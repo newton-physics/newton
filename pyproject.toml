@@ -5,17 +5,39 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "newton-physics"
 version = "0.1.0"
-description = "Add your description here"
+license = "Apache-2.0"
+authors = [{ name = "Newton Developers", email = "warp-python@nvidia.com" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = ["warp-lang>=1.7.0.dev20250326"]
 
 [project.optional-dependencies]
-dev = ["pre-commit"]
+dev = [
+    "coverage[toml]>=7.8.0",
+    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+]
 docs = ["sphinx", "furo"]
-mujoco = ["mujoco-warp"]
-tests = ["coverage[toml]", "usd-core"]
-all = ["newton-physics[dev,docs,mujoco,tests]"]
+all = [
+    # Dev dependencies
+    "coverage[toml]>=7.8.0",
+    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+    # Docs dependencies
+    "sphinx",
+    "furo",
+]
 
 [tool.setuptools]
 include-package-data = false # Explicitly disable automatic data inclusion
@@ -28,8 +50,15 @@ namespaces = false
 newton = ["licenses/**/*"]
 
 [[tool.uv.index]]
+url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
+default = true
+
+[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
 
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
@@ -90,4 +119,11 @@ exclude_lines = [
     "if 0:",
     "if __name__ == .__main__.:",
 ]
-omit = ["*/newton/examples/*", "*/newton/tests/*", "/newton/thirdparty/*"]
+omit = ["*/newton/examples/*", "*/newton/tests/*", "*/newton/thirdparty/*"]
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.8.0",
+    "mujoco-warp",
+    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+]

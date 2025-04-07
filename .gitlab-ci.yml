@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -67,8 +67,7 @@ linting:
   image: ghcr.io/astral-sh/uv:bookworm
   extends:
     - .runner-utility-linux-x86_64
-  before_script:
-    - uv venv
+  needs: []
   script:
     - uvx pre-commit run --all-files --show-diff-on-failure
 
@@ -78,11 +77,7 @@ testing:
   image: ghcr.io/astral-sh/uv:bookworm
   extends:
     - .omni_nvks_gpu
-  before_script:
-    - echo -e "\\e[0Ksection_start:`date +%s`:install_dependencies[collapsed=true]\\r\\e[0KInstalling dependencies"
-    - uv venv
-    - uv pip install .[mujoco,tests]
-    - echo -e "\\e[0Ksection_end:`date +%s`:install_dependencies\\r\\e[0K"
+  needs: []
   script:
     - uv run -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
@@ -116,6 +111,7 @@ testing:
 build_package:
   stage: build
   image: ghcr.io/astral-sh/uv:bookworm
+  needs: []
   extends:
     - .runner-utility-linux-x86_64
   script:
