@@ -21,6 +21,9 @@ dist/
 coverage.xml
 htmlcov/
 
+# --- Test Reports ---
+rspec.xml
+
 # --- Type Checking ---
 .mypy_cache/
 
