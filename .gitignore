@@ -29,3 +29,6 @@ rspec.xml
 
 # --- IDEs & Editors ---
 .vscode/
+
+# --- Documentation ---
+docs/_build/
