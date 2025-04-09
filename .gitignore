@@ -1,16 +1,13 @@
-# Byte-compiled / optimized / DLL files
+# Python-generated files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Distribution / packaging
+*.py[oc]
 build/
 dist/
-*.egg-info/
+wheels/
+*.egg-info
 
 # Virtual Environments 
-.venv/
+.venv
 
 # Tool cache
 .cache/
@@ -21,14 +18,14 @@ dist/
 coverage.xml
 htmlcov/
 
-# --- Test Reports ---
+# Test Reports
 rspec.xml
 
-# --- Type Checking ---
+# Type Checking
 .mypy_cache/
 
-# --- IDEs & Editors ---
+# IDEs & Editors
 .vscode/
 
-# --- Documentation ---
+# Documentation
 docs/_build/

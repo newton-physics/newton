@@ -52,3 +52,38 @@ To automatically run pre-commit hooks with `git commit`:
 ```bash
 uvx pre-commit install
 ```
+
+Updating project lockfile, remember to commit `uv.lock` after running:
+
+```bash
+uv lock -U
+```
+
+## Building Documentation
+
+Option 1:
+
+```bash
+rm -rf docs/_build
+uv run sphinx-build -b html docs docs/_build/html
+```
+
+Option 2 (uv + virtual environment):
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -e .[all]
+cd docs
+make clean
+make html
+```
+
+Option 3 (Others):
+
+```bash
+python -m pip install -e .[all]
+cd docs
+make clean
+make html
+```

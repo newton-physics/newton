@@ -117,10 +117,10 @@ class JointAxis:
         limit_upper (float): The upper position limit of the joint axis
         limit_ke (float): The elastic stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
         limit_kd (float): The damping stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
-        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode, see `Joint modes`_) of the joint axis
+        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode) of the joint axis
         target_ke (float): The proportional gain of the joint axis target drive PD controller
         target_kd (float): The derivative gain of the joint axis target drive PD controller
-        mode (int): The mode of the joint axis, see `Joint modes`_
+        mode (int): The mode of the joint axis
     """
 
     def __init__(
@@ -451,7 +451,7 @@ class Model:
         joint_target_kd (array): Joint damping, shape [joint_axis_count], float
         joint_axis_start (array): Start index of the first axis per joint, shape [joint_count], int
         joint_axis_dim (array): Number of linear and angular axes per joint, shape [joint_count, 2], int
-        joint_axis_mode (array): Joint axis mode, shape [joint_axis_count], int. See `Joint modes`_.
+        joint_axis_mode (array): Joint axis mode, shape [joint_axis_count], int.
         joint_linear_compliance (array): Joint linear compliance, shape [joint_count], float
         joint_angular_compliance (array): Joint linear compliance, shape [joint_count], float
         joint_enabled (array): Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int

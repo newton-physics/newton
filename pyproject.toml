@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "newton-physics"
@@ -33,25 +33,19 @@ dev = [
     "coverage[toml]>=7.8.0",
     "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
 ]
-docs = ["sphinx", "furo"]
+docs = ["myst-parser>=3.0.1", "sphinx>=7.4.7", "furo>=2024.8.6"]
 all = [
     # Dev dependencies
     "coverage[toml]>=7.8.0",
     "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
     # Docs dependencies
-    "sphinx",
-    "furo",
+    "myst-parser>=3.0.1",
+    "sphinx>=7.4.7",
+    "furo>=2024.8.6",
 ]
 
-[tool.setuptools]
-include-package-data = false # Explicitly disable automatic data inclusion
-
-[tool.setuptools.packages.find]
-exclude = ["newton.licenses*"]
-namespaces = false
-
-[tool.setuptools.package-data]
-newton = ["licenses/**/*"]
+[tool.hatch.build.targets.wheel]
+include = ["/newton", "/newton/licenses"]
 
 [[tool.uv.index]]
 url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
@@ -67,6 +61,16 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.8.0",
+    "furo>=2024.8.6",
+    "mujoco-warp>=3.2.7",
+    "myst-parser>=3.0.1",
+    "sphinx>=7.4.7",
+    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
@@ -124,10 +128,3 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 omit = ["*/newton/examples/*", "*/newton/tests/*", "*/newton/thirdparty/*"]
-
-[dependency-groups]
-dev = [
-    "coverage[toml]>=7.8.0",
-    "mujoco-warp",
-    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
-]
