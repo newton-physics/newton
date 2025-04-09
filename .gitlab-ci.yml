@@ -29,9 +29,6 @@ default:
       - unknown_failure
 
 variables:
-  UV_VERSION: 0.5
-  PYTHON_VERSION: 3.12
-  BASE_LAYER: bookworm-slim
   UV_LINK_MODE: copy
 
 workflow:
@@ -52,6 +49,7 @@ stages:
   - lint
   - test
   - build
+  - docs
 
 # ==============================================================================
 # Include the Omniverse DevPlat runner job definitions
@@ -120,3 +118,47 @@ build_package:
   artifacts:
     paths:
       - dist/
+
+# --- Stage: Build Documentation ---
+.build-docs-common:
+  stage: docs
+  image: ghcr.io/astral-sh/uv:bookworm
+  needs: []
+  extends:
+    - .runner-utility-linux-x86_64
+  artifacts:
+    paths:
+      - public
+  script:
+    - uv run sphinx-build -b html docs docs/_build/html
+    - mv docs/_build/html/ ./public/
+
+# Merge requests: Build documentation and save as an artifact
+# A link to the generated documentation is added to the merge request.
+merge request docs:
+  extends:
+    - .build-docs-common
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+  timeout: 10m
+  environment:
+    name: review/$CI_MERGE_REQUEST_IID
+    url: https://$CI_PROJECT_ROOT_NAMESPACE.$CI_PAGES_DOMAIN/-/$CI_PROJECT_NAME/-/jobs/$CI_JOB_ID/artifacts/public/index.html
+  after_script:
+    - echo "View the website at https://$CI_PROJECT_ROOT_NAMESPACE.$CI_PAGES_DOMAIN/-/$CI_PROJECT_NAME/-/jobs/$CI_JOB_ID/artifacts/public/index.html"
+
+# Build documentation and publish on gitlab-master
+# This only runs in the default branch pipeline. The "pages" name is special for GitLab.
+pages:
+  extends:
+    - .build-docs-common
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  timeout: 10m
+  environment:
+    name: GitLab Pages
+    deployment_tier: staging
+    url: $CI_PAGES_URL
