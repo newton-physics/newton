@@ -607,7 +607,6 @@ wheels = [
 
 [[package]]
 name = "newton-physics"
-version = "0.1.1a1"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang", version = "1.7.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
@@ -666,7 +665,7 @@ requires-dist = [
     { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250326", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250326" },
 ]
-provides-extras = ["dev", "docs", "all"]
+provides-extras = ["all", "dev", "docs"]
 
 [package.metadata.requires-dev]
 dev = [

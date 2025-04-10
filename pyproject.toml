@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "newton-physics"
-version = "0.1.1.a1"
+dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "warp-python@nvidia.com" }]
@@ -43,6 +43,9 @@ all = [
     "sphinx>=7.4.7",
     "furo>=2024.8.6",
 ]
+
+[tool.hatch.version]
+path = "newton/_version.py"
 
 [tool.hatch.build.targets.wheel]
 include = ["/newton", "/newton/licenses"]

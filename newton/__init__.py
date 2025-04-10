@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from . import solvers
+from ._version import __version__
 from .core.model import (
     GEO_BOX,
     GEO_CAPSULE,
@@ -78,5 +79,6 @@ __all__ = [
     "ModelShapeGeometry",
     "ModelShapeMaterials",
     "State",
+    "__version__",
     "solvers",
 ]
