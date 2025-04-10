@@ -14,16 +14,19 @@ project = "Newton"
 copyright = f"{datetime.date.today().year}, The Newton Developers"
 author = "The Newton Developers"
 
-# Read version from VERSION.md
+# Read version from _version.py
 project_root = Path(__file__).parent.parent
-version_file_path = project_root / "VERSION.md"
+version_file_path = project_root / "newton" / "_version.py"
 try:
-    # Read the file content and strip whitespace (like trailing newlines)
-    project_version = version_file_path.read_text(encoding="utf-8").strip()
+    # Get version from _version.py
+    version_globals: dict[str, str] = {}
+    with open(version_file_path, encoding="utf-8") as f:
+        exec(f.read(), version_globals)
+    project_version = version_globals["__version__"]
     if not project_version:
-        raise ValueError("VERSION.md is empty.")
+        raise ValueError("__version__ in _version.py is empty.")
 except FileNotFoundError:
-    print(f"Error: VERSION.md not found at {version_file_path}", file=sys.stderr)
+    print(f"Error: _version.py not found at {version_file_path}", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
     print(f"Error reading or parsing {version_file_path}: {e}", file=sys.stderr)
