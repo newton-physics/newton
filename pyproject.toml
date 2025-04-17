@@ -31,13 +31,13 @@ dependencies = ["warp-lang>=1.7.0.dev20250326"]
 [project.optional-dependencies]
 dev = [
     "coverage[toml]>=7.8.0",
-    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+    "usd-core>=25.5.dev20250417 ; platform_machine != 'aarch64'",
 ]
 docs = ["myst-parser>=3.0.1", "sphinx>=7.4.7", "furo>=2024.8.6"]
 all = [
     # Dev dependencies
     "coverage[toml]>=7.8.0",
-    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+    "usd-core>=25.5.dev20250417 ; platform_machine != 'aarch64'",
     # Docs dependencies
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
@@ -57,13 +57,20 @@ default = true
 [[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
+explicit = true
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
 
+[[tool.uv.index]]
+name = "gitlab"
+url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple"
+explicit = true
+
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+usd-core = { index = "gitlab" }
 
 [dependency-groups]
 dev = [
@@ -72,13 +79,14 @@ dev = [
     "mujoco-warp>=3.2.7",
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
-    "usd-core>=25.2.post1 ; platform_machine != 'aarch64'",
+    "usd-core>=25.5.dev20250417 ; platform_machine != 'aarch64'",
 ]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
 line-length = 120
 indent-width = 4
+exclude = ["newton/tests/test_usd_physics_parsing.py"]
 
 [tool.ruff.lint]
 select = [
