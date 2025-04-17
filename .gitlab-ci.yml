@@ -57,14 +57,14 @@ stages:
 include:
   - project: "omniverse/devplat/gitlab/templates/runners"
     file: "/modules/include.yml"
-    ref: v1_latest
+    ref: v2_latest
 
 # --- Stage: Lint ---
 linting:
   stage: lint
   image: ghcr.io/astral-sh/uv:bookworm
   extends:
-    - .runner-utility-linux-x86_64
+    - .omni_nvks_micro_runner
   needs: []
   script:
     - uvx pre-commit run --all-files --show-diff-on-failure
@@ -111,7 +111,7 @@ build_package:
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
   extends:
-    - .runner-utility-linux-x86_64
+    - .omni_nvks_micro_runner
   script:
     - uv build --wheel
     - uvx twine check dist/*
@@ -125,7 +125,7 @@ build_package:
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
   extends:
-    - .runner-utility-linux-x86_64
+    - .omni_nvks_micro_runner
   artifacts:
     paths:
       - public
