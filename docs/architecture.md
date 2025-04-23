@@ -40,7 +40,6 @@
             - [UsdPhysics to Newton Mapping](#usdphysics-to-newton-mapping)
         - [omni.newton](#omninewton)
     - [Other Considerations](#other-considerations)
-        - [Migration from Warp.Sim](#migration-from-warpsim)
         - [Coupling Multiple Solvers](#coupling-multiple-solvers)
         - [MuJoCo Warp Integration](#mujoco-warp-integration)
         - [Maximal-Coordinate Solver Support](#maximal-coordinate-solver-support)
@@ -689,19 +688,6 @@ def apply_newton_attrs(prim, simulation_view):
 To expose Newton into Omniverse and ultimately Isaac Lab / Sim we propose to publish a `omni.newton` extension that includes the Newton Python package and any additional integration code required (similar to how `omni.warp` exposes Warp in Omniverse). The extension code should live in the Isaac Sim repo. and be maintained by the Isaac team.
 
 ## Other Considerations
-
-### Migration from Warp.Sim
-
-As Newton represents a superseding of `warp.sim` functionality that is already in active use by many research partners we must manage user migration carefully.
-
-Specifically we should plan to continue shipping warp.sim for at least 2 minor release cycles (4 months) along with a detailed migration document.
-
-Example timeline:
-
-* June 1, 2025: Initial announcement of warp.sim deprecation in Warp 1.8 release notes. Importing warp.sim results in a [DeprecationWarning](https://docs.python.org/3/library/exceptions.html#DeprecationWarning).  
-* August 1, 2025: Warp 1.9 release.  
-* September, 2025: warp.sim is removed from the **main** branch in Warp  
-* October 1, 2025: Warp 1.10 release, warp.sim is removed. Importing warp.sim results in a *ModuleNotFoundError*.
 
 ### Coupling Multiple Solvers
 
