@@ -48,9 +48,6 @@
         - [Batched vs Indexed](#batched-vs-indexed)
         - [How will Newton be made available to Isaac Lab?](#how-will-newton-be-made-available-to-isaac-lab)
         - [Where will the Newton repository be hosted?](#where-will-the-newton-repository-be-hosted)
-        - [Can we get the name “newton” for the PyPI package?](#can-we-get-the-name-newton-for-the-pypi-package)
-    - [Engineering Breakdown](#engineering-breakdown)
-    - [Conclusion](#conclusion)
 
 ## Abstract
 
@@ -295,6 +292,9 @@ Open questions:
 
 ### `newton.Tensors`
 
+> [!NOTE]
+> This section still in development, not clear if this kind of API belongs in Newton or Isaac Lab.
+
 For robot learning it is desirable to have batched access to simulation data. In this section we propose a standalone module that enables users to create custom views onto simulation data.
 
 Question: should we move core functionality related to view creation into a lower-level Newton module that would enable the engine to be easily integrated into other RL frameworks, e.g.:
@@ -303,11 +303,12 @@ Question: should we move core functionality related to view creation into a lowe
 class newton.Tensors:
 def __init__():
 	...
-	# view onto state data 
+# view onto state data 
 @staticmethod
 def create_model_view(model: Model, property: string, indices: wp.array) -> wp.indexed_array
 return wp.indexedArray(model.get_model_attr(property), indices) 
-	# view onto state data
+
+# view onto state data
 @staticmethod
 def create_state_view(model: Model, state: State, property: string, indices: wp.array) -> wp.indexed_array
 return wp.indexedArray(model.get_state_attr(property), indices)
