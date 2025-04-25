@@ -487,6 +487,7 @@ class Model:
         soft_contact_body_pos (array), Positional offset of soft contact point in body frame, shape [soft_contact_max], vec3
         soft_contact_body_vel (array), Linear velocity of soft contact point in body frame, shape [soft_contact_max], vec3
         soft_contact_normal (array), Contact surface normal of soft contact point in world space, shape [soft_contact_max], vec3
+        soft_contact_tids (array), Thread indices of the soft contact points, shape [soft_contact_max], int
 
         rigid_contact_max (int): Maximum number of potential rigid body contact points to generate ignoring the `rigid_mesh_contact_max` limit.
         rigid_contact_max_limited (int): Maximum number of potential rigid body contact points to generate respecting the `rigid_mesh_contact_max` limit.
@@ -504,6 +505,12 @@ class Model:
         rigid_contact_thickness (array): Total contact thickness, shape [rigid_contact_max], float
         rigid_contact_shape0 (array): Index of shape 0 per contact, shape [rigid_contact_max], int
         rigid_contact_shape1 (array): Index of shape 1 per contact, shape [rigid_contact_max], int
+        rigid_contact_tids (array): Triangle indices of the contact points, shape [rigid_contact_max], int
+        rigid_contact_pairwise_counter (array): Pairwise counter for contact generation, shape [rigid_contact_max], int
+        rigid_contact_broad_shape0 (array): Broadphase shape index of shape 0 per contact, shape [rigid_contact_max], int
+        rigid_contact_broad_shape1 (array): Broadphase shape index of shape 1 per contact, shape [rigid_contact_max], int
+        rigid_contact_point_id (array): Contact point ID, shape [rigid_contact_max], int
+        rigid_contact_point_limit (array): Contact point limit, shape [rigid_contact_max], int
 
         ground (bool): Whether the ground plane and ground contacts are enabled
         ground_plane (array): Ground plane 3D normal and offset, shape [4], float
@@ -525,7 +532,8 @@ class Model:
         joint_dof_count (int): Total number of velocity degrees of freedom of all joints in the system
         joint_coord_count (int): Total number of position degrees of freedom of all joints in the system
 
-        particle_coloring (list of array): The coloring of all the particles, used for VBD's Gauss-Seidel iteration.
+        particle_color_groups (list of array): The coloring of all the particles, used for VBD's Gauss-Seidel iteration. Each array contains indices of particles sharing the same color.
+        particle_colors (array): Contains the color assignment for every particle
 
         device (wp.Device): Device on which the Model was allocated
 
@@ -659,6 +667,7 @@ class Model:
         self.soft_contact_body_pos = None
         self.soft_contact_body_vel = None
         self.soft_contact_normal = None
+        self.soft_contact_tids = None
 
         self.rigid_contact_max = 0
         self.rigid_contact_max_limited = 0
@@ -676,6 +685,12 @@ class Model:
         self.rigid_contact_thickness = None
         self.rigid_contact_shape0 = None
         self.rigid_contact_shape1 = None
+        self.rigid_contact_tids = None
+        self.rigid_contact_pairwise_counter = None
+        self.rigid_contact_broad_shape0 = None
+        self.rigid_contact_broad_shape1 = None
+        self.rigid_contact_point_id = None
+        self.rigid_contact_point_limit = None
 
         # toggles ground contact for all shapes
         self.ground = True
@@ -698,7 +713,10 @@ class Model:
         self.joint_dof_count = 0
         self.joint_coord_count = 0
 
-        self.particle_coloring = []
+        # indices of particles sharing the same color
+        self.particle_color_groups = []
+        # the color of each particles
+        self.particle_colors = None
 
         self.device = wp.get_device(device)
 
@@ -1023,7 +1041,7 @@ class ModelBuilder:
         self.particle_flags = []
         self.particle_max_velocity = 1e5
         # list of np.array
-        self.particle_coloring = []
+        self.particle_color_groups = []
 
         # shapes (each shape has an entry in these arrays)
         # transform from shape to body
@@ -1234,7 +1252,13 @@ class ModelBuilder:
     def add_articulation(self):
         self.articulation_start.append(self.joint_count)
 
-    def add_builder(self, builder, xform=None, update_num_env_count=True, separate_collision_group=True):
+    def add_builder(
+        self,
+        builder: ModelBuilder,
+        xform: Transform | None = None,
+        update_num_env_count: bool = True,
+        separate_collision_group: bool = True,
+    ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
 
         Args:
@@ -1267,9 +1291,9 @@ class ModelBuilder:
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
-        builder_coloring_translated = [group + start_particle_idx for group in builder.particle_coloring]
-        self.particle_coloring = combine_independent_particle_coloring(
-            self.particle_coloring, builder_coloring_translated
+        builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
+        self.particle_color_groups = combine_independent_particle_coloring(
+            self.particle_color_groups, builder_coloring_translated
         )
 
         start_body_idx = self.body_count
@@ -1283,7 +1307,7 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(xform * builder.shape_transform[s])
+                    self.shape_transform.append(xform * wp.transform(*builder.shape_transform[s]))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
@@ -1295,14 +1319,14 @@ class ModelBuilder:
             joint_q = copy.deepcopy(builder.joint_q)
             if xform is not None:
                 for i in range(len(joint_X_p)):
-                    if builder.joint_type[i] == JOINT_FREE:
+                    if builder.joint_type[i] == wp.sim.JOINT_FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
                         tf = xform * xform_prev
                         joint_q[qi : qi + 3] = tf.p
                         joint_q[qi + 3 : qi + 7] = tf.q
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = xform * joint_X_p[i]
+                        joint_X_p[i] = xform * wp.transform(*joint_X_p[i])
             self.joint_X_p.extend(joint_X_p)
             self.joint_q.extend(joint_q)
 
@@ -1318,7 +1342,7 @@ class ModelBuilder:
 
         for i in range(builder.body_count):
             if xform is not None:
-                self.body_q.append(xform * builder.body_q[i])
+                self.body_q.append(xform * wp.transform(*builder.body_q[i]))
             else:
                 self.body_q.append(builder.body_q[i])
 
@@ -2434,22 +2458,24 @@ class ModelBuilder:
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
-                        source_m = body_data[last_dynamic_body]["mass"]
-                        source_com = body_data[last_dynamic_body]["com"]
-                        # add inertia to last_dynamic_body
-                        m = body_data[child_body]["mass"]
-                        com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
-                        inertia = body_data[child_body]["inertia"]
-                        body_data[last_dynamic_body]["inertia"] += transform_inertia(
-                            m, inertia, incoming_xform.p, incoming_xform.q
-                        )
-                        body_data[last_dynamic_body]["mass"] += m
-                        body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / (m + source_m)
                         body_data[last_dynamic_body]["shapes"].append(shape)
-                        # indicate to recompute inverse mass, inertia for this body
-                        body_data[last_dynamic_body]["inv_mass"] = None
                     else:
                         self.shape_body[shape] = -1
+
+                if last_dynamic_body > -1:
+                    source_m = body_data[last_dynamic_body]["mass"]
+                    source_com = body_data[last_dynamic_body]["com"]
+                    # add inertia to last_dynamic_body
+                    m = body_data[child_body]["mass"]
+                    com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
+                    inertia = body_data[child_body]["inertia"]
+                    body_data[last_dynamic_body]["inertia"] += transform_inertia(
+                        m, inertia, incoming_xform.p, incoming_xform.q
+                    )
+                    body_data[last_dynamic_body]["mass"] += m
+                    body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / (m + source_m)
+                    # indicate to recompute inverse mass, inertia for this body
+                    body_data[last_dynamic_body]["inv_mass"] = None
             else:
                 joint["parent_xform"] = incoming_xform * joint["parent_xform"]
                 joint["parent"] = last_dynamic_body
@@ -2814,7 +2840,6 @@ class ModelBuilder:
 
         Returns:
             The index of the added shape
-
         """
 
         return self._add_shape(
@@ -3276,8 +3301,8 @@ class ModelBuilder:
         collision_filter_parent=True,
         has_ground_collision=True,
         has_shape_collision=True,
-        is_visible=True,
-    ):
+        is_visible: bool = True,
+    ) -> int:
         self.shape_body.append(body)
         shape = self.shape_count
         if body in self.body_shapes:
@@ -3324,9 +3349,10 @@ class ModelBuilder:
         self.shape_ground_collision.append(has_ground_collision)
         self.shape_shape_collision.append(has_shape_collision)
 
-        (m, c, I) = compute_shape_mass(type, scale, src, density, is_solid, thickness)
-
-        self._update_body_mass(body, m, I, pos + c, rot)
+        if density > 0.0:
+            (m, c, I) = compute_shape_mass(type, scale, src, density, is_solid, thickness)
+            com_body = wp.transform_point(wp.transform(pos, rot), c)
+            self._update_body_mass(body, m, I, com_body, rot)
         return shape
 
     # particles
@@ -3864,15 +3890,16 @@ class ModelBuilder:
             )  # opposite 0, opposite 1, vertex 0, vertex 1
 
             # skip constraints open edges
-            if e.f0 != -1 and e.f1 != -1:
-                spring_indices.add((min(e.o0, e.o1), max(e.o0, e.o1)))
+            spring_indices.add((min(e.v0, e.v1), max(e.v0, e.v1)))
+            if e.f0 != -1:
                 spring_indices.add((min(e.o0, e.v0), max(e.o0, e.v0)))
                 spring_indices.add((min(e.o0, e.v1), max(e.o0, e.v1)))
-
+            if e.f1 != -1:
                 spring_indices.add((min(e.o1, e.v0), max(e.o1, e.v0)))
                 spring_indices.add((min(e.o1, e.v1), max(e.o1, e.v1)))
 
-                spring_indices.add((min(e.v0, e.v1), max(e.v0, e.v1)))
+            if e.f0 != -1 and e.f1 != -1:
+                spring_indices.add((min(e.o0, e.o1), max(e.o0, e.o1)))
 
         if add_springs:
             for i, j in spring_indices:
@@ -3983,14 +4010,15 @@ class ModelBuilder:
         if add_springs:
             spring_indices = set()
             for i, j, k, l in edge_indices:
-                spring_indices.add((min(i, j), max(i, j)))
-                spring_indices.add((min(i, k), max(i, k)))
-                spring_indices.add((min(i, l), max(i, l)))
-
-                spring_indices.add((min(j, k), max(j, k)))
-                spring_indices.add((min(j, l), max(j, l)))
-
                 spring_indices.add((min(k, l), max(k, l)))
+                if i != -1:
+                    spring_indices.add((min(i, k), max(i, k)))
+                    spring_indices.add((min(i, l), max(i, l)))
+                if j != -1:
+                    spring_indices.add((min(j, k), max(j, k)))
+                    spring_indices.add((min(j, l), max(j, l)))
+                if i != -1 and j != -1:
+                    spring_indices.add((min(i, j), max(i, j)))
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0)
@@ -4325,19 +4353,19 @@ class ModelBuilder:
         for i in range(self.shape_count - 1):
             self.shape_collision_filter_pairs.add((i, ground_id))
 
-    def set_coloring(self, particle_coloring):
+    def set_coloring(self, particle_color_groups):
         """
-        Set coloring information with user-provided coloring.
+        Sets coloring information with user-provided coloring.
 
         Args:
-            particle_coloring: A list of list or `np.array` with `dtype`=`int`. The length of the list is the number of colors
-             and each list or `np.array` contains the indices of vertices with this color.
+            particle_color_groups: A list of list or `np.array` with `dtype`=`int`. The length of the list is the number of colors
+                and each list or `np.array` contains the indices of vertices with this color.
         """
-        particle_coloring = [
+        particle_color_groups = [
             color_group if isinstance(color_group, np.ndarray) else np.array(color_group)
-            for color_group in particle_coloring
+            for color_group in particle_color_groups
         ]
-        self.particle_coloring = particle_coloring
+        self.particle_color_groups = particle_color_groups
 
     def color(
         self,
@@ -4347,7 +4375,7 @@ class ModelBuilder:
         coloring_algorithm=ColoringAlgorithm.MCS,
     ):
         """
-        Run coloring algorithm to generate coloring information.
+        Runs coloring algorithm to generate coloring information.
 
         Args:
             include_bending_energy: Whether to consider bending energy for trimeshes in the coloring process. If set to `True`, the generated
@@ -4373,7 +4401,7 @@ class ModelBuilder:
         # ignore bending energy if it is too small
         edge_indices = np.array(self.edge_indices)
 
-        self.particle_coloring = color_trimesh(
+        self.particle_color_groups = color_trimesh(
             len(self.particle_q),
             edge_indices,
             include_bending,
@@ -4433,7 +4461,11 @@ class ModelBuilder:
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 
-            m.particle_coloring = [wp.array(group, dtype=int) for group in self.particle_coloring]
+            particle_colors = np.empty(self.particle_count, dtype=int)
+            for color in range(len(self.particle_color_groups)):
+                particle_colors[self.particle_color_groups[color]] = color
+            m.particle_colors = wp.array(particle_colors, dtype=int)
+            m.particle_color_groups = [wp.array(group, dtype=int) for group in self.particle_color_groups]
 
             # hash-grid for particle interactions
             m.particle_grid = wp.HashGrid(128, 128, 128)
