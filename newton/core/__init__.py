@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .contact import Contact
 from .control import Control
 from .model import Model
 from .state import State
 
-__all__ = ["Control", "Model", "State"]
+__all__ = ["Contact", "Control", "Model", "State"]

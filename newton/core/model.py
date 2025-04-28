@@ -434,7 +434,7 @@ class Model:
         body_inv_inertia (array): Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float
         body_mass (array): Rigid body mass, shape [body_count], float
         body_inv_mass (array): Rigid body inverse mass, shape [body_count], float
-        body_name (list): Rigid body names, shape [body_count], str
+        body_key (list): Rigid body keys, shape [body_count], str
 
         joint_q (array): Generalized joint positions used for state initialization, shape [joint_coord_count], float
         joint_qd (array): Generalized joint velocities used for state initialization, shape [joint_dof_count], float
@@ -469,7 +469,7 @@ class Model:
         joint_q_start (array): Start index of the first position coordinate per joint (note the last value is an additional sentinel entry to allow for querying the q dimensionality of joint i via ``joint_q_start[i+1] - joint_q_start[i]``), shape [joint_count + 1], int
         joint_qd_start (array): Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via ``joint_qd_start[i+1] - joint_qd_start[i]``), shape [joint_count + 1], int
         articulation_start (array): Articulation start index, shape [articulation_count], int
-        joint_name (list): Joint names, shape [joint_count], str
+        joint_key (list): Joint keys, shape [joint_count], str
         joint_attach_ke (float): Joint attachment force stiffness (used by :class:`SemiImplicitIntegrator`)
         joint_attach_kd (float): Joint attachment force damping (used by :class:`SemiImplicitIntegrator`)
 
@@ -479,7 +479,7 @@ class Model:
         soft_contact_kd (float): Damping of soft contacts (used by the Euler integrators)
         soft_contact_kf (float): Stiffness of friction force in soft contacts (used by the Euler integrators)
         soft_contact_mu (float): Friction coefficient of soft contacts
-        soft_contact_restitution (float): Restitution coefficient of soft contacts (used by :class:`XPBDIntegrator`)
+        soft_contact_restitution (float): Restitution coefficient of soft contacts (used by :class:`XPBDSolver`)
 
         soft_contact_count (array): Number of active particle-shape contacts, shape [1], int
         soft_contact_particle (array), Index of particle per soft contact point, shape [soft_contact_max], int
@@ -493,8 +493,8 @@ class Model:
         rigid_contact_max_limited (int): Maximum number of potential rigid body contact points to generate respecting the `rigid_mesh_contact_max` limit.
         rigid_mesh_contact_max (int): Maximum number of rigid body contact points to generate per mesh (0 = unlimited, default)
         rigid_contact_margin (float): Contact margin for generation of rigid body contacts
-        rigid_contact_torsional_friction (float): Torsional friction coefficient for rigid body contacts (used by :class:`XPBDIntegrator`)
-        rigid_contact_rolling_friction (float): Rolling friction coefficient for rigid body contacts (used by :class:`XPBDIntegrator`)
+        rigid_contact_torsional_friction (float): Torsional friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)
+        rigid_contact_rolling_friction (float): Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)
 
         rigid_contact_count (array): Number of active shape-shape contacts, shape [1], int
         rigid_contact_point0 (array): Contact point relative to frame of body 0, shape [rigid_contact_max], vec3
@@ -617,7 +617,7 @@ class Model:
         self.body_inv_inertia = None
         self.body_mass = None
         self.body_inv_mass = None
-        self.body_name = None
+        self.body_key = None
 
         self.joint_q = None
         self.joint_qd = None
@@ -647,7 +647,7 @@ class Model:
         self.joint_q_start = None
         self.joint_qd_start = None
         self.articulation_start = None
-        self.joint_name = None
+        self.joint_key = None
 
         # todo: per-joint values?
         self.joint_attach_ke = 1.0e3
@@ -1044,6 +1044,7 @@ class ModelBuilder:
         self.particle_color_groups = []
 
         # shapes (each shape has an entry in these arrays)
+        self.shape_key = []  # shape keys
         # transform from shape to body
         self.shape_transform = []
         # maps from shape index to body index
@@ -1119,7 +1120,7 @@ class ModelBuilder:
         self.body_com = []
         self.body_q = []
         self.body_qd = []
-        self.body_name = []
+        self.body_key = []
         self.body_shapes = {}  # mapping from body to shapes
 
         # rigid joints
@@ -1133,7 +1134,7 @@ class ModelBuilder:
         self.joint_qd = []
 
         self.joint_type = []
-        self.joint_name = []
+        self.joint_key = []
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
@@ -1155,7 +1156,9 @@ class ModelBuilder:
         self.joint_qd_start = []
         self.joint_axis_start = []
         self.joint_axis_dim = []
+
         self.articulation_start = []
+        self.articulation_key = []
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
@@ -1240,17 +1243,12 @@ class ModelBuilder:
     def articulation_count(self):
         return len(self.articulation_start)
 
-    # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
-    # these are used for computing forward kinematics e.g.:
-    #
-    # model.eval_articulation_fk()
-    # model.eval_articulation_j()
-    # model.eval_articulation_m()
-    #
-    # articulations are automatically 'closed' when calling finalize
-
-    def add_articulation(self):
+    def add_articulation(self, key: str | None = None):
+        # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
+        # these are used for computing forward kinematics e.g.:
+        # articulations are automatically 'closed' when calling finalize
         self.articulation_start.append(self.joint_count)
+        self.articulation_key.append(key or f"articulation_{self.articulation_count}")
 
     def add_builder(
         self,
@@ -1374,13 +1372,14 @@ class ModelBuilder:
             self.last_collision_group += builder.last_collision_group
 
         more_builder_attrs = [
+            "articulation_key",
             "body_inertia",
             "body_mass",
             "body_inv_inertia",
             "body_inv_mass",
             "body_com",
             "body_qd",
-            "body_name",
+            "body_key",
             "joint_type",
             "joint_enabled",
             "joint_X_c",
@@ -1388,7 +1387,7 @@ class ModelBuilder:
             "joint_axis",
             "joint_axis_dim",
             "joint_axis_mode",
-            "joint_name",
+            "joint_key",
             "joint_qd",
             "joint_act",
             "joint_limit_lower",
@@ -1399,6 +1398,7 @@ class ModelBuilder:
             "joint_target_kd",
             "joint_linear_compliance",
             "joint_angular_compliance",
+            "shape_key",
             "shape_visible",
             "shape_geo_type",
             "shape_geo_scale",
@@ -1455,24 +1455,24 @@ class ModelBuilder:
         armature: float = 0.0,
         com: Vec3 | None = None,
         I_m: Mat33 | None = None,
-        m: float = 0.0,
-        name: str | None = None,
+        mass: float = 0.0,
+        key: str | None = None,
     ) -> int:
         """Adds a rigid body to the model.
 
         Args:
-            origin: The location of the body in the world frame
-            armature: Artificial inertia added to the body
-            com: The center of mass of the body w.r.t its origin
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass)
-            m: Mass of the body
-            name: Name of the body (optional)
+            origin: The location of the body in the world frame.
+            armature: Artificial inertia added to the body.
+            com: The center of mass of the body w.r.t its origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass).
+            mass: Mass of the body.
+            key: Key of the body (optional).
 
         Returns:
-            The index of the body in the model
+            The index of the body in the model.
 
         Note:
-            If the mass (m) is zero then the body is treated as kinematic with no dynamics
+            If the mass is zero then the body is treated as kinematic with no dynamics.
 
         """
 
@@ -1490,11 +1490,11 @@ class ModelBuilder:
         # body data
         inertia = I_m + wp.mat33(np.eye(3)) * armature
         self.body_inertia.append(inertia)
-        self.body_mass.append(m)
+        self.body_mass.append(mass)
         self.body_com.append(com)
 
-        if m > 0.0:
-            self.body_inv_mass.append(1.0 / m)
+        if mass > 0.0:
+            self.body_inv_mass.append(1.0 / mass)
         else:
             self.body_inv_mass.append(0.0)
 
@@ -1506,7 +1506,7 @@ class ModelBuilder:
         self.body_q.append(origin)
         self.body_qd.append(wp.spatial_vector())
 
-        self.body_name.append(name or f"body {body_id}")
+        self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
         return body_id
 
@@ -1517,7 +1517,7 @@ class ModelBuilder:
         child: int,
         linear_axes: list[JointAxis] | None = None,
         angular_axes: list[JointAxis] | None = None,
-        name: str | None = None,
+        key: str | None = None,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
         linear_compliance: float = 0.0,
@@ -1535,7 +1535,7 @@ class ModelBuilder:
             child (int): The index of the child body
             linear_axes (list(:class:`JointAxis`)): The linear axes (see :class:`JointAxis`) of the joint
             angular_axes (list(:class:`JointAxis`)): The angular axes (see :class:`JointAxis`) of the joint
-            name (str): The name of the joint (optional)
+            key (str): The key of the joint (optional)
             parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance (float): The linear compliance of the joint
@@ -1571,7 +1571,7 @@ class ModelBuilder:
         self.joint_child.append(child)
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
-        self.joint_name.append(name or f"joint {self.joint_count}")
+        self.joint_key.append(key or f"joint_{self.joint_count}")
         self.joint_axis_start.append(len(self.joint_axis))
         self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
@@ -1669,7 +1669,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1691,7 +1691,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axis
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1736,7 +1736,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1759,7 +1759,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1781,7 +1781,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axis
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1826,7 +1826,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1840,7 +1840,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1854,7 +1854,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1877,7 +1877,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1891,7 +1891,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1906,7 +1906,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1929,7 +1929,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1941,7 +1941,7 @@ class ModelBuilder:
         child_xform: wp.transform | None = None,
         armature: float = 0.0,
         parent: int = -1,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1954,7 +1954,7 @@ class ModelBuilder:
             child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism)
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1975,7 +1975,7 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -2009,7 +2009,7 @@ class ModelBuilder:
         Returns:
             The index of the added joint
 
-        .. note:: Distance joints are currently only supported in the :class:`XPBDIntegrator` at the moment.
+        .. note:: Distance joints are currently only supported in the :class:`XPBDSolver` at the moment.
 
         """
         if parent_xform is None:
@@ -2046,7 +2046,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -2062,7 +2062,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -2086,7 +2086,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -2103,7 +2103,7 @@ class ModelBuilder:
         linear_compliance: float = 0.0,
         angular_compliance: float = 0.0,
         armature: float = 1e-2,
-        name: str | None = None,
+        key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -2123,7 +2123,7 @@ class ModelBuilder:
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
-            name: The name of the joint
+            key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -2147,7 +2147,7 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -2158,7 +2158,7 @@ class ModelBuilder:
         child: int,
         linear_axes: list[JointAxis] | None = None,
         angular_axes: list[JointAxis] | None = None,
-        name: str | None = None,
+        key: str | None = None,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
         linear_compliance: float = 0.0,
@@ -2174,7 +2174,7 @@ class ModelBuilder:
             child: The index of the child body
             linear_axes: A list of linear axes
             angular_axes: A list of angular axes
-            name: The name of the joint
+            key: The key of the joint
             parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
@@ -2210,15 +2210,15 @@ class ModelBuilder:
             linear_compliance=linear_compliance,
             angular_compliance=angular_compliance,
             armature=armature,
-            name=name,
+            key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
 
     def plot_articulation(
         self,
-        show_body_names=True,
-        show_joint_names=True,
+        show_body_keys=True,
+        show_joint_keys=True,
         show_joint_types=True,
         plot_shapes=True,
         show_shape_types=True,
@@ -2230,8 +2230,8 @@ class ModelBuilder:
         Bodies are shown as orange squares, shapes are shown as blue circles.
 
         Args:
-            show_body_names (bool): Whether to show the body names or indices
-            show_joint_names (bool): Whether to show the joint names or indices
+            show_body_keys (bool): Whether to show the body keys or indices
+            show_joint_keys (bool): Whether to show the joint keys or indices
             show_joint_types (bool): Whether to show the joint types
             plot_shapes (bool): Whether to render the shapes connected to the rigid bodies
             show_shape_types (bool): Whether to show the shape geometry types
@@ -2282,8 +2282,8 @@ class ModelBuilder:
                 return "none"
             return "unknown"
 
-        if show_body_names:
-            vertices = ["world", *self.body_name]
+        if show_body_keys:
+            vertices = ["world", *self.body_key]
         else:
             vertices = ["-1"] + [str(i) for i in range(self.body_count)]
         if plot_shapes:
@@ -2297,8 +2297,8 @@ class ModelBuilder:
         for i in range(self.joint_count):
             edge = (self.joint_child[i] + 1, self.joint_parent[i] + 1)
             edges.append(edge)
-            if show_joint_names:
-                joint_label = self.joint_name[i]
+            if show_joint_keys:
+                joint_label = self.joint_key[i]
             else:
                 joint_label = str(i)
             if show_joint_types:
@@ -2307,7 +2307,7 @@ class ModelBuilder:
 
         if plot_shapes:
             for i in range(self.shape_count):
-                edges.append((len(self.body_name) + i + 1, self.shape_body[i] + 1))
+                edges.append((len(self.body_key) + i + 1, self.shape_body[i] + 1))
 
         # plot graph
         G = nx.Graph()
@@ -2350,18 +2350,19 @@ class ModelBuilder:
         body_data = {}
         body_children = {-1: []}
         visited = {}
+        merged_body_data = {}
         for i in range(self.body_count):
-            name = self.body_name[i]
+            key = self.body_key[i]
             body_data[i] = {
                 "shapes": self.body_shapes[i],
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
-                "inertia": self.body_inertia[i],
+                "inertia": wp.mat33(*self.body_inertia[i]),
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": self.body_com[i],
-                "name": name,
+                "key": key,
                 "original_id": i,
             }
             visited[i] = False
@@ -2369,7 +2370,7 @@ class ModelBuilder:
 
         joint_data = {}
         for i in range(self.joint_count):
-            name = self.joint_name[i]
+            key = self.joint_key[i]
             parent = self.joint_parent[i]
             child = self.joint_child[i]
             body_children[parent].append(child)
@@ -2392,7 +2393,7 @@ class ModelBuilder:
                 "qd_start": qd_start,
                 "linear_compliance": self.joint_linear_compliance[i],
                 "angular_compliance": self.joint_angular_compliance[i],
-                "name": name,
+                "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
@@ -2428,6 +2429,8 @@ class ModelBuilder:
         retained_joints = []
         retained_bodies = []
         body_remap = {-1: -1}
+        body_merged_parent = {}
+        body_merged_transform = {}
 
         # depth first search over the joint graph
         def dfs(parent_body: int, child_body: int, incoming_xform: wp.transform, last_dynamic_body: int):
@@ -2435,26 +2438,32 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal body_remap
 
             joint = joint_data[(parent_body, child_body)]
             if joint["type"] == JOINT_FIXED:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
-                parent_name = self.body_name[parent_body] if parent_body > -1 else "world"
-                child_name = self.body_name[child_body]
-                last_dynamic_body_name = self.body_name[last_dynamic_body] if last_dynamic_body > -1 else "world"
+                parent_key = self.body_key[parent_body] if parent_body > -1 else "world"
+                child_key = self.body_key[child_body]
+                last_dynamic_body_key = self.body_key[last_dynamic_body] if last_dynamic_body > -1 else "world"
                 if verbose:
                     print(
-                        f"Remove fixed joint {joint['name']} between {parent_name} and {child_name}, "
-                        f"merging {child_name} into {last_dynamic_body_name}"
+                        f"Remove fixed joint {joint['key']} between {parent_key} and {child_key}, "
+                        f"merging {child_key} into {last_dynamic_body_key}"
                     )
                 child_id = body_data[child_body]["original_id"]
+                relative_xform = incoming_xform
+                merged_body_data[self.body_key[child_body]] = {
+                    "relative_xform": relative_xform,
+                    "parent_body": self.body_key[parent_body],
+                }
+                body_merged_parent[child_body] = last_dynamic_body
+                body_merged_transform[child_body] = incoming_xform
                 for shape in self.body_shapes[child_id]:
                     self.shape_transform[shape] = incoming_xform * self.shape_transform[shape]
                     if verbose:
                         print(
-                            f"  Shape {shape} moved to body {last_dynamic_body_name} with transform {self.shape_transform[shape]}"
+                            f"  Shape {shape} moved to body {last_dynamic_body_key} with transform {self.shape_transform[shape]}"
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
@@ -2500,7 +2509,7 @@ class ModelBuilder:
                 dfs(-1, body, wp.transform(), -1)
 
         # repopulate the model
-        self.body_name.clear()
+        self.body_key.clear()
         self.body_q.clear()
         self.body_qd.clear()
         self.body_mass.clear()
@@ -2511,9 +2520,9 @@ class ModelBuilder:
         self.body_shapes.clear()
         for i in retained_bodies:
             body = body_data[i]
-            new_id = len(self.body_name)
+            new_id = len(self.body_key)
             body_remap[body["original_id"]] = new_id
-            self.body_name.append(body["name"])
+            self.body_key.append(body["key"])
             self.body_q.append(list(body["q"]))
             self.body_qd.append(list(body["qd"]))
             m = body["mass"]
@@ -2533,7 +2542,6 @@ class ModelBuilder:
                 self.body_inv_mass.append(body["inv_mass"])
                 self.body_inv_inertia.append(body["inv_inertia"])
             self.body_shapes[new_id] = body["shapes"]
-            body_remap[body["original_id"]] = new_id
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -2552,7 +2560,7 @@ class ModelBuilder:
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
 
-        self.joint_name.clear()
+        self.joint_key.clear()
         self.joint_type.clear()
         self.joint_parent.clear()
         self.joint_child.clear()
@@ -2578,7 +2586,7 @@ class ModelBuilder:
         self.joint_axis_start.clear()
         self.joint_act.clear()
         for joint in retained_joints:
-            self.joint_name.append(joint["name"])
+            self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
             self.joint_parent.append(body_remap[joint["parent"]])
             self.joint_child.append(body_remap[joint["child"]])
@@ -2604,6 +2612,15 @@ class ModelBuilder:
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_act.append(axis["act"])
+
+        return {
+            "body_remap": body_remap,
+            "joint_remap": joint_remap,
+            "body_merged_parent": body_merged_parent,
+            "body_merged_transform": body_merged_transform,
+            # TODO clean up this data
+            "merged_body_data": merged_body_data,
+        }
 
     # muscles
     def add_muscle(
@@ -2659,6 +2676,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         is_visible: bool = True,
         collision_group: int = -1,
+        key: str | None = None,
     ):
         """
         Adds a plane collision shape.
@@ -2683,6 +2701,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             is_visible: Whether the plane is visible
             collision_group: The collision group of the shape
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -2722,6 +2741,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             is_visible=is_visible,
             collision_group=collision_group,
+            key=key,
         )
 
     def add_shape_sphere(
@@ -2743,6 +2763,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a sphere collision shape to a body.
 
@@ -2764,6 +2785,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the sphere is visible
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -2791,6 +2813,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_box(
@@ -2814,6 +2837,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a box collision shape to a body.
 
@@ -2837,6 +2861,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the box is visible
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -2862,6 +2887,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_capsule(
@@ -2885,6 +2911,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a capsule collision shape to a body.
 
@@ -2908,6 +2935,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the capsule is visible
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -2942,6 +2970,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_cylinder(
@@ -2965,6 +2994,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a cylinder collision shape to a body.
 
@@ -2988,9 +3018,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the cylinder is visible
-
-        Note:
-            Cylinders are currently not supported in rigid body collision handling.
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -3024,6 +3052,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_cone(
@@ -3047,6 +3076,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a cone collision shape to a body.
 
@@ -3070,9 +3100,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the cone is visible
-
-        Note:
-            Cones are currently not supported in rigid body collision handling.
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -3106,6 +3134,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_mesh(
@@ -3128,6 +3157,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds a triangle mesh collision shape to a body.
 
@@ -3152,6 +3182,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the mesh is visible
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -3187,6 +3218,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def add_shape_sdf(
@@ -3209,6 +3241,7 @@ class ModelBuilder:
         has_shape_collision: bool = True,
         collision_group: int = -1,
         is_visible: bool = True,
+        key: str | None = None,
     ):
         """Adds SDF collision shape to a body.
 
@@ -3231,6 +3264,7 @@ class ModelBuilder:
             has_shape_collision: If True, the shape will collide with other shapes
             collision_group: The collision group of the shape
             is_visible: Whether the shape is visible
+            key: The key of the shape
 
         Returns:
             The index of the added shape
@@ -3256,6 +3290,7 @@ class ModelBuilder:
             has_shape_collision=has_shape_collision,
             collision_group=collision_group,
             is_visible=is_visible,
+            key=key,
         )
 
     def _shape_radius(self, type, scale, src):
@@ -3302,6 +3337,7 @@ class ModelBuilder:
         has_ground_collision=True,
         has_shape_collision=True,
         is_visible: bool = True,
+        key: str | None = None,
     ) -> int:
         self.shape_body.append(body)
         shape = self.shape_count
@@ -3320,6 +3356,7 @@ class ModelBuilder:
         restitution = restitution if restitution is not None else self.default_shape_restitution
         thickness = thickness if thickness is not None else self.default_shape_thickness
         density = density if density is not None else self.default_shape_density
+        self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(wp.transform(pos, rot))
         self.shape_visible.append(is_visible)
         self.shape_geo_type.append(type)
@@ -4578,7 +4615,7 @@ class ModelBuilder:
             m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
-            m.body_name = self.body_name
+            m.body_key = self.body_key
 
             # joints
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
@@ -4591,7 +4628,7 @@ class ModelBuilder:
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_name = self.joint_name
+            m.joint_key = self.joint_key
             # compute joint ancestors
             child_to_joint = {}
             for i, child in enumerate(self.joint_child):

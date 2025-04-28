@@ -86,7 +86,7 @@ dev = [
 cache-dir = ".cache/ruff"
 line-length = 120
 indent-width = 4
-exclude = ["newton/tests/test_usd_physics_parsing.py"]
+exclude = []
 
 [tool.ruff.lint]
 select = [

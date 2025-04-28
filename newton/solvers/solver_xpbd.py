@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from newton.core import Control, Model, State
+from newton.core import Contact, Control, Model, State
 from newton.core.model import (
     JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
@@ -25,7 +25,7 @@ from newton.core.model import (
 )
 from newton.utils import vec_abs, vec_leaky_max, vec_leaky_min, vec_max, vec_min, velocity_at_point
 
-from .integrator import Integrator
+from .solver import SolverBase
 
 
 @wp.kernel
@@ -2632,7 +2632,7 @@ def apply_rigid_restitution(
         wp.atomic_add(deltas, body_b, wp.spatial_vector(dq, n * m_inv_b * dv_b))
 
 
-class XPBDIntegrator(Integrator):
+class XPBDSolver(SolverBase):
     """An implicit integrator using eXtended Position-Based Dynamics (XPBD) for rigid and soft body simulation.
 
     References:
@@ -2647,16 +2647,17 @@ class XPBDIntegrator(Integrator):
 
     .. code-block:: python
 
-        integrator = wp.XPBDIntegrator()
+        solver = newton.XPBDSolver()
 
         # simulation loop
         for i in range(100):
-            state = integrator.simulate(model, state_in, state_out, dt, control)
+            solver.step(model, state_in, state_out, control, contacts, dt)
 
     """
 
     def __init__(
         self,
+        model: Model = None,
         iterations=2,
         soft_body_relaxation=0.9,
         soft_contact_relaxation=0.9,
@@ -2667,6 +2668,7 @@ class XPBDIntegrator(Integrator):
         angular_damping=0.0,
         enable_restitution=False,
     ):
+        super().__init__(model=model)
         self.iterations = iterations
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -2790,7 +2792,7 @@ class XPBDIntegrator(Integrator):
 
         return new_body_q, new_body_qd
 
-    def simulate(self, model: Model, state_in: State, state_out: State, dt: float, control: Control = None):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0

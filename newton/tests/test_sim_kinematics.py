@@ -33,7 +33,6 @@ import os
 import unittest
 
 import warp as wp
-import warp.examples
 
 import newton.core
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
@@ -45,8 +44,8 @@ def test_fk_ik(test, device):
     num_envs = 1
 
     for i in range(num_envs):
-        wp.sim.parse_mjcf(
-            os.path.join(warp.examples.get_asset_directory(), "nv_ant.xml"),
+        newton.utils.parse_mjcf(
+            os.path.join(os.path.dirname(__file__), "assets", "nv_ant.xml"),
             builder,
             stiffness=0.0,
             damping=1.0,

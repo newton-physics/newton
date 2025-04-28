@@ -21,10 +21,12 @@ from newton.collision.collide import (
     TriMeshCollisionInfo,
     triangle_closest_point,
 )
-from newton.core import Control, Model, State
+from newton.core import Contact, Control, Model, State
 from newton.core.model import PARTICLE_FLAG_ACTIVE, ModelShapeMaterials
 
-from .integrator import Integrator
+from .solver import SolverBase
+
+wp.set_module_options({"enable_backward": False})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
     # "elasticity_force_hessian",
@@ -57,7 +59,7 @@ class ForceElementAdjacencyInfo:
     number of vertex i's adjacent [element]. For each adjacent element it stores 2 information:
         - the id of the adjacent element
         - the order of the vertex in the element, which is essential to compute the force and hessian for the vertex
-    - vertex_adjacent_[element]_offsets: stores where each vertex's information starts in the  flatten adjacency array.
+    - vertex_adjacent_[element]_offsets: stores where each vertex information starts in the  flatten adjacency array.
     Its size is |V|+1 such that the number of vertex i's adjacent [element] can be computed as
     vertex_adjacent_[element]_offsets[i+1]-vertex_adjacent_[element]_offsets[i].
     """
@@ -1925,17 +1927,17 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
         )
 
 
-class VBDIntegrator(Integrator):
+class VBDSolver(SolverBase):
     """An implicit integrator using Vertex Block Descent (VBD) for cloth simulation.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages. https://doi.org/10.1145/3658179
 
-    Note that VBDIntegrator's constructor requires a :class:`Model` object as input, so that it can do some precomputation and preallocate the space.
+    Note that VBDSolver's constructor requires a :class:`Model` object as input, so that it can do some precomputation and preallocate the space.
     After construction, you must provide the same :class:`Model` object that you used that was used during construction.
     Currently, you must manually provide particle coloring and assign it to `model.particle_color_groups` to make VBD work.
 
-    VBDIntegrator.simulate accepts three arguments: class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
+    VBDSolver.simulate accepts three arguments: class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
     may be used to advance the simulation state forward in time.
 
     Example
@@ -1944,11 +1946,11 @@ class VBDIntegrator(Integrator):
     .. code-block:: python
 
         model.particle_color_groups = # load or generate particle coloring
-        integrator = wp.VBDIntegrator(model)
+        solver = newton.VBDSolver(model)
 
         # simulation loop
         for i in range(100):
-            state = integrator.simulate(model, state_in, state_out, dt, control)
+            solver.step(model, state_in, state_out, control, contacts, dt)
 
     """
 
@@ -1965,8 +1967,7 @@ class VBDIntegrator(Integrator):
         triangle_collision_buffer_pre_alloc=32,
         edge_edge_parallel_epsilon=1e-5,
     ):
-        self.device = model.device
-        self.model = model
+        super().__init__(model)
         self.iterations = iterations
 
         # add new attributes for VBD solve
@@ -2109,9 +2110,9 @@ class VBDIntegrator(Integrator):
 
         return adjacency
 
-    def simulate(self, model: Model, state_in: State, state_out: State, dt: float, control: Control = None):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         if model is not self.model:
-            raise ValueError("model must be the one used to initialize VBDIntegrator")
+            raise ValueError("model must be the one used to initialize VBDSolver")
 
         if self.handle_self_contact:
             self.simulate_one_step_with_collisions_penetration_free(model, state_in, state_out, dt, control)

@@ -13,8 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .solver import SolverBase
-from .solver_vbd import VBDSolver
-from .solver_xpbd import XPBDSolver
+from __future__ import annotations
 
-__all__ = ["SolverBase", "VBDSolver", "XPBDSolver"]
+import warp as wp
+
+
+class Contact:
+    """Provides contact information to be consumed by a solver.
+    Stores the contact distance, position, frame, and geometry for each contact point.
+    """
+
+    def __init__(self):
+        self.dist: wp.array(dtype=wp.float32) | None = None
+        self.pos: wp.array(dtype=wp.vec3f) | None = None
+        self.frame: wp.array(dtype=wp.mat33f) | None = None
+        self.dim: wp.array(dtype=wp.int32) | None = None
+        self.geom: wp.array(dtype=wp.vec2i) | None = None
