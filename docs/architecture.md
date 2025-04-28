@@ -334,7 +334,7 @@ ctrl = newton.Control(model)
 
 # 3. Allocate a GPU array for contacts
 max_contacts = 64*1024
-contacts = wp.zeros(shape=max_contacts, dtype=newton.Contact)
+contacts = newton.collide.allocate(max_contacts)
 
 # 4. Create the MuJoCo-based solver
 solver = newton.solvers.MJCSolver(model)
