@@ -87,9 +87,3 @@ cd docs
 make clean
 make html
 ```
-
-## Installing usd-core (Development Version)
-
-```bash
-python -m pip install -U usd-core --index-url https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple
-```

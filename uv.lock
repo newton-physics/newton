@@ -643,8 +643,8 @@ requires-dist = [
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "sphinx", marker = "extra == 'all'", specifier = ">=7.4.7" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'all'", specifier = ">=25.5.dev20250417", index = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5.dev20250417", index = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple" },
+    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'all'", specifier = ">=25.5" },
+    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
     { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250326", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250326" },
 ]
@@ -657,7 +657,7 @@ dev = [
     { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", specifier = ">=3.0.1" },
     { name = "sphinx", specifier = ">=7.4.7" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'", specifier = ">=25.5.dev20250417", index = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple" },
+    { name = "usd-core", marker = "platform_machine != 'aarch64'", specifier = ">=25.5" },
 ]
 
 [[package]]
@@ -1130,21 +1130,21 @@ wheels = [
 
 [[package]]
 name = "usd-core"
-version = "25.5.dev20250417"
-source = { registry = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/simple" }
+version = "25.5"
+source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/8c674e6fa59e299a1fa60441e1de2074abb9229cc7d76da3778f1940fec17fef/usd_core-25.5.dev20250417-cp310-none-macosx_10_9_universal2.whl", hash = "sha256:8c674e6fa59e299a1fa60441e1de2074abb9229cc7d76da3778f1940fec17fef" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/7703bfbface3cd23029b96b2be4874ae593e8874363997fad4423f7813abe2c3/usd_core-25.5.dev20250417-cp310-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7703bfbface3cd23029b96b2be4874ae593e8874363997fad4423f7813abe2c3" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/7dfdb92f50b7ab3285308b2f605119750ddf28ee523e2a97bb239723f6f5712d/usd_core-25.5.dev20250417-cp310-none-win_amd64.whl", hash = "sha256:7dfdb92f50b7ab3285308b2f605119750ddf28ee523e2a97bb239723f6f5712d" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/40f71771cdc2f222433099f27fa40dfaa594454adce4fa9bf7b5a0df05baa823/usd_core-25.5.dev20250417-cp311-none-macosx_10_9_universal2.whl", hash = "sha256:40f71771cdc2f222433099f27fa40dfaa594454adce4fa9bf7b5a0df05baa823" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/a6c29b2cfeeda04780d2a377680e2458c75e632b0a8a797be6e1c32e5bc410a0/usd_core-25.5.dev20250417-cp311-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a6c29b2cfeeda04780d2a377680e2458c75e632b0a8a797be6e1c32e5bc410a0" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/cb7ddaff37c302ebfe44bf1311412592194ac02b1d710f551e9477ecae250c2e/usd_core-25.5.dev20250417-cp311-none-win_amd64.whl", hash = "sha256:cb7ddaff37c302ebfe44bf1311412592194ac02b1d710f551e9477ecae250c2e" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/c35c92fc7f5e557c635a61e875932d08034da71a259aecc8552a134d7b6e4f92/usd_core-25.5.dev20250417-cp312-none-macosx_10_9_universal2.whl", hash = "sha256:c35c92fc7f5e557c635a61e875932d08034da71a259aecc8552a134d7b6e4f92" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/ea53a047349861a79c372c7d22845c2afb55518068ca4e53d3d56db803efd062/usd_core-25.5.dev20250417-cp312-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ea53a047349861a79c372c7d22845c2afb55518068ca4e53d3d56db803efd062" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/f5c83f84561726aedd79df23f00b66ba1060843e78c3055405d03fda2409f414/usd_core-25.5.dev20250417-cp312-none-win_amd64.whl", hash = "sha256:f5c83f84561726aedd79df23f00b66ba1060843e78c3055405d03fda2409f414" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/640936ea8208c810b6acb37bb588f40daae9858ab6e11baaf42ba6d1d97dc7fc/usd_core-25.5.dev20250417-cp39-none-macosx_10_9_universal2.whl", hash = "sha256:640936ea8208c810b6acb37bb588f40daae9858ab6e11baaf42ba6d1d97dc7fc" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/1c782db2eb0c2d0abb2ff53bc5c2406815e3025623c23adfbcb208d687db9439/usd_core-25.5.dev20250417-cp39-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1c782db2eb0c2d0abb2ff53bc5c2406815e3025623c23adfbcb208d687db9439" },
-    { url = "https://gitlab-master.nvidia.com/api/v4/projects/173773/packages/pypi/files/0b7c24b7bac3fee2963c041273a19392d68a3ee2c21afde6adc2a10cf4c464eb/usd_core-25.5.dev20250417-cp39-none-win_amd64.whl", hash = "sha256:0b7c24b7bac3fee2963c041273a19392d68a3ee2c21afde6adc2a10cf4c464eb" },
+    { url = "https://files.pythonhosted.org/packages/db/d5/c9aecbc6cfef42812fd6c38647454c01d03aacec7430ff0ebf1af859b44b/usd_core-25.5-cp310-none-macosx_10_9_universal2.whl", hash = "sha256:05f550a74480102579e6a358c59b3d8c9a338e7bd46ef6e2e40577eee60e1f60", size = 39919150 },
+    { url = "https://files.pythonhosted.org/packages/3b/12/3d70833604034caa25cdf78d1171a095db18f7a1deaaddcbd28026fd306e/usd_core-25.5-cp310-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0a2772178cdfbab26bc34bdaf5c88a2831886f94b0ced0264239eb8ac0f4c0d1", size = 26913387 },
+    { url = "https://files.pythonhosted.org/packages/38/da/69b6f4a76a8ec66c8827133e40d70db1d5c510f43ddac2f5934edd147f0e/usd_core-25.5-cp310-none-win_amd64.whl", hash = "sha256:448e87f7330623233e50fa7fbb112e3247ce23261e9f5f223b7a42454b33c65b", size = 13882407 },
+    { url = "https://files.pythonhosted.org/packages/66/4d/c60fc2f19f73d7092e099667b8406dd7b37d81a736e8cc91537661512ae5/usd_core-25.5-cp311-none-macosx_10_9_universal2.whl", hash = "sha256:656717b3671a70aa73033c5145a83d3b9ef532f9fb8ce6846526d1f2ce5dfe95", size = 39919006 },
+    { url = "https://files.pythonhosted.org/packages/6d/42/4317732adc663215d76ba4b3840411c25e47f73478b9788771f128a236d1/usd_core-25.5-cp311-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0a66bfa5fbd3b0b6009e60d6781b4b3fa0bae67de20a7893811aab7ec4802b9d", size = 26910224 },
+    { url = "https://files.pythonhosted.org/packages/0a/27/c3cc3a5f6f708bdf8934fb8d2993161e0855b62f68389d8838bf3147eda6/usd_core-25.5-cp311-none-win_amd64.whl", hash = "sha256:38ecd693d0c750eb4e63370834c763f50f243b2580d99cebde993cdd1706ea3a", size = 13882801 },
+    { url = "https://files.pythonhosted.org/packages/66/13/608d68aba75964cd23d4fd33d111dbcc9d78027e5dc4fa500b1d37c8752a/usd_core-25.5-cp312-none-macosx_10_9_universal2.whl", hash = "sha256:43ac347de63e68ac8f77d876b4d9cdb63781085a4f537b384d8a171ead3799ae", size = 40141136 },
+    { url = "https://files.pythonhosted.org/packages/7c/13/8b6a8092eaea871ba78d64772a6ce8ce0a72833769353cb8bf054c91fc2f/usd_core-25.5-cp312-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6d4dbc80fc6dbbfe1e42cebcb61801197e62490a447ad4f7d946427c802c2037", size = 26817605 },
+    { url = "https://files.pythonhosted.org/packages/25/bf/11b0aec6f7c75ee4c671aeb623702847f3ad46bdbb0e62c44d27b60746b0/usd_core-25.5-cp312-none-win_amd64.whl", hash = "sha256:12dcd6f15a4c24bf3b48807f8c04116054a2fa8173bb6319b8e787ca800df0b7", size = 13918710 },
+    { url = "https://files.pythonhosted.org/packages/19/06/06cfd6adccbe100e77ca75f16dcd78fadd2a1109971262bb2bbfad14bae8/usd_core-25.5-cp39-none-macosx_10_9_universal2.whl", hash = "sha256:b0e1e6d9f338ec4e6839857273f35e2a827c442e35d99369ee860fcc3037ea06", size = 39927023 },
+    { url = "https://files.pythonhosted.org/packages/da/7c/33d37a432124bde92f14f0e9976ca89f2f50cbe9238fda3b94eddf10428b/usd_core-25.5-cp39-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:30cb1cd00fd2bdcfe420a9be033e0a1d0f44e443191c269a300213da02a64e87", size = 26914314 },
+    { url = "https://files.pythonhosted.org/packages/27/bf/13e0791b30a65ad50bec6bc35ffa10a34423818dd4267c201de943f31705/usd_core-25.5-cp39-none-win_amd64.whl", hash = "sha256:6ab2c5e21cff49efb283729c9515cfb1457cf767b146908c92db45e6aceb952b", size = 13883717 },
 ]
 
 [[package]]
