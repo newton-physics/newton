@@ -73,7 +73,7 @@ Option 2 (uv + virtual environment):
 ```bash
 uv venv
 source .venv/bin/activate
-uv pip install -e .[all]
+uv pip install -e .[docs]
 cd docs
 make clean
 make html
@@ -82,7 +82,7 @@ make html
 Option 3 (Others):
 
 ```bash
-python -m pip install -e .[all]
+python -m pip install -e .[docs]
 cd docs
 make clean
 make html
