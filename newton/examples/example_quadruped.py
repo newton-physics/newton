@@ -35,7 +35,6 @@ import newton.collision
 import newton.core.articulation
 
 
-# Taken from env/environment.py
 def compute_env_offsets(num_envs, env_offset=(5.0, 0.0, 5.0), up_axis="Y"):
     # compute positional offsets per environment
     env_offset = np.array(env_offset)
@@ -80,7 +79,7 @@ def compute_env_offsets(num_envs, env_offset=(5.0, 0.0, 5.0), up_axis="Y"):
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
         articulation_builder = newton.ModelBuilder()
-        wp.sim.parse_urdf(
+        newton.utils.parse_urdf(
             os.path.join(warp.examples.get_asset_directory(), "quadruped.urdf"),
             articulation_builder,
             xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
@@ -128,17 +127,16 @@ class Example:
         self.use_tile_gemm = False
         self.fuse_cholesky = False
 
-        self.integrator = newton.solvers.FeatherstoneIntegrator(
-            self.model, use_tile_gemm=self.use_tile_gemm, fuse_cholesky=self.fuse_cholesky
-        )
+        self.integrator = newton.solvers.XPBDSolver(self.model)
 
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path)
+            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
         else:
             self.renderer = None
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        self.control = self.model.control()
 
         newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
 
@@ -155,7 +153,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.collision.collide(self.model, self.state_0)
-            self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+            self.integrator.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

@@ -30,7 +30,7 @@
 
 import warp as wp
 
-from newton.core import Control, Model, State
+from newton.core import Contact, Control, Model, State
 from newton.core.model import PARTICLE_FLAG_ACTIVE
 
 
@@ -166,10 +166,23 @@ def integrate_bodies(
     body_qd_new[tid] = qd_new
 
 
-class Integrator:
+class SolverBase:
     """
-    Generic base class for integrators. Provides methods to integrate rigid bodies and particles.
+    Generic base class for solvers. Provides methods to integrate rigid bodies and particles.
     """
+
+    def __init__(self, model: Model):
+        self.model = model
+
+    @property
+    def device(self) -> wp.context.Device:
+        """
+        Get the device used by the solver.
+
+        Returns:
+            wp.Device: The device used by the solver.
+        """
+        return self.model.device
 
     def integrate_bodies(
         self,
@@ -244,7 +257,7 @@ class Integrator:
                 device=model.device,
             )
 
-    def simulate(self, model: Model, state_in: State, state_out: State, dt: float, control: Control = None):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 
@@ -252,7 +265,8 @@ class Integrator:
             model (Model): The model to simulate.
             state_in (State): The input state.
             state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
             control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
+            contacts (Contact): The contact information.
+            dt (float): The time step (typically in seconds).
         """
         raise NotImplementedError()

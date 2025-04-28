@@ -190,13 +190,14 @@ class Example:
 
             self.model.particle_flags = wp.array(flags)
 
-        self.integrator = newton.solvers.VBDIntegrator(
+        self.solver = newton.solvers.VBDSolver(
             self.model,
             self.iterations,
             handle_self_contact=True,
         )
         self.state0 = self.model.state()
         self.state1 = self.model.state()
+        self.control = self.model.control()
 
         rot_axes = [[1, 0, 0]] * len(right_side) + [[-1, 0, 0]] * len(left_side)
 
@@ -256,7 +257,7 @@ class Example:
                 ],
             )
 
-            self.integrator.simulate(self.model, self.state0, self.state1, self.dt, None)
+            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def advance_frame(self):
@@ -275,7 +276,7 @@ class Example:
             print(f"[{i:4d}/{self.num_frames}]")
 
             if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph:
-                self.integrator.rebuild_bvh(self.state0)
+                self.solver.rebuild_bvh(self.state0)
                 with wp.ScopedCapture() as capture:
                     self.integrate_frame_substeps()
                 self.cuda_graph = capture.graph

@@ -25,11 +25,70 @@ from newton.collision.collide import (
     TriMeshCollisionDetector,
     init_triangle_collision_data_kernel,
     triangle_closest_point,
+    triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
 from newton.core.model import Mesh
-from newton.solvers.integrator_euler import eval_triangles_contact
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
+
+
+@wp.kernel
+def eval_triangles_contact(
+    num_particles: int,  # size of particles
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    indices: wp.array2d(dtype=int),
+    materials: wp.array2d(dtype=float),
+    particle_radius: wp.array(dtype=float),
+    f: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    face_no = tid // num_particles  # which face
+    particle_no = tid % num_particles  # which particle
+
+    # k_mu = materials[face_no, 0]
+    # k_lambda = materials[face_no, 1]
+    # k_damp = materials[face_no, 2]
+    # k_drag = materials[face_no, 3]
+    # k_lift = materials[face_no, 4]
+
+    # at the moment, just one particle
+    pos = x[particle_no]
+
+    i = indices[face_no, 0]
+    j = indices[face_no, 1]
+    k = indices[face_no, 2]
+
+    if i == particle_no or j == particle_no or k == particle_no:
+        return
+
+    p = x[i]  # point zero
+    q = x[j]  # point one
+    r = x[k]  # point two
+
+    # vp = v[i] # vel zero
+    # vq = v[j] # vel one
+    # vr = v[k] # vel two
+
+    # qp = q-p # barycentric coordinates (centered at p)
+    # rp = r-p
+
+    bary = triangle_closest_point_barycentric(p, q, r, pos)
+    closest = p * bary[0] + q * bary[1] + r * bary[2]
+
+    diff = pos - closest
+    dist = wp.dot(diff, diff)
+    n = wp.normalize(diff)
+    c = wp.min(dist - particle_radius[particle_no], 0.0)  # 0 unless within particle's contact radius
+    # c = wp.leaky_min(dot(n, x0)-0.01, 0.0, 0.0)
+    fn = n * c * 1e5
+
+    wp.atomic_sub(f, particle_no, fn)
+
+    # # apply forces (could do - f / 3 here)
+    wp.atomic_add(f, i, fn * bary[0])
+    wp.atomic_add(f, j, fn * bary[1])
+    wp.atomic_add(f, k, fn * bary[2])
 
 
 @wp.kernel
@@ -697,14 +756,14 @@ def test_mesh_ground_collision_index(test, device):
     builder = newton.ModelBuilder()
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
-    b = builder.add_body(m=1.0)
+    b = builder.add_body(mass=1.0)
     builder.add_shape_mesh(
         body=b,
         mesh=mesh,
         has_shape_collision=False,
     )
     # add another mesh that is not in contact
-    b2 = builder.add_body(m=1.0, origin=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
+    b2 = builder.add_body(mass=1.0, origin=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
     builder.add_shape_mesh(
         body=b2,
         mesh=mesh,
