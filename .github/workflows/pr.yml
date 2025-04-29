@@ -4,7 +4,7 @@ on:
   pull_request:
     branches:
       - main
-      - "releases/**"
+      - "release-*"
 
 concurrency:
   group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}
@@ -14,3 +14,19 @@ jobs:
   build-and-test:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+
+  pull-request-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.0"
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      - name: Build Sphinx documentation
+        run: uv run sphinx-build -b html docs docs/_build/html
