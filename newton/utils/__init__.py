@@ -18,6 +18,7 @@ import warp as wp
 
 from .import_mjcf import parse_mjcf
 from .import_urdf import parse_urdf
+from .import_usd import parse_usd
 from .render import SimRenderer, SimRendererOpenGL, SimRendererUsd
 from .topology import topological_sort
 
