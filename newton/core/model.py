@@ -4668,6 +4668,7 @@ class ModelBuilder:
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
+            m.articulation_key = self.articulation_key
 
             # counts
             m.joint_count = self.joint_count
