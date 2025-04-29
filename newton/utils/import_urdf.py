@@ -277,7 +277,7 @@ def parse_urdf(
 
     visual_shapes = []
 
-    builder.add_articulation()
+    builder.add_articulation(key=root.attrib.get("name"))
 
     start_shape_count = len(builder.shape_geo_type)
 

@@ -784,7 +784,7 @@ def parse_mjcf(
 
     visual_shapes = []
     start_shape_count = len(builder.shape_geo_type)
-    builder.add_articulation()
+    builder.add_articulation(key=root.attrib.get("model"))
 
     world = root.find("worldbody")
     world_class = get_class(world)
