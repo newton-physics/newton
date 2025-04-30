@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    tags:
+      - v*
+    branches:
+      - main
+      - release-*
+
+jobs:
+  test-newton-ubuntu-x86_64:
+    runs-on: ubuntu-latest
+    env:
+      OS: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.0"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      - name: Run Tests
+        run: uv run -m newton.tests --junit-report-xml rspec.xml
+      - name: Test Summary
+        uses: test-summary/action@v2.4
+        with:
+          paths: "rspec.xml"
+          show: "fail"
+        if: always()
