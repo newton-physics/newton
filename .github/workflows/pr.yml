@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  run-newton-tests:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
