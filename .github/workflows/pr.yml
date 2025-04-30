@@ -1,0 +1,40 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+
+concurrency:
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # TODO: Replace this with the pre-commit action once repo is public
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+      - uses: pre-commit/action@v3.0.1
+
+  run-newton-tests:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  pull-request-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.0"
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      - name: Build Sphinx documentation
+        run: uv run sphinx-build -b html docs docs/_build/html

@@ -1,0 +1,47 @@
+name: Deploy Sphinx documentation to Pages
+
+# Runs on every tag created beginning with the character v
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.7.0"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      - name: Build Sphinx documentation
+        run: uv run sphinx-build -b html docs docs/_build/html
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-docs
+          path: docs/_build/html/
+      - name: Deploy to gh-pages
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git checkout --orphan gh-pages
+          git rm -rf .
+          mv docs/_build/html/* .
+          mv docs/_build/html/.nojekyll .
+          mv docs/_build/html/.buildinfo .
+          rm -rf docs newton _build __pycache__
+          git add . .nojekyll .buildinfo
+          git commit -m "Deploy Sphinx documentation"
+          git push -f origin gh-pages
