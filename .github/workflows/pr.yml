@@ -11,14 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # TODO: Replace this with the pre-commit action once repo is public
-  pre-commit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-      - uses: pre-commit/action@v3.0.1
-
   run-newton-tests:
     uses: ./.github/workflows/ci.yml
     secrets: inherit

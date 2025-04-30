@@ -1,6 +1,6 @@
 # Newton
 
-**⚠️ Alpha Stage Software ⚠️**
+**⚠️ Prerelease Software ⚠️**
 
 **This project is in active alpha development.** This means the API is unstable, features may be added or removed, and breaking changes are likely to occur frequently and without notice as the design is refined.
 
