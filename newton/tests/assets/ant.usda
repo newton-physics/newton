@@ -868,31 +868,3 @@ def Xform "ant" (
         }
     }
 }
-
-def Xform "Xform" (
-    references = @http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.1/Isaac/Environments/Grid/default_environment.usd@
-)
-{
-    double3 xformOp:rotateXYZ = (0, 0, 0)
-    double3 xformOp:scale = (1, 1, 3.192015034472321)
-    double3 xformOp:translate = (0, 0, 0)
-    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
-
-    over "GroundPlane"
-    {
-        over "CollisionPlane" (
-            delete apiSchemas = ["PhysicsCollisionAPI"]
-        )
-        {
-        }
-    }
-
-    over "Environment"
-    {
-        over "Geometry" (
-            prepend apiSchemas = ["PhysicsCollisionAPI"]
-        )
-        {
-        }
-    }
-}
