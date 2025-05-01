@@ -29,12 +29,13 @@
 # limitations under the License.
 
 import math
-import os
 import unittest
 
 import warp as wp
 
 import newton.core
+import newton.examples
+import newton.utils
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -45,7 +46,7 @@ def test_fk_ik(test, device):
 
     for i in range(num_envs):
         newton.utils.parse_mjcf(
-            os.path.join(os.path.dirname(__file__), "assets", "nv_ant.xml"),
+            newton.examples.get_asset("nv_ant.xml"),
             builder,
             stiffness=0.0,
             damping=1.0,
@@ -56,7 +57,7 @@ def test_fk_ik(test, device):
             contact_mu=0.75,
             limit_ke=1.0e3,
             limit_kd=1.0e1,
-            up_axis="y",
+            up_axis="Y",
         )
 
         coord_count = 15
@@ -78,8 +79,6 @@ def test_fk_ik(test, device):
     # finalize model
     model = builder.finalize(device=device)
     model.ground = True
-    model.joint_attach_ke *= 16.0
-    model.joint_attach_kd *= 4.0
 
     state = model.state()
 

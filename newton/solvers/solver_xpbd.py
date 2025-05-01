@@ -2647,7 +2647,7 @@ class XPBDSolver(SolverBase):
 
     .. code-block:: python
 
-        solver = newton.XPBDSolver()
+        solver = newton.XPBDSolver(model)
 
         # simulation loop
         for i in range(100):
