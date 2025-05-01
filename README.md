@@ -20,18 +20,19 @@ Running a basic example:
 
 ```bash
 uv run newton/examples/example_quadruped.py
+uv run --all-extras newton/examples/example_humanoid.py
 ```
 
-Running all tests:
+Running all tests with all extras installed:
 
 ```bash
-uv run -m newton.tests
+uv run --all-extras -m newton.tests
 ```
 
 Running all tests with code coverage:
 
 ```bash
-uv run -m newton.tests --coverage --coverage-html htmlcov
+uv run --all-extras -m newton.tests --coverage --coverage-html htmlcov
 xdg-open htmlcov/index.html
 ```
 
@@ -67,15 +68,14 @@ Option 1:
 
 ```bash
 rm -rf docs/_build
-uv run sphinx-build -b html docs docs/_build/html
+uv run --extra docs sphinx-build -b html docs docs/_build/html
 ```
 
 Option 2 (uv + virtual environment):
 
 ```bash
-uv venv
+uv sync --extra docs
 source .venv/bin/activate
-uv pip install -e .[docs]
 cd docs
 make clean
 make html
