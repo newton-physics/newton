@@ -208,7 +208,7 @@ class Mesh:
         m = openmesh.read_trimesh("mesh.obj")
         mesh_points = np.array(m.points())
         mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32).flatten()
-        mesh = wp.sim.Mesh(mesh_points, mesh_indices)
+        mesh = newton.Mesh(mesh_points, mesh_indices)
 
     Attributes:
 
@@ -455,11 +455,6 @@ class Model:
         joint_linear_compliance (array): Joint linear compliance, shape [joint_count], float
         joint_angular_compliance (array): Joint linear compliance, shape [joint_count], float
         joint_enabled (array): Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int
-
-            Note:
-
-               This setting is not supported by :class:`FeatherstoneIntegrator`.
-
         joint_limit_lower (array): Joint lower position limits, shape [joint_axis_count], float
         joint_limit_upper (array): Joint upper position limits, shape [joint_axis_count], float
         joint_limit_ke (array): Joint position limit stiffness (used by the Euler integrators), shape [joint_axis_count], float
@@ -470,8 +465,6 @@ class Model:
         joint_qd_start (array): Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via ``joint_qd_start[i+1] - joint_qd_start[i]``), shape [joint_count + 1], int
         articulation_start (array): Articulation start index, shape [articulation_count], int
         joint_key (list): Joint keys, shape [joint_count], str
-        joint_attach_ke (float): Joint attachment force stiffness (used by :class:`SemiImplicitIntegrator`)
-        joint_attach_kd (float): Joint attachment force damping (used by :class:`SemiImplicitIntegrator`)
 
         soft_contact_radius (float): Contact radius used for self-collisions in the VBD integrator.
         soft_contact_margin (float): Contact margin for generation of soft contacts
@@ -563,20 +556,24 @@ class Model:
         self.particle_flags = None
         self.particle_max_velocity = 1e5
 
+        self.shape_key = []
         self.shape_transform = None
         self.shape_body = None
         self.shape_visible = None
         self.body_shapes = {}
         self.shape_materials = ModelShapeMaterials()
         self.shape_geo = ModelShapeGeometry()
-        self.shape_geo_src = None
+        self.shape_geo_src = []
+        self.geo_meshes = []
+        self.geo_sdfs = []
+        self.ground_plane_params = {}
 
-        self.shape_collision_group = None
-        self.shape_collision_group_map = None
-        self.shape_collision_filter_pairs = None
+        self.shape_collision_group = []
+        self.shape_collision_group_map = {}
+        self.shape_collision_filter_pairs = set()
         self.shape_collision_radius = None
-        self.shape_ground_collision = None
-        self.shape_shape_collision = None
+        self.shape_ground_collision = []
+        self.shape_shape_collision = []
         self.shape_contact_pairs = None
         self.shape_ground_contact_pairs = None
 
@@ -617,7 +614,7 @@ class Model:
         self.body_inv_inertia = None
         self.body_mass = None
         self.body_inv_mass = None
-        self.body_key = None
+        self.body_key = []
 
         self.joint_q = None
         self.joint_qd = None
@@ -646,12 +643,9 @@ class Model:
         self.joint_twist_upper = None
         self.joint_q_start = None
         self.joint_qd_start = None
+        self.joint_key = []
         self.articulation_start = None
-        self.joint_key = None
-
-        # todo: per-joint values?
-        self.joint_attach_ke = 1.0e3
-        self.joint_attach_kd = 1.0e2
+        self.articulation_key = []
 
         self.soft_contact_radius = 0.2
         self.soft_contact_margin = 0.2
@@ -672,9 +666,10 @@ class Model:
         self.rigid_contact_max = 0
         self.rigid_contact_max_limited = 0
         self.rigid_mesh_contact_max = 0
-        self.rigid_contact_margin = None
-        self.rigid_contact_torsional_friction = None
-        self.rigid_contact_rolling_friction = None
+        self.rigid_contact_margin = 0.0
+        self.rigid_contact_torsional_friction = 0.0
+        self.rigid_contact_rolling_friction = 0.0
+        self.enable_tri_collisions = False
 
         self.rigid_contact_count = None
         self.rigid_contact_point0 = None
@@ -968,10 +963,9 @@ class ModelBuilder:
 
     .. code-block:: python
 
-        import warp as wp
-        import warp.sim
+        import newton
 
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder()
 
         # anchor point (zero mass)
         builder.add_particle((0, 1.0, 0.0), (0.0, 0.0, 0.0), 0.0)
@@ -985,12 +979,13 @@ class ModelBuilder:
         model = builder.finalize("cuda")
 
         state = model.state()
-        control = model.control()  # optional, to support time-varying control inputs
-        integrator = wp.sim.SemiImplicitIntegrator()
+        control = model.control()
+        contact = model.contact()
+        integrator = newton.XPBDSolver()
 
         for i in range(100):
             state.clear_forces()
-            integrator.simulate(model, state, state, dt=1.0 / 60.0, control=control)
+            integrator.simulate(model, state, state, control, contact, dt=1.0 / 60.0)
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -1317,7 +1312,7 @@ class ModelBuilder:
             joint_q = copy.deepcopy(builder.joint_q)
             if xform is not None:
                 for i in range(len(joint_X_p)):
-                    if builder.joint_type[i] == wp.sim.JOINT_FREE:
+                    if builder.joint_type[i] == JOINT_FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
                         tf = xform * xform_prev
@@ -4510,6 +4505,7 @@ class ModelBuilder:
             # ---------------------
             # collision geometry
 
+            m.shape_key = self.shape_key
             m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_visible = wp.array(self.shape_visible, dtype=wp.bool)

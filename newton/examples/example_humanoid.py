@@ -14,102 +14,104 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Quadruped
-#
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
-#
+# Loads a MuJoCo model from MJCF into Newton and simulates it using the
+# MuJoCo solver.
 ###########################################################################
-
-import math
 
 import numpy as np
 import warp as wp
 
 import newton
-import newton.collision
-import newton.core.articulation
 import newton.examples
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
+    def __init__(self, stage_path="example_mjc.usda", num_envs=8):
+        self.num_envs = num_envs
+
+        use_mujoco = False
+
+        # set numpy random seed
+        self.seed = 123
+        self.rng = np.random.default_rng(self.seed)
+
+        start_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(*self.rng.uniform(-1.0, 1.0, size=3))), -wp.pi * 0.5)
+
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
         articulation_builder = newton.ModelBuilder()
-        newton.utils.parse_urdf(
-            newton.examples.get_asset("quadruped.urdf"),
+
+        newton.utils.parse_mjcf(
+            mjcf_filename,
             articulation_builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
-            floating=True,
-            density=1000,
-            armature=0.01,
-            stiffness=200,
-            damping=1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=1.0,
-            limit_ke=1.0e4,
-            limit_kd=1.0e1,
+            stiffness=0.0,
+            damping=0.0,
+            collapse_fixed_joints=True,
+            ignore_names=["floor", "ground"],
+            up_axis="Y",
         )
 
+        # joint initial positions
+        articulation_builder.joint_q[:7] = [0.0, 1.5, 0.0, *start_rot]
+
+        spacing = 3.0
+        sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
+
         builder = newton.ModelBuilder()
+        for i in range(self.num_envs):
+            pos = wp.vec3((i % sqn) * spacing, 0.0, (i // sqn) * spacing)
+            articulation_builder.joint_q[7:] = self.rng.uniform(
+                -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
+            ).tolist()
+            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
 
         self.sim_time = 0.0
-        fps = 100
+        fps = 60
         self.frame_dt = 1.0 / fps
 
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
-
-        offsets = newton.examples.compute_env_offsets(self.num_envs)
-        for i in range(self.num_envs):
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
-
-            builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-
-            builder.joint_axis_mode = [newton.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
-            builder.joint_act[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-
-        np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
         self.model.ground = True
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
-
-        if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
-        else:
-            self.renderer = None
-
-        self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
+        self.solver = newton.solvers.MuJoCoSolver(
+            self.model,
+            use_mujoco=use_mujoco,
+            solver="newton",
+            integrator="euler",
+            iterations=10,
+            ls_iterations=5,
+        )
 
-        # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
-        self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        self.renderer = None
+        if stage_path:
+            self.renderer = newton.utils.SimRendererOpenGL(
+                path=stage_path, model=self.model, scaling=1.0, show_joints=True
+            )
+
+        self.state_0, self.state_1 = self.model.state(), self.model.state()
+
+        self.use_cuda_graph = not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda
+
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            newton.collision.collide(self.model, self.state_0)
             self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
+        with wp.ScopedTimer("step", active=False):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
@@ -120,7 +122,7 @@ class Example:
         if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", active=False):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
@@ -134,11 +136,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_quadruped.usd",
+        default="example_mjc.usda",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=9, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 

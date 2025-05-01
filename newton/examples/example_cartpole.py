@@ -14,77 +14,70 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Quadruped
+# Example Sim Cartpole
 #
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
+# Shows how to set up a simulation of a rigid-body cartpole articulation
+# from a URDF using newton.ModelBuilder().
 #
 ###########################################################################
 
 import math
 
-import numpy as np
 import warp as wp
 
 import newton
-import newton.collision
 import newton.core.articulation
 import newton.examples
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
+    def __init__(self, stage_path="example_cartpole.usd", num_envs=8):
+        self.num_envs = num_envs
+
         articulation_builder = newton.ModelBuilder()
+
         newton.utils.parse_urdf(
-            newton.examples.get_asset("quadruped.urdf"),
+            newton.examples.get_asset("cartpole.urdf"),
             articulation_builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
-            floating=True,
-            density=1000,
-            armature=0.01,
-            stiffness=200,
-            damping=1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=1.0,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
+            floating=False,
+            density=100,
+            armature=0.1,
+            stiffness=0.0,
+            damping=0.0,
             limit_ke=1.0e4,
             limit_kd=1.0e1,
+            enable_self_collisions=False,
+            collapse_fixed_joints=True,
         )
 
         builder = newton.ModelBuilder()
 
         self.sim_time = 0.0
-        fps = 100
+        fps = 60
         self.frame_dt = 1.0 / fps
 
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 0.0, 2.0))
 
-        offsets = newton.examples.compute_env_offsets(self.num_envs)
         for i in range(self.num_envs):
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+            builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
 
-            builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+            # joint initial positions
+            builder.joint_q[-3:] = [0.0, 0.3, 0.0]
 
-            builder.joint_axis_mode = [newton.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
-            builder.joint_act[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-
-        np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
-        self.model.ground = True
+        self.model.ground = False
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
+        self.solver = newton.solvers.MuJoCoSolver(self.model)
 
+        self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
-        else:
-            self.renderer = None
+            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -92,19 +85,15 @@ class Example:
 
         newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
 
-        # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
-        self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            newton.collision.collide(self.model, self.state_0)
             self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -134,11 +123,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_quadruped.usd",
+        default="example_cartpole.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--num_frames", type=int, default=1200, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
