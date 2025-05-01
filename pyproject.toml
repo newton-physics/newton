@@ -32,6 +32,8 @@ dependencies = ["warp-lang>=1.7.0.dev20250326"]
 dev = [
     "coverage[toml]>=7.8.0",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pyglet>=2.1.6",
+    "trimesh>=4.6.8",
 ]
 docs = ["myst-parser>=3.0.1", "sphinx>=7.4.7", "furo>=2024.8.6"]
 all = [
@@ -42,6 +44,8 @@ all = [
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
     "furo>=2024.8.6",
+    "pyglet>=2.1.6",
+    "trimesh>=4.6.8",
 ]
 
 [tool.hatch.version]
@@ -74,6 +78,8 @@ dev = [
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pyglet>=2.1.6",
+    "trimesh>=4.6.8",
 ]
 
 [tool.ruff]
