@@ -14,6 +14,8 @@ Newton is maintained by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 Although not required, [uv](https://docs.astral.sh/uv/) is recommended for setting up a development environment.
 
+If you are not using `uv`, optional dependencies required for some examples can be installed with `python -m pip install -e .[all]`.
+
 Running a basic example:
 
 ```bash
