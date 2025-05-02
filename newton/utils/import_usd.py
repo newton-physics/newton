@@ -49,6 +49,7 @@ def parse_usd(
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
     collapse_fixed_joints=False,
+    root_path="/",
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -79,6 +80,7 @@ def parse_usd(
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `newton.ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
+        root_path (str): The USD path to import, defaults to "/".
 
     Returns:
         dict: Dictionary with the following entries:
@@ -272,7 +274,7 @@ def parse_usd(
     # ret_dict = PhysicsUtils.LoadUsdPhysicsFromRange(
     #     stage, PhysicsUtils.ParsePrimIteratorRange(Usd.PrimRange(stage.GetPseudoRoot()))
     # )
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"], excludePaths=ignore_paths)
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
     # print("********************** LoadUsdPhysicsFromRange")
 
     # for key, value in ret_dict.items():
