@@ -29,4 +29,4 @@ jobs:
         with:
           python-version-file: ".python-version"
       - name: Build Sphinx documentation
-        run: uv run sphinx-build -b html docs docs/_build/html
+        run: uv run --extra docs sphinx-build -b html docs docs/_build/html

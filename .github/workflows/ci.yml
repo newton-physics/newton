@@ -29,7 +29,7 @@ jobs:
         with:
           python-version-file: ".python-version"
       - name: Run Tests
-        run: uv run -m newton.tests --junit-report-xml rspec.xml
+        run: uv run --all-extras -m newton.tests --junit-report-xml rspec.xml
       - name: Test Summary
         uses: test-summary/action@v2.4
         with:

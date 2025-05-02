@@ -77,7 +77,7 @@ testing:
     - .omni_nvks_gpu
   needs: []
   script:
-    - uv run -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast
+    - uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
     when: always
@@ -130,7 +130,7 @@ build_package:
     paths:
       - public
   script:
-    - uv run sphinx-build -b html docs docs/_build/html
+    - uv run --extra docs sphinx-build -b html docs docs/_build/html
     - mv docs/_build/html/ ./public/
 
 # Merge requests: Build documentation and save as an artifact
