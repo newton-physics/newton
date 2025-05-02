@@ -130,7 +130,7 @@ build_package:
     paths:
       - public
   script:
-    - uv run --extra docs sphinx-build -b html docs docs/_build/html
+    - uv run --extra docs sphinx-build -W -b html docs docs/_build/html
     - mv docs/_build/html/ ./public/
 
 # Merge requests: Build documentation and save as an artifact
