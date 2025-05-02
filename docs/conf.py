@@ -55,6 +55,7 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://jax.readthedocs.io/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
+    "warp": ("https://nvidia.github.io/warp", None),
 }
 
 source_suffix = {
@@ -84,4 +85,4 @@ autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = "furo"
-html_static_path = ["_static"]
+# html_static_path = ["_static"]

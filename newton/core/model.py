@@ -1256,7 +1256,7 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
-            xform (:ref:`transform <transform>`): offset transform applied to root bodies.
+            xform (:external+warp:ref:`transform <transform>`): offset transform applied to root bodies.
             update_num_env_count (bool): if True, the number of environments is incremented by 1.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
         """
@@ -1531,8 +1531,8 @@ class ModelBuilder:
             linear_axes (list(:class:`JointAxis`)): The linear axes (see :class:`JointAxis`) of the joint
             angular_axes (list(:class:`JointAxis`)): The angular axes (see :class:`JointAxis`) of the joint
             key (str): The key of the joint (optional)
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance (float): The linear compliance of the joint
             angular_compliance (float): The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axes (only considered by :class:`FeatherstoneIntegrator`)
@@ -1673,8 +1673,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
             target: The target angle (in radians) or target velocity of the joint (if None, the joint is considered to be in force control mode)
             target_ke: The stiffness of the joint target
@@ -1763,8 +1763,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
             target: The target position or velocity of the joint (if None, the joint is considered to be in force control mode)
             target_ke: The stiffness of the joint target
@@ -1844,8 +1844,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
@@ -1896,8 +1896,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
@@ -1945,8 +1945,8 @@ class ModelBuilder:
 
         Args:
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism)
             key: The key of the joint
@@ -1993,8 +1993,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body
             child: The index of the child body
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             min_distance: The minimum distance between the bodies (no limit if negative)
             max_distance: The maximum distance between the bodies (no limit if negative)
             compliance: The compliance of the joint
@@ -2052,8 +2052,8 @@ class ModelBuilder:
             child: The index of the child body
             axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
             axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
@@ -2113,8 +2113,8 @@ class ModelBuilder:
             axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
             axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
             axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
@@ -2170,8 +2170,8 @@ class ModelBuilder:
             linear_axes: A list of linear axes
             angular_axes: A list of angular axes
             key: The key of the joint
-            parent_xform (:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:ref:`transform <transform>`): The transform of the joint in the child body's local frame
+            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
+            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             linear_compliance: The linear compliance of the joint
             angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes

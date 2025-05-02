@@ -8,6 +8,7 @@ Newton documentation
     key-concepts
     api
     integrations/index
+    migration
     extending-newton
     contributing
     faq
