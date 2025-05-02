@@ -704,15 +704,14 @@ def parse_usd(
                 # we explicitly add a free joint to make sure Featherstone can simulate it
                 builder.add_joint_free(child=art_bodies[first_joint_parent])
                 builder.joint_q[-7:] = articulation_xform
-            for i in sorted_joints:
-                if i == 0 and first_joint_parent == -1:
+            for joint_id, i in enumerate(sorted_joints):
+                if joint_id == 0 and first_joint_parent == -1:
                     # the articulation root joint receives the articulation transform as parent transform
                     # except if we already inserted a floating-base joint
-                    articulation_xform = parse_xform(prim.GetParent())
                     parse_joint(
                         joint_descriptions[joint_names[i]],
                         joint_path=joint_names[i],
-                        # incoming_xform=articulation_xform, # TODO this messes up joint configurations of fixed base mechanisms
+                        incoming_xform=articulation_xform,
                     )
                 else:
                     parse_joint(
