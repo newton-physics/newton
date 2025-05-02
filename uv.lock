@@ -597,18 +597,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "coverage", extra = ["toml"] },
-    { name = "furo" },
-    { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "pyglet" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "trimesh" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'" },
-]
 dev = [
     { name = "coverage", extra = ["toml"] },
     { name = "pyglet" },
@@ -641,24 +629,17 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "coverage", extras = ["toml"], marker = "extra == 'all'", specifier = ">=7.8.0" },
     { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
-    { name = "furo", marker = "extra == 'all'", specifier = ">=2024.8.6" },
     { name = "furo", marker = "extra == 'docs'", specifier = ">=2024.8.6" },
-    { name = "myst-parser", marker = "extra == 'all'", specifier = ">=3.0.1" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
-    { name = "pyglet", marker = "extra == 'all'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6" },
-    { name = "sphinx", marker = "extra == 'all'", specifier = ">=7.4.7" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
-    { name = "trimesh", marker = "extra == 'all'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'all'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
     { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250326", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250326" },
 ]
-provides-extras = ["all", "dev", "docs"]
+provides-extras = ["dev", "docs"]
 
 [package.metadata.requires-dev]
 dev = [
