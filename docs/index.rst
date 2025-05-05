@@ -10,6 +10,7 @@ Newton documentation
     integrations/index
     migration
     extending-newton
+    development-guide
     contributing
     faq
     stability-policy
