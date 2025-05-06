@@ -23,6 +23,30 @@ import warp as wp
 from warp.sim.model import Mesh
 
 
+def _download_file(dst, url: str) -> None:
+    import requests
+
+    with requests.get(url, stream=True, timeout=10) as response:
+        response.raise_for_status()
+        for chunk in response.iter_content(chunk_size=8192):
+            dst.write(chunk)
+
+
+def download_asset_tmpfile(url: str):
+    """Download a file into a NamedTemporaryFile.
+    A closed NamedTemporaryFile is returned. It is automatically deleted upon being finalized
+    (e.g. garbage-collected)."""
+    import tempfile
+    from urllib.parse import urlsplit, unquote
+
+    urlpath = unquote(urlsplit(url).path)
+    file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete_on_close=False)
+    _download_file(file_od, url)
+    file_od.close()
+
+    return file_od
+
+
 def parse_urdf(
     urdf_filename,
     builder,
@@ -208,19 +232,9 @@ def parse_urdf(
                         )
                 elif filename.startswith("http://") or filename.startswith("https://"):
                     # download mesh
-                    import shutil
-                    import tempfile
-
-                    import requests
-
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        # get filename extension
-                        extension = os.path.splitext(filename)[1]
-                        tmpfile = os.path.join(tmpdir, "mesh" + extension)
-                        with requests.get(filename, stream=True) as r:
-                            with open(tmpfile, "wb") as f:
-                                shutil.copyfileobj(r.raw, f)
-                        filename = tmpfile
+                    # note that the file is deleted when file_tmp is garbage-collected
+                    file_tmp = download_asset_tmpfile(filename)
+                    filename = file_tmp.name
                 else:
                     filename = os.path.join(os.path.dirname(urdf_filename), filename)
                 if not os.path.exists(filename):
