@@ -48,7 +48,7 @@ Keyboard shortcuts when working with the OpenGLRenderer (aka newton.utils.SimRen
 USD Rendering
 -------------
 
-Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or UsdView.
+Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse.
 
 .. code-block:: python
 
