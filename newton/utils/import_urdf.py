@@ -37,7 +37,7 @@ def download_asset_tmpfile(url: str):
     A closed NamedTemporaryFile is returned. It is automatically deleted upon being finalized
     (e.g. garbage-collected)."""
     import tempfile
-    from urllib.parse import urlsplit, unquote
+    from urllib.parse import unquote, urlsplit
 
     urlpath = unquote(urlsplit(url).path)
     file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete_on_close=False)

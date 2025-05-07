@@ -13,18 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import unittest
-from unittest.mock import patch, Mock
-import io
 import tempfile
+import unittest
 from pathlib import Path
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.utils.import_urdf import parse_urdf
 from newton.tests.unittest_utils import assert_np_equal
+from newton.utils.import_urdf import parse_urdf
 
 MESH_URDF = """
 <robot name="mesh_test">
@@ -75,8 +73,8 @@ INERTIAL_URDF = """
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="1.0"/>
-      <inertia ixx="1.0" ixy="0.0" ixz="0.0" 
-               iyy="1.0" iyz="0.0" 
+      <inertia ixx="1.0" ixy="0.0" ixz="0.0"
+               iyy="1.0" iyz="0.0"
                izz="1.0"/>
     </inertial>
     <visual>
@@ -136,7 +134,9 @@ JOINT_URDF = """
 
 class TestImportUrdf(unittest.TestCase):
     @staticmethod
-    def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] = None, **kwargs) -> newton.ModelBuilder:
+    def parse_urdf(
+        urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] | None = None, **kwargs
+    ) -> newton.ModelBuilder:
         """Parse the specified URDF file from a directory of files.
         urdf: URDF file to parse
         res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
@@ -150,11 +150,11 @@ class TestImportUrdf(unittest.TestCase):
                 file_path = Path(temp_dir) / filename
                 with open(file_path, "w") as f:
                     f.write(content)
-            
+
             # Parse the URDF file
             urdf_path = Path(temp_dir) / urdf_filename
             parse_urdf(urdf_filename=str(urdf_path), builder=builder, **kwargs)
-            
+
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
         builder = newton.ModelBuilder()
@@ -186,11 +186,13 @@ class TestImportUrdf(unittest.TestCase):
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         self.parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
-            
+
         assert builder.shape_geo_type[0] == wp.sim.model.GEO_CAPSULE
         assert builder.shape_geo_scale[0][0] == 0.5
         assert builder.shape_geo_scale[0][1] == 0.5  # half height
-        assert_np_equal(np.array(builder.shape_transform[0][:]), np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]), tol=1e-6)
+        assert_np_equal(
+            np.array(builder.shape_transform[0][:]), np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]), tol=1e-6
+        )
 
         # Check inertial parameters
         assert_np_equal(builder.body_mass[0], np.array([1.0]))
@@ -202,9 +204,9 @@ class TestImportUrdf(unittest.TestCase):
             with self.subTest(enable_self_collisions=self_collisions):
                 builder = newton.ModelBuilder()
                 self.parse_urdf(SELF_COLLISION_URDF, builder, enable_self_collisions=self_collisions)
-                    
+
                 assert builder.shape_count == 2
-                
+
                 # Check if collision filtering is applied correctly based on self_collisions setting
                 filter_pair = (0, 1)
                 if self_collisions:
@@ -216,7 +218,7 @@ class TestImportUrdf(unittest.TestCase):
         # Test a simple revolute joint with axis and limits
         builder = newton.ModelBuilder()
         self.parse_urdf(JOINT_URDF, builder)
-        
+
         # Check joint was created with correct properties
         assert builder.joint_count == 2  # base joint + revolute
         assert builder.joint_type[-1] == wp.sim.JOINT_REVOLUTE
@@ -226,7 +228,6 @@ class TestImportUrdf(unittest.TestCase):
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
 
 
-
 if __name__ == "__main__":
     wp.clear_kernel_cache()
-    unittest.main(verbosity=2) 
+    unittest.main(verbosity=2)
