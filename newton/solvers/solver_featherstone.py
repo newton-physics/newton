@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -1515,14 +1515,11 @@ class FeatherstoneSolver(SolverBase):
 
     .. code-block:: python
 
-        integrator = wp.FeatherstoneIntegrator(model)
+        solver = newton.solvers.FeatherstoneSolver(model)
 
         # simulation loop
         for i in range(100):
-            state = integrator.simulate(model, state_in, state_out, dt)
-
-    Note:
-        The :class:`FeatherstoneIntegrator` requires the :class:`Model` to be passed in as a constructor argument.
+            solver.step(model, state_in, state_out, control, contacts, dt)
 
     """
 

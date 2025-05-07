@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -1765,7 +1765,9 @@ def eval_body_contact_forces(model: Model, state: State, particle_f: wp.array, f
         )
 
 
-def eval_body_joint_forces(model: Model, state: State, control: Control, body_f: wp.array):
+def eval_body_joint_forces(
+    model: Model, state: State, control: Control, body_f: wp.array, joint_attach_ke: float, joint_attach_kd: float
+):
     if model.joint_count:
         wp.launch(
             kernel=eval_body_joints,
@@ -1792,8 +1794,8 @@ def eval_body_joint_forces(model: Model, state: State, control: Control, body_f:
                 model.joint_limit_upper,
                 model.joint_limit_ke,
                 model.joint_limit_kd,
-                model.joint_attach_ke,
-                model.joint_attach_kd,
+                joint_attach_ke,
+                joint_attach_kd,
             ],
             outputs=[body_f],
             device=model.device,
@@ -1864,6 +1866,8 @@ def compute_forces(
     particle_f: wp.array,
     body_f: wp.array,
     dt: float,
+    joint_attach_ke: float,
+    joint_attach_kd: float,
     friction_smoothing: float = 1.0,
 ):
     # damped springs
@@ -1882,7 +1886,7 @@ def compute_forces(
     eval_tetrahedral_forces(model, state, control, particle_f)
 
     # body joints
-    eval_body_joint_forces(model, state, control, body_f)
+    eval_body_joint_forces(model, state, control, body_f, joint_attach_ke, joint_attach_kd)
 
     # particle-particle interactions
     eval_particle_forces(model, state, particle_f)
@@ -1918,11 +1922,11 @@ class SemiImplicitSolver(SolverBase):
 
     .. code-block:: python
 
-        integrator = wp.SemiImplicitIntegrator()
+        solver = newton.solvers.SemiImplicitSolver(model)
 
         # simulation loop
         for i in range(100):
-            state = integrator.simulate(model, state_in, state_out, dt)
+            solver.step(model, state_in, state_out, control, contacts, dt)
 
     """
 
@@ -1931,6 +1935,8 @@ class SemiImplicitSolver(SolverBase):
         model: Model | None = None,
         angular_damping: float = 0.05,
         friction_smoothing: float = 1.0,
+        joint_attach_ke: float = 1.0e3,
+        joint_attach_kd: float = 1.0e2,
     ):
         """Create a new Euler solver.
 
@@ -1942,6 +1948,8 @@ class SemiImplicitSolver(SolverBase):
         super().__init__(model=model)
         self.angular_damping = angular_damping
         self.friction_smoothing = friction_smoothing
+        self.joint_attach_ke = joint_attach_ke
+        self.joint_attach_kd = joint_attach_kd
 
     def step(
         self,
@@ -1965,7 +1973,17 @@ class SemiImplicitSolver(SolverBase):
             if control is None:
                 control = model.control(clone_variables=False)
 
-            compute_forces(model, state_in, control, particle_f, body_f, dt, friction_smoothing=self.friction_smoothing)
+            compute_forces(
+                model,
+                state_in,
+                control,
+                particle_f,
+                body_f,
+                dt,
+                self.joint_attach_ke,
+                self.joint_attach_kd,
+                friction_smoothing=self.friction_smoothing,
+            )
 
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
 

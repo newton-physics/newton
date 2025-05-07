@@ -465,8 +465,6 @@ class Model:
         joint_qd_start (array): Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via ``joint_qd_start[i+1] - joint_qd_start[i]``), shape [joint_count + 1], int
         articulation_start (array): Articulation start index, shape [articulation_count], int
         joint_key (list): Joint keys, shape [joint_count], str
-        joint_attach_ke (float): Joint attachment force stiffness (used by :class:`SemiImplicitSolver`)
-        joint_attach_kd (float): Joint attachment force damping (used by :class:`SemiImplicitSolver`)
 
         soft_contact_radius (float): Contact radius used for self-collisions in the VBD integrator.
         soft_contact_margin (float): Contact margin for generation of soft contacts
@@ -646,8 +644,6 @@ class Model:
         self.joint_q_start = None
         self.joint_qd_start = None
         self.joint_key = []
-        self.joint_attach_ke = 1.0e3
-        self.joint_attach_kd = 1.0e2
         self.articulation_start = None
         self.articulation_key = []
 
