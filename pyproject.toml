@@ -35,7 +35,12 @@ dev = [
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
 ]
-docs = ["myst-parser>=3.0.1", "sphinx>=7.4.7", "furo>=2024.8.6"]
+docs = [
+    "myst-parser>=3.0.1",
+ "sphinx>=7.4.7",
+ "furo>=2024.8.6",
+ "sphinxcontrib-mermaid>=1.0.0",
+]
 
 [tool.hatch.version]
 path = "newton/_version.py"
