@@ -34,13 +34,12 @@ def _download_file(dst, url: str) -> None:
 
 def download_asset_tmpfile(url: str):
     """Download a file into a NamedTemporaryFile.
-    A closed NamedTemporaryFile is returned. It is automatically deleted upon being finalized
-    (e.g. garbage-collected)."""
+    A closed NamedTemporaryFile is returned. It must be deleted by the caller."""
     import tempfile
     from urllib.parse import unquote, urlsplit
 
     urlpath = unquote(urlsplit(url).path)
-    file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete_on_close=False)
+    file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete=False)
     _download_file(file_od, url)
     file_od.close()
 
@@ -215,6 +214,7 @@ def parse_urdf(
                 shapes.append(s)
 
             for mesh in geo.findall("mesh"):
+                file_tmp = None
                 filename = mesh.get("filename")
                 if filename is None:
                     continue
@@ -230,9 +230,9 @@ def parse_urdf(
                         wp.utils.warn(
                             f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"'
                         )
-                elif filename.startswith("http://") or filename.startswith("https://"):
+                elif filename.startswith(("http://", "https://")):
                     # download mesh
-                    # note that the file is deleted when file_tmp is garbage-collected
+                    # note that the file must be deleted after use
                     file_tmp = download_asset_tmpfile(filename)
                     filename = file_tmp.name
                 else:
@@ -283,6 +283,9 @@ def parse_urdf(
                         **contact_vars,
                     )
                     shapes.append(s)
+                if file_tmp is not None:
+                    os.remove(file_tmp.name)
+                    file_tmp = None
 
         return shapes
 

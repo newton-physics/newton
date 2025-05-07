@@ -16,11 +16,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
 
 import newton
+import newton.utils.import_urdf
 from newton.tests.unittest_utils import assert_np_equal
 from newton.utils.import_urdf import parse_urdf
 
@@ -173,8 +175,12 @@ class TestImportUrdf(unittest.TestCase):
                 if mesh_src == "file":
                     self.parse_urdf(MESH_URDF.format(filename="cube.obj"), builder, {"cube.obj": MESH_OBJ})
                 else:
-                    continue
-                    # TODO(camevor): Test file download
+
+                    def mock_mesh_download(dst, url: str):
+                        dst.write(MESH_OBJ.encode("utf-8"))
+
+                    with patch("newton.utils.import_urdf._download_file", side_effect=mock_mesh_download):
+                        self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
                 assert builder.shape_geo_type[0] == wp.sim.model.GEO_MESH
