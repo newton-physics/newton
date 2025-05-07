@@ -74,6 +74,8 @@ class Example:
         self.model.ground = False
 
         self.solver = newton.solvers.MuJoCoSolver(self.model)
+        # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
+        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
         self.renderer = None
         if stage_path:
