@@ -4,7 +4,8 @@ Quickstart
 Real-time Rendering
 -------------------
 
-Newton provides a simple OpenGL renderer for visualizing the simulation. The renderer is based on `pyglet` and the 
+Newton provides a simple OpenGL renderer for visualizing the simulation.
+The renderer requires pyglet (version >= 2.0) to be installed.
 
 .. code-block:: python
 
