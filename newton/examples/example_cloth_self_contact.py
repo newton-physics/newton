@@ -121,7 +121,7 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_self_contact.usd", enable_timers=True, num_frames=600):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -134,6 +134,7 @@ class Example:
         self.bvh_rebuild_frames = 10
 
         self.num_frames = num_frames
+        self.enable_timers = enable_timers
         self.sim_time = 0.0
         self.profiler = {}
 
@@ -261,7 +262,7 @@ class Example:
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def advance_frame(self):
-        with wp.ScopedTimer("step", print=False, dict=self.profiler):
+        with wp.ScopedTimer("step", dict=self.profiler, active=self.enable_timers):
             if self.use_cuda_graph:
                 wp.capture_launch(self.cuda_graph)
             else:
@@ -273,7 +274,6 @@ class Example:
         for i in range(self.num_frames):
             self.advance_frame()
             self.render()
-            print(f"[{i:4d}/{self.num_frames}]")
 
             if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph:
                 self.solver.rebuild_bvh(self.state0)
@@ -285,9 +285,50 @@ class Example:
         if self.renderer is None:
             return
 
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state0)
-        self.renderer.end_frame()
+        with wp.ScopedTimer("render", active=self.enable_timers):
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state0)
+            self.renderer.end_frame()
+
+
+def run_cloth_self_contact(
+    num_frames: int = 300,
+    device: str | wp.context.Device | None = None,
+    stage_path: str | None = None,
+    enable_timers: bool = True,
+    **_ignored,
+) -> dict:
+    """Run the cloth self-contact example head-less or with rendering and return the final state.
+    Parameters
+    ----------
+    num_frames : int, optional
+        Number of simulation frames to advance.
+    device : str | wp.context.Device | None, optional
+        Warp device to run the simulation on. ``None`` selects the default.
+    stage_path : str | None, optional
+        Path to the output USD stage when ``render=True``.
+
+    Returns
+    -------
+    dict
+        Final state tensors as NumPy arrays for regression testing.
+    """
+
+    with wp.ScopedDevice(device):
+        example = Example(stage_path=stage_path, num_frames=num_frames, enable_timers=enable_timers)
+        example.run()
+
+        if example.renderer:
+            example.renderer.save()
+
+        def to_numpy(arr):
+            return None if arr is None else arr.numpy()
+
+        state = example.state0
+        return {
+            "particle_q": to_numpy(state.particle_q),
+            "particle_qd": to_numpy(state.particle_qd),
+        }
 
 
 if __name__ == "__main__":
@@ -305,13 +346,8 @@ if __name__ == "__main__":
 
     args = parser.parse_known_args()[0]
 
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        example.run()
-
-        frame_times = example.profiler["step"]
-        print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
-
-        if example.renderer:
-            example.renderer.save()
+    run_cloth_self_contact(
+        num_frames=args.num_frames,
+        device=args.device,
+        stage_path=args.stage_path,
+    )
