@@ -45,6 +45,7 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.extlinks",  # Markup to shorten external links
     "sphinx.ext.githubpages",
+    "sphinxcontrib.mermaid",
 ]
 
 templates_path = ["_templates"]
