@@ -80,6 +80,7 @@ class Example:
         self.model.ground = True
 
         self.solver = newton.solvers.XPBDSolver(self.model)
+        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
