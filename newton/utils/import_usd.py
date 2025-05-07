@@ -945,21 +945,24 @@ def parse_usd(
 
     collapse_results = None
     merged_body_data = {}
+    path_body_relative_transform = {}
     if scene_attributes.get("warp:collapse_fixed_joints", collapse_fixed_joints):
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
+        body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]
         # remap body ids in articulation bodies
         for art_id, bodies in articulation_bodies.items():
             articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
-        for key, value in path_body_map.items():
-            if value in body_remap:
-                new_id = body_remap[value]
+        for path, body_id in path_body_map.items():
+            if body_id in body_remap:
+                new_id = body_remap[body_id]
             else:
-                new_id = body_remap[body_merged_parent[value]]
+                new_id = body_remap[body_merged_parent[body_id]]
+                path_body_relative_transform[path] = body_merged_transform[body_id]
 
-            path_body_map[key] = new_id
+            path_body_map[path] = new_id
         merged_body_data = collapse_results["merged_body_data"]
 
     path_original_body_map = path_body_map.copy()
@@ -1032,6 +1035,7 @@ def parse_usd(
         "collapse_results": collapse_results,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
+        "path_body_relative_transform": path_body_relative_transform,
     }
 
 
