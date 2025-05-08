@@ -21,11 +21,14 @@ models + state forward in time.
 import warp as wp
 
 from newton.collision.collide import triangle_closest_point_barycentric
-from newton.core import Contact, Control, Model, State
-from newton.core.model import (
+from newton.core import (
     PARTICLE_FLAG_ACTIVE,
+    Contact,
+    Control,
+    Model,
     ModelShapeGeometry,
     ModelShapeMaterials,
+    State,
 )
 from newton.core.particles import eval_particle_forces
 from newton.utils import quat_decompose, quat_twist

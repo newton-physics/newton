@@ -20,13 +20,13 @@ import numpy as np
 import warp as wp
 import warp.examples
 
+from newton import ModelBuilder
 from newton.core.graph_coloring import (
     ColoringAlgorithm,
     construct_trimesh_graph_edges,
     convert_to_color_groups,
     validate_graph_coloring,
 )
-from newton.core.model import ModelBuilder
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
 

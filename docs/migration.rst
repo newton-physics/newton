@@ -37,6 +37,12 @@ Importers
 +-----------------------------------------------+----------------------------------------------------+
 
 
+``Model``
+---------
+
+``ModelShapeGeometry.is_solid`` now is of dtype ``bool`` instead of ``wp.uint8``.
+
+
 ``ModelBuilder``
 ----------------
 

@@ -21,8 +21,7 @@ from newton.collision.collide import (
     TriMeshCollisionInfo,
     triangle_closest_point,
 )
-from newton.core import Contact, Control, Model, State
-from newton.core.model import PARTICLE_FLAG_ACTIVE, ModelShapeMaterials
+from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, ModelShapeMaterials, State
 
 from .solver import SolverBase
 

@@ -89,7 +89,7 @@ def fill_color_groups(
         group_fill_count[particle_color] = group_idx + 1
 
 
-def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu"):
+def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu") -> list[int]:
     group_sizes = wp.zeros(shape=(num_colors,), dtype=int, device="cpu")
     wp.launch(kernel=count_color_group_size, inputs=[particle_colors, group_sizes], device="cpu", dim=1)
 
@@ -192,7 +192,7 @@ def color_graph(
     balance_colors=True,
     target_max_min_color_ratio=1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
-):
+) -> list[int]:
     """
     A function that generates coloring for a graph, which is represented by the number of nodes and an array of edges.
     It returns a list of `np.array` with `dtype`=`int`. The length of the list is the number of colors
@@ -252,7 +252,7 @@ def color_graph(
     return color_groups
 
 
-def combine_independent_particle_coloring(color_groups_1, color_groups_2):
+def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list[int]:
     """
     A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
     graphs so that there is no connection between them. This algorithm will sort color_groups_1 in ascending order and
