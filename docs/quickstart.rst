@@ -61,3 +61,32 @@ Instead of rendering in real-time, you can also render the simulation as a time-
 
     # to save the USD stage:
     renderer.save()
+
+Example: Creating a particle chain
+----------------------------------
+
+.. testcode::
+
+    import newton
+
+    builder = newton.ModelBuilder()
+
+    # anchor point (zero mass)
+    builder.add_particle((0, 1.0, 0.0), (0.0, 0.0, 0.0), 0.0)
+
+    # build chain
+    for i in range(1, 10):
+        builder.add_particle((i, 1.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        builder.add_spring(i - 1, i, 1.0e3, 0.0, 0)
+
+    model = builder.finalize("cpu")
+
+    print(f"{model.spring_indices.numpy()=}")
+    print(f"{model.particle_count=}")
+    print(f"{model.particle_mass.numpy()=}")
+
+.. testoutput::
+
+    model.spring_indices.numpy()=array([0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9], dtype=int32)
+    model.particle_count=10
+    model.particle_mass.numpy()=array([0., 1., 1., 1., 1., 1., 1., 1., 1., 1.], dtype=float32)

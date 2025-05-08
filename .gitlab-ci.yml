@@ -150,6 +150,15 @@ merge request docs:
   after_script:
     - echo "View the website at https://$CI_PROJECT_ROOT_NAMESPACE.$CI_PAGES_DOMAIN/-/$CI_PROJECT_NAME/-/jobs/$CI_JOB_ID/artifacts/public/index.html"
 
+doctest:
+  stage: docs
+  image: ghcr.io/astral-sh/uv:bookworm
+  needs: []
+  extends:
+    - .omni_nvks_gpu
+  script:
+    - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.
 pages:
