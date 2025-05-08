@@ -15,7 +15,7 @@
 
 from .contact import Contact
 from .control import Control
-from .model import SHAPE_FLAG_COLLIDE_GROUND, SHAPE_FLAG_COLLIDE_SHAPES, SHAPE_FLAG_VISIBLE, Model
+from .model import SHAPE_FLAG_COLLIDE_SHAPES, SHAPE_FLAG_VISIBLE, Model
 from .state import State
 
 __all__ = ["Contact", "Control", "Model", "State"]
