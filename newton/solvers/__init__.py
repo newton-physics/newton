@@ -14,8 +14,17 @@
 # limitations under the License.
 
 from .solver import SolverBase
+from .solver_euler import SemiImplicitSolver
+from .solver_featherstone import FeatherstoneSolver
 from .solver_mujoco import MuJoCoSolver
 from .solver_vbd import VBDSolver
 from .solver_xpbd import XPBDSolver
 
-__all__ = ["MuJoCoSolver", "SolverBase", "VBDSolver", "XPBDSolver"]
+__all__ = [
+    "FeatherstoneSolver",
+    "MuJoCoSolver",
+    "SemiImplicitSolver",
+    "SolverBase",
+    "VBDSolver",
+    "XPBDSolver",
+]
