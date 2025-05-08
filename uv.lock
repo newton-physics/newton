@@ -531,7 +531,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.1"
-source = { git = "https://github.com/google-deepmind/mujoco_warp#9ae65b3a457f018574f74fb1b64a2082c812bf98" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp#d6553e018579ca401453a761171d0848ae85a471" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10'" },
@@ -540,7 +540,7 @@ dependencies = [
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "warp-lang", version = "1.7.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.8.0.dev20250507", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang", version = "1.8.0.dev20250508", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
 ]
 
 [[package]]
@@ -593,7 +593,7 @@ name = "newton-physics"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang", version = "1.7.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.8.0.dev20250507", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang", version = "1.8.0.dev20250508", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
 ]
 
 [package.optional-dependencies]
@@ -894,11 +894,11 @@ wheels = [
 
 [[package]]
 name = "snowballstemmer"
-version = "2.2.0"
+version = "3.0.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/44/7b/af302bebf22c749c56c9c3e8ae13190b5b5db37a33d9068652e8f73b7089/snowballstemmer-2.2.0.tar.gz", hash = "sha256:09b16deb8547d3412ad7b590689584cd0fe25ec8db3be37788be3810cbf19cb1", size = 86699, upload-time = "2021-11-16T18:38:38.009Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/81/f47e97c9850c529ab233fd1cd8319e0e5a1cfae49c87c49ab2fd0a19c744/snowballstemmer-3.0.0.1.tar.gz", hash = "sha256:1d09493a5ecc85fb5b433674e9c83fcd41c6739b6979ce4b54e81a40ec078342", size = 105321, upload-time = "2025-05-08T12:30:36.516Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/dc/c02e01294f7265e63a7315fe086dd1df7dacb9f840a804da846b96d01b96/snowballstemmer-2.2.0-py2.py3-none-any.whl", hash = "sha256:c8e1716e83cc398ae16824e5572ae04e0d9fc2c6b985fb0f900f5f0c96ecba1a", size = 93002, upload-time = "2021-11-16T18:38:34.792Z" },
+    { url = "https://files.pythonhosted.org/packages/17/29/38d0cd1c958894aa042433a1515b7dab49a0a79b39df953b30b7ded716ce/snowballstemmer-3.0.0.1-py3-none-any.whl", hash = "sha256:d1cdabc06fb492e80620d9e2c44d39e67cfda290b2aaef8718b0691079443b10", size = 103250, upload-time = "2025-05-08T12:30:34.651Z" },
 ]
 
 [[package]]
@@ -1198,7 +1198,7 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.8.0.dev20250507"
+version = "1.8.0.dev20250508"
 source = { registry = "https://pypi.nvidia.com/" }
 resolution-markers = [
     "python_full_version >= '3.11' and sys_platform != 'darwin'",
@@ -1210,8 +1210,9 @@ dependencies = [
     { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' and sys_platform != 'darwin'" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250507-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:379de6c93e47204b6de269bc69dded0061686b93d25153dcea983ac326f7b037" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250507-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:cbd7c282d8f3b16fb018ba5552d79fc9033e4c43b8af6c22ba55eef44af3eb24" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250508-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:f110460ce4f9e3362b5f6809fc82ca502ef0c3002bc7f67ea9380b212d1d9583" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250508-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:8404d56eb3a0572db67f2cc59e3af4a60b6167af7778ccc2311146b7c97431a9" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250508-py3-none-win_amd64.whl", hash = "sha256:8d9537e715b7e68491b6d220fe97d1b73292f17d4187cbeef2d5a305590d3020" },
 ]
 
 [[package]]

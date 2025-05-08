@@ -3,6 +3,10 @@ name: Deploy Sphinx documentation to Pages
 # Runs on every tag created beginning with the character v
 on:
   push:
+    # TODO: Remove the branches trigger once Newton is making production releases
+    branches:
+      - main
+      - "release-*"
     tags:
       - v*
   workflow_dispatch:
