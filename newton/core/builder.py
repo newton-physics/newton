@@ -143,7 +143,7 @@ class ModelBuilder:
     default_joint_limit_ke = 100.0
     default_joint_limit_kd = 1.0
 
-    def __init__(self, up_vector:Vec3=(0.0, 1.0, 0.0), gravity: float =-9.81):
+    def __init__(self, up_vector: Vec3 = (0.0, 1.0, 0.0), gravity: float = -9.81):
         self.num_envs = 0
 
         # particles
@@ -3796,7 +3796,7 @@ class ModelBuilder:
 
             return m
 
-    def find_shape_contact_pairs(self, model:Model):
+    def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
         import copy
         import itertools

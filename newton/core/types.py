@@ -55,6 +55,7 @@ JOINT_UNIVERSAL = wp.constant(6)
 JOINT_DISTANCE = wp.constant(7)
 JOINT_D6 = wp.constant(8)
 
+
 def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     """Return the number of degrees of freedom in position and velocity for a given joint type."""
     dof_count = num_axes
@@ -70,6 +71,7 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
         coord_count = 0
     return dof_count, coord_count
 
+
 # Joint axis control mode types
 JOINT_MODE_FORCE = wp.constant(0)
 JOINT_MODE_TARGET_POSITION = wp.constant(1)
@@ -81,7 +83,6 @@ def flag_to_int(flag):
     if type(flag) in wp.types.int_types:
         return flag.value
     return int(flag)
-
 
 
 Vec3 = list[float] | tuple[float, float, float] | wp.vec3
@@ -154,6 +155,7 @@ class Axis(IntEnum):
 AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 """Type that can be used to represent an axis, including the enum, string, and integer representations."""
 
+
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     """Convert an axis representation to a 3D vector."""
     if isinstance(axis, Axis):
@@ -166,6 +168,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
         return wp.vec3(*axis)
     else:
         raise TypeError(f"Invalid type for axis: {type(axis)}")
+
 
 class JointAxis:
     """
@@ -234,13 +237,13 @@ class ModelShapeMaterials:
         mu: The coefficient of friction
         restitution: The coefficient of restitution (only used by XPBD integrator)
     """
+
     ke: wp.array(dtype=float)
     kd: wp.array(dtype=float)
     kf: wp.array(dtype=float)
     ka: wp.array(dtype=float)
     mu: wp.array(dtype=float)
     restitution: wp.array(dtype=float)
-
 
 
 @wp.struct
@@ -253,6 +256,7 @@ class ModelShapeGeometry:
         source: Pointer to the source geometry (can be a mesh or SDF index, zero otherwise)
         scale: The 3D scale of the shape
     """
+
     type: wp.array(dtype=wp.int32)
     is_solid: wp.array(dtype=bool)
     thickness: wp.array(dtype=float)
@@ -271,7 +275,7 @@ class SDF:
         com (Vec3): The center of mass of the SDF
     """
 
-    def __init__(self, volume: wp.Volume | None=None, I=None, mass=1.0, com=None):
+    def __init__(self, volume: wp.Volume | None = None, I=None, mass=1.0, com=None):
         self.volume = volume
         self.I = I if I is not None else wp.mat33(np.eye(3))
         self.mass = mass
@@ -284,7 +288,7 @@ class SDF:
     def finalize(self, device=None) -> wp.uint64:
         return self.volume.id
 
-    def __hash__(self)-> int:
+    def __hash__(self) -> int:
         return hash(self.volume.id)
 
 
@@ -345,7 +349,7 @@ class Mesh:
             self.com = wp.vec3()
 
     # construct simulation ready buffers from points
-    def finalize(self, device:Devicelike=None, requires_grad:bool=False) -> wp.uint64:
+    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
         """
         Constructs a simulation-ready :class:`Mesh` object from the mesh data and returns its ID.
 
