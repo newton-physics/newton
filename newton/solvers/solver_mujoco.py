@@ -878,7 +878,7 @@ class MuJoCoSolver(SolverBase):
         INT32_MAX = np.iinfo(np.int32).max
         if collision_mask_everything > INT32_MAX:
             print(
-                f"Warning: collision mask {collision_mask_everything} exceeds INT32_MAX, some collision groups will be ignored."
+                "Warning: collision mask exceeds INT32_MAX, some collision groups will be ignored when using MuJoCo C."
             )
             collision_mask_everything = INT32_MAX
 
