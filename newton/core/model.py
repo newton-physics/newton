@@ -45,6 +45,11 @@ Transform = tuple[Vec3, Quat]
 # Particle flags
 PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
 
+# Shape flags
+SHAPE_FLAG_VISIBLE = wp.constant(wp.uint32(1 << 0))
+SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
+SHAPE_FLAG_COLLIDE_GROUND = wp.constant(wp.uint32(1 << 2))
+
 # Shape geometry types
 GEO_SPHERE = wp.constant(0)
 GEO_BOX = wp.constant(1)
@@ -383,7 +388,7 @@ class Model:
         particle_max_velocity (float): Maximum particle velocity (to prevent instability)
 
         shape_transform (array): Rigid shape transforms, shape [shape_count, 7], float
-        shape_visible (array): Rigid shape visibility, shape [shape_count], bool
+        shape_flags (array): Rigid shape flags, shape [shape_count], uint32
         shape_body (array): Rigid shape body index, shape [shape_count], int
         body_shapes (dict): Mapping from body index to list of attached shape indices
         shape_materials (ModelShapeMaterials): Rigid shape contact materials, shape [shape_count], float
@@ -394,8 +399,6 @@ class Model:
         shape_collision_group_map (dict): Mapping from collision group to list of shape indices
         shape_collision_filter_pairs (set): Pairs of shape indices that should not collide
         shape_collision_radius (array): Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float
-        shape_ground_collision (list): Indicates whether each shape should collide with the ground, shape [shape_count], bool
-        shape_shape_collision (list): Indicates whether each shape should collide with any other shape, shape [shape_count], bool
         shape_contact_pairs (array): Pairs of shape indices that may collide, shape [contact_pair_count, 2], int
         shape_ground_contact_pairs (array): Pairs of shape, ground indices that may collide, shape [ground_contact_pair_count, 2], int
 
@@ -559,7 +562,7 @@ class Model:
         self.shape_key = []
         self.shape_transform = None
         self.shape_body = None
-        self.shape_visible = None
+        self.shape_flags = None
         self.body_shapes = {}
         self.shape_materials = ModelShapeMaterials()
         self.shape_geo = ModelShapeGeometry()
@@ -572,8 +575,6 @@ class Model:
         self.shape_collision_group_map = {}
         self.shape_collision_filter_pairs = set()
         self.shape_collision_radius = None
-        self.shape_ground_collision = []
-        self.shape_shape_collision = []
         self.shape_contact_pairs = None
         self.shape_ground_contact_pairs = None
 
@@ -795,40 +796,6 @@ class Model:
     def allocate_soft_contacts(self, count, requires_grad=False):
         self._allocate_soft_contacts(self, count, requires_grad)
 
-    def find_shape_contact_pairs(self):
-        # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
-        import copy
-        import itertools
-
-        filters = copy.copy(self.shape_collision_filter_pairs)
-        for a, b in self.shape_collision_filter_pairs:
-            filters.add((b, a))
-        contact_pairs = []
-        # iterate over collision groups (islands)
-        for group, shapes in self.shape_collision_group_map.items():
-            for shape_a, shape_b in itertools.product(shapes, shapes):
-                if not self.shape_shape_collision[shape_a]:
-                    continue
-                if not self.shape_shape_collision[shape_b]:
-                    continue
-                if shape_a < shape_b and (shape_a, shape_b) not in filters:
-                    contact_pairs.append((shape_a, shape_b))
-            if group != -1 and -1 in self.shape_collision_group_map:
-                # shapes with collision group -1 collide with all other shapes
-                for shape_a, shape_b in itertools.product(shapes, self.shape_collision_group_map[-1]):
-                    if shape_a < shape_b and (shape_a, shape_b) not in filters:
-                        contact_pairs.append((shape_a, shape_b))
-        self.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=self.device)
-        self.shape_contact_pair_count = len(contact_pairs)
-        # find ground contact pairs
-        ground_contact_pairs = []
-        ground_id = self.shape_count - 1
-        for i in range(ground_id):
-            if self.shape_ground_collision[i]:
-                ground_contact_pairs.append((i, ground_id))
-        self.shape_ground_contact_pairs = wp.array(np.array(ground_contact_pairs), dtype=wp.int32, device=self.device)
-        self.shape_ground_contact_pair_count = len(ground_contact_pairs)
-
     def count_contact_points(self):
         """
         Counts the maximum number of rigid contact points that need to be allocated.
@@ -1044,7 +1011,7 @@ class ModelBuilder:
         self.shape_transform = []
         # maps from shape index to body index
         self.shape_body = []
-        self.shape_visible = []
+        self.shape_flags = []
         self.shape_geo_type = []
         self.shape_geo_scale = []
         self.shape_geo_src = []
@@ -1062,10 +1029,6 @@ class ModelBuilder:
         self.last_collision_group = 0
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
-        # whether the shape collides with the ground
-        self.shape_ground_collision = []
-        # whether the shape collides with any other shape
-        self.shape_shape_collision = []
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs = set()
@@ -1394,7 +1357,7 @@ class ModelBuilder:
             "joint_linear_compliance",
             "joint_angular_compliance",
             "shape_key",
-            "shape_visible",
+            "shape_flags",
             "shape_geo_type",
             "shape_geo_scale",
             "shape_geo_src",
@@ -1407,8 +1370,6 @@ class ModelBuilder:
             "shape_material_mu",
             "shape_material_restitution",
             "shape_collision_radius",
-            "shape_ground_collision",
-            "shape_shape_collision",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -3351,9 +3312,12 @@ class ModelBuilder:
         restitution = restitution if restitution is not None else self.default_shape_restitution
         thickness = thickness if thickness is not None else self.default_shape_thickness
         density = density if density is not None else self.default_shape_density
+        shape_flags = int(SHAPE_FLAG_VISIBLE) if is_visible else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if has_shape_collision else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if has_ground_collision and body != -1 else 0
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(wp.transform(pos, rot))
-        self.shape_visible.append(is_visible)
+        self.shape_flags.append(shape_flags)
         self.shape_geo_type.append(type)
         self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
         self.shape_geo_src.append(src)
@@ -3376,10 +3340,6 @@ class ModelBuilder:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.add((parent_shape, shape))
-        if body == -1:
-            has_ground_collision = False
-        self.shape_ground_collision.append(has_ground_collision)
-        self.shape_shape_collision.append(has_shape_collision)
 
         if density > 0.0:
             (m, c, I) = compute_shape_mass(type, scale, src, density, is_solid, thickness)
@@ -4508,7 +4468,7 @@ class ModelBuilder:
             m.shape_key = self.shape_key
             m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
-            m.shape_visible = wp.array(self.shape_visible, dtype=wp.bool)
+            m.shape_flags = wp.array(self.shape_flags, dtype=wp.uint32)
             m.body_shapes = self.body_shapes
 
             # build list of ids for geometry sources (meshes, sdfs)
@@ -4549,8 +4509,6 @@ class ModelBuilder:
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_ground_collision = self.shape_ground_collision
-            m.shape_shape_collision = self.shape_shape_collision
 
             # ---------------------
             # springs
@@ -4684,7 +4642,7 @@ class ModelBuilder:
             # contacts
             if m.particle_count:
                 m.allocate_soft_contacts(self.soft_contact_max, requires_grad=requires_grad)
-            m.find_shape_contact_pairs()
+            self.find_shape_contact_pairs(m)
             if self.num_rigid_contacts_per_env is None:
                 contact_count, limited_contact_count = m.count_contact_points()
             else:
@@ -4709,3 +4667,37 @@ class ModelBuilder:
             m.enable_tri_collisions = False
 
             return m
+
+    def find_shape_contact_pairs(self, model=Model):
+        # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
+        import copy
+        import itertools
+
+        filters = copy.copy(self.shape_collision_filter_pairs)
+        for a, b in self.shape_collision_filter_pairs:
+            filters.add((b, a))
+        contact_pairs = []
+        # iterate over collision groups (islands)
+        for group, shapes in self.shape_collision_group_map.items():
+            for shape_a, shape_b in itertools.product(shapes, shapes):
+                if not (self.shape_flags[shape_a] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+                    continue
+                if not (self.shape_flags[shape_b] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+                    continue
+                if shape_a < shape_b and (shape_a, shape_b) not in filters:
+                    contact_pairs.append((shape_a, shape_b))
+            if group != -1 and -1 in self.shape_collision_group_map:
+                # shapes with collision group -1 collide with all other shapes
+                for shape_a, shape_b in itertools.product(shapes, self.shape_collision_group_map[-1]):
+                    if shape_a < shape_b and (shape_a, shape_b) not in filters:
+                        contact_pairs.append((shape_a, shape_b))
+        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=model.device)
+        model.shape_contact_pair_count = len(contact_pairs)
+        # find ground contact pairs
+        ground_contact_pairs = []
+        ground_id = self.shape_count - 1
+        for i in range(ground_id):
+            if self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_GROUND):
+                ground_contact_pairs.append((i, ground_id))
+        model.shape_ground_contact_pairs = wp.array(np.array(ground_contact_pairs), dtype=wp.int32, device=model.device)
+        model.shape_ground_contact_pair_count = len(ground_contact_pairs)
