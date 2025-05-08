@@ -1,0 +1,7 @@
+coverage:
+  status:
+    project: off
+    patch: off
+
+comment:
+  layout: "diff, flags, files"
