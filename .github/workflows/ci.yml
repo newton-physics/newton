@@ -48,3 +48,4 @@ jobs:
           env_vars: OS,PYTHON_VERSION
           files: ./coverage.xml
           flags: unittests
+          token: ${{ secrets.CODECOV_TOKEN }}
