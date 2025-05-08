@@ -1326,8 +1326,8 @@ def solve_simple_body_joints(
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1395,8 +1395,7 @@ def solve_simple_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    # linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    angular_compliance = joint_angular_compliance
     damping = 0.0
 
     axis_start = joint_axis_start[tid]
@@ -1608,7 +1607,7 @@ def solve_simple_body_joints(
     corr = wp.quat_rotate(q_dx, corr)
 
     lambda_in = 0.0
-    linear_alpha = joint_linear_compliance[tid]
+    linear_alpha = joint_linear_compliance
     lambda_n = compute_linear_correction_3d(
         corr, r_p, r_c, pose_p, pose_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, lambda_in, linear_alpha, damping, dt
     )
@@ -1648,8 +1647,8 @@ def solve_body_joints(
     joint_act: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1721,8 +1720,8 @@ def solve_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    linear_compliance = joint_linear_compliance
+    angular_compliance = joint_angular_compliance
 
     axis_start = joint_axis_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
@@ -2639,9 +2638,6 @@ class XPBDSolver(SolverBase):
         - Miles Macklin, Matthias Müller, and Nuttapong Chentanez. 2016. XPBD: position-based simulation of compliant constrained dynamics. In Proceedings of the 9th International Conference on Motion in Games (MIG '16). Association for Computing Machinery, New York, NY, USA, 49-54. https://doi.org/10.1145/2994258.2994272
         - Matthias Müller, Miles Macklin, Nuttapong Chentanez, Stefan Jeschke, and Tae-Yong Kim. 2020. Detailed rigid body simulation with extended position based dynamics. In Proceedings of the ACM SIGGRAPH/Eurographics Symposium on Computer Animation (SCA '20). Eurographics Association, Goslar, DEU, Article 10, 1-12. https://doi.org/10.1111/cgf.14105
 
-    After constructing :class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
-    may be used to advance the simulation state forward in time.
-
     Example
     -------
 
@@ -2657,12 +2653,14 @@ class XPBDSolver(SolverBase):
 
     def __init__(
         self,
-        model: Model = None,
+        model: Model,
         iterations=2,
         soft_body_relaxation=0.9,
         soft_contact_relaxation=0.9,
         joint_linear_relaxation=0.7,
         joint_angular_relaxation=0.4,
+        joint_linear_compliance=0.0,
+        joint_angular_compliance=0.0,
         rigid_contact_relaxation=0.8,
         rigid_contact_con_weighting=True,
         angular_damping=0.0,
@@ -2676,6 +2674,8 @@ class XPBDSolver(SolverBase):
 
         self.joint_linear_relaxation = joint_linear_relaxation
         self.joint_angular_relaxation = joint_angular_relaxation
+        self.joint_linear_compliance = joint_linear_compliance
+        self.joint_angular_compliance = joint_angular_compliance
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
@@ -3089,8 +3089,8 @@ class XPBDSolver(SolverBase):
                                 control.joint_act,
                                 model.joint_target_ke,
                                 model.joint_target_kd,
-                                model.joint_linear_compliance,
-                                model.joint_angular_compliance,
+                                self.joint_linear_compliance,
+                                self.joint_angular_compliance,
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
                                 dt,

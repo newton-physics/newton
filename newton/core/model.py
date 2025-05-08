@@ -455,8 +455,6 @@ class Model:
         joint_axis_start (array): Start index of the first axis per joint, shape [joint_count], int
         joint_axis_dim (array): Number of linear and angular axes per joint, shape [joint_count, 2], int
         joint_axis_mode (array): Joint axis mode, shape [joint_axis_count], int.
-        joint_linear_compliance (array): Joint linear compliance, shape [joint_count], float
-        joint_angular_compliance (array): Joint linear compliance, shape [joint_count], float
         joint_enabled (array): Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int
         joint_limit_lower (array): Joint lower position limits, shape [joint_axis_count], float
         joint_limit_upper (array): Joint upper position limits, shape [joint_axis_count], float
@@ -633,8 +631,6 @@ class Model:
         self.joint_axis_start = None
         self.joint_axis_dim = None
         self.joint_axis_mode = None
-        self.joint_linear_compliance = None
-        self.joint_angular_compliance = None
         self.joint_enabled = None
         self.joint_limit_lower = None
         self.joint_limit_upper = None
@@ -1106,8 +1102,6 @@ class ModelBuilder:
         self.joint_twist_lower = []
         self.joint_twist_upper = []
 
-        self.joint_linear_compliance = []
-        self.joint_angular_compliance = []
         self.joint_enabled = []
 
         self.joint_q_start = []
@@ -1354,8 +1348,6 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
-            "joint_linear_compliance",
-            "joint_angular_compliance",
             "shape_key",
             "shape_flags",
             "shape_geo_type",
@@ -1476,8 +1468,6 @@ class ModelBuilder:
         key: str | None = None,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1494,8 +1484,6 @@ class ModelBuilder:
             key (str): The key of the joint (optional)
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance (float): The linear compliance of the joint
-            angular_compliance (float): The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axes (only considered by :class:`FeatherstoneIntegrator`)
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies
             enabled (bool): Whether the joint is enabled (not considered by :class:`FeatherstoneIntegrator`)
@@ -1532,8 +1520,6 @@ class ModelBuilder:
         self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
 
-        self.joint_linear_compliance.append(linear_compliance)
-        self.joint_angular_compliance.append(angular_compliance)
         self.joint_enabled.append(enabled)
 
         def add_axis_dim(dim: JointAxis):
@@ -1622,8 +1608,6 @@ class ModelBuilder:
         limit_upper: float = 2 * math.pi,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1644,8 +1628,6 @@ class ModelBuilder:
             limit_upper: The upper limit of the joint
             limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
             limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_kd`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axis
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -1689,8 +1671,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             angular_axes=[ax],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -1712,8 +1692,6 @@ class ModelBuilder:
         limit_upper: float = 1e4,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1734,8 +1712,6 @@ class ModelBuilder:
             limit_upper: The upper limit of the joint
             limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
             limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axis
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -1779,8 +1755,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             linear_axes=[ax],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -1793,8 +1767,6 @@ class ModelBuilder:
         child: int,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1807,8 +1779,6 @@ class ModelBuilder:
             child: The index of the child body
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -1830,8 +1800,6 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -1844,8 +1812,6 @@ class ModelBuilder:
         child: int,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1859,8 +1825,6 @@ class ModelBuilder:
             child: The index of the child body
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -1882,8 +1846,6 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -1944,7 +1906,6 @@ class ModelBuilder:
         child_xform: wp.transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
-        compliance: float = 0.0,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1958,7 +1919,6 @@ class ModelBuilder:
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
             min_distance: The minimum distance between the bodies (no limit if negative)
             max_distance: The maximum distance between the bodies (no limit if negative)
-            compliance: The compliance of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
 
@@ -1986,7 +1946,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             linear_axes=[ax],
-            linear_compliance=compliance,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1999,8 +1958,6 @@ class ModelBuilder:
         axis_1: JointAxis,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -2015,8 +1972,6 @@ class ModelBuilder:
             axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -2039,8 +1994,6 @@ class ModelBuilder:
             angular_axes=[JointAxis(axis_0), JointAxis(axis_1)],
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -2056,8 +2009,6 @@ class ModelBuilder:
         axis_2: JointAxis,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -2076,8 +2027,6 @@ class ModelBuilder:
             axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
             key: The key of the joint
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
@@ -2100,8 +2049,6 @@ class ModelBuilder:
             angular_axes=[JointAxis(axis_0), JointAxis(axis_1), JointAxis(axis_2)],
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -2117,8 +2064,6 @@ class ModelBuilder:
         key: str | None = None,
         parent_xform: wp.transform | None = None,
         child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
         armature: float = 1e-2,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2133,8 +2078,6 @@ class ModelBuilder:
             key: The key of the joint
             parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
             child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
             armature: Artificial inertia added around the joint axes
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
             enabled: Whether the joint is enabled
@@ -2163,8 +2106,6 @@ class ModelBuilder:
             child_xform=child_xform,
             linear_axes=[JointAxis(a) for a in linear_axes],
             angular_axes=[JointAxis(a) for a in angular_axes],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
             armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
@@ -2347,8 +2288,6 @@ class ModelBuilder:
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
-                "linear_compliance": self.joint_linear_compliance[i],
-                "angular_compliance": self.joint_angular_compliance[i],
                 "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
@@ -2525,8 +2464,6 @@ class ModelBuilder:
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
         self.joint_enabled.clear()
-        self.joint_linear_compliance.clear()
-        self.joint_angular_compliance.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
         self.joint_X_c.clear()
@@ -2552,8 +2489,6 @@ class ModelBuilder:
             self.joint_qd.extend(joint["qd"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
-            self.joint_linear_compliance.append(joint["linear_compliance"])
-            self.joint_angular_compliance.append(joint["angular_compliance"])
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
             self.joint_axis_dim.append(joint["axis_dim"])
@@ -4603,12 +4538,6 @@ class ModelBuilder:
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_linear_compliance = wp.array(
-                self.joint_linear_compliance, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.joint_angular_compliance = wp.array(
-                self.joint_angular_compliance, dtype=wp.float32, requires_grad=requires_grad
-            )
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value
