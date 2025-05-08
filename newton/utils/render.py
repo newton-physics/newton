@@ -233,9 +233,7 @@ def CreateSimRenderer(renderer):
 
                     if shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
-                        self.add_shape_instance(
-                            name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True
-                        )
+                        self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
 
                 if self.show_joints and model.joint_count:
