@@ -45,6 +45,7 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.extlinks",  # Markup to shorten external links
     "sphinx.ext.githubpages",
+    "sphinx.ext.doctest",  # Test code snippets in docs
     "sphinxcontrib.mermaid",
 ]
 
@@ -63,6 +64,15 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
 }
+
+doctest_global_setup = """
+from typing import Any
+import numpy as np
+import warp as wp
+import newton
+wp.config.quiet = True
+wp.init()
+"""
 
 # -- Autodoc configuration ---------------------------------------------------
 
