@@ -15,8 +15,7 @@
 
 from . import solvers
 from ._version import __version__
-from .core.contact import Contact
-from .core.model import (
+from .core import (
     GEO_BOX,
     GEO_CAPSULE,
     GEO_CONE,
@@ -39,6 +38,7 @@ from .core.model import (
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
     SDF,
+    Contact,
     Control,
     JointAxis,
     Mesh,

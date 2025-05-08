@@ -15,13 +15,16 @@
 
 import warp as wp
 
-from newton.core import Contact, Control, Model, State
-from newton.core.model import (
+from newton.core import (
     JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
     PARTICLE_FLAG_ACTIVE,
+    Contact,
+    Control,
+    Model,
     ModelShapeMaterials,
+    State,
 )
 from newton.utils import vec_abs, vec_leaky_max, vec_leaky_min, vec_max, vec_min, velocity_at_point
 

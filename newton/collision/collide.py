@@ -17,13 +17,12 @@
 Collision handling functions and kernels.
 """
 
-from typing import Optional
+from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from warp.sim.model import Model, State
 
-from newton.core.model import PARTICLE_FLAG_ACTIVE, ModelShapeGeometry
+from newton.core import PARTICLE_FLAG_ACTIVE, Model, ModelShapeGeometry, State
 
 # types of triangle's closest point to a point
 TRI_CONTACT_FEATURE_VERTEX_A = wp.constant(0)
@@ -1561,7 +1560,7 @@ def collide(
     state: State,
     edge_sdf_iter: int = 10,
     iterate_mesh_vertices: bool = True,
-    requires_grad: Optional[bool] = None,
+    requires_grad: bool | None = None,
 ) -> None:
     """Generate contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.
 
