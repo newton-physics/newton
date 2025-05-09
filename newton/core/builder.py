@@ -54,16 +54,17 @@ from .types import (
     SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
-    SHAPE_FLAG_VISIBLE,
     JointAxis,
     Mat33,
     Mesh,
     Quat,
+    ShapeCfg,
     Transform,
     Vec3,
     Vec4,
     flag_to_int,
     get_joint_dof_count,
+    get_shape_radius,
 )
 
 
@@ -129,15 +130,25 @@ class ModelBuilder:
     default_edge_ke = 100.0
     default_edge_kd = 0.0
 
-    # Default rigid shape contact material properties
-    default_shape_ke = 1.0e5
-    default_shape_kd = 1000.0
-    default_shape_kf = 1000.0
-    default_shape_ka = 0.0
-    default_shape_mu = 0.5
-    default_shape_restitution = 0.0
-    default_shape_density = 1000.0
-    default_shape_thickness = 1e-5
+    # Default rigid shape properties
+    default_shape_cfg = ShapeCfg(
+        scale=(1.0, 1.0, 1.0),
+        src=None,
+        density=1000.0,
+        ke=1.0e5,
+        kd=1000.0,
+        kf=1000.0,
+        ka=0.0,
+        mu=0.5,
+        restitution=0.0,
+        thickness=1e-5,
+        is_solid=True,
+        collision_group=-1,
+        collision_filter_parent=True,
+        has_ground_collision=True,
+        has_shape_collision=True,
+        is_visible=True,
+    )
 
     # Default joint settings
     default_joint_limit_ke = 100.0
@@ -283,11 +294,6 @@ class ModelBuilder:
             "plane": (*up_vector, 0.0),
             "width": 0.0,
             "length": 0.0,
-            "ke": self.default_shape_ke,
-            "kd": self.default_shape_kd,
-            "kf": self.default_shape_kf,
-            "mu": self.default_shape_mu,
-            "restitution": self.default_shape_restitution,
         }
 
         # Maximum number of soft contacts that can be registered
@@ -558,7 +564,7 @@ class ModelBuilder:
     # register a rigid body and return its index.
     def add_body(
         self,
-        origin: Transform | None = None,
+        xform: Transform | None = None,
         armature: float = 0.0,
         com: Vec3 | None = None,
         I_m: Mat33 | None = None,
@@ -568,7 +574,7 @@ class ModelBuilder:
         """Adds a rigid body to the model.
 
         Args:
-            origin: The location of the body in the world frame.
+            xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body.
             com: The center of mass of the body w.r.t its origin.
             I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass).
@@ -583,12 +589,10 @@ class ModelBuilder:
 
         """
 
-        if origin is None:
-            origin = wp.transform()
-
+        if xform is None:
+            xform = wp.transform()
         if com is None:
             com = wp.vec3()
-
         if I_m is None:
             I_m = wp.mat33()
 
@@ -610,12 +614,14 @@ class ModelBuilder:
         else:
             self.body_inv_inertia.append(inertia)
 
-        self.body_q.append(origin)
+        self.body_q.append(xform)
         self.body_qd.append(wp.spatial_vector())
 
         self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
         return body_id
+
+    # region joints
 
     def add_joint(
         self,
@@ -1299,6 +1305,8 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    # endregion
+
     def plot_articulation(
         self,
         show_body_keys=True,
@@ -1740,689 +1748,36 @@ class ModelBuilder:
         # return the index of the muscle
         return len(self.muscle_start) - 1
 
-    # shapes
-    def add_shape_plane(
-        self,
-        plane: Vec4 | tuple[float, float, float, float] = (0.0, 1.0, 0.0, 0.0),
-        pos: Vec3 | None = None,
-        rot: Quat | None = None,
-        width: float = 10.0,
-        length: float = 10.0,
-        body: int = -1,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        thickness: float | None = None,
-        has_ground_collision: bool = False,
-        has_shape_collision: bool = True,
-        is_visible: bool = True,
-        collision_group: int = -1,
-        key: str | None = None,
-    ):
-        """
-        Adds a plane collision shape.
-        If pos and rot are defined, the plane is assumed to have its normal as (0, 1, 0).
-        Otherwise, the plane equation defined through the `plane` argument is used.
+    # region shapes
 
-        Args:
-            plane: The plane equation in form a*x + b*y + c*z + d = 0
-            pos: The position of the plane in world coordinates
-            rot: The rotation of the plane in world coordinates
-            width: The extent along x of the plane (infinite if 0)
-            length: The extent along z of the plane (infinite if 0)
-            body: The body index to attach the shape to (-1 by default to keep the plane static)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            thickness: The thickness of the plane (0 by default) for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            is_visible: Whether the plane is visible
-            collision_group: The collision group of the shape
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-        if pos is None or rot is None:
-            # compute position and rotation from plane equation
-            normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
-            if np.allclose(normal, (0.0, 1.0, 0.0)):
-                # no rotation necessary
-                rot = (0.0, 0.0, 0.0, 1.0)
-            else:
-                c = np.cross(normal, (0.0, 1.0, 0.0))
-                angle = np.arcsin(np.linalg.norm(c))
-                axis = np.abs(c) / np.linalg.norm(c)
-                rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
-        scale = wp.vec3(width, length, 0.0)
-
-        return self._add_shape(
-            body,
-            pos,
-            rot,
-            GEO_PLANE,
-            scale,
-            None,
-            0.0,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            is_visible=is_visible,
-            collision_group=collision_group,
-            key=key,
-        )
-
-    def add_shape_sphere(
-        self,
-        body,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a sphere collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the sphere
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the sphere is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow sphere, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the sphere is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        thickness = self.default_shape_thickness if thickness is None else thickness
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_SPHERE,
-            wp.vec3(radius, 0.0, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness + radius,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_box(
+    def add_shape(
         self,
         body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        hx: float = 0.5,
-        hy: float = 0.5,
-        hz: float = 0.5,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a box collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            hx: The half-extent along the x-axis
-            hy: The half-extent along the y-axis
-            hz: The half-extent along the z-axis
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the box is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow box, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the box is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-        """
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_BOX,
-            wp.vec3(hx, hy, hz),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_capsule(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a capsule collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the capsule
-            half_height: The half length of the center cylinder along the up axis
-            up_axis: The axis along which the capsule is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the capsule is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow capsule, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the capsule is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = wp.quat(rot)
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(q, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(q, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        thickness = self.default_shape_thickness if thickness is None else thickness
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CAPSULE,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness + radius,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_cylinder(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a cylinder collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the cylinder
-            half_height: The half length of the cylinder along the up axis
-            up_axis: The axis along which the cylinder is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the cylinder is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow cylinder, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the cylinder is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = rot
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(rot, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(rot, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CYLINDER,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_cone(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a cone collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the cone
-            half_height: The half length of the cone along the up axis
-            up_axis: The axis along which the cone is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the cone is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow cone, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the cone is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = rot
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(rot, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(rot, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CONE,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_mesh(
-        self,
-        body: int,
-        pos: Vec3 | None = None,
-        rot: Quat | None = None,
-        mesh: Mesh | None = None,
-        scale: Vec3 | None = None,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a triangle mesh collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-              (None to use the default value ``wp.vec3(0.0, 0.0, 0.0)``)
-            rot: The rotation of the shape with respect to the parent frame
-              (None to use the default value ``wp.quat(0.0, 0.0, 0.0, 1.0)``)
-            mesh: The mesh object
-            scale: Scale to use for the collider. (None to use the default value ``wp.vec3(1.0, 1.0, 1.0)``)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: If True, the mesh is solid, otherwise it is a hollow surface with the given wall thickness
-            thickness: Thickness to use for computing inertia of a hollow mesh, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the mesh is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        if pos is None:
-            pos = wp.vec3(0.0, 0.0, 0.0)
-
-        if rot is None:
-            rot = wp.quat(0.0, 0.0, 0.0, 1.0)
-
-        if scale is None:
-            scale = wp.vec3(1.0, 1.0, 1.0)
-
-        return self._add_shape(
-            body,
-            pos,
-            rot,
-            GEO_MESH,
-            wp.vec3(scale[0], scale[1], scale[2]),
-            mesh,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_sdf(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        sdf: SDF | None = None,
-        scale: Vec3 | tuple[float, float, float] = (1.0, 1.0, 1.0),
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds SDF collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            sdf: The sdf object
-            scale: Scale to use for the collider
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: If True, the SDF is solid, otherwise it is a hollow surface with the given wall thickness
-            thickness: Thickness to use for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the shape is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_SDF,
-            wp.vec3(scale[0], scale[1], scale[2]),
-            sdf,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def _shape_radius(self, type, scale, src):
-        """
-        Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
-        """
-        if type == GEO_SPHERE:
-            return scale[0]
-        elif type == GEO_BOX:
-            return np.linalg.norm(scale)
-        elif type == GEO_CAPSULE or type == GEO_CYLINDER or type == GEO_CONE:
-            return scale[0] + scale[1]
-        elif type == GEO_MESH:
-            vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-            return np.linalg.norm(vmax)
-        elif type == GEO_PLANE:
-            if scale[0] > 0.0 and scale[1] > 0.0:
-                # finite plane
-                return np.linalg.norm(scale)
-            else:
-                return 1.0e6
-        else:
-            return 10.0
-
-    def _add_shape(
-        self,
-        body,
-        pos,
-        rot,
-        type,
-        scale,
-        src=None,
-        density=None,
-        ke=None,
-        kd=None,
-        kf=None,
-        ka=None,
-        mu=None,
-        restitution=None,
-        thickness=None,
-        is_solid=True,
-        collision_group=-1,
-        collision_filter_parent=True,
-        has_ground_collision=True,
-        has_shape_collision=True,
-        is_visible: bool = True,
+        type: int,
+        xform: Transform | None = None,
+        cfg: ShapeCfg | None = None,
         key: str | None = None,
     ) -> int:
+        """Adds a shape to the model.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            type: The type of the shape (GEO_* constants)
+            xform: The transform of the shape relative to the body frame
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+        """
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        else:
+            cfg.assign_defaults(self.default_shape_cfg)
         self.shape_body.append(body)
         shape = self.shape_count
         if body in self.body_shapes:
@@ -2432,48 +1787,377 @@ class ModelBuilder:
             self.body_shapes[body].append(shape)
         else:
             self.body_shapes[body] = [shape]
-        ke = ke if ke is not None else self.default_shape_ke
-        kd = kd if kd is not None else self.default_shape_kd
-        kf = kf if kf is not None else self.default_shape_kf
-        ka = ka if ka is not None else self.default_shape_ka
-        mu = mu if mu is not None else self.default_shape_mu
-        restitution = restitution if restitution is not None else self.default_shape_restitution
-        thickness = thickness if thickness is not None else self.default_shape_thickness
-        density = density if density is not None else self.default_shape_density
-        shape_flags = int(SHAPE_FLAG_VISIBLE) if is_visible else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if has_shape_collision else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if has_ground_collision and body != -1 else 0
         self.shape_key.append(key or f"shape_{shape}")
-        self.shape_transform.append(wp.transform(pos, rot))
-        self.shape_flags.append(shape_flags)
+        self.shape_transform.append(xform)
+        self.shape_flags.append(cfg.flags)
         self.shape_geo_type.append(type)
-        self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
-        self.shape_geo_src.append(src)
-        self.shape_geo_thickness.append(thickness)
-        self.shape_geo_is_solid.append(is_solid)
-        self.shape_material_ke.append(ke)
-        self.shape_material_kd.append(kd)
-        self.shape_material_kf.append(kf)
-        self.shape_material_ka.append(ka)
-        self.shape_material_mu.append(mu)
-        self.shape_material_restitution.append(restitution)
-        self.shape_collision_group.append(collision_group)
-        if collision_group not in self.shape_collision_group_map:
-            self.shape_collision_group_map[collision_group] = []
-        self.last_collision_group = max(self.last_collision_group, collision_group)
-        self.shape_collision_group_map[collision_group].append(shape)
-        self.shape_collision_radius.append(self._shape_radius(type, scale, src))
-        if collision_filter_parent and body > -1 and body in self.joint_parents:
+        self.shape_geo_scale.append((cfg.scale[0], cfg.scale[1], cfg.scale[2]))
+        self.shape_geo_src.append(cfg.src)
+        self.shape_geo_thickness.append(cfg.thickness)
+        self.shape_geo_is_solid.append(cfg.is_solid)
+        self.shape_material_ke.append(cfg.ke)
+        self.shape_material_kd.append(cfg.kd)
+        self.shape_material_kf.append(cfg.kf)
+        self.shape_material_ka.append(cfg.ka)
+        self.shape_material_mu.append(cfg.mu)
+        self.shape_material_restitution.append(cfg.restitution)
+        self.shape_collision_group.append(cfg.collision_group)
+        if cfg.collision_group not in self.shape_collision_group_map:
+            self.shape_collision_group_map[cfg.collision_group] = []
+        self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
+        self.shape_collision_group_map[cfg.collision_group].append(shape)
+        self.shape_collision_radius.append(get_shape_radius(type, cfg.scale, cfg.src))
+        if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.add((parent_shape, shape))
 
-        if density > 0.0:
-            (m, c, I) = compute_shape_inertia(type, scale, src, density, is_solid, thickness)
-            com_body = wp.transform_point(wp.transform(pos, rot), c)
-            self._update_body_mass(body, m, I, com_body, rot)
+        if cfg.density > 0.0:
+            (m, c, I) = compute_shape_inertia(type, cfg.scale, cfg.src, cfg.density, cfg.is_solid, cfg.thickness)
+            com_body = wp.transform_point(xform, c)
+            self._update_body_mass(body, m, I, com_body, xform.q)
         return shape
+
+    def add_shape_plane(
+        self,
+        plane: Vec4 | None = (0.0, 1.0, 0.0, 0.0),
+        xform: Transform | None = None,
+        width: float = 10.0,
+        length: float = 10.0,
+        body: int = -1,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """
+        Adds a plane collision shape.
+        If pos and rot are defined, the plane is assumed to have its normal as (0, 1, 0).
+        Otherwise, the plane equation defined through the `plane` argument is used.
+
+        Args:
+            plane: The plane equation in form a*x + b*y + c*z + d = 0
+            xform: The transform of the shape relative to the body frame
+            width: The extent along x of the plane (infinite if 0)
+            length: The extent along z of the plane (infinite if 0)
+            body: The body index to attach the shape to (-1 by default to keep the plane static)
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+        if xform is None:
+            assert plane is not None, "Either xform or plane must be provided"
+            # compute position and rotation from plane equation
+            normal = np.array(plane[:3])
+            normal /= np.linalg.norm(normal)
+            pos = plane[3] * normal
+            if np.allclose(normal, (0.0, 1.0, 0.0)):
+                # no rotation necessary
+                rot = wp.quat_identity()
+            else:
+                c = np.cross(normal, (0.0, 1.0, 0.0))
+                angle = np.arcsin(np.linalg.norm(c))
+                axis = np.abs(c) / np.linalg.norm(c)
+                rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
+            xform = wp.transform(pos, rot)
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        else:
+            cfg.assign_defaults(self.default_shape_cfg)
+        cfg.scale = wp.vec3(width, length, 0.0)
+        cfg.density = 0.0
+        return self.add_shape(
+            body=body,
+            type=GEO_PLANE,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_sphere(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a sphere collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the sphere relative to the body frame
+            radius: The radius of the sphere
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        else:
+            cfg.assign_defaults(self.default_shape_cfg)
+        cfg.thickness += radius
+        cfg.scale = wp.vec3(radius, 0.0, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_PLANE,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_box(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        hx: float = 0.5,
+        hy: float = 0.5,
+        hz: float = 0.5,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a box collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the box relative to the body frame. The box is centered at its origin.
+            hx: The half-extent along the x-axis
+            hy: The half-extent along the y-axis
+            hz: The half-extent along the z-axis
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        cfg.scale = wp.vec3(hx, hy, hz)
+        return self.add_shape(
+            body=body,
+            type=GEO_BOX,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_capsule(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: int = 1,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a capsule collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the capsule relative to the body frame
+            radius: The radius of the capsule
+            half_height: The half length of the center cylinder along the up axis
+            up_axis: The axis along which the capsule is aligned (0=x, 1=y, 2=z)
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        sqh = math.sqrt(0.5)
+        if up_axis == 0:
+            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
+        elif up_axis == 2:
+            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        else:
+            cfg.assign_defaults(self.default_shape_cfg)
+        cfg.scale = wp.vec3(radius, half_height, 0.0)
+        cfg.thickness += radius
+        return self.add_shape(
+            body=body,
+            type=GEO_CAPSULE,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_cylinder(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: int = 1,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a cylinder collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the cylinder relative to the body frame
+            radius: The radius of the cylinder
+            half_height: The half length of the cylinder along the up axis
+            up_axis: The axis along which the cylinder is aligned (0=x, 1=y, 2=z)
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        sqh = math.sqrt(0.5)
+        if up_axis == 0:
+            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
+        elif up_axis == 2:
+            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        cfg.scale = wp.vec3(radius, half_height, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_CYLINDER,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_cone(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: int = 1,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a cone collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the cone relative to the body frame
+            radius: The radius of the cone
+            half_height: The half length of the cone along the up axis
+            up_axis: The axis along which the cone is aligned (0=x, 1=y, 2=z)
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        sqh = math.sqrt(0.5)
+        if up_axis == 0:
+            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
+        elif up_axis == 2:
+            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        cfg.scale = wp.vec3(radius, half_height, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_CONE,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_mesh(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        mesh: Mesh | None = None,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a triangle mesh collision shape to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the mesh relative to the body frame
+            mesh: The mesh object
+            xform: The transform of the mesh relative to the body frame
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        cfg.src = mesh
+        return self.add_shape(
+            body=body,
+            type=GEO_MESH,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    def add_shape_sdf(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        sdf: SDF | None = None,
+        cfg: ShapeCfg | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a signed distance field (SDF) collider to a body.
+
+        Args:
+            body: The index of the parent body this shape belongs to (use -1 for static shapes)
+            xform: The transform of the SDF relative to the body frame
+            sdf: The SDF object
+            cfg: The properties of the shape (:class:`ShapeCfg` object)
+            key: The key of the shape
+
+        Returns:
+            The index of the added shape
+
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg.copy()
+        cfg.src = sdf
+        return self.add_shape(
+            body=body,
+            type=GEO_SDF,
+            xform=xform,
+            cfg=cfg,
+            key=key,
+        )
+
+    # endregion
 
     # particles
     def add_particle(
@@ -3437,33 +3121,20 @@ class ModelBuilder:
         self,
         normal: Vec3 | None = None,
         offset: float = 0.0,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
+        cfg: ShapeCfg | None = None,
     ):
         """
         Creates a ground plane for the world. If the normal is not specified,
         the up_vector of the ModelBuilder is used.
         """
-        ke = ke if ke is not None else self.default_shape_ke
-        kd = kd if kd is not None else self.default_shape_kd
-        kf = kf if kf is not None else self.default_shape_kf
-        mu = mu if mu is not None else self.default_shape_mu
-        restitution = restitution if restitution is not None else self.default_shape_restitution
-
         if normal is None:
             normal = self.up_vector
         self._ground_params = {
             "plane": (*normal, offset),
             "width": 0.0,
             "length": 0.0,
-            "ke": ke,
-            "kd": kd,
-            "kf": kf,
-            "mu": mu,
-            "restitution": restitution,
+            "cfg": cfg,
+            "key": "ground_plane",
         }
 
     def _create_ground_plane(self):

@@ -49,6 +49,7 @@ from .types import (
     Mesh,
     ModelShapeGeometry,
     ModelShapeMaterials,
+    ShapeCfg,
 )
 
 __all__ = [

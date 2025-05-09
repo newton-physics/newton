@@ -17,9 +17,11 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -43,6 +45,30 @@ GEO_MESH = wp.constant(5)
 GEO_SDF = wp.constant(6)
 GEO_PLANE = wp.constant(7)
 GEO_NONE = wp.constant(8)
+
+
+def get_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
+    """
+    Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
+    """
+    if geo_type == GEO_SPHERE:
+        return scale[0]
+    elif geo_type == GEO_BOX:
+        return np.linalg.norm(scale)
+    elif geo_type == GEO_CAPSULE or geo_type == GEO_CYLINDER or geo_type == GEO_CONE:
+        return scale[0] + scale[1]
+    elif geo_type == GEO_MESH:
+        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
+        return np.linalg.norm(vmax)
+    elif geo_type == GEO_PLANE:
+        if scale[0] > 0.0 and scale[1] > 0.0:
+            # finite plane
+            return np.linalg.norm(scale)
+        else:
+            return 1.0e6
+    else:
+        return 10.0
+
 
 # Types of joints linking rigid bodies
 JOINT_PRISMATIC = wp.constant(0)
@@ -224,6 +250,73 @@ class JointAxis:
             self.target_ke = target_ke
             self.target_kd = target_kd
             self.mode = mode
+
+
+@dataclass
+class ShapeCfg:
+    """
+    Represents the properties of a collision shape used in simulation.
+    Values set to None will be replaced with default values from :attr:`ModelBuilder.default_shape_cfg`.
+
+        scale (Vec3): The scale of the shape in 3D space. Defaults to (1.0, 1.0, 1.0).
+        src (Mesh | SDF | Any | None): The source geometry of the shape. Can be a mesh, SDF, or other types. Defaults to None.
+        density (float): The density of the shape material.
+        ke (float): The contact elastic stiffness
+        kd (float): The contact damping stiffness
+        kf (float): The contact friction stiffness
+        ka (float): The contact adhesion distance
+        mu (float): The coefficient of friction
+        restitution (float): The coefficient of restitution
+        thickness (float): The thickness of the shape.
+        is_solid (bool): Indicates whether the shape is solid or hollow. Defaults to True.
+        collision_group (int): The collision group ID for the shape. Defaults to -1.
+        collision_filter_parent (bool): Whether to inherit collision filtering from the parent. Defaults to True.
+        has_ground_collision (bool): Whether the shape can collide with the ground. Defaults to True.
+        has_shape_collision (bool): Whether the shape can collide with other shapes. Defaults to True.
+        is_visible (bool): Indicates whether the shape is visible in the simulation. Defaults to True.
+    """
+
+    scale: Vec3 | None = None
+    src: Mesh | SDF | Any | None = None
+    density: float | None = None
+    ke: float | None = None
+    kd: float | None = None
+    kf: float | None = None
+    ka: float | None = None
+    mu: float | None = None
+    restitution: float | None = None
+    thickness: float | None = None
+    is_solid: bool | None = None
+    collision_group: int | None = None
+    collision_filter_parent: bool | None = None
+    has_ground_collision: bool | None = None
+    has_shape_collision: bool | None = None
+    is_visible: bool | None = None
+
+    def assign_defaults(self, defaults: ShapeCfg):
+        for key, value in self.__dict__.items():
+            if value is None:
+                self.__dict__[key] = defaults.__dict__[key]
+
+    @property
+    def flags(self) -> int:
+        """Returns the flags for the shape."""
+
+        shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+        return shape_flags
+
+    @flags.setter
+    def flags(self, value: int):
+        """Sets the flags for the shape."""
+
+        self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
+        self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
+        self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
+
+    def copy(self) -> ShapeCfg:
+        return copy.copy(self)
 
 
 @wp.struct
