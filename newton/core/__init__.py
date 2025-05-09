@@ -87,5 +87,6 @@ __all__ = [
     "ModelBuilder",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
+    "ShapeCfg",
     "State",
 ]

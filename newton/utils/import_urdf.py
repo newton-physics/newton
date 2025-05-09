@@ -20,7 +20,8 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import warp as wp
-from warp.sim.model import Mesh
+
+from newton.core import Mesh, ShapeCfg
 
 
 def parse_urdf(
@@ -115,6 +116,11 @@ def parse_urdf(
         return wp.transform(xyz, wp.quat_rpy(*rpy))
 
     def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
+        cfg = ShapeCfg(
+            is_visible=visible,
+            has_ground_collision=not just_visual,
+            has_shape_collision=not just_visual,
+        )
         shapes = []
         # add geometry
         for geom_group in geoms:
@@ -131,62 +137,42 @@ def parse_urdf(
                 size = [float(x) for x in size.split()]
                 s = builder.add_shape_box(
                     body=link,
-                    pos=wp.vec3(tf.p),
-                    rot=wp.quat(tf.q),
+                    xform=tf,
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
-                    density=density,
-                    is_visible=visible,
-                    has_ground_collision=not just_visual,
-                    has_shape_collision=not just_visual,
-                    **contact_vars,
+                    cfg=cfg,
                 )
                 shapes.append(s)
 
             for sphere in geo.findall("sphere"):
                 s = builder.add_shape_sphere(
                     body=link,
-                    pos=wp.vec3(tf.p),
-                    rot=wp.quat(tf.q),
+                    xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
-                    density=density,
-                    is_visible=visible,
-                    has_ground_collision=not just_visual,
-                    has_shape_collision=not just_visual,
-                    **contact_vars,
+                    cfg=cfg,
                 )
                 shapes.append(s)
 
             for cylinder in geo.findall("cylinder"):
                 s = builder.add_shape_capsule(
                     body=link,
-                    pos=wp.vec3(tf.p),
-                    rot=wp.quat(tf.q),
+                    xform=tf,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    density=density,
                     up_axis=2,  # cylinders in URDF are aligned with z-axis
-                    is_visible=visible,
-                    has_ground_collision=not just_visual,
-                    has_shape_collision=not just_visual,
-                    **contact_vars,
+                    cfg=cfg,
                 )
                 shapes.append(s)
 
             for capsule in geo.findall("capsule"):
                 s = builder.add_shape_capsule(
                     body=link,
-                    pos=wp.vec3(tf.p),
-                    rot=wp.quat(tf.q),
+                    xform=tf,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
-                    density=density,
                     up_axis=2,  # capsules in URDF are aligned with z-axis
-                    is_visible=visible,
-                    has_ground_collision=not just_visual,
-                    has_shape_collision=not just_visual,
-                    **contact_vars,
+                    cfg=cfg,
                 )
                 shapes.append(s)
 
@@ -242,8 +228,7 @@ def parse_urdf(
                         m_mesh = Mesh(m_vertices, m_faces)
                         s = builder.add_shape_mesh(
                             body=link,
-                            pos=wp.vec3(tf.p),
-                            rot=wp.quat(tf.q),
+                            xform=tf,
                             mesh=m_mesh,
                             density=density,
                             is_visible=visible,
@@ -259,8 +244,7 @@ def parse_urdf(
                     m_mesh = Mesh(m_vertices, m_faces)
                     s = builder.add_shape_mesh(
                         body=link,
-                        pos=wp.vec3(tf.p),
-                        rot=wp.quat(tf.q),
+                        xform=tf,
                         mesh=m_mesh,
                         density=density,
                         is_visible=visible,
@@ -282,9 +266,9 @@ def parse_urdf(
     start_shape_count = len(builder.shape_geo_type)
 
     # add links
-    for _i, urdf_link in enumerate(root.findall("link")):
+    for urdf_link in root.findall("link"):
         name = urdf_link.get("name")
-        link = builder.add_body(origin=wp.transform_identity(), armature=armature, key=name)
+        link = builder.add_body(armature=armature, key=name)
 
         # add ourselves to the index
         link_index[name] = link

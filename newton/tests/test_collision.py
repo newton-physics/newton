@@ -763,7 +763,7 @@ def test_mesh_ground_collision_index(test, device):
         has_shape_collision=False,
     )
     # add another mesh that is not in contact
-    b2 = builder.add_body(mass=1.0, origin=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
+    b2 = builder.add_body(mass=1.0, xform=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
     builder.add_shape_mesh(
         body=b2,
         mesh=mesh,

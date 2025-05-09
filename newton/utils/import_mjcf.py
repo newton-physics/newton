@@ -540,7 +540,7 @@ def parse_mjcf(
                     linear_axes.append(ax)
 
         link = builder.add_body(
-            origin=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
+            xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
             armature=joint_armature[0] if len(joint_armature) > 0 else armature,
             key=body_name,
         )

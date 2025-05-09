@@ -341,7 +341,7 @@ def parse_usd(
         body_armature = parse_float_with_fallback((prim, physics_scene_prim), "warp:armature", armature)
 
         b = builder.add_body(
-            origin=origin,
+            xform=origin,
             key=path,
             armature=body_armature,
         )
