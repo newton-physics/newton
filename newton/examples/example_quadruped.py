@@ -23,6 +23,7 @@
 ###########################################################################
 
 import math
+from typing import Dict, Callable
 
 import numpy as np
 import warp as wp
@@ -34,8 +35,38 @@ import newton.examples
 import newton.utils
 
 
+SolverFactory = Callable[[newton.Model], newton.solvers.SolverBase]
+SOLVER_MAP: Dict[str, SolverFactory] = {
+    "featherstone": newton.solvers.FeatherstoneSolver,
+    "mujoco": newton.solvers.MuJoCoSolver,
+    "mujoco-native": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=True),
+    "xpbd": newton.solvers.XPBDSolver,
+}
+
+
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
+    """Quadruped simulation helper that can be run interactively or head-less.
+
+    Parameters
+    ----------
+    stage_path : str | None, optional
+        USD stage path to write frames to. If ``None`` no renderer is created.
+    num_envs : int, optional
+        Number of environment copies to simulate in parallel.
+    solver_cls : SolverFactory, optional
+        Factory that returns an initialized solver. Defaults to
+        :class:`XPBDSolver`.
+    enable_timers : bool, optional
+        Whether to enable per-step timing prints.
+    """
+
+    def __init__(
+        self,
+        stage_path: str | None = "example_quadruped.usd",
+        num_envs: int = 8,
+        solver_cls: SolverFactory = newton.solvers.FeatherstoneSolver,
+        enable_timers: bool = True,
+    ):
         articulation_builder = newton.ModelBuilder()
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
@@ -79,8 +110,10 @@ class Example:
         self.model = builder.finalize()
         self.model.ground = True
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
-        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        self.enable_timers = enable_timers
+
+        # create solver from provided class
+        self.solver = solver_cls(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
@@ -110,7 +143,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
+        with wp.ScopedTimer("step", active=self.enable_timers):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
@@ -118,13 +151,91 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        """Render the current frame if a renderer is attached."""
         if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", active=self.enable_timers):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
+
+    # ---------------------------------------------------------------------
+    # Convenience helpers
+    # ---------------------------------------------------------------------
+
+    def get_state(self) -> dict:
+        """Return key tensors as NumPy arrays for regression testing."""
+
+        def _to_numpy(arr):
+            return None if arr is None else arr.numpy()
+
+        return {
+            "joint_q": _to_numpy(self.state_0.joint_q),
+            "joint_qd": _to_numpy(self.state_0.joint_qd),
+            "body_q": _to_numpy(self.state_0.body_q),
+            "body_qd": _to_numpy(self.state_0.body_qd),
+        }
+
+
+# -------------------------------------------------------------------------
+# Public helper function for tests & scripts
+# -------------------------------------------------------------------------
+
+def run_quadruped(
+    solver_name: str = "featherstone",
+    num_frames: int = 300,
+    num_envs: int = 8,
+    device: str | wp.context.Device | None = None,
+    render: bool = False,
+    stage_path: str | None = None,
+    enable_timers: bool = True,
+) -> dict:
+    """Run the quadruped example head-less or with rendering and return final state.
+
+    Parameters
+    ----------
+    solver_name : str, optional
+        Key identifying which solver to use (see ``SOLVER_MAP``).
+    num_frames : int, optional
+        Number of simulation frames to advance.
+    num_envs : int, optional
+        Number of parallel environments.
+    device : str | wp.context.Device | None, optional
+        Warp device to run the simulation on.
+    render : bool, optional
+        Whether to render the simulation to a USD stage.
+    stage_path : str | None, optional
+        Path to the output USD stage when ``render=True``.
+    enable_timers : bool, optional
+        If ``False`` disables per-step timing prints (``wp.ScopedTimer``).
+    """
+
+    # Determine solver factory from map
+    solver_factory = SOLVER_MAP.get(solver_name.lower())
+    if solver_factory is None:
+        raise ValueError(f"Unknown solver '{solver_name}'. Valid keys: {list(SOLVER_MAP)}")
+
+    if render and stage_path is None:
+        stage_path = "example_quadruped.usd"
+
+    # Skip rendering entirely when not requested.
+    if not render:
+        stage_path = None
+
+    with wp.ScopedDevice(device):
+        example = Example(stage_path=stage_path, num_envs=num_envs, solver_cls=solver_factory, enable_timers=enable_timers)
+
+        for _ in range(num_frames):
+            example.step()
+            if render:
+                example.render()
+
+        # Save USD if we rendered frames.
+        if render and example.renderer:
+            example.renderer.save()
+
+        return example.get_state()
 
 
 if __name__ == "__main__":
@@ -140,15 +251,22 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument(
+        "--solver",
+        type=str,
+        default="xpbd",
+        choices=list(SOLVER_MAP.keys()),
+        help="Which integrator to use for the simulation.",
+    )
 
     args = parser.parse_known_args()[0]
 
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
-
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
-        if example.renderer:
-            example.renderer.save()
+    run_quadruped(
+        solver_name=args.solver,
+        num_frames=args.num_frames,
+        num_envs=args.num_envs,
+        device=args.device,
+        render=True,
+        stage_path=args.stage_path,
+        enable_timers=True,
+    )
