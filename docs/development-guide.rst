@@ -151,7 +151,7 @@ Using uv
 .. code-block:: console
 
     rm -rf docs/_build
-    uv run --extra docs sphinx-build -b html docs docs/_build/html
+    uv run --extra docs sphinx-build -W -b html docs docs/_build/html
 
     # Alternatively using the Makefile
     uv sync --extra docs
@@ -166,12 +166,30 @@ Using venv
 .. code-block:: console
 
     python -m pip install -e .[docs]
-    python -m sphinx -b html docs docs/_build/html
+    python -m sphinx -W -b html docs docs/_build/html
 
     # Alternatively using the Makefile
     cd docs
     make clean
     make html
+
+Testing documentation code snippets
+-----------------------------------
+
+The ``doctest`` Sphinx builder is used to ensure that code snippets in the documentation remains up-to-date.
+
+The doctests can be run with:
+
+.. code-block:: console
+
+    # With uv installed
+    uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+
+    # With venv
+    python -m sphinx -W -b doctest docs docs/_build/doctest
+
+For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
+documentation.
 
 Packaging
 ---------

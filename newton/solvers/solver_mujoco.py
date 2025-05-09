@@ -878,7 +878,7 @@ class MuJoCoSolver(SolverBase):
         INT32_MAX = np.iinfo(np.int32).max
         if collision_mask_everything > INT32_MAX:
             print(
-                f"Warning: collision mask {collision_mask_everything} exceeds INT32_MAX, some collision groups will be ignored."
+                "Warning: collision mask exceeds INT32_MAX, some collision groups will be ignored when using MuJoCo C."
             )
             collision_mask_everything = INT32_MAX
 
@@ -944,13 +944,14 @@ class MuJoCoSolver(SolverBase):
         def add_geoms(warp_body_id: int, perm_position=False, incoming_xform=None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
+            shape_flags = model.shape_flags.numpy()
             if not shapes:
                 return
             for shape in shapes:
                 if shape == model.shape_count - 1 and not model.ground:
                     # skip ground plane
                     continue
-                elif skip_visual_only_geoms and not model.shape_shape_collision[shape]:
+                elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
                     # this is a shape in a different environment, skip it

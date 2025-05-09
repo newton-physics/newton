@@ -33,14 +33,13 @@ import unittest
 
 import warp as wp
 
-import newton.core
 import newton.examples
 import newton.utils
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
 def test_fk_ik(test, device):
-    builder = newton.core.model.ModelBuilder()
+    builder = newton.ModelBuilder()
 
     num_envs = 1
 

@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core.model import ModelBuilder
+from newton import ModelBuilder
 from newton.tests.unittest_utils import assert_np_equal
 
 

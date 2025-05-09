@@ -28,7 +28,7 @@ from newton.collision.collide import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton.core.model import Mesh
+from newton.core import Mesh
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
 

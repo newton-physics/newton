@@ -30,8 +30,7 @@
 
 import warp as wp
 
-from newton.core import Contact, Control, Model, State
-from newton.core.model import PARTICLE_FLAG_ACTIVE
+from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 
 
 @wp.kernel

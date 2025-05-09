@@ -139,7 +139,7 @@ def CreateSimRenderer(renderer):
                 shape_geo_thickness = model.shape_geo.thickness.numpy()
                 shape_geo_is_solid = model.shape_geo.is_solid.numpy()
                 shape_transform = model.shape_transform.numpy()
-                shape_visible = model.shape_visible.numpy()
+                shape_flags = model.shape_flags.numpy()
 
                 p = np.zeros(3, dtype=np.float32)
                 q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
@@ -231,11 +231,9 @@ def CreateSimRenderer(renderer):
 
                         self.geo_shape[geo_hash] = shape
 
-                    if shape_visible[s]:
+                    if shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
-                        self.add_shape_instance(
-                            name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=shape_visible[s]
-                        )
+                        self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
 
                 if self.show_joints and model.joint_count:
