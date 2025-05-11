@@ -403,10 +403,10 @@ def parse_usd(
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
                     joint_params["target"] = joint_desc.drive.targetVelocity
-                    joint_params["mode"] = wp.sim.JOINT_MODE_TARGET_VELOCITY
+                    joint_params["mode"] = newton.JOINT_MODE_TARGET_VELOCITY
                 else:
                     joint_params["target"] = joint_desc.drive.targetPosition
-                    joint_params["mode"] = wp.sim.JOINT_MODE_TARGET_POSITION
+                    joint_params["mode"] = newton.JOINT_MODE_TARGET_POSITION
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
                 joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
@@ -462,7 +462,7 @@ def parse_usd(
 
                 def define_joint_mode(dof, joint_desc):
                     action = 0.0  # TODO: parse action from state:*:physics:appliedForce usd attribute when no drive is present
-                    mode = wp.sim.JOINT_MODE_FORCE
+                    mode = newton.JOINT_MODE_FORCE
                     target_ke = 0.0
                     target_kd = 0.0
                     for drive in joint_desc.jointDrives:
@@ -471,10 +471,10 @@ def parse_usd(
                         if drive.second.enabled:
                             if drive.second.targetVelocity != 0.0:
                                 action = drive.second.targetVelocity
-                                mode = wp.sim.JOINT_MODE_VELOCITY
+                                mode = newton.JOINT_MODE_TARGET_VELOCITY
                             else:
                                 action = drive.second.targetPosition
-                                mode = wp.sim.JOINT_MODE_TARGET_POSITION
+                                mode = newton.JOINT_MODE_TARGET_POSITION
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                     return action, mode, target_ke, target_kd
@@ -498,7 +498,7 @@ def parse_usd(
                 }
                 if free_axis and dof in _trans_axes:
                     linear_axes.append(
-                        wp.sim.JointAxis(
+                        newton.JointAxis(
                             axis=_trans_axes[dof],
                             limit_lower=limit_lower,
                             limit_upper=limit_upper,
@@ -512,7 +512,7 @@ def parse_usd(
                     )
                 elif free_axis and dof in _rot_axes:
                     angular_axes.append(
-                        wp.sim.JointAxis(
+                        newton.JointAxis(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
@@ -856,7 +856,7 @@ def parse_usd(
                             )
                             continue
                         face_id += count
-                    m = wp.sim.Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                    m = newton.Mesh(points, np.array(faces, dtype=np.int32).flatten())
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,

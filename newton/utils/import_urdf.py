@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import warp as wp
 
+import newton
 from newton.core import Mesh, ShapeCfg
 
 
@@ -416,8 +417,8 @@ def parse_urdf(
                 "z": [0.0, 0.0, 1.0],
             }
             builder.add_joint_d6(
-                linear_axes=[wp.sim.JointAxis(axes[a]) for a in linear_axes],
-                angular_axes=[wp.sim.JointAxis(axes[a]) for a in angular_axes],
+                linear_axes=[newton.JointAxis(axes[a]) for a in linear_axes],
+                angular_axes=[newton.JointAxis(axes[a]) for a in angular_axes],
                 parent_xform=base_parent_xform,
                 child_xform=base_child_xform,
                 parent=-1,
@@ -467,9 +468,9 @@ def parse_urdf(
         parent_xform = joint["origin"]
         child_xform = wp.transform_identity()
 
-        joint_mode = wp.sim.JOINT_MODE_FORCE
+        joint_mode = newton.JOINT_MODE_FORCE
         if stiffness > 0.0:
-            joint_mode = wp.sim.JOINT_MODE_TARGET_POSITION
+            joint_mode = newton.JOINT_MODE_TARGET_POSITION
 
         joint_params = {
             "parent": parent,
@@ -524,7 +525,7 @@ def parse_urdf(
 
             builder.add_joint_d6(
                 linear_axes=[
-                    wp.sim.JointAxis(
+                    newton.JointAxis(
                         u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
@@ -534,7 +535,7 @@ def parse_urdf(
                         target_kd=joint_damping,
                         mode=joint_mode,
                     ),
-                    wp.sim.JointAxis(
+                    newton.JointAxis(
                         v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,

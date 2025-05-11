@@ -130,15 +130,26 @@ class Axis(IntEnum):
     Y = 1
     Z = 2
 
-    def __init__(self, value: AxisType):
+    @classmethod
+    def from_string(cls, axis_str: str) -> "Axis":
+        axis_str = axis_str.lower()
+        if axis_str == "x":
+            return cls.X
+        elif axis_str == "y":
+            return cls.Y
+        elif axis_str == "z":
+            return cls.Z
+        raise ValueError(f"Invalid axis string: {axis_str}")
+
+    @classmethod
+    def from_any(cls, value: AxisType) -> "Axis":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls.from_string(value)
         if isinstance(value, int):
-            self._value_ = value
-        elif isinstance(value, str):
-            self._value_ = Axis.from_string(value).value
-        elif isinstance(value, Axis):
-            self._value_ = value.value
-        else:
-            raise TypeError(f"Invalid type for Axis: {type(value)}")
+            return cls(value)
+        raise TypeError(f"Cannot convert {type(value)} to Axis")
 
     def __str__(self):
         return self.name.capitalize()
@@ -190,7 +201,9 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
         return Axis.from_string(axis).to_vec3()
     elif isinstance(axis, int):
         return Axis(axis).to_vec3()
-    elif isinstance(axis, (list, tuple, np.ndarray, wp.vec3)):
+    elif isinstance(axis, (list, tuple, np.ndarray)):
+        return wp.vec3(*axis)
+    elif wp.types.type_is_vector(type(axis)):
         return wp.vec3(*axis)
     else:
         raise TypeError(f"Invalid type for axis: {type(axis)}")

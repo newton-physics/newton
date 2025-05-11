@@ -13,10 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .contact import Contact
 from .control import Control
 from .model import Model
+from .spatial import (
+    quat_decompose,
+    quat_from_euler,
+    quat_to_euler,
+    quat_to_rpy,
+    quat_twist,
+    quat_twist_angle,
+    transform_twist,
+    transform_wrench,
+    velocity_at_point,
+)
 from .state import State
 from .types import (
     GEO_BOX,
@@ -89,4 +101,15 @@ __all__ = [
     "ModelShapeMaterials",
     "ShapeCfg",
     "State",
+    "eval_fk",
+    "eval_ik",
+    "quat_decompose",
+    "quat_from_euler",
+    "quat_to_euler",
+    "quat_to_rpy",
+    "quat_twist",
+    "quat_twist_angle",
+    "transform_twist",
+    "transform_wrench",
+    "velocity_at_point",
 ]

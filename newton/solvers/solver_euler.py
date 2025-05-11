@@ -20,6 +20,7 @@ models + state forward in time.
 
 import warp as wp
 
+import newton
 from newton.collision.collide import triangle_closest_point_barycentric
 from newton.core import (
     PARTICLE_FLAG_ACTIVE,
@@ -29,9 +30,10 @@ from newton.core import (
     ModelShapeGeometry,
     ModelShapeMaterials,
     State,
+    quat_decompose,
+    quat_twist,
 )
 from newton.core.particles import eval_particle_forces
-from newton.utils import quat_decompose, quat_twist
 
 from .solver import SolverBase
 
@@ -1009,23 +1011,23 @@ def eval_joint_force(
     damping_f = 0.0
     target_f = 0.0
 
-    if mode == wp.sim.JOINT_MODE_FORCE:
+    if mode == newton.JOINT_MODE_FORCE:
         target_f = act
-    elif mode == wp.sim.JOINT_MODE_TARGET_POSITION:
+    elif mode == newton.JOINT_MODE_TARGET_POSITION:
         target_f = target_ke * (act - q) - target_kd * qd
-    elif mode == wp.sim.JOINT_MODE_TARGET_VELOCITY:
+    elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
         target_f = target_ke * (act - qd)
 
     # compute limit forces, damping only active when limit is violated
     if q < limit_lower:
         limit_f = limit_ke * (limit_lower - q)
         damping_f = -limit_kd * qd
-        if mode == wp.sim.JOINT_MODE_TARGET_VELOCITY:
+        if mode == newton.JOINT_MODE_TARGET_VELOCITY:
             target_f = 0.0  # override target force when limit is violated
     elif q > limit_upper:
         limit_f = limit_ke * (limit_upper - q)
         damping_f = -limit_kd * qd
-        if mode == wp.sim.JOINT_MODE_TARGET_VELOCITY:
+        if mode == newton.JOINT_MODE_TARGET_VELOCITY:
             target_f = 0.0  # override target force when limit is violated
 
     return limit_f + damping_f + target_f
@@ -1062,7 +1064,7 @@ def eval_body_joints(
     type = joint_type[tid]
 
     # early out for free joints
-    if joint_enabled[tid] == 0 or type == wp.sim.JOINT_FREE:
+    if joint_enabled[tid] == 0 or type == newton.JOINT_FREE:
         return
 
     c_child = joint_child[tid]
@@ -1122,7 +1124,7 @@ def eval_body_joints(
     # reduce angular damping stiffness for stability
     angular_damping_scale = 0.01
 
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         ang_err = wp.normalize(wp.vec3(r_err[0], r_err[1], r_err[2])) * wp.acos(r_err[3]) * 2.0
 
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
@@ -1130,7 +1132,7 @@ def eval_body_joints(
             wp.transform_vector(X_wp, ang_err) * joint_attach_ke + w_err * joint_attach_kd * angular_damping_scale
         )
 
-    if type == wp.sim.JOINT_PRISMATIC:
+    if type == newton.JOINT_PRISMATIC:
         axis = joint_axis[axis_start]
 
         # world space joint axis
@@ -1163,7 +1165,7 @@ def eval_body_joints(
             wp.transform_vector(X_wp, ang_err) * joint_attach_ke + w_err * joint_attach_kd * angular_damping_scale
         )
 
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_REVOLUTE:
         axis = joint_axis[axis_start]
 
         axis_p = wp.transform_vector(X_wp, axis)
@@ -1195,7 +1197,7 @@ def eval_body_joints(
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
         t_total += swing_err * joint_attach_ke + (w_err - qd * axis_p) * joint_attach_kd * angular_damping_scale
 
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         ang_err = wp.normalize(wp.vec3(r_err[0], r_err[1], r_err[2])) * wp.acos(r_err[3]) * 2.0
 
         # TODO joint limits
@@ -1203,7 +1205,7 @@ def eval_body_joints(
         # t_total += target_kd * w_err + target_ke * wp.transform_vector(X_wp, ang_err)
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
 
-    if type == wp.sim.JOINT_COMPOUND:
+    if type == newton.JOINT_COMPOUND:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         # decompose to a compound rotation each axis
@@ -1270,7 +1272,7 @@ def eval_body_joints(
 
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
 
-    if type == wp.sim.JOINT_UNIVERSAL:
+    if type == newton.JOINT_UNIVERSAL:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         # decompose to a compound rotation each axis
@@ -1327,12 +1329,12 @@ def eval_body_joints(
             0.0,
             0.0,
             0.0,
-            wp.sim.JOINT_MODE_FORCE,
+            newton.JOINT_MODE_FORCE,
         )
 
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
 
-    if type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_D6:
         pos = wp.vec3(0.0)
         vel = wp.vec3(0.0)
         if lin_axis_count >= 1:
@@ -1501,7 +1503,7 @@ def eval_body_joints(
                 0.0,
                 0.0,
                 0.0,
-                wp.sim.JOINT_MODE_FORCE,
+                newton.JOINT_MODE_FORCE,
             )
 
         if ang_axis_count == 3:

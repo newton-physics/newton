@@ -146,7 +146,7 @@ class TestInertia(unittest.TestCase):
             b,
             pos=tf.p,
             rot=tf.q,
-            mesh=wp.sim.Mesh(vertices=vertices, indices=indices),
+            mesh=newton.Mesh(vertices=vertices, indices=indices),
             density=1000.0,
         )
         transformed_com = wp.transform_point(tf, wp.vec3(*offset))

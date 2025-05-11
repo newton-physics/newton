@@ -2374,7 +2374,7 @@ class VBDSolver(SolverBase):
         quality. In these cases, rebuilding the entire tree is necessary to achieve better querying efficiency.
 
         Args:
-            state (wp.sim.State):  The state whose particle positions (:attr:`State.particle_q`) will be used for rebuilding the BVHs.
+            state (newton.State):  The state whose particle positions (:attr:`State.particle_q`) will be used for rebuilding the BVHs.
         """
         self.trimesh_collision_detector.rebuild(state.particle_q)
 

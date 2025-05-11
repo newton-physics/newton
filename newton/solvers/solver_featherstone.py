@@ -15,6 +15,7 @@
 
 import warp as wp
 
+import newton
 from newton.core import Contact, Control, Model, State
 from newton.core.articulation import (
     compute_2d_rotational_dofs,
@@ -148,19 +149,19 @@ def jcalc_transform(
     joint_q: wp.array(dtype=float),
     start: int,
 ):
-    if type == wp.sim.JOINT_PRISMATIC:
+    if type == newton.JOINT_PRISMATIC:
         q = joint_q[start]
         axis = joint_axis[axis_start]
         X_jc = wp.transform(axis * q, wp.quat_identity())
         return X_jc
 
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_REVOLUTE:
         q = joint_q[start]
         axis = joint_axis[axis_start]
         X_jc = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
         return X_jc
 
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         qx = joint_q[start + 0]
         qy = joint_q[start + 1]
         qz = joint_q[start + 2]
@@ -169,11 +170,11 @@ def jcalc_transform(
         X_jc = wp.transform(wp.vec3(), wp.quat(qx, qy, qz, qw))
         return X_jc
 
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         X_jc = wp.transform_identity()
         return X_jc
 
-    if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
         px = joint_q[start + 0]
         py = joint_q[start + 1]
         pz = joint_q[start + 2]
@@ -186,7 +187,7 @@ def jcalc_transform(
         X_jc = wp.transform(wp.vec3(px, py, pz), wp.quat(qx, qy, qz, qw))
         return X_jc
 
-    if type == wp.sim.JOINT_COMPOUND:
+    if type == newton.JOINT_COMPOUND:
         rot, _ = compute_3d_rotational_dofs(
             joint_axis[axis_start],
             joint_axis[axis_start + 1],
@@ -202,7 +203,7 @@ def jcalc_transform(
         X_jc = wp.transform(wp.vec3(), rot)
         return X_jc
 
-    if type == wp.sim.JOINT_UNIVERSAL:
+    if type == newton.JOINT_UNIVERSAL:
         rot, _ = compute_2d_rotational_dofs(
             joint_axis[axis_start],
             joint_axis[axis_start + 1],
@@ -215,7 +216,7 @@ def jcalc_transform(
         X_jc = wp.transform(wp.vec3(), rot)
         return X_jc
 
-    if type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_D6:
         pos = wp.vec3(0.0)
         rot = wp.quat_identity()
 
@@ -282,21 +283,21 @@ def jcalc_motion(
     # outputs
     joint_S_s: wp.array(dtype=wp.spatial_vector),
 ):
-    if type == wp.sim.JOINT_PRISMATIC:
+    if type == newton.JOINT_PRISMATIC:
         axis = joint_axis[axis_start]
         S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
 
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_REVOLUTE:
         axis = joint_axis[axis_start]
         S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
 
-    if type == wp.sim.JOINT_UNIVERSAL:
+    if type == newton.JOINT_UNIVERSAL:
         axis_0 = joint_axis[axis_start + 0]
         axis_1 = joint_axis[axis_start + 1]
         q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, wp.cross(axis_0, axis_1)))
@@ -316,7 +317,7 @@ def jcalc_motion(
 
         return S_0 * joint_qd[qd_start + 0] + S_1 * joint_qd[qd_start + 1]
 
-    if type == wp.sim.JOINT_COMPOUND:
+    if type == newton.JOINT_COMPOUND:
         axis_0 = joint_axis[axis_start + 0]
         axis_1 = joint_axis[axis_start + 1]
         axis_2 = joint_axis[axis_start + 2]
@@ -343,7 +344,7 @@ def jcalc_motion(
 
         return S_0 * joint_qd[qd_start + 0] + S_1 * joint_qd[qd_start + 1] + S_2 * joint_qd[qd_start + 2]
 
-    if type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_D6:
         v_j_s = wp.spatial_vector()
         if lin_axis_count > 0:
             axis = joint_axis[axis_start + 0]
@@ -378,7 +379,7 @@ def jcalc_motion(
 
         return v_j_s
 
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         S_0 = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
         S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
@@ -389,10 +390,10 @@ def jcalc_motion(
 
         return S_0 * joint_qd[qd_start + 0] + S_1 * joint_qd[qd_start + 1] + S_2 * joint_qd[qd_start + 2]
 
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         return wp.spatial_vector()
 
-    if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
         v_j_s = transform_twist(
             X_sc,
             wp.spatial_vector(
@@ -444,7 +445,7 @@ def jcalc_tau(
     # outputs
     tau: wp.array(dtype=float),
 ):
-    if type == wp.sim.JOINT_PRISMATIC or type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_PRISMATIC or type == newton.JOINT_REVOLUTE:
         S_s = joint_S_s[dof_start]
 
         q = joint_q[coord_start]
@@ -469,7 +470,7 @@ def jcalc_tau(
 
         return
 
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         # target_ke = joint_target_ke[axis_start]
         # target_kd = joint_target_kd[axis_start]
 
@@ -483,14 +484,14 @@ def jcalc_tau(
 
         return
 
-    if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
         for i in range(6):
             S_s = joint_S_s[dof_start + i]
             tau[dof_start + i] = -wp.dot(S_s, body_f_s)
 
         return
 
-    if type == wp.sim.JOINT_COMPOUND or type == wp.sim.JOINT_UNIVERSAL or type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_COMPOUND or type == newton.JOINT_UNIVERSAL or type == newton.JOINT_D6:
         axis_count = lin_axis_count + ang_axis_count
 
         for i in range(axis_count):
@@ -533,11 +534,11 @@ def jcalc_integrate(
     joint_q_new: wp.array(dtype=float),
     joint_qd_new: wp.array(dtype=float),
 ):
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         return
 
     # prismatic / revolute
-    if type == wp.sim.JOINT_PRISMATIC or type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_PRISMATIC or type == newton.JOINT_REVOLUTE:
         qdd = joint_qdd[dof_start]
         qd = joint_qd[dof_start]
         q = joint_q[coord_start]
@@ -551,7 +552,7 @@ def jcalc_integrate(
         return
 
     # ball
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         m_j = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
         w_j = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
 
@@ -581,7 +582,7 @@ def jcalc_integrate(
         return
 
     # free joint
-    if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
         # dofs: qd = (omega_x, omega_y, omega_z, vel_x, vel_y, vel_z)
         # coords: q = (trans_x, trans_y, trans_z, quat_x, quat_y, quat_z, quat_w)
 
@@ -636,7 +637,7 @@ def jcalc_integrate(
         return
 
     # other joint types (compound, universal, D6)
-    if type == wp.sim.JOINT_COMPOUND or type == wp.sim.JOINT_UNIVERSAL or type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_COMPOUND or type == newton.JOINT_UNIVERSAL or type == newton.JOINT_D6:
         axis_count = lin_axis_count + ang_axis_count
 
         for i in range(axis_count):

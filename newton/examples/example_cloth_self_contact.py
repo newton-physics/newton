@@ -226,7 +226,7 @@ class Example:
         )
 
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=1)
+            self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=1)
         else:
             self.renderer = None
         self.cuda_graph = None

@@ -15,7 +15,18 @@
 
 import warp as wp
 
-from newton.utils import quat_decompose, quat_twist
+from .spatial import quat_decompose, quat_twist
+from .types import (
+    JOINT_BALL,
+    JOINT_COMPOUND,
+    JOINT_D6,
+    JOINT_DISTANCE,
+    JOINT_FIXED,
+    JOINT_FREE,
+    JOINT_PRISMATIC,
+    JOINT_REVOLUTE,
+    JOINT_UNIVERSAL,
+)
 
 
 @wp.func
@@ -226,7 +237,7 @@ def eval_single_articulation_fk(
         X_j = wp.transform_identity()
         v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
 
-        if type == wp.sim.JOINT_PRISMATIC:
+        if type == JOINT_PRISMATIC:
             axis = joint_axis[axis_start]
 
             q = joint_q[q_start]
@@ -235,7 +246,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(axis * q, wp.quat_identity())
             v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
-        if type == wp.sim.JOINT_REVOLUTE:
+        if type == JOINT_REVOLUTE:
             axis = joint_axis[axis_start]
 
             q = joint_q[q_start]
@@ -244,7 +255,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
             v_j = wp.spatial_vector(axis * qd, wp.vec3())
 
-        if type == wp.sim.JOINT_BALL:
+        if type == JOINT_BALL:
             r = wp.quat(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3])
 
             w = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
@@ -252,7 +263,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(w, wp.vec3())
 
-        if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+        if type == JOINT_FREE or type == JOINT_DISTANCE:
             t = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
@@ -266,7 +277,7 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == wp.sim.JOINT_COMPOUND:
+        if type == JOINT_COMPOUND:
             rot, vel_w = compute_3d_rotational_dofs(
                 joint_axis[axis_start],
                 joint_axis[axis_start + 1],
@@ -285,7 +296,7 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == wp.sim.JOINT_UNIVERSAL:
+        if type == JOINT_UNIVERSAL:
             rot, vel_w = compute_2d_rotational_dofs(
                 joint_axis[axis_start],
                 joint_axis[axis_start + 1],
@@ -301,7 +312,7 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == wp.sim.JOINT_D6:
+        if type == JOINT_D6:
             pos = wp.vec3(0.0)
             rot = wp.quat_identity()
             vel_v = wp.vec3(0.0)
@@ -615,7 +626,7 @@ def eval_articulation_ik(
     lin_axis_count = joint_axis_dim[tid, 0]
     ang_axis_count = joint_axis_dim[tid, 1]
 
-    if type == wp.sim.JOINT_PRISMATIC:
+    if type == JOINT_PRISMATIC:
         axis = joint_axis[axis_start]
 
         # world space joint axis
@@ -630,7 +641,7 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == JOINT_REVOLUTE:
         axis = joint_axis[axis_start]
         q_pc = wp.quat_inverse(q_p) * q_c
 
@@ -641,7 +652,7 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_BALL:
+    if type == JOINT_BALL:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         joint_q[q_start + 0] = q_pc[0]
@@ -656,10 +667,10 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_FIXED:
+    if type == JOINT_FIXED:
         return
 
-    if type == wp.sim.JOINT_FREE or type == wp.sim.JOINT_DISTANCE:
+    if type == JOINT_FREE or type == JOINT_DISTANCE:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -685,7 +696,7 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_COMPOUND:
+    if type == JOINT_COMPOUND:
         axis_0 = joint_axis[axis_start + 0]
         axis_1 = joint_axis[axis_start + 1]
         axis_2 = joint_axis[axis_start + 2]
@@ -699,7 +710,7 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_UNIVERSAL:
+    if type == JOINT_UNIVERSAL:
         axis_0 = joint_axis[axis_start + 0]
         axis_1 = joint_axis[axis_start + 1]
         qs2, qds2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, w_err)
@@ -710,7 +721,7 @@ def eval_articulation_ik(
 
         return
 
-    if type == wp.sim.JOINT_D6:
+    if type == JOINT_D6:
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
         v_err_c = wp.quat_rotate_inv(q_p, v_err)
         if lin_axis_count > 0:
