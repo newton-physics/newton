@@ -359,7 +359,7 @@ class Model:
         self.ground_plane = None
         self.up_vector = np.array((0.0, 1.0, 0.0))
         self.up_axis = 1
-        self.gravity = np.array((0.0, -9.80665, 0.0))
+        self.gravity = np.array((0.0, -9.81, 0.0))
 
         self.particle_count = 0
         self.body_count = 0
