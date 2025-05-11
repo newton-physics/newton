@@ -153,6 +153,8 @@ class ModelBuilder:
     # Default joint settings
     default_joint_limit_ke = 100.0
     default_joint_limit_kd = 1.0
+    default_joint_limit_lower = -1e6
+    default_joint_limit_upper = 1e6
 
     def __init__(self, up_vector: Vec3 = (0.0, 1.0, 0.0), gravity: float = -9.81):
         self.num_envs = 0
@@ -1906,7 +1908,7 @@ class ModelBuilder:
         cfg.scale = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_PLANE,
+            type=GEO_SPHERE,
             xform=xform,
             cfg=cfg,
             key=key,
