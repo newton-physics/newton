@@ -47,8 +47,6 @@ class Example:
         newton.utils.parse_mjcf(
             mjcf_filename,
             articulation_builder,
-            stiffness=0.0,
-            damping=0.0,
             collapse_fixed_joints=True,
             ignore_names=["floor", "ground"],
             up_axis="Y",
