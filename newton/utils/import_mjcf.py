@@ -461,8 +461,12 @@ def parse_mjcf(
 
                 joint_name.append(joint_attrib.get("name") or f"{body_name}_joint_{i}")
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
-                joint_range = parse_vec(joint_attrib, "range", (builder.default_joint_limit_lower, builder.default_joint_limit_upper))
-                joint_armature.append(parse_float(joint_attrib, "armature", builder.default_joint_armature) * armature_scale)
+                joint_range = parse_vec(
+                    joint_attrib, "range", (builder.default_joint_limit_lower, builder.default_joint_limit_upper)
+                )
+                joint_armature.append(
+                    parse_float(joint_attrib, "armature", builder.default_joint_armature) * armature_scale
+                )
 
                 if joint_type_str == "free":
                     joint_type = newton.JOINT_FREE
@@ -646,7 +650,13 @@ def parse_mjcf(
             colliders = visuals
         else:
             s = parse_shapes(
-                defaults, body_name, link, visuals, density=0.0, just_visual=True, visible=not hide_visuals
+                defaults,
+                body_name,
+                link,
+                geoms=visuals,
+                density=0.0,
+                just_visual=True,
+                visible=not hide_visuals,
             )
             visual_shapes.extend(s)
 
@@ -657,7 +667,14 @@ def parse_mjcf(
             # we need to show the collision shapes since there are no visual shapes
             show_colliders = True
 
-        parse_shapes(defaults, body_name, link, colliders, None, visible=show_colliders)
+        parse_shapes(
+            defaults,
+            body_name,
+            link,
+            geoms=colliders,
+            density=None,
+            visible=show_colliders,
+        )
 
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
@@ -746,7 +763,14 @@ def parse_mjcf(
     # -----------------
     # add static geoms
 
-    parse_shapes(world_defaults, body_name="world", link=-1, geoms=world.findall("geom"), density=None, incoming_xform=xform,)
+    parse_shapes(
+        world_defaults,
+        body_name="world",
+        link=-1,
+        geoms=world.findall("geom"),
+        density=None,
+        incoming_xform=xform,
+    )
 
     end_shape_count = len(builder.shape_geo_type)
 
