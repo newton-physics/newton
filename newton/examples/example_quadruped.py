@@ -37,21 +37,19 @@ import newton.utils
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_body_armature = 0.01
+        articulation_builder.default_joint_armature = 0.01
+        articulation_builder.default_joint_stiffness = 200.0
+        articulation_builder.default_joint_damping = 1.0
+        articulation_builder.default_shape_cfg.ke = 1.0e4
+        articulation_builder.default_shape_cfg.kd = 1.0e2
+        articulation_builder.default_shape_cfg.kf = 1.0e2
+        articulation_builder.default_shape_cfg.mu = 1.0
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
             xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=True,
-            density=1000,
-            armature=0.01,
-            stiffness=200,
-            damping=1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=1.0,
-            limit_ke=1.0e4,
-            limit_kd=1.0e1,
         )
 
         builder = newton.ModelBuilder()

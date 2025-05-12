@@ -23,6 +23,7 @@ import warp.examples
 import newton
 from newton.collision.collide import (
     TriMeshCollisionDetector,
+    collide,
     init_triangle_collision_data_kernel,
     triangle_closest_point,
     triangle_closest_point_barycentric,
@@ -757,17 +758,18 @@ def test_mesh_ground_collision_index(test, device):
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
     b = builder.add_body(mass=1.0)
+    cfg = newton.ShapeCfg(has_shape_collision=False)
     builder.add_shape_mesh(
         body=b,
         mesh=mesh,
-        has_shape_collision=False,
+        cfg=cfg,
     )
     # add another mesh that is not in contact
     b2 = builder.add_body(mass=1.0, xform=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
     builder.add_shape_mesh(
         body=b2,
         mesh=mesh,
-        has_shape_collision=False,
+        cfg=cfg,
     )
     model = builder.finalize(device=device)
     test.assertEqual(model.rigid_contact_max, 6)
@@ -777,7 +779,7 @@ def test_mesh_ground_collision_index(test, device):
     # ensure all the mesh vertices will be within the contact margin
     model.rigid_contact_margin = 2.0
     state = model.state()
-    wp.sim.collide(model, state)
+    collide(model, state)
     test.assertEqual(model.rigid_contact_count.numpy()[0], 3)
     tids = model.rigid_contact_tids.list()
     test.assertEqual(sorted(tids), [-1, -1, -1, 0, 1, 2])
