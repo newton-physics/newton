@@ -70,14 +70,10 @@ linting:
     - uvx pre-commit run --all-files --show-diff-on-failure
 
 # --- Stage: Test ---
-testing:
+
+.test_common:
   stage: test
-  image: ghcr.io/astral-sh/uv:bookworm
-  extends:
-    - .omni_nvks_gpu
   needs: []
-  script:
-    - uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
     when: always
@@ -104,6 +100,24 @@ testing:
         - uv.lock
     - when: manual # If not auto-triggered, allow any pipeline to run this job manually
       allow_failure: true
+  script:
+    - uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast
+
+linux-x86_64 test:
+  image: ghcr.io/astral-sh/uv:bookworm
+  extends:
+    - .omni_nvks_gpu
+    - .test_common
+
+windows-x86_64 test:
+  extends:
+    - .runner-test-windows-x86_64-gpu
+    - .test_common
+  needs: []
+  before_script:
+    - powershell -ExecutionPolicy ByPass -c {$env:UV_INSTALL_DIR = "${env:CI_PROJECT_DIR}\uv-install";irm https://astral.sh/uv/install.ps1 | iex}
+    - $env:Path = "${env:CI_PROJECT_DIR}\uv-install;$env:Path"
+    - uv python install --managed-python --verbose --install-dir "${env:CI_PROJECT_DIR}\uv-python-install"
 
 # --- Stage: Build ---
 build_package:
