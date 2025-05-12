@@ -131,7 +131,7 @@ class Axis(IntEnum):
     Z = 2
 
     @classmethod
-    def from_string(cls, axis_str: str) -> "Axis":
+    def from_string(cls, axis_str: str) -> Axis:
         axis_str = axis_str.lower()
         if axis_str == "x":
             return cls.X
@@ -142,7 +142,7 @@ class Axis(IntEnum):
         raise ValueError(f"Invalid axis string: {axis_str}")
 
     @classmethod
-    def from_any(cls, value: AxisType) -> "Axis":
+    def from_any(cls, value: AxisType) -> Axis:
         if isinstance(value, cls):
             return value
         if isinstance(value, str):
@@ -211,33 +211,36 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 class JointAxis:
     """
-    Describes a joint axis that can have limits and be driven towards a target.
+    Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
 
     Attributes:
 
-        axis (3D vector or JointAxis): The 3D axis that this JointAxis object describes, or alternatively another JointAxis object to copy from
-        limit_lower (float): The lower position limit of the joint axis
-        limit_upper (float): The upper position limit of the joint axis
-        limit_ke (float): The elastic stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
-        limit_kd (float): The damping stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
-        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode) of the joint axis
-        target_ke (float): The proportional gain of the joint axis target drive PD controller
-        target_kd (float): The derivative gain of the joint axis target drive PD controller
-        mode (int): The mode of the joint axis
+        axis (3D vector or JointAxis): The 3D axis that this JointAxis object describes, or alternatively another JointAxis object to copy from.
+        limit_lower (float): The lower position limit of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_limit_lower` is used.
+        limit_upper (float): The upper position limit of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_limit_upper` is used.
+        limit_ke (float): The elastic stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`. If None, the default value from :attr:`ModelBuilder.default_joint_limit_ke` is used.
+        limit_kd (float): The damping stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`. If None, the default value from :attr:`ModelBuilder.default_joint_limit_kd` is used.
+        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode) of the joint axis. If None, the default value is set based on the mode.
+                        0.0 for target velocity modes, or 0.5 * (limit_lower + limit_upper) for target position mode with limits.
+        target_ke (float): The proportional gain of the target drive PD controller. If None, the default value from :attr:`ModelBuilder.default_joint_stiffness` is used.
+        target_kd (float): The derivative gain of the target drive PD controller. If None, the default value from :attr:`ModelBuilder.default_joint_damping` is used.
+        mode (int): The mode of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_control_mode` is used.
     """
 
     def __init__(
         self,
         axis: JointAxis | AxisType | Vec3,
-        limit_lower=-wp.inf,
-        limit_upper=wp.inf,
-        limit_ke=100.0,
-        limit_kd=10.0,
-        action=None,
-        target_ke=0.0,
-        target_kd=0.0,
-        mode=JOINT_MODE_FORCE,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
+        limit_ke: float | None = None,
+        limit_kd: float | None = None,
+        action: float | None = None,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        mode: int | None = None,
     ):
+        from .builder import ModelBuilder
+
         if isinstance(axis, JointAxis):
             self.axis = axis.axis
             self.limit_lower = axis.limit_lower
@@ -256,13 +259,29 @@ class JointAxis:
             self.limit_kd = limit_kd
             if action is not None:
                 self.action = action
-            elif mode == JOINT_MODE_TARGET_POSITION and (limit_lower > 0.0 or limit_upper < 0.0):
-                self.action = 0.5 * (limit_lower + limit_upper)
-            else:
-                self.action = 0.0
             self.target_ke = target_ke
             self.target_kd = target_kd
             self.mode = mode
+        if self.limit_lower is None:
+            self.limit_lower = ModelBuilder.default_joint_limit_lower
+        if self.limit_upper is None:
+            self.limit_upper = ModelBuilder.default_joint_limit_upper
+        if self.limit_ke is None:
+            self.limit_ke = ModelBuilder.default_joint_limit_ke
+        if self.limit_kd is None:
+            self.limit_kd = ModelBuilder.default_joint_limit_kd
+        if self.target_ke is None:
+            self.target_ke = ModelBuilder.default_joint_stiffness
+        if self.target_kd is None:
+            self.target_kd = ModelBuilder.default_joint_damping
+        if self.mode is None:
+            self.mode = ModelBuilder.default_joint_control_mode
+
+        if self.action is None:
+            if self.mode == JOINT_MODE_TARGET_POSITION and (self.limit_lower > 0.0 or self.limit_upper < 0.0):
+                self.action = 0.5 * (self.limit_lower + self.limit_upper)
+            else:
+                self.action = 0.0
 
 
 @dataclass
