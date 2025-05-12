@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from .contact import Contact
 from .control import Control
 from .state import State
 from .types import ModelShapeGeometry, ModelShapeMaterials
@@ -448,6 +449,9 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         return c
+
+    def contact(self, requires_grad=None) -> Contact:
+        return Contact()
 
     def _allocate_soft_contacts(self, target, count, requires_grad=False):
         with wp.ScopedDevice(self.device):
