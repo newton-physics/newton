@@ -29,6 +29,7 @@ from .inertia import (
     transform_inertia,
 )
 from .model import Model
+from .spatial import quat_between_axes
 from .types import (
     GEO_BOX,
     GEO_CAPSULE,
@@ -54,6 +55,8 @@ from .types import (
     SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
+    Axis,
+    AxisType,
     JointAxis,
     Mat33,
     Mesh,
@@ -80,9 +83,10 @@ class ModelBuilder:
     Example
     -------
 
-    .. code-block:: python
+    .. testcode::
 
         import newton
+        from newton.solvers import XPBDSolver
 
         builder = newton.ModelBuilder()
 
@@ -95,16 +99,17 @@ class ModelBuilder:
             builder.add_spring(i - 1, i, 1.0e3, 0.0, 0)
 
         # create model
-        model = builder.finalize("cuda")
+        model = builder.finalize()
 
-        state = model.state()
+        state_0, state_1 = model.state(), model.state()
         control = model.control()
         contact = model.contact()
-        integrator = newton.XPBDSolver()
+        solver = XPBDSolver(model)
 
-        for i in range(100):
-            state.clear_forces()
-            integrator.simulate(model, state, state, control, contact, dt=1.0 / 60.0)
+        for i in range(10):
+            state_0.clear_forces()
+            solver.step(model, state_0, state_1, control, contact, dt=1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -151,11 +156,13 @@ class ModelBuilder:
     )
 
     # Default joint settings
-    default_joint_limit_ke = 100.0
-    default_joint_limit_kd = 1.0
+    default_joint_limit_ke = 1e4
+    default_joint_limit_kd = 1e1
     default_joint_limit_lower = -1e6
     default_joint_limit_upper = 1e6
     default_joint_armature = 0.0
+    default_joint_stiffness = 0.0
+    default_joint_damping = 0.0
     default_joint_control_mode = JOINT_MODE_FORCE
 
     # Default body settings
@@ -1961,23 +1968,23 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: int = 1,
+        up_axis: AxisType = Axis.Y,
         cfg: ShapeCfg | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the capsule relative to the body frame
-            radius: The radius of the capsule
-            half_height: The half length of the center cylinder along the up axis
-            up_axis: The axis along which the capsule is aligned (0=x, 1=y, 2=z)
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body: The index of the parent body this shape belongs to (use -1 for static shapes).
+            xform: The transform of the capsule relative to the body frame.
+            radius: The radius of the capsule.
+            half_height: The half length of the center cylinder along the up axis.
+            up_axis: The axis along which the capsule is aligned.
+            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
+            key: The key of the shape.
 
         Returns:
-            The index of the added shape
+            The index of the added shape.
 
         """
 
@@ -1985,11 +1992,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+        q = quat_between_axes(self.up_axis, up_axis)
+        xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
@@ -2011,23 +2015,23 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: int = 1,
+        up_axis: AxisType = Axis.Y,
         cfg: ShapeCfg | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cylinder collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the cylinder relative to the body frame
-            radius: The radius of the cylinder
-            half_height: The half length of the cylinder along the up axis
-            up_axis: The axis along which the cylinder is aligned (0=x, 1=y, 2=z)
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body: The index of the parent body this shape belongs to (use -1 for static shapes).
+            xform: The transform of the cylinder relative to the body frame.
+            radius: The radius of the cylinder.
+            half_height: The half length of the cylinder along the up axis.
+            up_axis: The axis along which the cylinder is aligned.
+            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
+            key: The key of the shape.
 
         Returns:
-            The index of the added shape
+            The index of the added shape.
 
         """
 
@@ -2035,11 +2039,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+        q = quat_between_axes(self.up_axis, up_axis)
+        xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
@@ -2058,23 +2059,23 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: int = 1,
+        up_axis: AxisType = Axis.Y,
         cfg: ShapeCfg | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cone collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the cone relative to the body frame
-            radius: The radius of the cone
-            half_height: The half length of the cone along the up axis
-            up_axis: The axis along which the cone is aligned (0=x, 1=y, 2=z)
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body: The index of the parent body this shape belongs to (use -1 for static shapes).
+            xform: The transform of the cone relative to the body frame.
+            radius: The radius of the cone.
+            half_height: The half length of the cone along the up axis.
+            up_axis: The axis along which the cone is aligned.
+            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
+            key: The key of the shape.
 
         Returns:
-            The index of the added shape
+            The index of the added shape.
 
         """
 
@@ -2082,11 +2083,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            xform.q = wp.mul(xform.q, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            xform.q = wp.mul(xform.q, wp.quat(sqh, 0.0, 0.0, sqh))
+        q = quat_between_axes(self.up_axis, up_axis)
+        xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
@@ -2110,14 +2108,14 @@ class ModelBuilder:
         """Adds a triangle mesh collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the mesh relative to the body frame
-            mesh: The mesh object
-            xform: The transform of the mesh relative to the body frame
-            key: The key of the shape
+            body: The index of the parent body this shape belongs to (use -1 for static shapes).
+            xform: The transform of the mesh relative to the body frame.
+            mesh: The mesh object.
+            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
+            key: The key of the shape.
 
         Returns:
-            The index of the added shape
+            The index of the added shape.
 
         """
 
@@ -2143,14 +2141,14 @@ class ModelBuilder:
         """Adds a signed distance field (SDF) collider to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the SDF relative to the body frame
-            sdf: The SDF object
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body: The index of the parent body this shape belongs to (use -1 for static shapes).
+            xform: The transform of the SDF relative to the body frame.
+            sdf: The SDF object.
+            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
+            key: The key of the shape.
 
         Returns:
-            The index of the added shape
+            The index of the added shape.
 
         """
         if cfg is None:
@@ -2175,20 +2173,20 @@ class ModelBuilder:
         radius: float | None = None,
         flags: wp.uint32 = PARTICLE_FLAG_ACTIVE,
     ) -> int:
-        """Adds a single particle to the model
+        """Adds a single particle to the model.
 
         Args:
-            pos: The initial position of the particle
-            vel: The initial velocity of the particle
-            mass: The mass of the particle
+            pos: The initial position of the particle.
+            vel: The initial velocity of the particle.
+            mass: The mass of the particle.
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants
+            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that does is not subject to dynamics.
+            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
 
         Returns:
-            The index of the particle in the system
+            The index of the particle in the system.
         """
         self.particle_q.append(pos)
         self.particle_qd.append(vel)
