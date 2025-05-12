@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from .types import Axis, AxisType
+
 
 @wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
@@ -229,7 +231,33 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
     return wp.spatial_vector(w, v)
 
 
+__axis_rotations = {}
+
+
+def quat_between_axes(source_axis: AxisType, target_axis: AxisType) -> wp.quat:
+    """
+    Returns a quaternion that rotates from the source up axis to the target up axis.
+
+    Args:
+        source_axis (AxisType): The source up axis.
+        target_axis (AxisType): The target up axis.
+
+    Returns:
+        wp.quat: The rotation quaternion.
+    """
+    src = Axis.from_any(source_axis)
+    dst = Axis.from_any(target_axis)
+    if src == dst:
+        return wp.quat_identity()
+    if (src.value, dst.value) in __axis_rotations:
+        return __axis_rotations[(src.value, dst.value)]
+    quat = wp.quat_between_vectors(src.to_vec3(), dst.to_vec3())
+    __axis_rotations[(src.value, dst.value)] = quat
+    return quat
+
+
 __all__ = [
+    "quat_between_axes",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",
