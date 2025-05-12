@@ -22,39 +22,25 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Mesh, ShapeCfg
+from newton.core import Axis, Mesh, ModelBuilder, ShapeCfg
+from newton.core.types import Transform
 
 
 def parse_urdf(
-    urdf_filename,
-    builder,
-    xform=None,
-    floating=False,
+    urdf_filename: str,
+    builder: ModelBuilder,
+    xform: Transform | None = None,
+    floating: bool = False,
     base_joint: dict | str | None = None,
-    density=1000.0,
-    stiffness=100.0,
-    damping=10.0,
-    armature=0.0,
-    contact_ke=1.0e4,
-    contact_kd=1.0e3,
-    contact_kf=1.0e2,
-    contact_ka=0.0,
-    contact_mu=0.25,
-    contact_restitution=0.5,
-    contact_thickness=0.0,
-    limit_ke=100.0,
-    limit_kd=10.0,
-    joint_limit_lower=-1e6,
-    joint_limit_upper=1e6,
-    scale=1.0,
-    hide_visuals=False,
-    parse_visuals_as_colliders=False,
-    force_show_colliders=False,
-    enable_self_collisions=True,
-    ignore_inertial_definitions=True,
-    ensure_nonstatic_links=True,
-    static_link_mass=1e-2,
-    collapse_fixed_joints=False,
+    scale: float = 1.0,
+    hide_visuals: bool = False,
+    parse_visuals_as_colliders: bool = False,
+    force_show_colliders: bool = False,
+    enable_self_collisions: bool = True,
+    ignore_inertial_definitions: bool = True,
+    ensure_nonstatic_links: bool = True,
+    static_link_mass: float = 1e-2,
+    collapse_fixed_joints: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -62,7 +48,7 @@ def parse_urdf(
     Args:
         urdf_filename (str): The filename of the URDF file to parse.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        xform (:external+warp:ref:`transform <transform>`): The transform to apply to the root body.
+        xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
         floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
         density (float): The density of the shapes in kg/m^3 which will be used to calculate the body mass and inertia.
@@ -96,16 +82,6 @@ def parse_urdf(
     file = ET.parse(urdf_filename)
     root = file.getroot()
 
-    contact_vars = {
-        "ke": contact_ke,
-        "kd": contact_kd,
-        "kf": contact_kf,
-        "ka": contact_ka,
-        "mu": contact_mu,
-        "restitution": contact_restitution,
-        "thickness": contact_thickness,
-    }
-
     def parse_transform(element):
         if element is None or element.find("origin") is None:
             return wp.transform()
@@ -118,6 +94,7 @@ def parse_urdf(
 
     def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
         cfg = ShapeCfg(
+            density=density,
             is_visible=visible,
             has_ground_collision=not just_visual,
             has_shape_collision=not just_visual,
@@ -161,7 +138,7 @@ def parse_urdf(
                     xform=tf,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    up_axis=2,  # cylinders in URDF are aligned with z-axis
+                    up_axis=Axis.Z,  # cylinders in URDF are aligned with z-axis
                     cfg=cfg,
                 )
                 shapes.append(s)
@@ -231,11 +208,7 @@ def parse_urdf(
                             body=link,
                             xform=tf,
                             mesh=m_mesh,
-                            density=density,
-                            is_visible=visible,
-                            has_ground_collision=not just_visual,
-                            has_shape_collision=not just_visual,
-                            **contact_vars,
+                            cfg=cfg,
                         )
                         shapes.append(s)
                 else:
@@ -247,11 +220,7 @@ def parse_urdf(
                         body=link,
                         xform=tf,
                         mesh=m_mesh,
-                        density=density,
-                        is_visible=visible,
-                        has_ground_collision=not just_visual,
-                        has_shape_collision=not just_visual,
-                        **contact_vars,
+                        cfg=cfg,
                     )
                     shapes.append(s)
 
@@ -269,7 +238,7 @@ def parse_urdf(
     # add links
     for urdf_link in root.findall("link"):
         name = urdf_link.get("name")
-        link = builder.add_body(armature=armature, key=name)
+        link = builder.add_body(key=name)
 
         # add ourselves to the index
         link_index[name] = link
@@ -290,40 +259,44 @@ def parse_urdf(
             # we need to show the collision shapes since there are no visual shapes
             show_colliders = True
 
-        parse_shapes(link, colliders, density=density, visible=show_colliders)
+        parse_shapes(link, colliders, density=None, visible=show_colliders)
         m = builder.body_mass[link]
-        if not ignore_inertial_definitions and urdf_link.find("inertial") is not None:
+        el_inertia = urdf_link.find("inertial")
+        if not ignore_inertial_definitions and el_inertia is not None:
             # overwrite inertial parameters if defined
-            inertial = urdf_link.find("inertial")
-            inertial_frame = parse_transform(inertial)
+            inertial_frame = parse_transform(el_inertia)
             com = inertial_frame.p
-            I_m = np.zeros((3, 3))
-            I_m[0, 0] = float(inertial.find("inertia").get("ixx") or "0") * scale**2
-            I_m[1, 1] = float(inertial.find("inertia").get("iyy") or "0") * scale**2
-            I_m[2, 2] = float(inertial.find("inertia").get("izz") or "0") * scale**2
-            I_m[0, 1] = float(inertial.find("inertia").get("ixy") or "0") * scale**2
-            I_m[0, 2] = float(inertial.find("inertia").get("ixz") or "0") * scale**2
-            I_m[1, 2] = float(inertial.find("inertia").get("iyz") or "0") * scale**2
-            I_m[1, 0] = I_m[0, 1]
-            I_m[2, 0] = I_m[0, 2]
-            I_m[2, 1] = I_m[1, 2]
-            rot = wp.quat_to_matrix(inertial_frame.q)
-            I_m = rot @ wp.mat33(I_m)
-            m = float(inertial.find("mass").get("value") or "0")
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m if m > 0.0 else 0.0
             builder.body_com[link] = com
-            builder.body_inertia[link] = I_m
-            if any(x for x in I_m):
-                builder.body_inv_inertia[link] = wp.inverse(I_m)
-            else:
-                builder.body_inv_inertia[link] = I_m
+            I_m = np.zeros((3, 3))
+            el_i_m = el_inertia.find("inertia")
+            if el_i_m is not None:
+                I_m[0, 0] = float(el_i_m.get("ixx", 0)) * scale**2
+                I_m[1, 1] = float(el_i_m.get("iyy", 0)) * scale**2
+                I_m[2, 2] = float(el_i_m.get("izz", 0)) * scale**2
+                I_m[0, 1] = float(el_i_m.get("ixy", 0)) * scale**2
+                I_m[0, 2] = float(el_i_m.get("ixz", 0)) * scale**2
+                I_m[1, 2] = float(el_i_m.get("iyz", 0)) * scale**2
+                I_m[1, 0] = I_m[0, 1]
+                I_m[2, 0] = I_m[0, 2]
+                I_m[2, 1] = I_m[1, 2]
+                rot = wp.quat_to_matrix(inertial_frame.q)
+                I_m = rot @ wp.mat33(I_m)
+                builder.body_inertia[link] = I_m
+                if any(x for x in I_m):
+                    builder.body_inv_inertia[link] = wp.inverse(I_m)
+                else:
+                    builder.body_inv_inertia[link] = I_m
+            el_mass = el_inertia.find("mass")
+            if el_mass is not None:
+                m = float(el_mass.get("value", 0))
+                builder.body_mass[link] = m
+                builder.body_inv_mass[link] = 1.0 / m if m > 0.0 else 0.0
         if m == 0.0 and ensure_nonstatic_links:
             # set the mass to something nonzero to ensure the body is dynamic
             m = static_link_mass
             # cube with side length 0.5
             I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(armature * np.eye(3))
+            I_m += wp.mat33(builder.default_shape_cfg.density * np.eye(3))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
@@ -347,27 +320,26 @@ def parse_urdf(
             "child": child,
             "type": joint.get("type"),
             "origin": parse_transform(joint),
-            "damping": damping,
+            "damping": builder.default_joint_damping,
             "friction": 0.0,
-            "limit_lower": joint_limit_lower,
-            "limit_upper": joint_limit_upper,
         }
-        if joint.find("axis") is not None:
-            joint_data["axis"] = joint.find("axis").get("xyz")
-            joint_data["axis"] = np.array([float(x) for x in joint_data["axis"].split()])
-        if joint.find("dynamics") is not None:
-            dynamics = joint.find("dynamics")
-            joint_data["damping"] = float(dynamics.get("damping") or str(damping))
-            joint_data["friction"] = float(dynamics.get("friction") or "0")
-        if joint.find("limit") is not None:
-            limit = joint.find("limit")
-            joint_data["limit_lower"] = float(limit.get("lower") or "-1e6")
-            joint_data["limit_upper"] = float(limit.get("upper") or "1e6")
-        if joint.find("mimic") is not None:
-            mimic = joint.find("mimic")
-            joint_data["mimic_joint"] = mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(mimic.get("multiplier") or "1")
-            joint_data["mimic_offset"] = float(mimic.get("offset") or "0")
+        el_axis = joint.find("axis")
+        if el_axis is not None:
+            ax = el_axis.get("xyz", "1 0 0")
+            joint_data["axis"] = np.array([float(x) for x in ax.split()])
+        el_dynamics = joint.find("dynamics")
+        if el_dynamics is not None:
+            joint_data["damping"] = float(el_dynamics.get("damping", builder.default_joint_damping))
+            joint_data["friction"] = float(el_dynamics.get("friction", 0))
+        el_limit = joint.find("limit")
+        if el_limit is not None:
+            joint_data["limit_lower"] = float(el_limit.get("lower", builder.default_joint_limit_lower))
+            joint_data["limit_upper"] = float(el_limit.get("upper", builder.default_joint_limit_upper))
+        el_mimic = joint.find("mimic")
+        if el_mimic is not None:
+            joint_data["mimic_joint"] = el_mimic.get("joint")
+            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
+            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
 
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
@@ -468,41 +440,28 @@ def parse_urdf(
         parent_xform = joint["origin"]
         child_xform = wp.transform_identity()
 
-        joint_mode = newton.JOINT_MODE_FORCE
-        if stiffness > 0.0:
-            joint_mode = newton.JOINT_MODE_TARGET_POSITION
-
         joint_params = {
             "parent": parent,
             "child": child,
             "parent_xform": parent_xform,
             "child_xform": child_xform,
             "key": joint["name"],
-            "armature": armature,
         }
 
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             builder.add_joint_revolute(
                 axis=joint["axis"],
-                target_ke=stiffness,
                 target_kd=joint_damping,
                 limit_lower=lower,
                 limit_upper=upper,
-                limit_ke=limit_ke,
-                limit_kd=limit_kd,
-                mode=joint_mode,
                 **joint_params,
             )
         elif joint["type"] == "prismatic":
             builder.add_joint_prismatic(
                 axis=joint["axis"],
-                target_ke=stiffness,
                 target_kd=joint_damping,
                 limit_lower=lower * scale,
                 limit_upper=upper * scale,
-                limit_ke=limit_ke,
-                limit_kd=limit_kd,
-                mode=joint_mode,
                 **joint_params,
             )
         elif joint["type"] == "fixed":
@@ -529,21 +488,13 @@ def parse_urdf(
                         u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        limit_ke=limit_ke,
-                        limit_kd=limit_kd,
-                        target_ke=stiffness,
                         target_kd=joint_damping,
-                        mode=joint_mode,
                     ),
                     newton.JointAxis(
                         v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        limit_ke=limit_ke,
-                        limit_kd=limit_kd,
-                        target_ke=stiffness,
                         target_kd=joint_damping,
-                        mode=joint_mode,
                     ),
                 ],
                 **joint_params,
