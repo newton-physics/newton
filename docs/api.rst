@@ -12,6 +12,10 @@ Core Data Structures
 
 .. autoclass:: newton.Control
 
+.. autoclass:: newton.JointAxis
+
+.. autoclass:: newton.ShapeCfg
+
 Solvers
 -------
 

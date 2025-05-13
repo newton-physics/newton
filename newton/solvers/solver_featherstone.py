@@ -1526,12 +1526,12 @@ class FeatherstoneSolver(SolverBase):
 
     def __init__(
         self,
-        model,
-        angular_damping=0.05,
-        update_mass_matrix_every=1,
-        friction_smoothing=1.0,
-        use_tile_gemm=False,
-        fuse_cholesky=True,
+        model: Model,
+        angular_damping: float = 0.05,
+        update_mass_matrix_every: int = 1,
+        friction_smoothing: float = 1.0,
+        use_tile_gemm: bool = False,
+        fuse_cholesky: bool = True,
     ):
         """
         Args:
