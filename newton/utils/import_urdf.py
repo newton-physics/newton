@@ -26,6 +26,29 @@ from newton.core import Axis, Mesh, ModelBuilder, ShapeCfg
 from newton.core.types import Transform
 
 
+def _download_file(dst, url: str) -> None:
+    import requests
+
+    with requests.get(url, stream=True, timeout=10) as response:
+        response.raise_for_status()
+        for chunk in response.iter_content(chunk_size=8192):
+            dst.write(chunk)
+
+
+def download_asset_tmpfile(url: str):
+    """Download a file into a NamedTemporaryFile.
+    A closed NamedTemporaryFile is returned. It must be deleted by the caller."""
+    import tempfile
+    from urllib.parse import unquote, urlsplit
+
+    urlpath = unquote(urlsplit(url).path)
+    file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete=False)
+    _download_file(file_od, url)
+    file_od.close()
+
+    return file_od
+
+
 def parse_urdf(
     urdf_filename: str,
     builder: ModelBuilder,
@@ -155,6 +178,7 @@ def parse_urdf(
                 shapes.append(s)
 
             for mesh in geo.findall("mesh"):
+                file_tmp = None
                 filename = mesh.get("filename")
                 if filename is None:
                     continue
@@ -170,21 +194,11 @@ def parse_urdf(
                         wp.utils.warn(
                             f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"'
                         )
-                elif filename.startswith("http://") or filename.startswith("https://"):
+                elif filename.startswith(("http://", "https://")):
                     # download mesh
-                    import shutil
-                    import tempfile
-
-                    import requests
-
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        # get filename extension
-                        extension = os.path.splitext(filename)[1]
-                        tmpfile = os.path.join(tmpdir, "mesh" + extension)
-                        with requests.get(filename, stream=True) as r:
-                            with open(tmpfile, "wb") as f:
-                                shutil.copyfileobj(r.raw, f)
-                        filename = tmpfile
+                    # note that the file must be deleted after use
+                    file_tmp = download_asset_tmpfile(filename)
+                    filename = file_tmp.name
                 else:
                     filename = os.path.join(os.path.dirname(urdf_filename), filename)
                 if not os.path.exists(filename):
@@ -223,6 +237,9 @@ def parse_urdf(
                         cfg=cfg,
                     )
                     shapes.append(s)
+                if file_tmp is not None:
+                    os.remove(file_tmp.name)
+                    file_tmp = None
 
         return shapes
 
