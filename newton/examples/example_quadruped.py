@@ -32,19 +32,21 @@ import newton.collision
 import newton.core.articulation
 import newton.examples
 import newton.utils
+from newton import ModelBuilder
 
 
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
         articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_body_armature = 0.01
-        articulation_builder.default_joint_armature = 0.01
-        articulation_builder.default_joint_stiffness = 200.0
-        articulation_builder.default_joint_damping = 1.0
-        articulation_builder.default_shape_cfg.ke = 1.0e4
-        articulation_builder.default_shape_cfg.kd = 1.0e2
-        articulation_builder.default_shape_cfg.kf = 1.0e2
-        articulation_builder.default_shape_cfg.mu = 1.0
+        ModelBuilder.default_body_armature = 0.01
+        ModelBuilder.default_joint_armature = 0.01
+        ModelBuilder.default_joint_control_mode = newton.JOINT_MODE_TARGET_POSITION
+        ModelBuilder.default_joint_stiffness = 2000.0
+        ModelBuilder.default_joint_damping = 1.0
+        ModelBuilder.default_shape_cfg.ke = 1.0e4
+        ModelBuilder.default_shape_cfg.kd = 1.0e2
+        ModelBuilder.default_shape_cfg.kf = 1.0e2
+        ModelBuilder.default_shape_cfg.mu = 1.0
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
@@ -79,6 +81,7 @@ class Example:
 
         self.solver = newton.solvers.XPBDSolver(self.model)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        # self.solver = newton.solvers.SemiImplicitSolver(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)

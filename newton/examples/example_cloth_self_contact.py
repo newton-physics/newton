@@ -32,7 +32,8 @@ import warp.sim.render
 from pxr import Usd, UsdGeom
 
 import newton
-from newton.core.model import PARTICLE_FLAG_ACTIVE
+import newton.utils
+from newton.core import PARTICLE_FLAG_ACTIVE
 
 
 @wp.kernel
@@ -226,7 +227,7 @@ class Example:
         )
 
         if stage_path:
-            self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=1)
+            self.renderer = newton.utils.SimRenderer(self.model, stage_path, scaling=1)
         else:
             self.renderer = None
         self.cuda_graph = None

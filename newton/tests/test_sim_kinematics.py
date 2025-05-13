@@ -47,15 +47,6 @@ def test_fk_ik(test, device):
         newton.utils.parse_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             builder,
-            stiffness=0.0,
-            damping=1.0,
-            armature=0.1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=0.75,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
             up_axis="Y",
         )
 

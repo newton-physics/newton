@@ -144,10 +144,9 @@ class TestInertia(unittest.TestCase):
         tf = wp.transform(wp.vec3(4.0, 5.0, 6.0), wp.quat_rpy(0.5, -0.8, 1.3))
         builder.add_shape_mesh(
             b,
-            pos=tf.p,
-            rot=tf.q,
+            xform=tf,
             mesh=newton.Mesh(vertices=vertices, indices=indices),
-            density=1000.0,
+            cfg=newton.ShapeCfg(density=1000.0),
         )
         transformed_com = wp.transform_point(tf, wp.vec3(*offset))
         assert_np_equal(np.array(builder.body_com[0]), np.array(transformed_com), tol=3e-3)

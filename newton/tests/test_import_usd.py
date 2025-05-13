@@ -48,11 +48,6 @@ class TestImportUsd(unittest.TestCase):
         results = parse_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
             builder,
-            armature=0.1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=0.75,
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 9)
