@@ -47,7 +47,6 @@ from .types import (
     JOINT_FIXED,
     JOINT_FREE,
     JOINT_MODE_FORCE,
-    JOINT_MODE_TARGET_POSITION,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
@@ -61,6 +60,7 @@ from .types import (
     Mat33,
     Mesh,
     Quat,
+    Sequence,
     ShapeCfg,
     Transform,
     Vec3,
@@ -164,6 +164,8 @@ class ModelBuilder:
     default_joint_stiffness = 0.0
     default_joint_damping = 0.0
     default_joint_control_mode = JOINT_MODE_FORCE
+    default_joint_angular_compliance = 0.0
+    default_joint_linear_compliance = 0.0
 
     # Default body settings
     default_body_armature = 0.0
@@ -390,7 +392,7 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
-            xform (:external+warp:ref:`transform <transform>`): offset transform applied to root bodies.
+            xform (Transform): offset transform applied to root bodies.
             update_num_env_count (bool): if True, the number of environments is incremented by 1.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
         """
@@ -579,7 +581,7 @@ class ModelBuilder:
     def add_body(
         self,
         xform: Transform | None = None,
-        armature: float = 0.0,
+        armature: float | None = None,
         com: Vec3 | None = None,
         I_m: Mat33 | None = None,
         mass: float = 0.0,
@@ -589,9 +591,9 @@ class ModelBuilder:
 
         Args:
             xform: The location of the body in the world frame.
-            armature: Artificial inertia added to the body.
-            com: The center of mass of the body w.r.t its origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass).
+            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
 
@@ -605,6 +607,8 @@ class ModelBuilder:
 
         if xform is None:
             xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
         if I_m is None:
@@ -613,6 +617,8 @@ class ModelBuilder:
         body_id = len(self.body_mass)
 
         # body data
+        if armature is None:
+            armature = self.default_body_armature
         inertia = I_m + wp.mat33(np.eye(3)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
@@ -645,11 +651,11 @@ class ModelBuilder:
         linear_axes: list[JointAxis] | None = None,
         angular_axes: list[JointAxis] | None = None,
         key: str | None = None,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -657,34 +663,36 @@ class ModelBuilder:
         Generic method to add any type of joint to this ModelBuilder.
 
         Args:
-            joint_type (constant): The type of joint to add (see `Joint types`_)
-            parent (int): The index of the parent body (-1 is the world)
-            child (int): The index of the child body
-            linear_axes (list(:class:`JointAxis`)): The linear axes (see :class:`JointAxis`) of the joint
-            angular_axes (list(:class:`JointAxis`)): The angular axes (see :class:`JointAxis`) of the joint
-            key (str): The key of the joint (optional)
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance (float): The linear compliance of the joint
-            angular_compliance (float): The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axes (only considered by :class:`FeatherstoneIntegrator`)
-            collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies
-            enabled (bool): Whether the joint is enabled (not considered by :class:`FeatherstoneIntegrator`)
+            joint_type (constant): The type of joint to add (see `Joint types`_).
+            parent (int): The index of the parent body (-1 is the world).
+            child (int): The index of the child body.
+            linear_axes (list(:class:`JointAxis`)): The linear axes (see :class:`JointAxis`) of the joint.
+            angular_axes (list(:class:`JointAxis`)): The angular axes (see :class:`JointAxis`) of the joint.
+            key (str): The key of the joint (optional).
+            parent_xform (Transform): The transform of the joint in the parent body's local frame. If None, the identity transform is used.
+            child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
+            linear_compliance (float): The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance (float): The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature (float): Artificial inertia added around the joint axes (only considered by :class:`FeatherstoneIntegrator`).
+            collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
+            enabled (bool): Whether the joint is enabled (not considered by :class:`FeatherstoneSolver`).
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
         """
         if linear_axes is None:
             linear_axes = []
-
         if angular_axes is None:
             angular_axes = []
 
         if parent_xform is None:
             parent_xform = wp.transform()
-
+        else:
+            parent_xform = wp.transform(*parent_xform)
         if child_xform is None:
             child_xform = wp.transform()
+        else:
+            child_xform = wp.transform(*child_xform)
 
         if len(self.articulation_start) == 0:
             # automatically add an articulation if none exists
@@ -703,6 +711,10 @@ class ModelBuilder:
         self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
 
+        if linear_compliance is None:
+            linear_compliance = self.default_joint_linear_compliance
+        if angular_compliance is None:
+            angular_compliance = self.default_joint_angular_compliance
         self.joint_linear_compliance.append(linear_compliance)
         self.joint_angular_compliance.append(angular_compliance)
         self.joint_enabled.append(enabled)
@@ -734,6 +746,8 @@ class ModelBuilder:
         for _i in range(coord_count):
             self.joint_q.append(0.0)
 
+        if armature is None:
+            armature = self.default_joint_armature
         for _i in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_armature.append(armature)
@@ -759,20 +773,20 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        axis: Vec3 = (1.0, 0.0, 0.0),
-        target: float | None = None,
-        target_ke: float = 0.0,
-        target_kd: float = 0.0,
-        mode: int = JOINT_MODE_FORCE,
-        limit_lower: float = -2 * math.pi,
-        limit_upper: float = 2 * math.pi,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        axis: AxisType | Vec3 | JointAxis = Axis.X,
+        action: float | None = None,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        mode: int | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -780,45 +794,31 @@ class ModelBuilder:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
-            target: The target angle (in radians) or target velocity of the joint (if None, the joint is considered to be in force control mode)
-            target_ke: The stiffness of the joint target
-            target_kd: The damping of the joint target
-            limit_lower: The lower limit of the joint
-            limit_upper: The upper limit of the joint
-            limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_kd`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axis
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            axis (AxisType | Vec3 | JointAxis): The axis of rotation in the parent body's local frame, can be a :class:`JointAxis` object whose settings will be used instead of the other arguments.
+            action: The target angle (in radians) or target velocity of the joint.
+            target_ke: The stiffness of the joint target.
+            target_kd: The damping of the joint target.
+            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            linear_compliance: The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance: The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
 
-        if child_xform is None:
-            child_xform = wp.transform()
-
-        limit_ke = limit_ke if limit_ke is not None else self.default_joint_limit_ke
-        limit_kd = limit_kd if limit_kd is not None else self.default_joint_limit_kd
-
-        action = 0.0
-        if target is None and mode == JOINT_MODE_TARGET_POSITION:
-            action = 0.5 * (limit_lower + limit_upper)
-        elif target is not None:
-            action = target
-            if mode == JOINT_MODE_FORCE:
-                mode = JOINT_MODE_TARGET_POSITION
         ax = JointAxis(
             axis=axis,
             limit_lower=limit_lower,
@@ -849,20 +849,20 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        axis: Vec3 = (1.0, 0.0, 0.0),
-        target: float | None = None,
-        target_ke: float = 0.0,
-        target_kd: float = 0.0,
-        mode: int = JOINT_MODE_FORCE,
-        limit_lower: float = -1e4,
-        limit_upper: float = 1e4,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        axis: AxisType | Vec3 | JointAxis = Axis.X,
+        action: float | None = None,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        mode: int | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -870,45 +870,31 @@ class ModelBuilder:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
-            target: The target position or velocity of the joint (if None, the joint is considered to be in force control mode)
-            target_ke: The stiffness of the joint target
-            target_kd: The damping of the joint target
-            limit_lower: The lower limit of the joint
-            limit_upper: The upper limit of the joint
-            limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axis
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            axis (AxisType | Vec3 | JointAxis): The axis of rotation in the parent body's local frame, can be a :class:`JointAxis` object whose settings will be used instead of the other arguments.
+            action: The target angle (in radians) or target velocity of the joint.
+            target_ke: The stiffness of the joint target.
+            target_kd: The damping of the joint target.
+            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            linear_compliance: The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance: The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
 
-        if child_xform is None:
-            child_xform = wp.transform()
-
-        limit_ke = limit_ke if limit_ke is not None else self.default_joint_limit_ke
-        limit_kd = limit_kd if limit_kd is not None else self.default_joint_limit_kd
-
-        action = 0.0
-        if target is None and mode == JOINT_MODE_TARGET_POSITION:
-            action = 0.5 * (limit_lower + limit_upper)
-        elif target is not None:
-            action = target
-            if mode == JOINT_MODE_FORCE:
-                mode = JOINT_MODE_TARGET_POSITION
         ax = JointAxis(
             axis=axis,
             limit_lower=limit_lower,
@@ -939,11 +925,11 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -951,26 +937,21 @@ class ModelBuilder:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            linear_compliance: The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance: The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature (float): Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_BALL,
@@ -990,11 +971,11 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1003,26 +984,21 @@ class ModelBuilder:
         See :meth:`collapse_fixed_joints` for a helper function that removes these fixed joints and merges the connecting bodies to simplify the model and improve stability.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            linear_compliance: The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance: The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature (float): Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
             The index of the added joint
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_FIXED,
@@ -1041,9 +1017,9 @@ class ModelBuilder:
     def add_joint_free(
         self,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        armature: float = 0.0,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        armature: float | None = None,
         parent: int = -1,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1053,24 +1029,19 @@ class ModelBuilder:
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
 
         Args:
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            armature (float): Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_FREE,
@@ -1088,11 +1059,11 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
-        compliance: float = 0.0,
+        compliance: float | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1100,20 +1071,20 @@ class ModelBuilder:
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            min_distance: The minimum distance between the bodies (no limit if negative)
-            max_distance: The maximum distance between the bodies (no limit if negative)
-            compliance: The compliance of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            min_distance: The minimum distance between the bodies (no limit if negative).
+            max_distance: The maximum distance between the bodies (no limit if negative).
+            compliance: The compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in the :class:`XPBDSolver` at the moment.
+        .. note:: Distance joints are currently only supported in the :class:`newton.solvers.XPBDSolver`.
 
         """
         if parent_xform is None:
@@ -1145,11 +1116,11 @@ class ModelBuilder:
         child: int,
         axis_0: JointAxis,
         axis_1: JointAxis,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1157,28 +1128,23 @@ class ModelBuilder:
         """Adds a universal joint to the model. U-joints have two degrees of freedom, one for each axis.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            linear_compliance: The linear compliance of the joint.
+            angular_compliance: The angular compliance of the joint.
+            armature: Artificial inertia added around the joint axes.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_UNIVERSAL,
@@ -1202,10 +1168,10 @@ class ModelBuilder:
         axis_0: JointAxis,
         axis_1: JointAxis,
         axis_2: JointAxis,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
         armature: float = 1e-2,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1217,29 +1183,24 @@ class ModelBuilder:
         Depending on the choice of axes, the orientation can be specified through Euler angles, e.g. `z-x-z` or `x-y-x`, or through a Tait-Bryan angle sequence, e.g. `z-y-x` or `x-y-z`.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            linear_compliance: The linear compliance of the joint.
+            angular_compliance: The angular compliance of the joint.
+            armature: Artificial inertia added around the joint axes.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_COMPOUND,
@@ -1260,48 +1221,41 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        linear_axes: list[JointAxis] | None = None,
-        angular_axes: list[JointAxis] | None = None,
+        linear_axes: Sequence[JointAxis] | None = None,
+        angular_axes: Sequence[JointAxis] | None = None,
         key: str | None = None,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        linear_compliance: float | None = None,
+        angular_compliance: float | None = None,
+        armature: float | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-    ):
+    ) -> int:
         """Adds a generic joint with custom linear and angular axes. The number of axes determines the number of degrees of freedom of the joint.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            linear_axes: A list of linear axes
-            angular_axes: A list of angular axes
-            key: The key of the joint
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            linear_axes: A list of linear axes.
+            angular_axes: A list of angular axes.
+            key: The key of the joint.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame
+            child_xform (Transform): The transform of the joint in the child body's local frame
+            linear_compliance: The linear compliance of the joint. If None, the default value from :attr:`default_joint_linear_compliance` is used.
+            angular_compliance: The angular compliance of the joint. If None, the default value from :attr:`default_joint_angular_compliance` is used.
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
         if linear_axes is None:
             linear_axes = []
-
         if angular_axes is None:
             angular_axes = []
-
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_D6,
