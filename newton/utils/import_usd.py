@@ -23,7 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import ShapeCfg
+from newton.core import ShapeCfg, quat_between_axes
 from newton.core.types import Axis, Transform
 
 
@@ -118,11 +118,6 @@ def parse_usd(
 
     default_density = builder.default_shape_cfg.density
 
-    if xform is None:
-        incoming_world_xform = wp.transform_identity()
-    else:
-        incoming_world_xform = wp.transform(*xform)
-
     def get_attribute(prim, name):
         return prim.GetAttribute(name)
 
@@ -209,16 +204,6 @@ def parse_usd(
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
     else:
         stage = source
-
-    def get_up_vector_and_axis(stage):
-        # First entry on tuple is vector and second entry on tuple is axis
-        _vector_and_axis = {
-            "X": (wp.vec3(1.0, 0.0, 0.0), 0),
-            "Y": (wp.vec3(0.0, 1.0, 0.0), 1),
-            "Z": (wp.vec3(0.0, 0.0, 1.0), 2),
-        }
-        up_symbol = UsdGeom.GetStageUpAxis(stage)
-        return _vector_and_axis[up_symbol]
 
     DegreesToRadian = np.pi / 180
     mass_unit = 1.0
@@ -557,8 +542,9 @@ def parse_usd(
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
-        builder.up_vector = -np.array(scene_desc.gravityDirection, dtype=np.float32)
-        builder.up_axis = np.argmax(np.abs(builder.up_vector))
+        # builder.up_vector = -np.array(scene_desc.gravityDirection, dtype=np.float32)
+        # builder.up_axis = int(np.argmax(np.abs(builder.up_vector)))
+        axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -570,7 +556,14 @@ def parse_usd(
             physics_scene_prim, "warp:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
     else:
-        builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
+        # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
+        axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
+    
+    axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
+    if xform is None:
+        incoming_world_xform = axis_xform
+    else:
+        incoming_world_xform = wp.transform(*xform) * axis_xform
 
     if verbose:
         print(

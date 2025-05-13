@@ -39,7 +39,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Mesh, ModelBuilder, ShapeCfg
+from newton.core import Mesh, ModelBuilder, ShapeCfg, quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
@@ -172,14 +172,11 @@ def parse_mjcf(
                 attrib[key] = value
         return attrib
 
-    up_axis = Axis.from_any(up_axis)
-    sqh = np.sqrt(0.5)
-    if up_axis == Axis.X:
-        xform = wp.transform(xform.p, wp.quat(0.0, 0.0, -sqh, sqh) * xform.q)
-    elif up_axis == Axis.Z:
-        xform = wp.transform(xform.p, wp.quat(sqh, 0.0, 0.0, -sqh) * xform.q)
-    # do not apply scaling to the root transform
-    xform = wp.transform(np.array(xform.p) / scale, xform.q)
+    axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
+    if xform is None:
+        xform = axis_xform
+    else:
+        xform = wp.transform(*xform) * axis_xform
 
     def parse_float(attrib, key, default) -> float:
         if key in attrib:
