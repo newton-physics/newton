@@ -50,7 +50,7 @@ class Example:
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
+            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_identity()),
             floating=True,
         )
 
