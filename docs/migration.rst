@@ -44,6 +44,9 @@ Similarly, the shape contact parameters have been removed from the importers.
 Instead, you can set the default contact parameters on the :attr:`newton.ModelBuilder.default_shape_cfg` object before loading the asset.
 For example, ``ke`` is now defined using :attr:`ModelBuilder.default_shape_cfg.ke`.
 
+The MJCF and URDF importers both have an ``up_axis`` argument that defaults to +Z.
+All importers will rotate the asset now to match the builder's ``up_axis`` (instead of overwriting the ``up_axis`` in the builder, as was the case for the USD importer).
+
 
 ``Model``
 ---------
@@ -72,6 +75,9 @@ For example, ``ke`` is now defined using :attr:`ModelBuilder.default_shape_cfg.k
 
 It is now possible to set the up axis of the builder using the :attr:`ModelBuilder.up_axis` attribute.
 :attr:`ModelBuilder.up_vector` is now a read-only property computed from :attr:`ModelBuilder.up_axis`.
+
+The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args values to be filled in by the ``ModelBuilder.default_joint_*`` attributes.
+The :class:`JointAxis` class similarly uses those defaults if the provided constructor args are ``None``.
 
 Renderers
 ---------
