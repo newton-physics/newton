@@ -21,7 +21,6 @@
 #
 ###########################################################################
 
-import math
 
 import warp as wp
 
@@ -43,7 +42,6 @@ class Example:
         newton.utils.parse_urdf(
             newton.examples.get_asset("cartpole.urdf"),
             articulation_builder,
-            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=False,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
