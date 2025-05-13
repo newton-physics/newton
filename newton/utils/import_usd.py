@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -50,6 +50,7 @@ def parse_usd(
     cloned_env: str | None = None,
     collapse_fixed_joints=False,
     root_path="/",
+    joint_ordering: Literal["bfs", "dfs"] = "bfs",
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -81,6 +82,7 @@ def parse_usd(
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `newton.ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
         root_path (str): The USD path to import, defaults to "/".
+        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
 
     Returns:
         dict: Dictionary with the following entries:
@@ -697,7 +699,7 @@ def parse_usd(
                 joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
 
             # add joints in topological order
-            sorted_joints = topological_sort(joint_edges)
+            sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
             # sorted_joints = np.arange(len(joint_names))
             articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
             first_joint_parent = joint_edges[sorted_joints[0]][0]
