@@ -433,6 +433,7 @@ def jcalc_tau(
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
+    joint_torques: wp.array(dtype=float),
     joint_axis_mode: wp.array(dtype=int),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
@@ -466,7 +467,7 @@ def jcalc_tau(
             q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode
         )
 
-        tau[dof_start] = t
+        tau[dof_start] = t + joint_torques[axis_start]
 
         return
 
@@ -514,7 +515,7 @@ def jcalc_tau(
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + f
 
-            tau[dof_start + i] = t
+            tau[dof_start + i] = t + joint_torques[axis_start + i]
 
         return
 
@@ -961,6 +962,7 @@ def eval_rigid_tau(
     joint_S_s: wp.array(dtype=wp.spatial_vector),
     body_fb_s: wp.array(dtype=wp.spatial_vector),
     body_f_ext: wp.array(dtype=wp.spatial_vector),
+    joint_torques: wp.array(dtype=float),
     # outputs
     body_ft_s: wp.array(dtype=wp.spatial_vector),
     tau: wp.array(dtype=float),
@@ -1003,6 +1005,7 @@ def eval_rigid_tau(
             joint_q,
             joint_qd,
             joint_target,
+            joint_torques,
             joint_axis_mode,
             joint_limit_lower,
             joint_limit_upper,
@@ -1678,6 +1681,8 @@ class FeatherstoneSolver(SolverBase):
             # joints
             target.joint_qdd = wp.zeros_like(model.joint_qd, requires_grad=requires_grad)
             target.joint_tau = wp.empty_like(model.joint_qd, requires_grad=requires_grad)
+            # store additional joint torques to be directly added to joint_tau
+            target.joint_torques = wp.empty_like(model.joint_act, requires_grad=requires_grad)
             if requires_grad:
                 # used in the custom grad implementation of eval_dense_solve_batched
                 target.joint_solve_tmp = wp.zeros_like(model.joint_qd, requires_grad=True)
@@ -1890,6 +1895,7 @@ class FeatherstoneSolver(SolverBase):
                             state_aug.joint_S_s,
                             state_aug.body_f_s,
                             body_f,
+                            state_aug.joint_torques,
                         ],
                         outputs=[
                             state_aug.body_ft_s,
