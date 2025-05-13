@@ -147,7 +147,7 @@ class Axis(IntEnum):
             return value
         if isinstance(value, str):
             return cls.from_string(value)
-        if isinstance(value, int):
+        if isinstance(value, int) or type(value) in {wp.int32, wp.int64, np.int32, np.int64}:
             return cls(value)
         raise TypeError(f"Cannot convert {type(value)} to Axis")
 
@@ -257,8 +257,7 @@ class JointAxis:
             self.limit_upper = limit_upper
             self.limit_ke = limit_ke
             self.limit_kd = limit_kd
-            if action is not None:
-                self.action = action
+            self.action = action
             self.target_ke = target_ke
             self.target_kd = target_kd
             self.mode = mode
