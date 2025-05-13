@@ -558,7 +558,7 @@ def parse_usd(
     else:
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
         axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
-    
+
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
     if xform is None:
         incoming_world_xform = axis_xform
