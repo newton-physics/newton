@@ -24,23 +24,24 @@ import warp as wp
 
 import newton
 from newton.core import ShapeCfg, quat_between_axes
-from newton.core.types import Axis, Transform
+from newton.core.types import Axis, Literal, Transform
 
 
 def parse_usd(
     source,
     builder: newton.ModelBuilder,
     xform: Transform | None = None,
-    only_load_enabled_rigid_bodies=False,
-    only_load_enabled_joints=True,
-    only_load_warp_scene=False,
-    joint_drive_gains_scaling=1.0,
-    invert_rotations=False,
+    only_load_enabled_rigid_bodies: bool = False,
+    only_load_enabled_joints: bool = True,
+    only_load_warp_scene: bool = False,
+    joint_drive_gains_scaling: float = 1.0,
+    invert_rotations: bool = False,
     verbose: bool = wp.config.verbose,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
-    collapse_fixed_joints=False,
-    root_path="/",
+    collapse_fixed_joints: bool = False,
+    root_path: str = "/",
+    joint_ordering: Literal[bfs, dfs] = "bfs",
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -55,16 +56,6 @@ def parse_usd(
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         only_load_warp_scene (bool): If True, only load bodies that belong to a PhysicsScene which is simulated by Warp as a simulation owner.
-        contact_ke (float): The default contact stiffness to use, if not set on the primitive or the PhysicsScene with as "warp:contact_ke". Only considered by the Euler integrators.
-        contact_kd (float): The default contact damping to use, if not set on the primitive or the PhysicsScene with as "warp:contact_kd". Only considered by the Euler integrators.
-        contact_kf (float): The default friction stiffness to use, if not set on the primitive or the PhysicsScene with as "warp:contact_kf". Only considered by the Euler integrators.
-        contact_ka (float): The default adhesion distance to use, if not set on the primitive or the PhysicsScene with as "warp:contact_ka". Only considered by the Euler integrators.
-        contact_mu (float): The default friction coefficient to use if a shape has not friction coefficient defined in a PhysicsMaterial.
-        contact_restitution (float): The default coefficient of restitution to use if a shape has not coefficient of restitution defined in a PhysicsMaterial.
-        contact_thickness (float): The thickness to add to the shape geometry, if not set on the primitive or the PhysicsScene with as "warp:contact_thickness".
-        joint_limit_ke (float): The default stiffness to use for joint limits, if not set on the primitive or the PhysicsScene with as "warp:joint_limit_ke". Only considered by the Euler integrators.
-        joint_limit_kd (float): The default damping to use for joint limits, if not set on the primitive or the PhysicsScene with as "warp:joint_limit_kd". Only considered by the Euler integrators.
-        armature (float): The default armature to use for the bodies, if not set on the primitive or the PhysicsScene with as "warp:armature".
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "warp:joint_drive_gains_scaling".
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file.
@@ -72,6 +63,7 @@ def parse_usd(
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `newton.ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
         root_path (str): The USD path to import, defaults to "/".
+        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
 
     Returns:
         dict: Dictionary with the following entries:
@@ -684,7 +676,7 @@ def parse_usd(
                 joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
 
             # add joints in topological order
-            sorted_joints = topological_sort(joint_edges)
+            sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
             # sorted_joints = np.arange(len(joint_names))
             articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
             first_joint_parent = joint_edges[sorted_joints[0]][0]
