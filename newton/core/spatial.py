@@ -234,26 +234,27 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
 __axis_rotations = {}
 
 
-def quat_between_axes(source_axis: AxisType, target_axis: AxisType) -> wp.quat:
+def quat_between_axes(*axes: AxisType) -> wp.quat:
     """
-    Returns a quaternion that rotates from the source up axis to the target up axis.
+    Returns a quaternion that represents the rotations between the given sequence of axes.
 
     Args:
-        source_axis (AxisType): The source up axis.
-        target_axis (AxisType): The target up axis.
+        axes (AxisType): The axes between to rotate.
 
     Returns:
         wp.quat: The rotation quaternion.
     """
-    src = Axis.from_any(source_axis)
-    dst = Axis.from_any(target_axis)
-    if src == dst:
-        return wp.quat_identity()
-    if (src.value, dst.value) in __axis_rotations:
-        return __axis_rotations[(src.value, dst.value)]
-    quat = wp.quat_between_vectors(src.to_vec3(), dst.to_vec3())
-    __axis_rotations[(src.value, dst.value)] = quat
-    return quat
+    q = wp.quat_identity()
+    for i in range(len(axes) - 1):
+        src = Axis.from_any(axes[i])
+        dst = Axis.from_any(axes[i + 1])
+        if (src.value, dst.value) in __axis_rotations:
+            dq = __axis_rotations[(src.value, dst.value)]
+        else:
+            dq = wp.quat_between_vectors(src.to_vec3(), dst.to_vec3())
+            __axis_rotations[(src.value, dst.value)] = dq
+        q *= dq
+    return q
 
 
 __all__ = [

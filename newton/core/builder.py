@@ -65,6 +65,7 @@ from .types import (
     Transform,
     Vec3,
     Vec4,
+    axis_to_vec3,
     flag_to_int,
     get_joint_dof_count,
     get_shape_radius,
@@ -170,7 +171,7 @@ class ModelBuilder:
     # Default body settings
     default_body_armature = 0.0
 
-    def __init__(self, up_vector: Vec3 = (0.0, 1.0, 0.0), gravity: float = -9.81):
+    def __init__(self, up_axis: AxisType = Axis.Y, gravity: float = -9.81):
         self.num_envs = 0
 
         # particles
@@ -300,14 +301,13 @@ class ModelBuilder:
         self.joint_coord_count = 0
         self.joint_axis_total_count = 0
 
-        self.up_vector = wp.vec3(up_vector)
-        self.up_axis = int(np.argmax(np.abs(up_vector)))
-        self.gravity = gravity
+        self.up_axis: Axis = Axis.from_any(up_axis)
+        self.gravity: float = gravity
         # indicates whether a ground plane has been created
         self._ground_created = False
         # constructor parameters for ground plane shape
         self._ground_params = {
-            "plane": (*up_vector, 0.0),
+            "plane": None,
             "width": 0.0,
             "length": 0.0,
         }
@@ -329,6 +329,17 @@ class ModelBuilder:
         # number of rigid contact points to allocate in the model during self.finalize() per environment
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
+
+    @property
+    def up_vector(self) -> Vec3:
+        """Computes the 3D up vector from :attr:`up_axis`."""
+        return axis_to_vec3(self.up_axis)
+
+    @up_vector.setter
+    def up_vector(self, value):
+        raise AttributeError(
+            "The 'up_vector' property is read-only and cannot be set. Instead, use 'up_axis' to set the up axis."
+        )
 
     @property
     def shape_count(self):
@@ -570,7 +581,7 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
         self.joint_axis_total_count += builder.joint_axis_total_count
 
-        self.up_vector = builder.up_vector
+        self.up_axis = builder.up_axis
         self.gravity = builder.gravity
         self._ground_params = builder._ground_params
 
@@ -1946,7 +1957,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        q = quat_between_axes(self.up_axis, up_axis)
+        # up axis is always +Y for capsules
+        q = quat_between_axes(up_axis, Axis.Y)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -1993,7 +2005,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        q = quat_between_axes(self.up_axis, up_axis)
+        # up axis is always +Y for cylinders
+        q = quat_between_axes(up_axis, Axis.Y)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2037,7 +2050,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        q = quat_between_axes(self.up_axis, up_axis)
+        # up axis is always +Y for cones
+        q = quat_between_axes(up_axis, Axis.Y)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -3097,6 +3111,8 @@ class ModelBuilder:
         }
 
     def _create_ground_plane(self):
+        if self._ground_params["plane"] is None:
+            self._ground_params["plane"] = (*self.up_vector, 0.0)
         ground_id = self.add_shape_plane(**self._ground_params)
         self._ground_created = True
         # disable ground collisions as they will be treated separately

@@ -67,6 +67,11 @@ For example, ``ke`` is now defined using :attr:`ModelBuilder.default_shape_cfg.k
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., action=...)``                          |
 +--------------------------------------------------------+------------------------------------------------------------------------+
+| ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")``                                          |
++--------------------------------------------------------+------------------------------------------------------------------------+
+
+It is now possible to set the up axis of the builder using the :attr:`ModelBuilder.up_axis` attribute.
+:attr:`ModelBuilder.up_vector` is now a read-only property computed from :attr:`ModelBuilder.up_axis`.
 
 Renderers
 ---------

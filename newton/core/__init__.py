@@ -19,6 +19,7 @@ from .contact import Contact
 from .control import Control
 from .model import Model
 from .spatial import (
+    quat_between_axes,
     quat_decompose,
     quat_from_euler,
     quat_to_euler,
@@ -107,6 +108,7 @@ __all__ = [
     "State",
     "eval_fk",
     "eval_ik",
+    "quat_between_axes",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",
