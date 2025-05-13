@@ -22,7 +22,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.utils.import_urdf
 from newton.tests.unittest_utils import assert_np_equal
 from newton.utils.import_urdf import parse_urdf
 
@@ -136,9 +135,7 @@ JOINT_URDF = """
 
 class TestImportUrdf(unittest.TestCase):
     @staticmethod
-    def parse_urdf(
-        urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] | None = None, **kwargs
-    ) -> newton.ModelBuilder:
+    def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] | None = None, **kwargs):
         """Parse the specified URDF file from a directory of files.
         urdf: URDF file to parse
         res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
@@ -163,7 +160,7 @@ class TestImportUrdf(unittest.TestCase):
         self.parse_urdf(SPHERE_URDF, builder)
 
         assert builder.shape_count == 1
-        assert builder.shape_geo_type[0] == wp.sim.model.GEO_SPHERE
+        assert builder.shape_geo_type[0] == newton.GEO_SPHERE
         assert builder.shape_geo_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
@@ -183,7 +180,7 @@ class TestImportUrdf(unittest.TestCase):
                         self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
-                assert builder.shape_geo_type[0] == wp.sim.model.GEO_MESH
+                assert builder.shape_geo_type[0] == newton.GEO_MESH
                 assert_np_equal(builder.shape_geo_scale[0], np.array([1.0, 1.0, 1.0]))
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_geo_src[0].vertices.shape[0] == 8
@@ -193,7 +190,7 @@ class TestImportUrdf(unittest.TestCase):
         builder = newton.ModelBuilder()
         self.parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
 
-        assert builder.shape_geo_type[0] == wp.sim.model.GEO_CAPSULE
+        assert builder.shape_geo_type[0] == newton.GEO_CAPSULE
         assert builder.shape_geo_scale[0][0] == 0.5
         assert builder.shape_geo_scale[0][1] == 0.5  # half height
         assert_np_equal(
@@ -227,7 +224,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Check joint was created with correct properties
         assert builder.joint_count == 2  # base joint + revolute
-        assert builder.joint_type[-1] == wp.sim.JOINT_REVOLUTE
+        assert builder.joint_type[-1] == newton.JOINT_REVOLUTE
 
         assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
