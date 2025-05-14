@@ -103,6 +103,10 @@ ignore = [
     "UP018",  # Warp kernels often use float(val) and int(val)
     "RUF046", # Warp kernels often use int(val)
     "F811",   # Allow Warp kernel/function overloads
+    "TCH001", # Allow quotations in type annotations, e.g. Literal["a"]
+    "TCH002",
+    "TCH003",
+    "F821",
 ]
 
 [tool.ruff.lint.pydocstyle]
