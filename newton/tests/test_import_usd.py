@@ -58,6 +58,48 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(len(results["path_shape_map"]), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_ordering(self):
+        builder_dfs = newton.ModelBuilder()
+        parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder_dfs,
+            collapse_fixed_joints=True,
+            joint_ordering="dfs",
+        )
+        expected = [
+            "front_left_leg",
+            "front_left_foot",
+            "front_right_leg",
+            "front_right_foot",
+            "left_back_leg",
+            "left_back_foot",
+            "right_back_leg",
+            "right_back_foot",
+        ]
+        for i in range(8):
+            self.assertTrue(builder_dfs.joint_key[i + 1].endswith(expected[i]))
+
+        builder_bfs = newton.ModelBuilder()
+        parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder_bfs,
+            collapse_fixed_joints=True,
+            joint_ordering="bfs",
+        )
+        expected = [
+            "front_left_leg",
+            "front_right_leg",
+            "left_back_leg",
+            "right_back_leg",
+            "front_left_foot",
+            "front_right_foot",
+            "left_back_foot",
+            "right_back_foot",
+        ]
+        for i in range(8):
+            self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_env_cloning(self):
         builder_no_cloning = newton.ModelBuilder()
         builder_cloning = newton.ModelBuilder()
