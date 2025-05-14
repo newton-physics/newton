@@ -16,17 +16,19 @@
 from __future__ import annotations
 
 
-def topological_sort(joints: list[tuple[int, int]]) -> list[int]:
+def topological_sort(joints: list[tuple[int, int]], use_dfs: bool = True) -> list[int]:
     """
     Topological sort of a list of joints connecting rigid bodies.
 
     Args:
         joints (List[Tuple[int, int]]): A list of joint pairs (parent, child).
+        use_dfs (bool): If True, use depth-first search for topological sorting.
+            If False, use Kahn's algorithm. Default is True.
 
     Returns:
         List[int]: A list of joint indices in topological order.
     """
-    from collections import defaultdict
+    from collections import defaultdict, deque
 
     incoming = defaultdict(set)
     outgoing = defaultdict(set)
@@ -46,18 +48,32 @@ def topological_sort(joints: list[tuple[int, int]]) -> list[int]:
     joint_order = []
     visited = set()
 
-    def visit(node):
-        visited.add(node)
-        # sort by joint ID to retain original order if topological order is not unique
-        outs = sorted(outgoing[node], key=lambda x: x[0])
-        for joint_id, child in outs:
-            if child in visited:
-                raise ValueError(f"Joint graph contains a cycle at body {child}")
-            joint_order.append(joint_id)
-            visit(child)
+    if use_dfs:
 
-    roots = sorted(roots)
-    for root in roots:
-        visit(root)
+        def visit(node):
+            visited.add(node)
+            # sort by joint ID to retain original order if topological order is not unique
+            outs = sorted(outgoing[node], key=lambda x: x[0])
+            for joint_id, child in outs:
+                if child in visited:
+                    raise ValueError(f"Joint graph contains a cycle at body {child}")
+                joint_order.append(joint_id)
+                visit(child)
+
+        roots = sorted(roots)
+        for root in roots:
+            visit(root)
+    else:
+        # Breadth-first search (Kahn's algorithm)
+        queue = deque(sorted(roots))
+        while queue:
+            node = queue.popleft()
+            visited.add(node)
+            outs = sorted(outgoing[node], key=lambda x: x[0])
+            for joint_id, child in outs:
+                if child in visited:
+                    raise ValueError(f"Joint graph contains a cycle at body {child}")
+                joint_order.append(joint_id)
+                queue.append(child)
 
     return joint_order
