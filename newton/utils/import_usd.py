@@ -56,16 +56,6 @@ def parse_usd(
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         only_load_warp_scene (bool): If True, only load bodies that belong to a PhysicsScene which is simulated by Warp as a simulation owner.
-        contact_ke (float): The default contact stiffness to use, if not set on the primitive or the PhysicsScene with as "warp:contact_ke". Only considered by the Euler integrators.
-        contact_kd (float): The default contact damping to use, if not set on the primitive or the PhysicsScene with as "warp:contact_kd". Only considered by the Euler integrators.
-        contact_kf (float): The default friction stiffness to use, if not set on the primitive or the PhysicsScene with as "warp:contact_kf". Only considered by the Euler integrators.
-        contact_ka (float): The default adhesion distance to use, if not set on the primitive or the PhysicsScene with as "warp:contact_ka". Only considered by the Euler integrators.
-        contact_mu (float): The default friction coefficient to use if a shape has not friction coefficient defined in a PhysicsMaterial.
-        contact_restitution (float): The default coefficient of restitution to use if a shape has not coefficient of restitution defined in a PhysicsMaterial.
-        contact_thickness (float): The thickness to add to the shape geometry, if not set on the primitive or the PhysicsScene with as "warp:contact_thickness".
-        joint_limit_ke (float): The default stiffness to use for joint limits, if not set on the primitive or the PhysicsScene with as "warp:joint_limit_ke". Only considered by the Euler integrators.
-        joint_limit_kd (float): The default damping to use for joint limits, if not set on the primitive or the PhysicsScene with as "warp:joint_limit_kd". Only considered by the Euler integrators.
-        armature (float): The default armature to use for the bodies, if not set on the primitive or the PhysicsScene with as "warp:armature".
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "warp:joint_drive_gains_scaling".
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file.
