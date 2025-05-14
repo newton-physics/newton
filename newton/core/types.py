@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import IntEnum
-from typing import Literal
+from typing import Literal, override
 
 import numpy as np
 import warp as wp
@@ -145,34 +145,29 @@ class Axis(IntEnum):
             return value
         if isinstance(value, str):
             return cls.from_string(value)
-        if isinstance(value, int) or type(value) in {wp.int32, wp.int64, np.int32, np.int64}:
+        if type(value) in {wp.int32, wp.int64, np.int32, np.int64}:
             return cls(value)
         raise TypeError(f"Cannot convert {type(value)} to Axis")
 
+    @override
     def __str__(self):
         return self.name.capitalize()
 
+    @override
     def __repr__(self):
         return f"Axis.{self.name.capitalize()}"
 
-    @classmethod
-    def from_string(cls, axis_str: str) -> Axis:
-        axis_str = axis_str.lower()
-        if axis_str == "x":
-            return Axis.X
-        if axis_str == "y":
-            return Axis.Y
-        if axis_str == "z":
-            return Axis.Z
-        raise ValueError(f"Invalid axis string: {axis_str}")
-
+    @override
     def __eq__(self, other):
-        if isinstance(other, Axis):
-            return self.value == other.value
-        if isinstance(other, int):
-            return self.value == other
         if isinstance(other, str):
             return self.name.lower() == other.lower()
+        # Axis members are also ints, so this check covers comparison
+        # with other Axis members (e.g., Axis.X == Axis.Y) and
+        # with plain integers (e.g., Axis.X == 0).
+        if isinstance(other, int):
+            return self.value == other
+        if type(other) in {wp.int32, wp.int64, np.int32, np.int64}:
+            return self.value == int(other)
         return NotImplemented
 
     def to_vector(self) -> tuple[float, float, float]:
@@ -340,7 +335,7 @@ class SDF:
         self.has_inertia = True
         self.is_solid = True
 
-    def finalize(self, device=None) -> wp.uint64:
+    def finalize(self) -> wp.uint64:
         return self.volume.id
 
     def __hash__(self) -> int:
@@ -423,6 +418,7 @@ class Mesh:
             self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
             return self.mesh.id
 
+    @override
     def __hash__(self) -> int:
         """
         Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
