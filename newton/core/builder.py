@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import copy
 import math
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -54,6 +56,7 @@ from .types import (
     SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
+    SHAPE_FLAG_VISIBLE,
     Axis,
     AxisType,
     JointAxis,
@@ -61,7 +64,6 @@ from .types import (
     Mesh,
     Quat,
     Sequence,
-    ShapeCfg,
     Transform,
     Vec3,
     Vec4,
@@ -70,6 +72,63 @@ from .types import (
     get_joint_dof_count,
     get_shape_radius,
 )
+
+
+@dataclass
+class ShapeConfig:
+    """
+    Represents the properties of a collision shape used in simulation.
+
+        density (float): The density of the shape material.
+        ke (float): The contact elastic stiffness
+        kd (float): The contact damping stiffness
+        kf (float): The contact friction stiffness
+        ka (float): The contact adhesion distance
+        mu (float): The coefficient of friction
+        restitution (float): The coefficient of restitution
+        thickness (float): The thickness of the shape.
+        is_solid (bool): Indicates whether the shape is solid or hollow. Defaults to True.
+        collision_group (int): The collision group ID for the shape. Defaults to -1.
+        collision_filter_parent (bool): Whether to inherit collision filtering from the parent. Defaults to True.
+        has_ground_collision (bool): Whether the shape can collide with the ground. Defaults to True.
+        has_shape_collision (bool): Whether the shape can collide with other shapes. Defaults to True.
+        is_visible (bool): Indicates whether the shape is visible in the simulation. Defaults to True.
+    """
+
+    density: float = 1000.0
+    ke: float = 1.0e5
+    kd: float = 1000.0
+    kf: float = 1000.0
+    ka: float = 0.0
+    mu: float = 0.5
+    restitution: float = 0.0
+    thickness: float = 1e-5
+    is_solid: bool = True
+    collision_group: int = -1
+    collision_filter_parent: bool = True
+    has_ground_collision: bool = True
+    has_shape_collision: bool = True
+    is_visible: bool = True
+
+    @property
+    def flags(self) -> int:
+        """Returns the flags for the shape."""
+
+        shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
+        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+        return shape_flags
+
+    @flags.setter
+    def flags(self, value: int):
+        """Sets the flags for the shape."""
+
+        self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
+        self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
+        self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
+
+    def copy(self) -> ShapeConfig:
+        return copy.copy(self)
 
 
 class ModelBuilder:
@@ -118,61 +177,45 @@ class ModelBuilder:
         desired.
     """
 
-    # Default particle settings
-    default_particle_radius = 0.1
-
-    # Default triangle soft mesh settings
-    default_tri_ke = 100.0
-    default_tri_ka = 100.0
-    default_tri_kd = 10.0
-    default_tri_drag = 0.0
-    default_tri_lift = 0.0
-
-    # Default distance constraint properties
-    default_spring_ke = 100.0
-    default_spring_kd = 0.0
-
-    # Default edge bending properties
-    default_edge_ke = 100.0
-    default_edge_kd = 0.0
-
-    # Default rigid shape properties
-    default_shape_cfg = ShapeCfg(
-        scale=(1.0, 1.0, 1.0),
-        src=None,
-        density=1000.0,
-        ke=1.0e5,
-        kd=1000.0,
-        kf=1000.0,
-        ka=0.0,
-        mu=0.5,
-        restitution=0.0,
-        thickness=1e-5,
-        is_solid=True,
-        collision_group=-1,
-        collision_filter_parent=True,
-        has_ground_collision=True,
-        has_shape_collision=True,
-        is_visible=True,
-    )
-
-    # Default joint settings
-    default_joint_limit_ke = 1e4
-    default_joint_limit_kd = 1e1
-    default_joint_limit_lower = -1e6
-    default_joint_limit_upper = 1e6
-    default_joint_armature = 0.0
-    default_joint_stiffness = 0.0
-    default_joint_damping = 0.0
-    default_joint_control_mode = JOINT_MODE_FORCE
-    default_joint_angular_compliance = 0.0
-    default_joint_linear_compliance = 0.0
-
-    # Default body settings
-    default_body_armature = 0.0
-
     def __init__(self, up_axis: AxisType = Axis.Y, gravity: float = -9.81):
         self.num_envs = 0
+
+        # region defaults
+        self.default_shape_cfg = ShapeConfig()
+
+        # Default particle settings
+        self.default_particle_radius = 0.1
+
+        # Default triangle soft mesh settings
+        self.default_tri_ke = 100.0
+        self.default_tri_ka = 100.0
+        self.default_tri_kd = 10.0
+        self.default_tri_drag = 0.0
+        self.default_tri_lift = 0.0
+
+        # Default distance constraint properties
+        self.default_spring_ke = 100.0
+        self.default_spring_kd = 0.0
+
+        # Default edge bending properties
+        self.default_edge_ke = 100.0
+        self.default_edge_kd = 0.0
+
+        # Default joint settings
+        self.default_joint_limit_ke = 1e4
+        self.default_joint_limit_kd = 1e1
+        self.default_joint_limit_lower = -1e6
+        self.default_joint_limit_upper = 1e6
+        self.default_joint_armature = 0.0
+        self.default_joint_stiffness = 0.0
+        self.default_joint_damping = 0.0
+        self.default_joint_control_mode = JOINT_MODE_FORCE
+        self.default_joint_angular_compliance = 0.0
+        self.default_joint_linear_compliance = 0.0
+
+        # Default body settings
+        self.default_body_armature = 0.0
+        # endregion
 
         # particles
         self.particle_q = []
@@ -1734,20 +1777,28 @@ class ModelBuilder:
         body: int,
         type: int,
         xform: Transform | None = None,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
+        scale: Vec3 | None = None,
+        src: SDF | Mesh | Any | None = None,
+        is_static: bool = False,
         key: str | None = None,
     ) -> int:
-        """Adds a shape to the model.
+        """Adds a generic collision shape to the model.
+
+        This is the base method for adding shapes; prefer using specific helpers like :meth:`add_shape_sphere` where possible.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            type: The type of the shape (GEO_* constants)
-            xform: The transform of the shape relative to the body frame
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body (e.g., static environment geometry).
+            type (int): The geometry type of the shape (e.g., `GEO_BOX`, `GEO_SPHERE`).
+            xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(0.0, 0.0, 0.0)` if `None`.
+            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GEO_MESH` or an :class:`SDF` object for `GEO_SDF`. Defaults to `None`.
+            is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
 
         Returns:
-            The index of the added shape
+            int: The index of the newly added shape.
         """
         if xform is None:
             xform = wp.transform()
@@ -1755,8 +1806,8 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if cfg is None:
             cfg = self.default_shape_cfg
-        else:
-            cfg.assign_defaults(self.default_shape_cfg)
+        if scale is None:
+            scale = (0.0, 0.0, 0.0)
         self.shape_body.append(body)
         shape = self.shape_count
         if body in self.body_shapes:
@@ -1770,8 +1821,8 @@ class ModelBuilder:
         self.shape_transform.append(xform)
         self.shape_flags.append(cfg.flags)
         self.shape_geo_type.append(type)
-        self.shape_geo_scale.append((cfg.scale[0], cfg.scale[1], cfg.scale[2]))
-        self.shape_geo_src.append(cfg.src)
+        self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
+        self.shape_geo_src.append(src)
         self.shape_geo_thickness.append(cfg.thickness)
         self.shape_geo_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -1785,15 +1836,15 @@ class ModelBuilder:
             self.shape_collision_group_map[cfg.collision_group] = []
         self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
-        self.shape_collision_radius.append(get_shape_radius(type, cfg.scale, cfg.src))
+        self.shape_collision_radius.append(get_shape_radius(type, scale, src))
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.add((parent_shape, shape))
 
-        if cfg.density > 0.0:
-            (m, c, I) = compute_shape_inertia(type, cfg.scale, cfg.src, cfg.density, cfg.is_solid, cfg.thickness)
+        if not is_static and cfg.density > 0.0:
+            (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
         return shape
@@ -1805,26 +1856,29 @@ class ModelBuilder:
         width: float = 10.0,
         length: float = 10.0,
         body: int = -1,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """
-        Adds a plane collision shape.
-        If pos and rot are defined, the plane is assumed to have its normal as (0, 1, 0).
-        Otherwise, the plane equation defined through the `plane` argument is used.
+        Adds a plane collision shape to the model.
+
+        If `xform` is provided, it directly defines the plane's position and orientation. The plane's collision normal
+        is assumed to be along the local Y-axis of this `xform`.
+        If `xform` is `None`, it will be derived from the `plane` equation `a*x + b*y + c*z + d = 0`.
+        Plane shapes added via this method are always static (massless).
 
         Args:
-            plane: The plane equation in form a*x + b*y + c*z + d = 0
-            xform: The transform of the shape relative to the body frame
-            width: The extent along x of the plane (infinite if 0)
-            length: The extent along z of the plane (infinite if 0)
-            body: The body index to attach the shape to (-1 by default to keep the plane static)
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            plane (Vec4 | None): The plane equation `(a, b, c, d)`. If `xform` is `None`, this defines the plane.
+                The normal is `(a,b,c)` and `d` is the offset. Defaults to `(0.0, 1.0, 0.0, 0.0)` (an XZ ground plane at Y=0) if `xform` is also `None`.
+            xform (Transform | None): The transform of the plane in the world or parent body's frame. If `None`, transform is derived from `plane`. Defaults to `None`.
+            width (float): The visual/collision extent of the plane along its local X-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
+            length (float): The visual/collision extent of the plane along its local Z-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
+            body (int): The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape
-
+            int: The index of the newly added shape.
         """
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
@@ -1842,16 +1896,15 @@ class ModelBuilder:
                 rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
             xform = wp.transform(pos, rot)
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        else:
-            cfg.assign_defaults(self.default_shape_cfg)
-        cfg.scale = wp.vec3(width, length, 0.0)
-        cfg.density = 0.0
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(width, length, 0.0)
         return self.add_shape(
             body=body,
             type=GEO_PLANE,
             xform=xform,
             cfg=cfg,
+            scale=scale,
+            is_static=True,
             key=key,
         )
 
@@ -1860,34 +1913,31 @@ class ModelBuilder:
         body: int,
         xform: Transform | None = None,
         radius: float = 1.0,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a sphere collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the sphere relative to the body frame
-            radius: The radius of the sphere
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the sphere in the parent body's local frame. The sphere is centered at this transform's position. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the sphere. Defaults to `1.0`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape
-
+            int: The index of the newly added shape.
         """
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        else:
-            cfg.assign_defaults(self.default_shape_cfg)
-        cfg.thickness += radius
-        cfg.scale = wp.vec3(radius, 0.0, 0.0)
+            cfg = self.default_shape_cfg
+        scale: Any = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
             type=GEO_SPHERE,
             xform=xform,
             cfg=cfg,
+            scale=scale,
             key=key,
         )
 
@@ -1898,32 +1948,35 @@ class ModelBuilder:
         hx: float = 0.5,
         hy: float = 0.5,
         hz: float = 0.5,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a box collision shape to a body.
 
+        The box is centered at its local origin as defined by `xform`.
+
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            xform: The transform of the box relative to the body frame. The box is centered at its origin.
-            hx: The half-extent along the x-axis
-            hy: The half-extent along the y-axis
-            hz: The half-extent along the z-axis
-            cfg: The properties of the shape (:class:`ShapeCfg` object)
-            key: The key of the shape
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the box in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            hx (float): The half-extent of the box along its local X-axis. Defaults to `0.5`.
+            hy (float): The half-extent of the box along its local Y-axis. Defaults to `0.5`.
+            hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape
+            int: The index of the newly added shape.
         """
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        cfg.scale = wp.vec3(hx, hy, hz)
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
             body=body,
             type=GEO_BOX,
             xform=xform,
             cfg=cfg,
+            scale=scale,
             key=key,
         )
 
@@ -1934,23 +1987,24 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         up_axis: AxisType = Axis.Y,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
+        The capsule is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes).
-            xform: The transform of the capsule relative to the body frame.
-            radius: The radius of the capsule.
-            half_height: The half length of the center cylinder along the up axis.
-            up_axis: The axis along which the capsule is aligned.
-            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
-            key: The key of the shape.
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the capsule in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the capsule's hemispherical ends and its cylindrical segment. Defaults to `1.0`.
+            half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the capsule along which its length is aligned (typically `Axis.X`, `Axis.Y`, or `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape.
-
+            int: The index of the newly added shape.
         """
 
         if xform is None:
@@ -1962,16 +2016,14 @@ class ModelBuilder:
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        else:
-            cfg.assign_defaults(self.default_shape_cfg)
-        cfg.scale = wp.vec3(radius, half_height, 0.0)
-        cfg.thickness += radius
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
             type=GEO_CAPSULE,
             xform=xform,
             cfg=cfg,
+            scale=scale,
             key=key,
         )
 
@@ -1982,23 +2034,24 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         up_axis: AxisType = Axis.Y,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cylinder collision shape to a body.
 
+        The cylinder is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes).
-            xform: The transform of the cylinder relative to the body frame.
-            radius: The radius of the cylinder.
-            half_height: The half length of the cylinder along the up axis.
-            up_axis: The axis along which the cylinder is aligned.
-            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
-            key: The key of the shape.
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the cylinder. Defaults to `1.0`.
+            half_height (float): The half-length of the cylinder along the `up_axis`. Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the cylinder along which its length is aligned (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape.
-
+            int: The index of the newly added shape.
         """
 
         if xform is None:
@@ -2010,13 +2063,14 @@ class ModelBuilder:
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        cfg.scale = wp.vec3(radius, half_height, 0.0)
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
             type=GEO_CYLINDER,
             xform=xform,
             cfg=cfg,
+            scale=scale,
             key=key,
         )
 
@@ -2027,23 +2081,24 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         up_axis: AxisType = Axis.Y,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cone collision shape to a body.
 
+        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `up_axis` towards its apex.
+
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes).
-            xform: The transform of the cone relative to the body frame.
-            radius: The radius of the cone.
-            half_height: The half length of the cone along the up axis.
-            up_axis: The axis along which the cone is aligned.
-            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
-            key: The key of the shape.
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the cone in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the cone's base. Defaults to `1.0`.
+            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `up_axis`). Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape.
-
+            int: The index of the newly added shape.
         """
 
         if xform is None:
@@ -2055,13 +2110,14 @@ class ModelBuilder:
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        cfg.scale = wp.vec3(radius, half_height, 0.0)
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
             type=GEO_CONE,
             xform=xform,
             cfg=cfg,
+            scale=scale,
             key=key,
         )
 
@@ -2070,31 +2126,30 @@ class ModelBuilder:
         body: int,
         xform: Transform | None = None,
         mesh: Mesh | None = None,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a triangle mesh collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes).
-            xform: The transform of the mesh relative to the body frame.
-            mesh: The mesh object.
-            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
-            key: The key of the shape.
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the mesh in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            mesh (Mesh | None): The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape.
-
+            int: The index of the newly added shape.
         """
 
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        cfg.src = mesh
+            cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
             type=GEO_MESH,
             xform=xform,
             cfg=cfg,
+            src=mesh,
             key=key,
         )
 
@@ -2103,30 +2158,29 @@ class ModelBuilder:
         body: int,
         xform: Transform | None = None,
         sdf: SDF | None = None,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
-        """Adds a signed distance field (SDF) collider to a body.
+        """Adds a signed distance field (SDF) collision shape to a body.
 
         Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes).
-            xform: The transform of the SDF relative to the body frame.
-            sdf: The SDF object.
-            cfg: The properties of the shape (:class:`ShapeCfg` object). If None, the default shape configuration :attr:`default_shape_cfg` is used.
-            key: The key of the shape.
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the SDF in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            sdf (SDF | None): The :class:`SDF` object representing the signed distance field. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
         Returns:
-            The index of the added shape.
-
+            int: The index of the newly added shape.
         """
         if cfg is None:
-            cfg = self.default_shape_cfg.copy()
-        cfg.src = sdf
+            cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
             type=GEO_SDF,
             xform=xform,
             cfg=cfg,
+            src=sdf,
             key=key,
         )
 
@@ -3094,7 +3148,7 @@ class ModelBuilder:
         self,
         normal: Vec3 | None = None,
         offset: float = 0.0,
-        cfg: ShapeCfg | None = None,
+        cfg: ShapeConfig | None = None,
     ):
         """
         Creates a ground plane for the world. If the normal is not specified,

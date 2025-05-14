@@ -22,7 +22,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Axis, AxisType, Mesh, ModelBuilder, ShapeCfg, quat_between_axes
+from newton.core import Axis, AxisType, Mesh, ModelBuilder, quat_between_axes
+from newton.core.builder import ShapeConfig
 from newton.core.types import Transform
 
 
@@ -106,7 +107,7 @@ def parse_urdf(
         return wp.transform(xyz, wp.quat_rpy(*rpy))
 
     def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
-        cfg = ShapeCfg(
+        cfg = ShapeConfig(
             density=density,
             is_visible=visible,
             has_ground_collision=not just_visual,

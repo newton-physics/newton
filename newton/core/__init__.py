@@ -64,7 +64,6 @@ from .types import (
     Mesh,
     ModelShapeGeometry,
     ModelShapeMaterials,
-    ShapeCfg,
 )
 
 __all__ = [
@@ -104,7 +103,6 @@ __all__ = [
     "ModelBuilder",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
-    "ShapeCfg",
     "State",
     "eval_fk",
     "eval_ik",

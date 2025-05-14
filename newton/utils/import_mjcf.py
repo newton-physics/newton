@@ -39,7 +39,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Mesh, ModelBuilder, ShapeCfg, quat_between_axes
+from newton.core import Mesh, ModelBuilder, quat_between_axes
+from newton.core.builder import ShapeConfig
 from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
@@ -204,7 +205,7 @@ def parse_mjcf(
             euler = np.fromstring(attrib["euler"], sep=" ")
             if use_degrees:
                 euler *= np.pi / 180
-            return newton.quat_from_euler(wp.vec3(euler), *euler_seq)
+            return newton.core.quat_from_euler(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
             axisangle = np.fromstring(attrib["axisangle"], sep=" ")
             angle = axisangle[3]
@@ -267,7 +268,7 @@ def parse_mjcf(
             tf = wp.transform(geom_pos, geom_rot)
             geom_density = parse_float(geom_attrib, "density", density)
 
-            shape_cfg = ShapeCfg(
+            shape_cfg = ShapeConfig(
                 is_visible=visible,
                 has_ground_collision=not just_visual,
                 has_shape_collision=not just_visual,
@@ -297,7 +298,6 @@ def parse_mjcf(
                     hx=geom_size[0],
                     hy=geom_size[1],
                     hz=geom_size[2],
-                    is_visible=visible,
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -324,10 +324,8 @@ def parse_mjcf(
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
                         m_mesh = Mesh(m_vertices, m_faces)
                         s = builder.add_shape_mesh(
-                            pos=geom_pos,
-                            rot=geom_rot,
+                            xform=tf,
                             mesh=m_mesh,
-                            density=density,
                             **shape_kwargs,
                         )
                         shapes.append(s)
@@ -577,6 +575,7 @@ def parse_mjcf(
                 )
                 builder.joint_q[-7:-4] = [*body_pos]
             else:
+                # TODO parse ref, springref values from joint_attrib
                 builder.add_joint(
                     joint_type,
                     parent=parent,

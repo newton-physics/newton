@@ -17,11 +17,9 @@
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Sequence
-from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -283,73 +281,6 @@ class JointAxis:
                 self.action = 0.0
 
 
-@dataclass
-class ShapeCfg:
-    """
-    Represents the properties of a collision shape used in simulation.
-    Values set to None will be replaced with default values from :attr:`ModelBuilder.default_shape_cfg`.
-
-        scale (Vec3): The scale of the shape in 3D space. Defaults to (1.0, 1.0, 1.0).
-        src (Mesh | SDF | Any | None): The source geometry of the shape. Can be a mesh, SDF, or other types. Defaults to None.
-        density (float): The density of the shape material.
-        ke (float): The contact elastic stiffness
-        kd (float): The contact damping stiffness
-        kf (float): The contact friction stiffness
-        ka (float): The contact adhesion distance
-        mu (float): The coefficient of friction
-        restitution (float): The coefficient of restitution
-        thickness (float): The thickness of the shape.
-        is_solid (bool): Indicates whether the shape is solid or hollow. Defaults to True.
-        collision_group (int): The collision group ID for the shape. Defaults to -1.
-        collision_filter_parent (bool): Whether to inherit collision filtering from the parent. Defaults to True.
-        has_ground_collision (bool): Whether the shape can collide with the ground. Defaults to True.
-        has_shape_collision (bool): Whether the shape can collide with other shapes. Defaults to True.
-        is_visible (bool): Indicates whether the shape is visible in the simulation. Defaults to True.
-    """
-
-    scale: Vec3 | None = None
-    src: Mesh | SDF | Any | None = None
-    density: float | None = None
-    ke: float | None = None
-    kd: float | None = None
-    kf: float | None = None
-    ka: float | None = None
-    mu: float | None = None
-    restitution: float | None = None
-    thickness: float | None = None
-    is_solid: bool | None = None
-    collision_group: int | None = None
-    collision_filter_parent: bool | None = None
-    has_ground_collision: bool | None = None
-    has_shape_collision: bool | None = None
-    is_visible: bool | None = None
-
-    def assign_defaults(self, defaults: ShapeCfg):
-        for key, value in self.__dict__.items():
-            if value is None:
-                self.__dict__[key] = defaults.__dict__[key]
-
-    @property
-    def flags(self) -> int:
-        """Returns the flags for the shape."""
-
-        shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
-        return shape_flags
-
-    @flags.setter
-    def flags(self, value: int):
-        """Sets the flags for the shape."""
-
-        self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
-        self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-        self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
-
-    def copy(self) -> ShapeCfg:
-        return copy.copy(self)
-
-
 @wp.struct
 class ModelShapeMaterials:
     """
@@ -539,4 +470,5 @@ __all__ = [
     "Vec4",
     "flag_to_int",
     "get_joint_dof_count",
+    "Sequence",
 ]

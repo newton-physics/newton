@@ -46,7 +46,6 @@ from .core import (
     ModelBuilder,
     ModelShapeGeometry,
     ModelShapeMaterials,
-    ShapeCfg,
     State,
 )
 
@@ -81,7 +80,6 @@ __all__ = [
     "ModelBuilder",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
-    "ShapeCfg",
     "State",
     "__version__",
     "solvers",

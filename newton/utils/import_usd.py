@@ -23,7 +23,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import ShapeCfg, quat_between_axes
+from newton.core import quat_between_axes
+from newton.core.builder import ShapeConfig
 from newton.core.types import Axis, Transform
 
 
@@ -31,25 +32,25 @@ def parse_usd(
     source,
     builder: newton.ModelBuilder,
     xform: Transform | None = None,
-    only_load_enabled_rigid_bodies=False,
-    only_load_enabled_joints=True,
-    only_load_warp_scene=False,
-    joint_drive_gains_scaling=1.0,
-    invert_rotations=False,
+    only_load_enabled_rigid_bodies: bool=False,
+    only_load_enabled_joints: bool=True,
+    only_load_warp_scene: bool=False,
+    joint_drive_gains_scaling: float=1.0,
+    invert_rotations: bool=False,
     verbose: bool = wp.config.verbose,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
-    collapse_fixed_joints=False,
-    root_path="/",
+    collapse_fixed_joints: bool=False,
+    root_path: str="/",
     joint_ordering: Literal["bfs", "dfs"] = "bfs",
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
-    The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `UsdStage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
+    The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
     Args:
-        source (str | pxr.UsdStage): The file path to the USD file, or an existing USD stage instance.
+        source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         xform (Transform): The transform to apply to the entire scene.
         default_density (float): The default density to use for bodies without a density attribute.
@@ -763,7 +764,7 @@ def parse_usd(
                 shape_params = {
                     "body": body_id,
                     "xform": wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot)),
-                    "cfg": ShapeCfg(
+                    "cfg": ShapeConfig(
                         ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", None),
                         kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", None),
                         kf=parse_float_with_fallback(prim_and_scene, "warp:contact_kf", None),
