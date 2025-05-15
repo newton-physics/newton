@@ -36,7 +36,7 @@ Keyboard shortcuts when working with the OpenGLRenderer (aka newton.utils.SimRen
       - Toggle the visibility of the coordinate system axes
     * - ``G``
       - Toggle ground grid
-    * - ``D``
+    * - ``T``
       - Toggle depth rendering
     * - ``I``
       - Toggle info text in the top left corner
