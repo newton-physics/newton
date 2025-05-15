@@ -24,7 +24,7 @@ import warp as wp
 
 import newton
 from newton.core import quat_between_axes
-from newton.core.builder import ShapeConfig
+from newton.core.builder import JointDofConfig, ShapeConfig
 from newton.core.types import Axis, Transform
 
 
@@ -32,16 +32,16 @@ def parse_usd(
     source,
     builder: newton.ModelBuilder,
     xform: Transform | None = None,
-    only_load_enabled_rigid_bodies: bool=False,
-    only_load_enabled_joints: bool=True,
-    only_load_warp_scene: bool=False,
-    joint_drive_gains_scaling: float=1.0,
-    invert_rotations: bool=False,
+    only_load_enabled_rigid_bodies: bool = False,
+    only_load_enabled_joints: bool = True,
+    only_load_warp_scene: bool = False,
+    joint_drive_gains_scaling: float = 1.0,
+    invert_rotations: bool = False,
     verbose: bool = wp.config.verbose,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
-    collapse_fixed_joints: bool=False,
-    root_path: str="/",
+    collapse_fixed_joints: bool = False,
+    root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] = "bfs",
 ) -> dict[str, Any]:
     """
@@ -109,7 +109,12 @@ def parse_usd(
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
 
-    default_density = builder.default_shape_cfg.density
+    # load joint defaults
+    default_joint_limit_ke = builder.default_joint_cfg.target_ke
+    default_joint_limit_kd: float = builder.default_joint_cfg.target_kd
+
+    # load shape defaults
+    default_shape_density = builder.default_shape_cfg.density
 
     def get_attribute(prim, name):
         return prim.GetAttribute(name)
@@ -127,7 +132,7 @@ def parse_usd(
             return val
         return default
 
-    def parse_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float | None = 0.0) -> float | None:
+    def parse_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float = 0.0) -> float:
         ret = default
         for prim in prims:
             if not prim:
@@ -312,7 +317,9 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature = parse_float_with_fallback((prim, physics_scene_prim), "warp:armature", None)
+        body_armature = parse_float_with_fallback(
+            (prim, physics_scene_prim), "warp:armature", builder.default_body_armature
+        )
 
         b = builder.add_body(
             xform=origin,
@@ -359,10 +366,10 @@ def parse_usd(
             "armature": joint_armature,
         }
         current_joint_limit_ke = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "warp:joint_limit_ke", builder.default_joint_limit_ke
+            (joint_prim, physics_scene_prim), "warp:joint_limit_ke", default_joint_limit_ke
         )
         current_joint_limit_kd = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "warp:joint_limit_kd", builder.default_joint_limit_kd
+            (joint_prim, physics_scene_prim), "warp:joint_limit_kd", default_joint_limit_kd
         )
 
         if key == UsdPhysics.ObjectType.FixedJoint:
@@ -376,19 +383,21 @@ def parse_usd(
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
-                    joint_params["action"] = joint_desc.drive.targetVelocity
+                    joint_params["target"] = joint_desc.drive.targetVelocity
                     joint_params["mode"] = newton.JOINT_MODE_TARGET_VELOCITY
                 else:
-                    joint_params["action"] = joint_desc.drive.targetPosition
+                    joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = newton.JOINT_MODE_TARGET_POSITION
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
                 joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
 
+            dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
+            joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
+            joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
+            joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
+
             if key == UsdPhysics.ObjectType.PrismaticJoint:
-                joint_prim.CreateAttribute("physics:tensor:linear:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
                 builder.add_joint_prismatic(**joint_params)
             else:
                 joint_prim.CreateAttribute("physics:tensor:angular:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
@@ -396,7 +405,7 @@ def parse_usd(
                 joint_prim.CreateAttribute("state:angular:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
                 if joint_desc.drive.enabled:
-                    joint_params["action"] *= DegreesToRadian
+                    joint_params["target"] *= DegreesToRadian
                     joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
                     joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
@@ -435,7 +444,7 @@ def parse_usd(
                 free_axis = limit_lower < limit_upper
 
                 def define_joint_mode(dof, joint_desc):
-                    action = 0.0  # TODO: parse action from state:*:physics:appliedForce usd attribute when no drive is present
+                    target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
                     mode = newton.JOINT_MODE_FORCE
                     target_ke = 0.0
                     target_kd = 0.0
@@ -444,16 +453,16 @@ def parse_usd(
                             continue
                         if drive.second.enabled:
                             if drive.second.targetVelocity != 0.0:
-                                action = drive.second.targetVelocity
+                                target = drive.second.targetVelocity
                                 mode = newton.JOINT_MODE_TARGET_VELOCITY
                             else:
-                                action = drive.second.targetPosition
+                                target = drive.second.targetPosition
                                 mode = newton.JOINT_MODE_TARGET_POSITION
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
-                    return action, mode, target_ke, target_kd
+                    return target, mode, target_ke, target_kd
 
-                action, mode, target_ke, target_kd = define_joint_mode(dof, joint_desc)
+                target, mode, target_ke, target_kd = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -472,13 +481,13 @@ def parse_usd(
                 }
                 if free_axis and dof in _trans_axes:
                     linear_axes.append(
-                        newton.JointAxis(
+                        JointDofConfig(
                             axis=_trans_axes[dof],
                             limit_lower=limit_lower,
                             limit_upper=limit_upper,
                             limit_ke=current_joint_limit_ke,
                             limit_kd=current_joint_limit_kd,
-                            action=action,
+                            target=target,
                             mode=mode,
                             target_ke=target_ke,
                             target_kd=target_kd,
@@ -486,13 +495,13 @@ def parse_usd(
                     )
                 elif free_axis and dof in _rot_axes:
                     angular_axes.append(
-                        newton.JointAxis(
+                        JointDofConfig(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
                             limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            action=action * DegreesToRadian,
+                            target=target * DegreesToRadian,
                             mode=mode,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
@@ -591,7 +600,7 @@ def parse_usd(
             dynamicFriction=desc.dynamicFriction,
             restitution=desc.restitution,
             # TODO: if desc.density is 0, then we should look for mass somewhere
-            density=desc.density if desc.density > 0.0 else default_density,
+            density=desc.density if desc.density > 0.0 else default_shape_density,
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -599,7 +608,7 @@ def parse_usd(
         for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs):
             body_path = str(prim_path)
             body_specs[body_path] = rigid_body_desc
-            body_density[body_path] = default_density
+            body_density[body_path] = default_shape_density
             prim = stage.GetPrimAtPath(prim_path)
             # Marking for deprecation --->
             if prim.HasRelationship("material:binding:physics"):
@@ -765,11 +774,13 @@ def parse_usd(
                     "body": body_id,
                     "xform": wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot)),
                     "cfg": ShapeConfig(
-                        ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", None),
-                        kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", None),
-                        kf=parse_float_with_fallback(prim_and_scene, "warp:contact_kf", None),
-                        ka=parse_float_with_fallback(prim_and_scene, "warp:contact_ka", None),
-                        thickness=parse_float_with_fallback(prim_and_scene, "warp:contact_thickness", None),
+                        ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", builder.default_shape_cfg.ke),
+                        kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", builder.default_shape_cfg.kd),
+                        kf=parse_float_with_fallback(prim_and_scene, "warp:contact_kf", builder.default_shape_cfg.kf),
+                        ka=parse_float_with_fallback(prim_and_scene, "warp:contact_ka", builder.default_shape_cfg.ka),
+                        thickness=parse_float_with_fallback(
+                            prim_and_scene, "warp:contact_thickness", builder.default_shape_cfg.thickness
+                        ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         density=material.density,

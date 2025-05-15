@@ -21,9 +21,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import warp as wp
 
-import newton
 from newton.core import Axis, AxisType, Mesh, ModelBuilder, quat_between_axes
-from newton.core.builder import ShapeConfig
+from newton.core.builder import JointDofConfig, ShapeConfig
 from newton.core.types import Transform
 
 
@@ -95,6 +94,14 @@ def parse_urdf(
 
     file = ET.parse(urdf_filename)
     root = file.getroot()
+
+    # load joint defaults
+    default_joint_limit_lower = builder.default_joint_cfg.limit_lower
+    default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_damping = builder.default_joint_cfg.target_kd
+
+    # load shape defaults
+    default_shape_density = builder.default_shape_cfg.density
 
     def parse_transform(element):
         if element is None or element.find("origin") is None:
@@ -267,7 +274,7 @@ def parse_urdf(
             # we need to show the collision shapes since there are no visual shapes
             show_colliders = True
 
-        parse_shapes(link, colliders, density=None, visible=show_colliders)
+        parse_shapes(link, colliders, density=default_shape_density, visible=show_colliders)
         m = builder.body_mass[link]
         el_inertia = urdf_link.find("inertial")
         if not ignore_inertial_definitions and el_inertia is not None:
@@ -328,7 +335,7 @@ def parse_urdf(
             "child": child,
             "type": joint.get("type"),
             "origin": parse_transform(joint),
-            "damping": builder.default_joint_damping,
+            "damping": default_joint_damping,
             "friction": 0.0,
         }
         el_axis = joint.find("axis")
@@ -337,12 +344,12 @@ def parse_urdf(
             joint_data["axis"] = np.array([float(x) for x in ax.split()])
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
-            joint_data["damping"] = float(el_dynamics.get("damping", builder.default_joint_damping))
+            joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
             joint_data["friction"] = float(el_dynamics.get("friction", 0))
         el_limit = joint.find("limit")
         if el_limit is not None:
-            joint_data["limit_lower"] = float(el_limit.get("lower", builder.default_joint_limit_lower))
-            joint_data["limit_upper"] = float(el_limit.get("upper", builder.default_joint_limit_upper))
+            joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
+            joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -397,8 +404,8 @@ def parse_urdf(
                 "z": [0.0, 0.0, 1.0],
             }
             builder.add_joint_d6(
-                linear_axes=[newton.JointAxis(axes[a]) for a in linear_axes],
-                angular_axes=[newton.JointAxis(axes[a]) for a in angular_axes],
+                linear_axes=[JointDofConfig(axes[a]) for a in linear_axes],
+                angular_axes=[JointDofConfig(axes[a]) for a in angular_axes],
                 parent_xform=base_parent_xform,
                 child_xform=base_child_xform,
                 parent=-1,
@@ -492,13 +499,13 @@ def parse_urdf(
 
             builder.add_joint_d6(
                 linear_axes=[
-                    newton.JointAxis(
+                    JointDofConfig(
                         u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
                     ),
-                    newton.JointAxis(
+                    JointDofConfig(
                         v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,

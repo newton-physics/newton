@@ -40,7 +40,7 @@ import warp as wp
 
 import newton
 from newton.core import Mesh, ModelBuilder, quat_between_axes
-from newton.core.builder import ShapeConfig, JointDofConfig
+from newton.core.builder import JointDofConfig, ShapeConfig
 from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
@@ -466,12 +466,8 @@ def parse_mjcf(
 
                 joint_name.append(joint_attrib.get("name") or f"{body_name}_joint_{i}")
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
-                joint_range = parse_vec(
-                    joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper)
-                )
-                joint_armature.append(
-                    parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale
-                )
+                joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
+                joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
 
                 if joint_type_str == "free":
                     joint_type = newton.JOINT_FREE
