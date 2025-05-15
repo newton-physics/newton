@@ -228,6 +228,61 @@ def convert_warp_coords_to_mj_kernel(
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
 
+@wp.kernel
+def convert_joint_q_qpos0(
+    joint_q: wp.array(dtype=wp.float32),
+    joints_per_env: int,
+    up_axis: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
+    # outputs
+    qpos0: wp.array2d(dtype=wp.float32),
+):
+    worldid, jntid = wp.tid()
+
+    type = joint_type[jntid]
+    q_i = joint_q_start[jntid]
+    wq_i = joint_q_start[joints_per_env * worldid + jntid]
+
+    if type == newton.JOINT_FREE:
+        # convert position components
+        if up_axis == 1:
+            qpos0[worldid, q_i + 0] = joint_q[wq_i + 0]
+            qpos0[worldid, q_i + 1] = -joint_q[wq_i + 2]
+            qpos0[worldid, q_i + 2] = joint_q[wq_i + 1]
+        else:
+            for i in range(3):
+                qpos0[worldid, q_i + i] = joint_q[wq_i + i]
+
+        rot = wp.quat(
+            joint_q[wq_i + 3],
+            joint_q[wq_i + 4],
+            joint_q[wq_i + 5],
+            joint_q[wq_i + 6],
+        )
+        if up_axis == 1:
+            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+            rot = rot_y2z * rot
+        # change quaternion order from xyzw to wxyz
+        qpos0[worldid, q_i + 3] = rot[3]
+        qpos0[worldid, q_i + 4] = rot[0]
+        qpos0[worldid, q_i + 5] = rot[1]
+        qpos0[worldid, q_i + 6] = rot[2]
+
+    elif type == newton.JOINT_BALL:
+        # change quaternion order from xyzw to wxyz
+        qpos0[worldid, q_i + 0] = joint_q[wq_i + 1]
+        qpos0[worldid, q_i + 1] = joint_q[wq_i + 2]
+        qpos0[worldid, q_i + 2] = joint_q[wq_i + 3]
+        qpos0[worldid, q_i + 3] = joint_q[wq_i + 0]
+    else:
+        axis_count = joint_axis_dim[jntid, 0] + joint_axis_dim[jntid, 1]
+        for i in range(axis_count):
+            # convert position components
+            qpos0[worldid, q_i + i] = joint_q[wq_i + i]
+
+
 
 @wp.kernel
 def apply_mjc_control_kernel(
@@ -1235,6 +1290,21 @@ class MuJoCoSolver(SolverBase):
         # expand model fields that can be expanded:
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
+        # joint_1 -> qpos0
+        wp.launch(
+            convert_joint_q_qpos0,
+            dim=(nworld, joints_per_env),
+            inputs=[
+                model.joint_q,
+                joints_per_env,
+                model.up_axis,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_axis_dim,
+            ],
+            outputs=[mj_model.qpos0],
+            device=model.device,
+        )
         
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
