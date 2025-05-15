@@ -758,7 +758,7 @@ def test_mesh_ground_collision_index(test, device):
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
     b = builder.add_body(mass=1.0)
-    cfg = newton.ShapeCfg(has_shape_collision=False)
+    cfg = newton.core.builder.ShapeConfig(has_shape_collision=False)
     builder.add_shape_mesh(
         body=b,
         mesh=mesh,

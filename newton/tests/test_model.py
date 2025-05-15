@@ -113,7 +113,7 @@ class TestModel(unittest.TestCase):
         assert_np_equal(np.array(builder1.edge_bending_properties), np.array(builder2.edge_bending_properties))
 
     def test_collapse_fixed_joints(self):
-        shape_cfg = newton.ShapeCfg(density=1.0)
+        shape_cfg = newton.core.builder.ShapeConfig(density=1.0)
 
         def add_three_cubes(builder: ModelBuilder, parent_body=-1):
             unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
