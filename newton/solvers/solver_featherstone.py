@@ -432,7 +432,7 @@ def jcalc_tau(
     joint_S_s: wp.array(dtype=wp.spatial_vector),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    joint_act: wp.array(dtype=float),
+    joint_target: wp.array(dtype=float),
     joint_axis_mode: wp.array(dtype=int),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
@@ -450,7 +450,7 @@ def jcalc_tau(
 
         q = joint_q[coord_start]
         qd = joint_qd[dof_start]
-        act = joint_act[axis_start]
+        act = joint_target[axis_start]
 
         lower = joint_limit_lower[axis_start]
         upper = joint_limit_upper[axis_start]
@@ -499,7 +499,7 @@ def jcalc_tau(
 
             q = joint_q[coord_start + i]
             qd = joint_qd[dof_start + i]
-            act = joint_act[axis_start + i]
+            act = joint_target[axis_start + i]
 
             lower = joint_limit_lower[axis_start + i]
             upper = joint_limit_upper[axis_start + i]
@@ -951,7 +951,7 @@ def eval_rigid_tau(
     joint_axis_mode: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    joint_act: wp.array(dtype=float),
+    joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
@@ -1002,7 +1002,7 @@ def eval_rigid_tau(
             joint_S_s,
             joint_q,
             joint_qd,
-            joint_act,
+            joint_target,
             joint_axis_mode,
             joint_limit_lower,
             joint_limit_upper,
@@ -1880,7 +1880,7 @@ class FeatherstoneSolver(SolverBase):
                             model.joint_axis_mode,
                             state_in.joint_q,
                             state_in.joint_qd,
-                            control.joint_act,
+                            control.joint_target,
                             model.joint_target_ke,
                             model.joint_target_kd,
                             model.joint_limit_lower,
@@ -2047,8 +2047,8 @@ class FeatherstoneSolver(SolverBase):
                                 device=model.device,
                             )
 
-                        # print("joint_act:")
-                        # print(control.joint_act.numpy())
+                        # print("joint_target:")
+                        # print(control.joint_target.numpy())
                         # print("joint_tau:")
                         # print(state_aug.joint_tau.numpy())
                         # print("H:")

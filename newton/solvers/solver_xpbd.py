@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 from newton.core import (
+    JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
     PARTICLE_FLAG_ACTIVE,
@@ -1618,7 +1619,7 @@ def solve_simple_body_joints(
     corr = wp.quat_rotate(q_dx, corr)
 
     lambda_in = 0.0
-    linear_alpha = joint_linear_compliance[tid]
+    linear_alpha = joint_linear_compliance
     lambda_n = compute_linear_correction_3d(
         corr, r_p, r_c, pose_p, pose_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, lambda_in, linear_alpha, damping, dt
     )
