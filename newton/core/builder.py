@@ -75,109 +75,6 @@ from .types import (
 )
 
 
-@dataclass
-class ShapeConfig:
-    """
-    Represents the properties of a collision shape used in simulation.
-    """
-
-    density: float = 1000.0
-    """The density of the shape material."""
-    ke: float = 1.0e5
-    """The contact elastic stiffness."""
-    kd: float = 1000.0
-    """The contact damping stiffness."""
-    kf: float = 1000.0
-    """The contact friction stiffness."""
-    ka: float = 0.0
-    """The contact adhesion distance."""
-    mu: float = 0.5
-    """The coefficient of friction."""
-    restitution: float = 0.0
-    """The coefficient of restitution."""
-    thickness: float = 1e-5
-    """The thickness of the shape."""
-    is_solid: bool = True
-    """Indicates whether the shape is solid or hollow. Defaults to True."""
-    collision_group: int = -1
-    """The collision group ID for the shape. Defaults to -1."""
-    collision_filter_parent: bool = True
-    """Whether to inherit collision filtering from the parent. Defaults to True."""
-    has_ground_collision: bool = True
-    """Whether the shape can collide with the ground. Defaults to True."""
-    has_shape_collision: bool = True
-    """Whether the shape can collide with other shapes. Defaults to True."""
-    is_visible: bool = True
-    """Indicates whether the shape is visible in the simulation. Defaults to True."""
-
-    @property
-    def flags(self) -> int:
-        """Returns the flags for the shape."""
-
-        shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
-        return shape_flags
-
-    @flags.setter
-    def flags(self, value: int):
-        """Sets the flags for the shape."""
-
-        self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
-        self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-        self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
-
-    def copy(self) -> ShapeConfig:
-        return copy.copy(self)
-
-
-class JointDofConfig:
-    """
-    Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
-    """
-
-    def __init__(
-        self,
-        axis: AxisType | Vec3 = Axis.X,
-        limit_lower: float = -1e6,
-        limit_upper: float = 1e6,
-        limit_ke: float = 1e4,
-        limit_kd: float = 1e1,
-        target: float = 0.0,
-        target_ke: float = 0.0,
-        target_kd: float = 0.0,
-        mode: int = JOINT_MODE_TARGET_POSITION,
-        armature: float = 1e-2,
-    ):
-        self.axis = wp.normalize(axis_to_vec3(axis))
-        """The 3D axis that this JointDofConfig object describes."""
-        self.limit_lower = limit_lower
-        """The lower position limit of the joint axis. Defaults to -1e6."""
-        self.limit_upper = limit_upper
-        """The upper position limit of the joint axis. Defaults to 1e6."""
-        self.limit_ke = limit_ke
-        """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
-        self.limit_kd = limit_kd
-        """The damping stiffness of the joint axis limits. Defaults to 1e1."""
-        self.target = target
-        """The target position or velocity (depending on the mode) of the joint axis.
-        If `mode` is `JOINT_MODE_TARGET_POSITION` and the initial `target` is outside the limits,
-        it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
-        self.target_ke = target_ke
-        """The proportional gain of the target drive PD controller. Defaults to 0.0."""
-        self.target_kd = target_kd
-        """The derivative gain of the target drive PD controller. Defaults to 0.0."""
-        self.mode = mode
-        """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
-        self.armature = armature
-        """Artificial inertia added around the joint axis. Defaults to 1e-2."""
-
-        if self.mode == JOINT_MODE_TARGET_POSITION and (
-            self.target > self.limit_upper or self.target < self.limit_lower
-        ):
-            self.target = 0.5 * (self.limit_lower + self.limit_upper)
-
-
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -224,12 +121,113 @@ class ModelBuilder:
         desired.
     """
 
+    @dataclass
+    class ShapeConfig:
+        """
+        Represents the properties of a collision shape used in simulation.
+        """
+
+        density: float = 1000.0
+        """The density of the shape material."""
+        ke: float = 1.0e5
+        """The contact elastic stiffness."""
+        kd: float = 1000.0
+        """The contact damping stiffness."""
+        kf: float = 1000.0
+        """The contact friction stiffness."""
+        ka: float = 0.0
+        """The contact adhesion distance."""
+        mu: float = 0.5
+        """The coefficient of friction."""
+        restitution: float = 0.0
+        """The coefficient of restitution."""
+        thickness: float = 1e-5
+        """The thickness of the shape."""
+        is_solid: bool = True
+        """Indicates whether the shape is solid or hollow. Defaults to True."""
+        collision_group: int = -1
+        """The collision group ID for the shape. Defaults to -1."""
+        collision_filter_parent: bool = True
+        """Whether to inherit collision filtering from the parent. Defaults to True."""
+        has_ground_collision: bool = True
+        """Whether the shape can collide with the ground. Defaults to True."""
+        has_shape_collision: bool = True
+        """Whether the shape can collide with other shapes. Defaults to True."""
+        is_visible: bool = True
+        """Indicates whether the shape is visible in the simulation. Defaults to True."""
+
+        @property
+        def flags(self) -> int:
+            """Returns the flags for the shape."""
+
+            shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+            return shape_flags
+
+        @flags.setter
+        def flags(self, value: int):
+            """Sets the flags for the shape."""
+
+            self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
+            self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
+            self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
+
+        def copy(self) -> ShapeConfig:
+            return copy.copy(self)
+
+    class JointDofConfig:
+        """
+        Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
+        """
+
+        def __init__(
+            self,
+            axis: AxisType | Vec3 = Axis.X,
+            limit_lower: float = -1e6,
+            limit_upper: float = 1e6,
+            limit_ke: float = 1e4,
+            limit_kd: float = 1e1,
+            target: float = 0.0,
+            target_ke: float = 0.0,
+            target_kd: float = 0.0,
+            mode: int = JOINT_MODE_TARGET_POSITION,
+            armature: float = 1e-2,
+        ):
+            self.axis = wp.normalize(axis_to_vec3(axis))
+            """The 3D axis that this JointDofConfig object describes."""
+            self.limit_lower = limit_lower
+            """The lower position limit of the joint axis. Defaults to -1e6."""
+            self.limit_upper = limit_upper
+            """The upper position limit of the joint axis. Defaults to 1e6."""
+            self.limit_ke = limit_ke
+            """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
+            self.limit_kd = limit_kd
+            """The damping stiffness of the joint axis limits. Defaults to 1e1."""
+            self.target = target
+            """The target position or velocity (depending on the mode) of the joint axis.
+            If `mode` is `JOINT_MODE_TARGET_POSITION` and the initial `target` is outside the limits,
+            it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            self.target_ke = target_ke
+            """The proportional gain of the target drive PD controller. Defaults to 0.0."""
+            self.target_kd = target_kd
+            """The derivative gain of the target drive PD controller. Defaults to 0.0."""
+            self.mode = mode
+            """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
+            self.armature = armature
+            """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+
+            if self.mode == JOINT_MODE_TARGET_POSITION and (
+                self.target > self.limit_upper or self.target < self.limit_lower
+            ):
+                self.target = 0.5 * (self.limit_lower + self.limit_upper)
+
     def __init__(self, up_axis: AxisType = Axis.Y, gravity: float = -9.81):
         self.num_envs = 0
 
         # region defaults
-        self.default_shape_cfg = ShapeConfig()
-        self.default_joint_cfg = JointDofConfig()
+        self.default_shape_cfg = ModelBuilder.ShapeConfig()
+        self.default_joint_cfg = ModelBuilder.JointDofConfig()
 
         # Default particle settings
         self.default_particle_radius = 0.1
@@ -795,7 +793,7 @@ class ModelBuilder:
         self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
         self.joint_enabled.append(enabled)
 
-        def add_axis_dim(dim: JointDofConfig):
+        def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
             self.joint_axis_mode.append(dim.mode)
             self.joint_target.append(dim.target)
@@ -894,10 +892,10 @@ class ModelBuilder:
 
         if axis is None:
             axis = self.default_joint_cfg.axis
-        if isinstance(axis, JointDofConfig):
+        if isinstance(axis, ModelBuilder.JointDofConfig):
             ax = axis
         else:
-            ax = JointDofConfig(
+            ax = ModelBuilder.JointDofConfig(
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
@@ -969,10 +967,10 @@ class ModelBuilder:
 
         if axis is None:
             axis = self.default_joint_cfg.axis
-        if isinstance(axis, JointDofConfig):
+        if isinstance(axis, ModelBuilder.JointDofConfig):
             ax = axis
         else:
-            ax = JointDofConfig(
+            ax = ModelBuilder.JointDofConfig(
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
@@ -1140,7 +1138,7 @@ class ModelBuilder:
 
         """
 
-        ax = JointDofConfig(
+        ax = ModelBuilder.JointDofConfig(
             axis=(1.0, 0.0, 0.0),
             limit_lower=min_distance,
             limit_upper=max_distance,
