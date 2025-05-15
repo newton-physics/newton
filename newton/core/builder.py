@@ -33,7 +33,6 @@ from .inertia import (
 from .model import Model
 from .spatial import quat_between_axes
 from .types import (
-    Devicelike,
     GEO_BOX,
     GEO_CAPSULE,
     GEO_CONE,
@@ -60,6 +59,7 @@ from .types import (
     SHAPE_FLAG_VISIBLE,
     Axis,
     AxisType,
+    Devicelike,
     Mat33,
     Mesh,
     Quat,
@@ -1759,7 +1759,7 @@ class ModelBuilder:
             type (int): The geometry type of the shape (e.g., `GEO_BOX`, `GEO_SPHERE`).
             xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(0.0, 0.0, 0.0)` if `None`.
+            scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GEO_MESH` or an :class:`SDF` object for `GEO_SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
@@ -1774,7 +1774,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         if scale is None:
-            scale = (0.0, 0.0, 0.0)
+            scale = (1.0, 1.0, 1.0)
         self.shape_body.append(body)
         shape = self.shape_count
         if body in self.body_shapes:
@@ -3200,7 +3200,7 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device: Devicelike | None=None, requires_grad:bool=False) -> Model:
+    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
         """Convert this builder object to a concrete model for simulation.
 
         After building simulation elements this method should be called to transfer
