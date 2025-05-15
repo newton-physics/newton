@@ -17,7 +17,6 @@ import warp as wp
 
 import newton
 from newton.core import (
-    JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
     PARTICLE_FLAG_ACTIVE,
@@ -1337,8 +1336,8 @@ def solve_simple_body_joints(
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1406,8 +1405,8 @@ def solve_simple_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    # linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    # linear_compliance = joint_linear_compliance
+    angular_compliance = joint_angular_compliance
     damping = 0.0
 
     axis_start = joint_axis_start[tid]
@@ -1659,8 +1658,8 @@ def solve_body_joints(
     joint_act: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1732,8 +1731,8 @@ def solve_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    linear_compliance = joint_linear_compliance
+    angular_compliance = joint_angular_compliance
 
     axis_start = joint_axis_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
@@ -2668,16 +2667,18 @@ class XPBDSolver(SolverBase):
 
     def __init__(
         self,
-        model: Model = None,
-        iterations=2,
-        soft_body_relaxation=0.9,
-        soft_contact_relaxation=0.9,
-        joint_linear_relaxation=0.7,
-        joint_angular_relaxation=0.4,
-        rigid_contact_relaxation=0.8,
-        rigid_contact_con_weighting=True,
-        angular_damping=0.0,
-        enable_restitution=False,
+        model: Model,
+        iterations: int = 2,
+        soft_body_relaxation: float = 0.9,
+        soft_contact_relaxation: float = 0.9,
+        joint_linear_relaxation: float = 0.7,
+        joint_angular_relaxation: float = 0.4,
+        joint_linear_compliance: float = 0.0,
+        joint_angular_compliance: float = 0.0,
+        rigid_contact_relaxation: float = 0.8,
+        rigid_contact_con_weighting: bool = True,
+        angular_damping: float = 0.0,
+        enable_restitution: bool = False,
     ):
         super().__init__(model=model)
         self.iterations = iterations
@@ -2687,6 +2688,8 @@ class XPBDSolver(SolverBase):
 
         self.joint_linear_relaxation = joint_linear_relaxation
         self.joint_angular_relaxation = joint_angular_relaxation
+        self.joint_linear_compliance = joint_linear_compliance
+        self.joint_angular_compliance = joint_angular_compliance
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
@@ -2864,7 +2867,7 @@ class XPBDSolver(SolverBase):
                             model.joint_axis_dim,
                             model.joint_axis,
                             model.joint_axis_mode,
-                            control.joint_act,
+                            control.joint_target,
                         ],
                         outputs=[state_in.body_f],
                         device=model.device,
@@ -3066,8 +3069,8 @@ class XPBDSolver(SolverBase):
                         #         control.joint_target,
                         #         model.joint_target_ke,
                         #         model.joint_target_kd,
-                        #         model.joint_linear_compliance,
-                        #         model.joint_angular_compliance,
+                        #         self.joint_linear_compliance,
+                        #         self.joint_angular_compliance,
                         #         self.joint_angular_relaxation,
                         #         self.joint_linear_relaxation,
                         #         dt,
@@ -3097,11 +3100,11 @@ class XPBDSolver(SolverBase):
                                 model.joint_axis_dim,
                                 model.joint_axis_mode,
                                 model.joint_axis,
-                                control.joint_act,
+                                control.joint_target,
                                 model.joint_target_ke,
                                 model.joint_target_kd,
-                                model.joint_linear_compliance,
-                                model.joint_angular_compliance,
+                                self.joint_linear_compliance,
+                                self.joint_angular_compliance,
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
                                 dt,

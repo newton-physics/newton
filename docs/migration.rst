@@ -95,6 +95,12 @@ It is now possible to set the up axis of the builder using the :attr:`~newton.co
 
 The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args values to be filled in by the ``ModelBuilder.default_joint_*`` attributes.
 
+The ``ModelBuilder.add_joint*()`` methods no longer accept ``linear_compliance`` and ``angular_compliance`` arguments
+and the ``Model`` no longer stores them as attributes.
+Instead, you can pass them as arguments to the :class:`newton.solvers.XPBDSolver` constructor. Note that now these values
+apply to all joints and cannot be set individually per joint anymore. So far we have not found applications that require
+per-joint compliance settings and have decided to remove this feature for memory efficiency.
+
 Renderers
 ---------
 
