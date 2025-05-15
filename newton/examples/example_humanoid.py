@@ -114,6 +114,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        self.solver.update_mjc_model(self.model, self.solver.mjw_model)
         with wp.ScopedTimer("step", active=False):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
@@ -150,9 +151,13 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-        for _ in range(args.num_frames):
+        for i in range(args.num_frames):
             example.step()
             example.render()
+
+            if i % 100 == 0:
+                example.model.joint_q = wp.array(example.model.joint_q.numpy() + example.rng.uniform(-.1, 0.1, size=(example.model.joint_coord_count)), dtype=wp.float32)
+
 
         if example.renderer:
             example.renderer.save()

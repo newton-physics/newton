@@ -605,9 +605,8 @@ class MuJoCoSolver(SolverBase):
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
-            if self.model._joint_q_dirty:
-                self.update_model_joint_q(self.model, self.mjw_model)
-
+            # AD: this does not work with graph capture.. maybe use a conditional?
+            #self.update_mjc_model(self.model, self.mjw_model)
 
             self.apply_mjc_control(self.model, control, self.mjw_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
@@ -1419,6 +1418,10 @@ class MuJoCoSolver(SolverBase):
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array, dtype=array.dtype))
 
+
+    def update_mjc_model(self, model: Model, mjw_model: MjWarpModel):
+        if model._joint_q_dirty:
+            MuJoCoSolver.update_model_joint_q(model, mjw_model)
 
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
