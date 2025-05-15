@@ -31,27 +31,28 @@ import newton.collision
 import newton.core.articulation
 import newton.examples
 import newton.utils
-from newton import ModelBuilder
 
 
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
         articulation_builder = newton.ModelBuilder()
-        ModelBuilder.default_body_armature = 0.01
-        ModelBuilder.default_joint_armature = 0.01
-        ModelBuilder.default_joint_control_mode = newton.JOINT_MODE_TARGET_POSITION
-        ModelBuilder.default_joint_stiffness = 2000.0
-        ModelBuilder.default_joint_damping = 1.0
-        ModelBuilder.default_shape_cfg.ke = 1.0e4
-        ModelBuilder.default_shape_cfg.kd = 1.0e2
-        ModelBuilder.default_shape_cfg.kf = 1.0e2
-        ModelBuilder.default_shape_cfg.mu = 1.0
+        articulation_builder.default_body_armature = 0.01
+        articulation_builder.default_joint_cfg.armature = 0.01
+        articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
+        articulation_builder.default_joint_cfg.target_ke = 2000.0
+        articulation_builder.default_joint_cfg.target_kd = 1.0
+        articulation_builder.default_shape_cfg.ke = 1.0e4
+        articulation_builder.default_shape_cfg.kd = 1.0e2
+        articulation_builder.default_shape_cfg.kf = 1.0e2
+        articulation_builder.default_shape_cfg.mu = 1.0
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
             xform=wp.transform([0.0, 0.7, 0.0], wp.quat_identity()),
             floating=True,
         )
+        articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+        articulation_builder.joint_target[-12:] = articulation_builder.joint_q[-12:]
 
         builder = newton.ModelBuilder()
 
@@ -67,11 +68,6 @@ class Example:
         offsets = newton.examples.compute_env_offsets(self.num_envs)
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
-
-            builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-
-            builder.joint_axis_mode = [newton.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
-            builder.joint_act[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
 
         np.set_printoptions(suppress=True)
         # finalize model
