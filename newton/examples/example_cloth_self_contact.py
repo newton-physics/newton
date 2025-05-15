@@ -28,11 +28,11 @@ import os
 import numpy as np
 import warp as wp
 import warp.examples
-import warp.sim.render
 from pxr import Usd, UsdGeom
 
 import newton
-from newton.core.model import PARTICLE_FLAG_ACTIVE
+import newton.utils
+from newton.core.types import PARTICLE_FLAG_ACTIVE
 
 
 @wp.kernel
@@ -225,10 +225,10 @@ class Example:
             ],
         )
 
+        self.renderer = None
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=1)
-        else:
-            self.renderer = None
+            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
+
         self.cuda_graph = None
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
