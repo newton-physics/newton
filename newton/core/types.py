@@ -19,10 +19,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import IntEnum
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
+from typing_extensions import override
 from warp.context import Devicelike
 
 # Particle flags
@@ -43,6 +44,30 @@ GEO_MESH = wp.constant(5)
 GEO_SDF = wp.constant(6)
 GEO_PLANE = wp.constant(7)
 GEO_NONE = wp.constant(8)
+
+
+def get_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
+    """
+    Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
+    """
+    if geo_type == GEO_SPHERE:
+        return scale[0]
+    elif geo_type == GEO_BOX:
+        return np.linalg.norm(scale)
+    elif geo_type == GEO_CAPSULE or geo_type == GEO_CYLINDER or geo_type == GEO_CONE:
+        return scale[0] + scale[1]
+    elif geo_type == GEO_MESH:
+        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
+        return np.linalg.norm(vmax)
+    elif geo_type == GEO_PLANE:
+        if scale[0] > 0.0 and scale[1] > 0.0:
+            # finite plane
+            return np.linalg.norm(scale)
+        else:
+            return 1.0e6
+    else:
+        return 10.0
+
 
 # Types of joints linking rigid bodies
 JOINT_PRISMATIC = wp.constant(0)
@@ -96,6 +121,9 @@ Mat33 = list[float] | wp.mat33
 Transform = tuple[Vec3, Quat] | wp.transform
 """A 3D transformation represented as a tuple of 3D translation and rotation quaternion (in XYZW order)."""
 
+# type alias for numpy arrays
+nparray = np.ndarray[Any, np.dtype[Any]]
+
 
 class Axis(IntEnum):
     """Enum for representing the three axes in 3D space."""
@@ -104,40 +132,41 @@ class Axis(IntEnum):
     Y = 1
     Z = 2
 
-    def __init__(self, value: AxisType):
-        if isinstance(value, int):
-            self._value_ = value
-        elif isinstance(value, str):
-            self._value_ = Axis.from_string(value).value
-        elif isinstance(value, Axis):
-            self._value_ = value.value
-        else:
-            raise TypeError(f"Invalid type for Axis: {type(value)}")
-
-    def __str__(self):
-        return self.name.capitalize()
-
-    def __repr__(self):
-        return f"Axis.{self.name.capitalize()}"
-
     @classmethod
     def from_string(cls, axis_str: str) -> Axis:
         axis_str = axis_str.lower()
         if axis_str == "x":
-            return Axis.X
-        if axis_str == "y":
-            return Axis.Y
-        if axis_str == "z":
-            return Axis.Z
+            return cls.X
+        elif axis_str == "y":
+            return cls.Y
+        elif axis_str == "z":
+            return cls.Z
         raise ValueError(f"Invalid axis string: {axis_str}")
 
+    @classmethod
+    def from_any(cls, value: AxisType) -> Axis:
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls.from_string(value)
+        if type(value) in {int, wp.int32, wp.int64, np.int32, np.int64}:
+            return cls(value)
+        raise TypeError(f"Cannot convert {type(value)} to Axis")
+
+    @override
+    def __str__(self):
+        return self.name.capitalize()
+
+    @override
+    def __repr__(self):
+        return f"Axis.{self.name.capitalize()}"
+
+    @override
     def __eq__(self, other):
-        if isinstance(other, Axis):
-            return self.value == other.value
-        if isinstance(other, int):
-            return self.value == other
         if isinstance(other, str):
             return self.name.lower() == other.lower()
+        if type(other) in {int, wp.int32, wp.int64, np.int32, np.int64}:
+            return self.value == int(other)
         return NotImplemented
 
     def to_vector(self) -> tuple[float, float, float]:
@@ -158,72 +187,12 @@ AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     """Convert an axis representation to a 3D vector."""
-    if isinstance(axis, Axis):
-        return axis.to_vec3()
-    elif isinstance(axis, str):
-        return Axis.from_string(axis).to_vec3()
-    elif isinstance(axis, int):
-        return Axis(axis).to_vec3()
-    elif isinstance(axis, (list, tuple, np.ndarray, wp.vec3)):
+    if isinstance(axis, (list, tuple, np.ndarray)):
+        return wp.vec3(*axis)
+    elif wp.types.type_is_vector(type(axis)):
         return wp.vec3(*axis)
     else:
-        raise TypeError(f"Invalid type for axis: {type(axis)}")
-
-
-class JointAxis:
-    """
-    Describes a joint axis that can have limits and be driven towards a target.
-
-    Attributes:
-
-        axis (3D vector or JointAxis): The 3D axis that this JointAxis object describes, or alternatively another JointAxis object to copy from
-        limit_lower (float): The lower position limit of the joint axis
-        limit_upper (float): The upper position limit of the joint axis
-        limit_ke (float): The elastic stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
-        limit_kd (float): The damping stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`
-        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode) of the joint axis
-        target_ke (float): The proportional gain of the joint axis target drive PD controller
-        target_kd (float): The derivative gain of the joint axis target drive PD controller
-        mode (int): The mode of the joint axis
-    """
-
-    def __init__(
-        self,
-        axis: JointAxis | AxisType | Vec3,
-        limit_lower=-wp.inf,
-        limit_upper=wp.inf,
-        limit_ke=100.0,
-        limit_kd=10.0,
-        action=None,
-        target_ke=0.0,
-        target_kd=0.0,
-        mode=JOINT_MODE_FORCE,
-    ):
-        if isinstance(axis, JointAxis):
-            self.axis = axis.axis
-            self.limit_lower = axis.limit_lower
-            self.limit_upper = axis.limit_upper
-            self.limit_ke = axis.limit_ke
-            self.limit_kd = axis.limit_kd
-            self.action = axis.action
-            self.target_ke = axis.target_ke
-            self.target_kd = axis.target_kd
-            self.mode = axis.mode
-        else:
-            self.axis = wp.normalize(axis_to_vec3(axis))
-            self.limit_lower = limit_lower
-            self.limit_upper = limit_upper
-            self.limit_ke = limit_ke
-            self.limit_kd = limit_kd
-            if action is not None:
-                self.action = action
-            elif mode == JOINT_MODE_TARGET_POSITION and (limit_lower > 0.0 or limit_upper < 0.0):
-                self.action = 0.5 * (limit_lower + limit_upper)
-            else:
-                self.action = 0.0
-            self.target_ke = target_ke
-            self.target_kd = target_kd
-            self.mode = mode
+        return Axis.from_any(axis).to_vec3()
 
 
 @wp.struct
@@ -285,9 +254,10 @@ class SDF:
         self.has_inertia = True
         self.is_solid = True
 
-    def finalize(self, device=None) -> wp.uint64:
+    def finalize(self) -> wp.uint64:
         return self.volume.id
 
+    @override
     def __hash__(self) -> int:
         return hash(self.volume.id)
 
@@ -340,6 +310,7 @@ class Mesh:
         self.indices = np.array(indices, dtype=np.int32).flatten()
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
+        self.mesh = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -368,6 +339,7 @@ class Mesh:
             self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
             return self.mesh.id
 
+    @override
     def __hash__(self) -> int:
         """
         Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
@@ -404,12 +376,12 @@ __all__ = [
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
-    "JointAxis",
     "Mat33",
     "Mesh",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
     "Quat",
+    "Sequence",
     "Transform",
     "Vec3",
     "Vec4",

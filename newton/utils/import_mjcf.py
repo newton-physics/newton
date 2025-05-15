@@ -34,46 +34,31 @@ import math
 import os
 import re
 import xml.etree.ElementTree as ET
-from typing import Literal
 
 import numpy as np
 import warp as wp
-from warp.sim.model import Mesh
 
 import newton
+from newton.core import Mesh, ModelBuilder, quat_between_axes
+from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
 def parse_mjcf(
-    mjcf_filename,
-    builder: newton.ModelBuilder,
-    xform: wp.transform | None = None,
-    floating: bool = False,
+    mjcf_filename: str,
+    builder: ModelBuilder,
+    xform: Transform | None = None,
+    floating: bool | None = None,
     base_joint: dict | str | None = None,
-    density: float = 1000.0,
-    stiffness: float = 100.0,
-    damping: float = 10.0,
-    armature: float = 0.0,
     armature_scale: float = 1.0,
-    contact_ke: float = 1.0e4,
-    contact_kd: float = 1.0e3,
-    contact_kf: float = 1.0e2,
-    contact_ka: float = 0.0,
-    contact_mu: float = 0.25,
-    contact_restitution: float = 0.5,
-    contact_thickness: float = 0.0,
-    limit_ke: float = 100.0,
-    limit_kd: float = 10.0,
-    joint_limit_lower: float = -1e6,
-    joint_limit_upper: float = 1e6,
     scale: float = 1.0,
     hide_visuals: bool = False,
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
-    up_axis: Literal["X", "Y", "Z"] = "Z",
-    ignore_names: list[str] = (),
-    ignore_classes=None,
-    visual_classes: list[str] = ("visual",),
-    collider_classes: list[str] = ("collision",),
+    up_axis: AxisType = Axis.Z,
+    ignore_names: Sequence[str] = (),
+    ignore_classes: Sequence[str] = (),
+    visual_classes: Sequence[str] = ("visual",),
+    collider_classes: Sequence[str] = ("collision",),
     no_class_as_colliders: bool = True,
     force_show_colliders: bool = False,
     enable_self_collisions: bool = False,
@@ -89,34 +74,19 @@ def parse_mjcf(
     Args:
         mjcf_filename (str): The filename of the MuJoCo file to parse.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        xform (:external+warp:ref:`transform <transform>`): The transform to apply to the imported mechanism.
-        floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
+        xform (Transform): The transform to apply to the imported mechanism.
+        floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
-        density (float): The density of the shapes in kg/m^3 which will be used to calculate the body mass and inertia.
-        stiffness (float): The stiffness of the joints.
-        damping (float): The damping of the joints.
-        armature (float): Default joint armature to use if `armature` has not been defined for a joint in the MJCF.
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
-        contact_ke (float): The stiffness of the shape contacts.
-        contact_kd (float): The damping of the shape contacts.
-        contact_kf (float): The friction stiffness of the shape contacts.
-        contact_ka (float): The adhesion distance of the shape contacts.
-        contact_mu (float): The friction coefficient of the shape contacts.
-        contact_restitution (float): The restitution coefficient of the shape contacts.
-        contact_thickness (float): The thickness to add to the shape geometry.
-        limit_ke (float): The stiffness of the joint limits.
-        limit_kd (float): The damping of the joint limits.
-        joint_limit_lower (float): The default lower joint limit if not specified in the MJCF.
-        joint_limit_upper (float): The default upper joint limit if not specified in the MJCF.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
-        up_axis (str): The up axis of the mechanism. Can be either `"X"`, `"Y"` or `"Z"`. The default is `"Z"`.
-        ignore_names (List[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
-        ignore_classes (List[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
-        visual_classes (List[str]): A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
-        collider_classes (List[str]): A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
+        up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
+        ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
+        ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+        visual_classes (Sequence[str]): A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
+        collider_classes (Sequence[str]): A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
@@ -128,26 +98,25 @@ def parse_mjcf(
     """
     if xform is None:
         xform = wp.transform()
-
-    if ignore_classes is None:
-        ignore_classes = []
+    else:
+        xform = wp.transform(*xform)
 
     mjcf_dirname = os.path.dirname(mjcf_filename)
     file = ET.parse(mjcf_filename)
     root = file.getroot()
 
-    contact_vars = {
-        "ke": contact_ke,
-        "kd": contact_kd,
-        "kf": contact_kf,
-        "ka": contact_ka,
-        "mu": contact_mu,
-        "restitution": contact_restitution,
-        "thickness": contact_thickness,
-    }
-
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
+
+    # load joint defaults
+    default_joint_limit_lower = builder.default_joint_cfg.limit_lower
+    default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_stiffness = builder.default_joint_cfg.target_ke
+    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_armature = builder.default_joint_cfg.armature
+
+    # load shape defaults
+    default_shape_density = builder.default_shape_cfg.density
 
     compiler = root.find("compiler")
     if compiler is not None:
@@ -174,7 +143,7 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
-    def get_class(element):
+    def get_class(element) -> str:
         return element.get("class", "__all__")
 
     def parse_default(node, parent):
@@ -201,7 +170,7 @@ def parse_mjcf(
     for default in root.findall("default"):
         parse_default(default, None)
 
-    def merge_attrib(default_attrib: dict, incoming_attrib: dict):
+    def merge_attrib(default_attrib: dict, incoming_attrib: dict) -> dict:
         attrib = default_attrib.copy()
         for key, value in incoming_attrib.items():
             if key in attrib:
@@ -213,17 +182,13 @@ def parse_mjcf(
                 attrib[key] = value
         return attrib
 
-    if isinstance(up_axis, str):
-        up_axis = "XYZ".index(up_axis.upper())
-    sqh = np.sqrt(0.5)
-    if up_axis == 0:
-        xform = wp.transform(xform.p, wp.quat(0.0, 0.0, -sqh, sqh) * xform.q)
-    elif up_axis == 2:
-        xform = wp.transform(xform.p, wp.quat(sqh, 0.0, 0.0, -sqh) * xform.q)
-    # do not apply scaling to the root transform
-    xform = wp.transform(np.array(xform.p) / scale, xform.q)
+    axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
+    if xform is None:
+        xform = axis_xform
+    else:
+        xform = wp.transform(*xform) * axis_xform
 
-    def parse_float(attrib, key, default):
+    def parse_float(attrib, key, default) -> float:
         if key in attrib:
             return float(attrib[key])
         else:
@@ -241,7 +206,7 @@ def parse_mjcf(
 
         return wp.vec(length, wp.float32)(out)
 
-    def parse_orientation(attrib):
+    def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
             wxyz = np.fromstring(attrib["quat"], sep=" ")
             return wp.normalize(wp.quat(*wxyz[1:], wxyz[0]))
@@ -249,7 +214,7 @@ def parse_mjcf(
             euler = np.fromstring(attrib["euler"], sep=" ")
             if use_degrees:
                 euler *= np.pi / 180
-            return wp.sim.quat_from_euler(wp.vec3(euler), *euler_seq)
+            return newton.core.quat_from_euler(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
             axisangle = np.fromstring(attrib["axisangle"], sep=" ")
             angle = axisangle[3]
@@ -309,40 +274,39 @@ def parse_mjcf(
             geom_size = parse_vec(geom_attrib, "size", [1.0, 1.0, 1.0]) * scale
             geom_pos = parse_vec(geom_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             geom_rot = parse_orientation(geom_attrib)
+            tf = wp.transform(geom_pos, geom_rot)
             geom_density = parse_float(geom_attrib, "density", density)
+
+            shape_cfg = ModelBuilder.ShapeConfig(
+                is_visible=visible,
+                has_ground_collision=not just_visual,
+                has_shape_collision=not just_visual,
+                density=geom_density,
+            )
 
             shape_kwargs = {
                 "key": geom_name,
                 "body": link,
-                "is_visible": visible,
-                "has_ground_collision": not just_visual,
-                "has_shape_collision": not just_visual,
-                **contact_vars,
+                "cfg": shape_cfg,
             }
 
             if incoming_xform is not None:
-                geom_pos = wp.transform_point(incoming_xform, geom_pos)
-                geom_rot = incoming_xform.q * geom_rot
+                tf = incoming_xform * tf
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
-                    pos=geom_pos,
-                    rot=geom_rot,
+                    xform=tf,
                     radius=geom_size[0],
-                    density=geom_density,
                     **shape_kwargs,
                 )
                 shapes.append(s)
 
             elif geom_type == "box":
                 s = builder.add_shape_box(
-                    pos=geom_pos,
-                    rot=geom_rot,
+                    xform=tf,
                     hx=geom_size[0],
                     hy=geom_size[1],
                     hz=geom_size[2],
-                    density=geom_density,
-                    is_visible=visible,
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -369,10 +333,8 @@ def parse_mjcf(
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
                         m_mesh = Mesh(m_vertices, m_faces)
                         s = builder.add_shape_mesh(
-                            pos=geom_pos,
-                            rot=geom_rot,
+                            xform=tf,
                             mesh=m_mesh,
-                            density=density,
                             **shape_kwargs,
                         )
                         shapes.append(s)
@@ -382,10 +344,8 @@ def parse_mjcf(
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
                     m_mesh = Mesh(m_vertices, m_faces)
                     s = builder.add_shape_mesh(
-                        pos=geom_pos,
-                        rot=geom_rot,
+                        xform=tf,
                         mesh=m_mesh,
-                        density=density,
                         **shape_kwargs,
                     )
                     shapes.append(s)
@@ -404,10 +364,11 @@ def parse_mjcf(
 
                     geom_pos = (start + end) * 0.5
                     geom_rot = wp.quat_from_axis_angle(axis, -angle)
+                    tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
                     geom_height = wp.length(end - start) * 0.5
-                    geom_up_axis = 1
+                    geom_up_axis = Axis.Y
 
                 else:
                     geom_radius = geom_size[0]
@@ -416,22 +377,18 @@ def parse_mjcf(
 
                 if geom_type == "cylinder":
                     s = builder.add_shape_cylinder(
-                        pos=geom_pos,
-                        rot=geom_rot,
+                        xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        density=density,
                         up_axis=geom_up_axis,
                         **shape_kwargs,
                     )
                     shapes.append(s)
                 else:
                     s = builder.add_shape_capsule(
-                        pos=geom_pos,
-                        rot=geom_rot,
+                        xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        density=density,
                         up_axis=geom_up_axis,
                         **shape_kwargs,
                     )
@@ -487,7 +444,7 @@ def parse_mjcf(
 
         freejoint_tags = body.findall("freejoint")
         if len(freejoint_tags) > 0:
-            joint_type = wp.sim.JOINT_FREE
+            joint_type = newton.JOINT_FREE
             joint_name.append(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
             joint_armature.append(0.0)
         else:
@@ -508,31 +465,25 @@ def parse_mjcf(
 
                 joint_name.append(joint_attrib.get("name") or f"{body_name}_joint_{i}")
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
-                joint_range = parse_vec(joint_attrib, "range", (joint_limit_lower, joint_limit_upper))
-                joint_armature.append(parse_float(joint_attrib, "armature", armature) * armature_scale)
+                joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
+                joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
 
                 if joint_type_str == "free":
-                    joint_type = wp.sim.JOINT_FREE
+                    joint_type = newton.JOINT_FREE
                     break
                 if joint_type_str == "fixed":
-                    joint_type = wp.sim.JOINT_FIXED
+                    joint_type = newton.JOINT_FIXED
                     break
                 is_angular = joint_type_str == "hinge"
-                mode = wp.sim.JOINT_MODE_FORCE
-                if stiffness > 0.0 or "stiffness" in joint_attrib:
-                    mode = wp.sim.JOINT_MODE_TARGET_POSITION
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
-                ax = wp.sim.JointAxis(
+                ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
                     limit_upper=limit_upper,
-                    target_ke=parse_float(joint_attrib, "stiffness", stiffness),
-                    target_kd=parse_float(joint_attrib, "damping", damping),
-                    limit_ke=limit_ke,
-                    limit_kd=limit_kd,
-                    mode=mode,
+                    target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
+                    target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -540,25 +491,25 @@ def parse_mjcf(
                     linear_axes.append(ax)
 
         link = builder.add_body(
-            origin=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
-            armature=joint_armature[0] if len(joint_armature) > 0 else armature,
+            xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
+            armature=joint_armature[0] if len(joint_armature) > 0 else default_joint_armature,
             key=body_name,
         )
 
         if joint_type is None:
             if len(linear_axes) == 0:
                 if len(angular_axes) == 0:
-                    joint_type = wp.sim.JOINT_FIXED
+                    joint_type = newton.JOINT_FIXED
                 elif len(angular_axes) == 1:
-                    joint_type = wp.sim.JOINT_REVOLUTE
+                    joint_type = newton.JOINT_REVOLUTE
                 elif len(angular_axes) == 2:
-                    joint_type = wp.sim.JOINT_UNIVERSAL
+                    joint_type = newton.JOINT_UNIVERSAL
                 elif len(angular_axes) == 3:
-                    joint_type = wp.sim.JOINT_COMPOUND
+                    joint_type = newton.JOINT_COMPOUND
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
-                joint_type = wp.sim.JOINT_PRISMATIC
+                joint_type = newton.JOINT_PRISMATIC
             else:
-                joint_type = wp.sim.JOINT_D6
+                joint_type = newton.JOINT_D6
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
@@ -580,8 +531,8 @@ def parse_mjcf(
                         "z": [0.0, 0.0, 1.0],
                     }
                     builder.add_joint_d6(
-                        linear_axes=[wp.sim.JointAxis(axes[a]) for a in linear_axes],
-                        angular_axes=[wp.sim.JointAxis(axes[a]) for a in angular_axes],
+                        linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
+                        angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
                         parent=-1,
@@ -599,7 +550,7 @@ def parse_mjcf(
                     raise ValueError(
                         "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
                     )
-            elif floating:
+            elif floating is not None and floating:
                 builder.add_joint_free(link, key="floating_base")
 
                 # set dofs to transform
@@ -620,25 +571,24 @@ def parse_mjcf(
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
-            if joint_type == wp.sim.JOINT_FREE:
+            if joint_type == newton.JOINT_FREE:
                 builder.add_joint_free(
                     link,
                     key="_".join(joint_name),
                     parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori),
-                    armature=joint_armature[0] if len(joint_armature) > 0 else armature,
                 )
                 builder.joint_q[-7:-4] = [*body_pos]
             else:
+                # TODO parse ref, springref values from joint_attrib
                 builder.add_joint(
                     joint_type,
-                    parent,
-                    link,
-                    linear_axes,
-                    angular_axes,
+                    parent=parent,
+                    child=link,
+                    linear_axes=linear_axes,
+                    angular_axes=angular_axes,
                     key="_".join(joint_name),
                     parent_xform=wp.transform(body_pos + joint_pos, body_ori),
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                    armature=joint_armature[0] if len(joint_armature) > 0 else armature,
                 )
 
         # -----------------
@@ -699,7 +649,13 @@ def parse_mjcf(
             colliders = visuals
         else:
             s = parse_shapes(
-                defaults, body_name, link, visuals, density=0.0, just_visual=True, visible=not hide_visuals
+                defaults,
+                body_name,
+                link,
+                geoms=visuals,
+                density=0.0,
+                just_visual=True,
+                visible=not hide_visuals,
             )
             visual_shapes.extend(s)
 
@@ -710,7 +666,14 @@ def parse_mjcf(
             # we need to show the collision shapes since there are no visual shapes
             show_colliders = True
 
-        parse_shapes(defaults, body_name, link, colliders, density, visible=show_colliders)
+        parse_shapes(
+            defaults,
+            body_name,
+            link,
+            geoms=colliders,
+            density=default_shape_density,
+            visible=show_colliders,
+        )
 
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
@@ -726,7 +689,7 @@ def parse_mjcf(
             inertial_frame = wp.transform(inertial_pos, inertial_rot)
             com = inertial_frame.p
             if inertial_attrib.get("diaginertia") is not None:
-                diaginertia = parse_vec(inertial_attrib, "diaginertia", None)
+                diaginertia = parse_vec(inertial_attrib, "diaginertia", (0.0, 0.0, 0.0))
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
@@ -761,7 +724,7 @@ def parse_mjcf(
             m = static_link_mass
             # cube with side length 0.5
             I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(armature * np.eye(3))
+            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
@@ -799,7 +762,14 @@ def parse_mjcf(
     # -----------------
     # add static geoms
 
-    parse_shapes(world_defaults, "world", -1, world.findall("geom"), density, incoming_xform=xform)
+    parse_shapes(
+        defaults=world_defaults,
+        body_name="world",
+        link=-1,
+        geoms=world.findall("geom"),
+        density=default_shape_density,
+        incoming_xform=xform,
+    )
 
     end_shape_count = len(builder.shape_geo_type)
 

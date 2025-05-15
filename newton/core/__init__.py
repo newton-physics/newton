@@ -13,10 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .contact import Contact
 from .control import Control
 from .model import Model
+from .spatial import (
+    quat_between_axes,
+    quat_decompose,
+    quat_from_euler,
+    quat_to_euler,
+    quat_to_rpy,
+    quat_twist,
+    quat_twist_angle,
+    transform_twist,
+    transform_wrench,
+    velocity_at_point,
+)
 from .state import State
 from .types import (
     GEO_BOX,
@@ -45,7 +58,8 @@ from .types import (
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
-    JointAxis,
+    Axis,
+    AxisType,
     Mesh,
     ModelShapeGeometry,
     ModelShapeMaterials,
@@ -78,13 +92,26 @@ __all__ = [
     "SHAPE_FLAG_COLLIDE_GROUND",
     "SHAPE_FLAG_COLLIDE_SHAPES",
     "SHAPE_FLAG_VISIBLE",
+    "Axis",
+    "AxisType",
     "Contact",
     "Control",
-    "JointAxis",
     "Mesh",
     "Model",
     "ModelBuilder",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
     "State",
+    "eval_fk",
+    "eval_ik",
+    "quat_between_axes",
+    "quat_decompose",
+    "quat_from_euler",
+    "quat_to_euler",
+    "quat_to_rpy",
+    "quat_twist",
+    "quat_twist_angle",
+    "transform_twist",
+    "transform_wrench",
+    "velocity_at_point",
 ]

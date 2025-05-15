@@ -231,7 +231,7 @@ def convert_warp_coords_to_mj_kernel(
 
 @wp.kernel
 def apply_mjc_control_kernel(
-    joint_act: wp.array(dtype=wp.float32),
+    joint_target: wp.array(dtype=wp.float32),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
@@ -240,7 +240,7 @@ def apply_mjc_control_kernel(
     worldid, axisid = wp.tid()
     actuator_id = axis_to_actuator[axisid]
     if actuator_id != -1:
-        mj_act[worldid, actuator_id] = joint_act[worldid * axes_per_env + axisid]
+        mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
 
 
 @wp.func
@@ -576,12 +576,12 @@ class MuJoCoSolver(SolverBase):
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
-        # TODO consider assigning a reshaped control.joint_act to ctrl directly
+        # TODO consider assigning a reshaped control.joint_target to ctrl directly
         wp.launch(
             apply_mjc_control_kernel,
             dim=(nworld, axes_per_env),
             inputs=[
-                control.joint_act,
+                control.joint_target,
                 model.axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                 axes_per_env,
             ],
@@ -723,7 +723,6 @@ class MuJoCoSolver(SolverBase):
         ls_tolerance: float = 0.01,
         timestep: float = 0.01,
         cone: int = 0,
-        is_sparse: bool | None = None,
         register_collision_groups: bool = True,
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,

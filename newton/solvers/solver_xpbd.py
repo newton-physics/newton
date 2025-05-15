@@ -15,6 +15,7 @@
 
 import warp as wp
 
+import newton
 from newton.core import (
     JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
@@ -25,8 +26,15 @@ from newton.core import (
     Model,
     ModelShapeMaterials,
     State,
+    velocity_at_point,
 )
-from newton.utils import vec_abs, vec_leaky_max, vec_leaky_min, vec_max, vec_min, velocity_at_point
+from newton.utils import (
+    vec_abs,
+    vec_leaky_max,
+    vec_leaky_min,
+    vec_max,
+    vec_min,
+)
 
 from .solver import SolverBase
 
@@ -999,13 +1007,13 @@ def apply_joint_actions(
 ):
     tid = wp.tid()
     type = joint_type[tid]
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         return
-    if type == wp.sim.JOINT_FREE:
+    if type == newton.JOINT_FREE:
         return
-    if type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_DISTANCE:
         return
-    if type == wp.sim.JOINT_BALL:
+    if type == newton.JOINT_BALL:
         return
 
     # rigid body indices of the child and parent
@@ -1045,21 +1053,21 @@ def apply_joint_actions(
     f_total = wp.vec3()
 
     # handle angular constraints
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_REVOLUTE:
         mode = joint_axis_mode[axis_start]
-        if mode == wp.sim.JOINT_MODE_FORCE:
+        if mode == newton.JOINT_MODE_FORCE:
             axis = joint_axis[axis_start]
             act = joint_act[axis_start]
             a_p = wp.transform_vector(X_wp, axis)
             t_total += act * a_p
-    elif type == wp.sim.JOINT_PRISMATIC:
+    elif type == newton.JOINT_PRISMATIC:
         mode = joint_axis_mode[axis_start]
-        if mode == wp.sim.JOINT_MODE_FORCE:
+        if mode == newton.JOINT_MODE_FORCE:
             axis = joint_axis[axis_start]
             act = joint_act[axis_start]
             a_p = wp.transform_vector(X_wp, axis)
             f_total += act * a_p
-    elif type == wp.sim.JOINT_COMPOUND:
+    elif type == newton.JOINT_COMPOUND:
         # q_off = wp.transform_get_rotation(X_cj)
         # q_pc = wp.quat_inverse(q_off)*wp.quat_inverse(q_p)*q_c*q_off
         # # decompose to a compound rotation each axis
@@ -1079,17 +1087,17 @@ def apply_joint_actions(
         # t_total += joint_act[qd_start+1] * wp.quat_rotate(q_w, axis_1)
         # t_total += joint_act[qd_start+2] * wp.quat_rotate(q_w, axis_2)
 
-        if joint_axis_mode[axis_start + 0] == wp.sim.JOINT_MODE_FORCE:
+        if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
             axis_0 = joint_axis[axis_start + 0]
             t_total += joint_act[axis_start + 0] * wp.transform_vector(X_wp, axis_0)
-        if joint_axis_mode[axis_start + 1] == wp.sim.JOINT_MODE_FORCE:
+        if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
             axis_1 = joint_axis[axis_start + 1]
             t_total += joint_act[axis_start + 1] * wp.transform_vector(X_wp, axis_1)
-        if joint_axis_mode[axis_start + 2] == wp.sim.JOINT_MODE_FORCE:
+        if joint_axis_mode[axis_start + 2] == newton.JOINT_MODE_FORCE:
             axis_2 = joint_axis[axis_start + 2]
             t_total += joint_act[axis_start + 2] * wp.transform_vector(X_wp, axis_2)
 
-    elif type == wp.sim.JOINT_UNIVERSAL:
+    elif type == newton.JOINT_UNIVERSAL:
         # q_off = wp.transform_get_rotation(X_cj)
         # q_pc = wp.quat_inverse(q_off)*wp.quat_inverse(q_p)*q_c*q_off
 
@@ -1111,50 +1119,50 @@ def apply_joint_actions(
         # t_total += joint_act[qd_start+0] * wp.quat_rotate(q_w, axis_0)
         # t_total += joint_act[qd_start+1] * wp.quat_rotate(q_w, axis_1)
 
-        if joint_axis_mode[axis_start + 0] == wp.sim.JOINT_MODE_FORCE:
+        if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
             axis_0 = joint_axis[axis_start + 0]
             t_total += joint_act[axis_start + 0] * wp.transform_vector(X_wp, axis_0)
-        if joint_axis_mode[axis_start + 1] == wp.sim.JOINT_MODE_FORCE:
+        if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
             axis_1 = joint_axis[axis_start + 1]
             t_total += joint_act[axis_start + 1] * wp.transform_vector(X_wp, axis_1)
 
-    elif type == wp.sim.JOINT_D6:
+    elif type == newton.JOINT_D6:
         # unroll for loop to ensure joint actions remain differentiable
         # (since differentiating through a dynamic for loop that updates a local variable is not supported)
 
         if lin_axis_count > 0:
-            if joint_axis_mode[axis_start + 0] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + 0]
                 act = joint_act[axis_start + 0]
                 a_p = wp.transform_vector(X_wp, axis)
                 f_total += act * a_p
         if lin_axis_count > 1:
-            if joint_axis_mode[axis_start + 1] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + 1]
                 act = joint_act[axis_start + 1]
                 a_p = wp.transform_vector(X_wp, axis)
                 f_total += act * a_p
         if lin_axis_count > 2:
-            if joint_axis_mode[axis_start + 2] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + 2] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + 2]
                 act = joint_act[axis_start + 2]
                 a_p = wp.transform_vector(X_wp, axis)
                 f_total += act * a_p
 
         if ang_axis_count > 0:
-            if joint_axis_mode[axis_start + lin_axis_count + 0] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + lin_axis_count + 0] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + lin_axis_count + 0]
                 act = joint_act[axis_start + lin_axis_count + 0]
                 a_p = wp.transform_vector(X_wp, axis)
                 t_total += act * a_p
         if ang_axis_count > 1:
-            if joint_axis_mode[axis_start + lin_axis_count + 1] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + lin_axis_count + 1] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + lin_axis_count + 1]
                 act = joint_act[axis_start + lin_axis_count + 1]
                 a_p = wp.transform_vector(X_wp, axis)
                 t_total += act * a_p
         if ang_axis_count > 2:
-            if joint_axis_mode[axis_start + lin_axis_count + 2] == wp.sim.JOINT_MODE_FORCE:
+            if joint_axis_mode[axis_start + lin_axis_count + 2] == newton.JOINT_MODE_FORCE:
                 axis = joint_axis[axis_start + lin_axis_count + 2]
                 act = joint_act[axis_start + lin_axis_count + 2]
                 a_p = wp.transform_vector(X_wp, axis)
@@ -1329,8 +1337,8 @@ def solve_simple_body_joints(
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1341,15 +1349,15 @@ def solve_simple_body_joints(
 
     if joint_enabled[tid] == 0:
         return
-    if type == wp.sim.JOINT_FREE:
+    if type == newton.JOINT_FREE:
         return
-    if type == wp.sim.JOINT_COMPOUND:
+    if type == newton.JOINT_COMPOUND:
         return
-    if type == wp.sim.JOINT_UNIVERSAL:
+    if type == newton.JOINT_UNIVERSAL:
         return
-    if type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_DISTANCE:
         return
-    if type == wp.sim.JOINT_D6:
+    if type == newton.JOINT_D6:
         return
 
     # rigid body indices of the child and parent
@@ -1398,8 +1406,8 @@ def solve_simple_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    # linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    # linear_compliance = joint_linear_compliance
+    angular_compliance = joint_angular_compliance
     damping = 0.0
 
     axis_start = joint_axis_start[tid]
@@ -1414,7 +1422,7 @@ def solve_simple_body_joints(
     # joint properties (for 1D joints)
     axis = joint_axis[axis_start]
 
-    if type == wp.sim.JOINT_FIXED:
+    if type == newton.JOINT_FIXED:
         limit_lower = 0.0
         limit_upper = 0.0
     else:
@@ -1435,7 +1443,7 @@ def solve_simple_body_joints(
     ang_delta_c = wp.vec3(0.0)
 
     # handle angular constraints
-    if type == wp.sim.JOINT_REVOLUTE:
+    if type == newton.JOINT_REVOLUTE:
         # align joint axes
         a_p = wp.quat_rotate(q_p, axis)
         a_c = wp.quat_rotate(q_c, axis)
@@ -1550,7 +1558,7 @@ def solve_simple_body_joints(
             ang_delta_p -= lambda_n * ncorr
             ang_delta_c += lambda_n * ncorr
 
-    if (type == wp.sim.JOINT_FIXED) or (type == wp.sim.JOINT_PRISMATIC):
+    if (type == newton.JOINT_FIXED) or (type == newton.JOINT_PRISMATIC):
         # align the mutual orientations of the two bodies
         # Eq. 18-19
         q = q_p * wp.quat_inverse(q_c)
@@ -1584,7 +1592,7 @@ def solve_simple_body_joints(
 
     lower_pos_limits = wp.vec3(0.0)
     upper_pos_limits = wp.vec3(0.0)
-    if type == wp.sim.JOINT_PRISMATIC:
+    if type == newton.JOINT_PRISMATIC:
         lower_pos_limits = axis * limit_lower
         upper_pos_limits = axis * limit_upper
 
@@ -1594,7 +1602,7 @@ def solve_simple_body_joints(
     corr -= vec_leaky_min(zero, upper_pos_limits - dx)
     corr -= vec_leaky_max(zero, lower_pos_limits - dx)
 
-    # if (type == wp.sim.JOINT_PRISMATIC):
+    # if (type == newton.JOINT_PRISMATIC):
     #     if mode == JOINT_MODE_TARGET_POSITION:
     #         target = wp.clamp(target, limit_lower, limit_upper)
     #         if target_ke > 0.0:
@@ -1611,7 +1619,7 @@ def solve_simple_body_joints(
     corr = wp.quat_rotate(q_dx, corr)
 
     lambda_in = 0.0
-    linear_alpha = joint_linear_compliance[tid]
+    linear_alpha = joint_linear_compliance
     lambda_n = compute_linear_correction_3d(
         corr, r_p, r_c, pose_p, pose_c, m_inv_p, m_inv_c, I_inv_p, I_inv_c, lambda_in, linear_alpha, damping, dt
     )
@@ -1651,8 +1659,8 @@ def solve_body_joints(
     joint_act: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
-    joint_linear_compliance: wp.array(dtype=float),
-    joint_angular_compliance: wp.array(dtype=float),
+    joint_linear_compliance: float,
+    joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -1663,15 +1671,15 @@ def solve_body_joints(
 
     if joint_enabled[tid] == 0:
         return
-    if type == wp.sim.JOINT_FREE:
+    if type == newton.JOINT_FREE:
         return
-    # if type == wp.sim.JOINT_FIXED:
+    # if type == newton.JOINT_FIXED:
     #     return
-    # if type == wp.sim.JOINT_REVOLUTE:
+    # if type == newton.JOINT_REVOLUTE:
     #     return
-    # if type == wp.sim.JOINT_PRISMATIC:
+    # if type == newton.JOINT_PRISMATIC:
     #     return
-    # if type == wp.sim.JOINT_BALL:
+    # if type == newton.JOINT_BALL:
     #     return
 
     # rigid body indices of the child and parent
@@ -1724,8 +1732,8 @@ def solve_body_joints(
     # x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
-    linear_compliance = joint_linear_compliance[tid]
-    angular_compliance = joint_angular_compliance[tid]
+    linear_compliance = joint_linear_compliance
+    angular_compliance = joint_angular_compliance
 
     axis_start = joint_axis_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
@@ -1735,7 +1743,7 @@ def solve_body_joints(
     world_com_c = wp.transform_point(pose_c, com_c)
 
     # handle positional constraints
-    if type == wp.sim.JOINT_DISTANCE:
+    if type == newton.JOINT_DISTANCE:
         r_p = wp.transform_get_translation(X_wp) - world_com_p
         r_c = wp.transform_get_translation(X_wc) - world_com_c
         lower = joint_limit_lower[axis_start]
@@ -1929,12 +1937,12 @@ def solve_body_joints(
                 ang_delta_c += angular_c * (d_lambda * angular_relaxation)
 
     if (
-        type == wp.sim.JOINT_FIXED
-        or type == wp.sim.JOINT_PRISMATIC
-        or type == wp.sim.JOINT_REVOLUTE
-        or type == wp.sim.JOINT_UNIVERSAL
-        or type == wp.sim.JOINT_COMPOUND
-        or type == wp.sim.JOINT_D6
+        type == newton.JOINT_FIXED
+        or type == newton.JOINT_PRISMATIC
+        or type == newton.JOINT_REVOLUTE
+        or type == newton.JOINT_UNIVERSAL
+        or type == newton.JOINT_COMPOUND
+        or type == newton.JOINT_D6
     ):
         # handle angular constraints
 
@@ -2057,7 +2065,7 @@ def solve_body_joints(
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
-        # if type == wp.sim.JOINT_D6:
+        # if type == newton.JOINT_D6:
         #     wp.printf("axis_target: %f %f %f\t axis_stiffness: %f %f %f\t axis_damping: %f %f %f\t axis_limits_lower: %f %f %f \t axis_limits_upper: %f %f %f\n",
         #               axis_target[0], axis_target[1], axis_target[2],
         #               axis_stiffness[0], axis_stiffness[1], axis_stiffness[2],
@@ -2660,16 +2668,18 @@ class XPBDSolver(SolverBase):
 
     def __init__(
         self,
-        model: Model = None,
-        iterations=2,
-        soft_body_relaxation=0.9,
-        soft_contact_relaxation=0.9,
-        joint_linear_relaxation=0.7,
-        joint_angular_relaxation=0.4,
-        rigid_contact_relaxation=0.8,
-        rigid_contact_con_weighting=True,
-        angular_damping=0.0,
-        enable_restitution=False,
+        model: Model,
+        iterations: int = 2,
+        soft_body_relaxation: float = 0.9,
+        soft_contact_relaxation: float = 0.9,
+        joint_linear_relaxation: float = 0.7,
+        joint_angular_relaxation: float = 0.4,
+        joint_linear_compliance: float = 0.0,
+        joint_angular_compliance: float = 0.0,
+        rigid_contact_relaxation: float = 0.8,
+        rigid_contact_con_weighting: bool = True,
+        angular_damping: float = 0.0,
+        enable_restitution: bool = False,
     ):
         super().__init__(model=model)
         self.iterations = iterations
@@ -2679,6 +2689,8 @@ class XPBDSolver(SolverBase):
 
         self.joint_linear_relaxation = joint_linear_relaxation
         self.joint_angular_relaxation = joint_angular_relaxation
+        self.joint_linear_compliance = joint_linear_compliance
+        self.joint_angular_compliance = joint_angular_compliance
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
@@ -2856,7 +2868,7 @@ class XPBDSolver(SolverBase):
                             model.joint_axis_dim,
                             model.joint_axis,
                             model.joint_axis_mode,
-                            control.joint_act,
+                            control.joint_target,
                         ],
                         outputs=[state_in.body_f],
                         device=model.device,
@@ -3058,8 +3070,8 @@ class XPBDSolver(SolverBase):
                         #         control.joint_target,
                         #         model.joint_target_ke,
                         #         model.joint_target_kd,
-                        #         model.joint_linear_compliance,
-                        #         model.joint_angular_compliance,
+                        #         self.joint_linear_compliance,
+                        #         self.joint_angular_compliance,
                         #         self.joint_angular_relaxation,
                         #         self.joint_linear_relaxation,
                         #         dt,
@@ -3089,11 +3101,11 @@ class XPBDSolver(SolverBase):
                                 model.joint_axis_dim,
                                 model.joint_axis_mode,
                                 model.joint_axis,
-                                control.joint_act,
+                                control.joint_target,
                                 model.joint_target_ke,
                                 model.joint_target_kd,
-                                model.joint_linear_compliance,
-                                model.joint_angular_compliance,
+                                self.joint_linear_compliance,
+                                self.joint_angular_compliance,
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
                                 dt,

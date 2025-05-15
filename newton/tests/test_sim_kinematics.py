@@ -13,21 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import math
 import unittest
 
@@ -47,15 +32,6 @@ def test_fk_ik(test, device):
         newton.utils.parse_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             builder,
-            stiffness=0.0,
-            damping=1.0,
-            armature=0.1,
-            contact_ke=1.0e4,
-            contact_kd=1.0e2,
-            contact_kf=1.0e2,
-            contact_mu=0.75,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
             up_axis="Y",
         )
 
@@ -85,12 +61,12 @@ def test_fk_ik(test, device):
     q_fk = model.joint_q.numpy()
     qd_fk = model.joint_qd.numpy()
 
-    wp.sim.eval_fk(model, model.joint_q, model.joint_qd, None, state)
+    newton.core.eval_fk(model, model.joint_q, model.joint_qd, None, state)
 
     q_ik = wp.zeros_like(model.joint_q, device=device)
     qd_ik = wp.zeros_like(model.joint_qd, device=device)
 
-    wp.sim.eval_ik(model, state, q_ik, qd_ik)
+    newton.core.eval_ik(model, state, q_ik, qd_ik)
 
     assert_np_equal(q_fk, q_ik.numpy(), tol=1e-6)
     assert_np_equal(qd_fk, qd_ik.numpy(), tol=1e-6)

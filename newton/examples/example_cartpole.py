@@ -21,7 +21,6 @@
 #
 ###########################################################################
 
-import math
 
 import warp as wp
 
@@ -36,18 +35,14 @@ class Example:
         self.num_envs = num_envs
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.density = 100.0
+        articulation_builder.default_joint_armature = 0.1
+        articulation_builder.default_body_armature = 0.1
 
         newton.utils.parse_urdf(
             newton.examples.get_asset("cartpole.urdf"),
             articulation_builder,
-            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=False,
-            density=100,
-            armature=0.1,
-            stiffness=0.0,
-            damping=0.0,
-            limit_ke=1.0e4,
-            limit_kd=1.0e1,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )

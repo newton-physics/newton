@@ -113,8 +113,10 @@ class TestModel(unittest.TestCase):
         assert_np_equal(np.array(builder1.edge_bending_properties), np.array(builder2.edge_bending_properties))
 
     def test_collapse_fixed_joints(self):
+        shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
+
         def add_three_cubes(builder: ModelBuilder, parent_body=-1):
-            unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "density": 1.0}
+            unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
             b0 = builder.add_body()
             builder.add_shape_box(body=b0, **unit_cube)
             builder.add_joint_fixed(parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
@@ -140,13 +142,15 @@ class TestModel(unittest.TestCase):
         assert builder.body_count == 6
         assert builder.articulation_count == 2
         b3 = builder.add_body()
-        builder.add_shape_box(body=b3, hx=0.5, hy=0.5, hz=0.5, density=1.0, pos=wp.vec3(1.0, 2.0, 3.0))
+        builder.add_shape_box(
+            body=b3, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg, xform=wp.transform(wp.vec3(1.0, 2.0, 3.0))
+        )
         builder.add_joint_revolute(parent=last_body, child=b3, axis=wp.vec3(0.0, 1.0, 0.0))
 
         # a non-fixed joint followed by fixed joints
         builder.add_articulation()
         b4 = builder.add_body()
-        builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, density=1.0)
+        builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
         builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
         assert builder.joint_count == 8
         assert builder.body_count == 8

@@ -6,11 +6,21 @@ Core Data Structures
 
 .. autoclass:: newton.Model
 
-.. autoclass:: newton.ModelBuilder
-
 .. autoclass:: newton.State
 
 .. autoclass:: newton.Control
+
+.. autoclass:: newton.ModelBuilder
+
+.. autoclass:: newton.Mesh
+
+.. autoclass:: newton.SDF
+
+.. autodata:: newton.AxisType
+   :annotation:
+
+.. autoclass:: newton.Axis
+
 
 Solvers
 -------
@@ -22,6 +32,10 @@ Solvers
 .. autoclass:: newton.solvers.VBDSolver
 
 .. autoclass:: newton.solvers.MuJoCoSolver
+
+.. autoclass:: newton.solvers.SemiImplicitSolver
+
+.. autoclass:: newton.solvers.FeatherstoneSolver
 
 Importers
 ---------
@@ -85,12 +99,7 @@ Joint Types
 Joint Control Modes
 -------------------
 
-Joint modes control the behavior of how the joint control input :attr:`Control.joint_act` affects the torque applied at a given joint axis.
-By default, it behaves as a direct force application via :data:`JOINT_MODE_FORCE`. Other modes can be used to implement joint position or velocity drives:
-
-.. data:: JOINT_MODE_FORCE
-
-    This is the default control mode where the control input is the torque :math:`\tau` applied at the joint axis.
+Joint modes control whether the respective :attr:`newton.Control.joint_target` input is a joint position or velocity target.
 
 .. data:: JOINT_MODE_TARGET_POSITION
 

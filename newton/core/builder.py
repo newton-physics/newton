@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import copy
 import math
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -29,6 +31,7 @@ from .inertia import (
     transform_inertia,
 )
 from .model import Model
+from .spatial import quat_between_axes
 from .types import (
     GEO_BOX,
     GEO_CAPSULE,
@@ -45,7 +48,6 @@ from .types import (
     JOINT_DISTANCE,
     JOINT_FIXED,
     JOINT_FREE,
-    JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
@@ -55,15 +57,21 @@ from .types import (
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
-    JointAxis,
+    Axis,
+    AxisType,
+    Devicelike,
     Mat33,
     Mesh,
     Quat,
+    Sequence,
     Transform,
     Vec3,
     Vec4,
+    axis_to_vec3,
     flag_to_int,
     get_joint_dof_count,
+    get_shape_radius,
+    nparray,
 )
 
 
@@ -79,9 +87,10 @@ class ModelBuilder:
     Example
     -------
 
-    .. code-block:: python
+    .. testcode::
 
         import newton
+        from newton.solvers import XPBDSolver
 
         builder = newton.ModelBuilder()
 
@@ -94,16 +103,17 @@ class ModelBuilder:
             builder.add_spring(i - 1, i, 1.0e3, 0.0, 0)
 
         # create model
-        model = builder.finalize("cuda")
+        model = builder.finalize()
 
-        state = model.state()
+        state_0, state_1 = model.state(), model.state()
         control = model.control()
         contact = model.contact()
-        integrator = newton.XPBDSolver()
+        solver = XPBDSolver(model)
 
-        for i in range(100):
-            state.clear_forces()
-            integrator.simulate(model, state, state, control, contact, dt=1.0 / 60.0)
+        for i in range(10):
+            state_0.clear_forces()
+            solver.step(model, state_0, state_1, control, contact, dt=1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -111,40 +121,135 @@ class ModelBuilder:
         desired.
     """
 
-    # Default particle settings
-    default_particle_radius = 0.1
+    @dataclass
+    class ShapeConfig:
+        """
+        Represents the properties of a collision shape used in simulation.
+        """
 
-    # Default triangle soft mesh settings
-    default_tri_ke = 100.0
-    default_tri_ka = 100.0
-    default_tri_kd = 10.0
-    default_tri_drag = 0.0
-    default_tri_lift = 0.0
+        density: float = 1000.0
+        """The density of the shape material."""
+        ke: float = 1.0e5
+        """The contact elastic stiffness."""
+        kd: float = 1000.0
+        """The contact damping stiffness."""
+        kf: float = 1000.0
+        """The contact friction stiffness."""
+        ka: float = 0.0
+        """The contact adhesion distance."""
+        mu: float = 0.5
+        """The coefficient of friction."""
+        restitution: float = 0.0
+        """The coefficient of restitution."""
+        thickness: float = 1e-5
+        """The thickness of the shape."""
+        is_solid: bool = True
+        """Indicates whether the shape is solid or hollow. Defaults to True."""
+        collision_group: int = -1
+        """The collision group ID for the shape. Defaults to -1."""
+        collision_filter_parent: bool = True
+        """Whether to inherit collision filtering from the parent. Defaults to True."""
+        has_ground_collision: bool = True
+        """Whether the shape can collide with the ground. Defaults to True."""
+        has_shape_collision: bool = True
+        """Whether the shape can collide with other shapes. Defaults to True."""
+        is_visible: bool = True
+        """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
-    # Default distance constraint properties
-    default_spring_ke = 100.0
-    default_spring_kd = 0.0
+        @property
+        def flags(self) -> int:
+            """Returns the flags for the shape."""
 
-    # Default edge bending properties
-    default_edge_ke = 100.0
-    default_edge_kd = 0.0
+            shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+            return shape_flags
 
-    # Default rigid shape contact material properties
-    default_shape_ke = 1.0e5
-    default_shape_kd = 1000.0
-    default_shape_kf = 1000.0
-    default_shape_ka = 0.0
-    default_shape_mu = 0.5
-    default_shape_restitution = 0.0
-    default_shape_density = 1000.0
-    default_shape_thickness = 1e-5
+        @flags.setter
+        def flags(self, value: int):
+            """Sets the flags for the shape."""
 
-    # Default joint settings
-    default_joint_limit_ke = 100.0
-    default_joint_limit_kd = 1.0
+            self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
+            self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
+            self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
 
-    def __init__(self, up_vector: Vec3 = (0.0, 1.0, 0.0), gravity: float = -9.81):
+        def copy(self) -> ShapeConfig:
+            return copy.copy(self)
+
+    class JointDofConfig:
+        """
+        Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
+        """
+
+        def __init__(
+            self,
+            axis: AxisType | Vec3 = Axis.X,
+            limit_lower: float = -1e6,
+            limit_upper: float = 1e6,
+            limit_ke: float = 1e4,
+            limit_kd: float = 1e1,
+            target: float = 0.0,
+            target_ke: float = 0.0,
+            target_kd: float = 0.0,
+            mode: int = JOINT_MODE_TARGET_POSITION,
+            armature: float = 1e-2,
+        ):
+            self.axis = wp.normalize(axis_to_vec3(axis))
+            """The 3D axis that this JointDofConfig object describes."""
+            self.limit_lower = limit_lower
+            """The lower position limit of the joint axis. Defaults to -1e6."""
+            self.limit_upper = limit_upper
+            """The upper position limit of the joint axis. Defaults to 1e6."""
+            self.limit_ke = limit_ke
+            """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
+            self.limit_kd = limit_kd
+            """The damping stiffness of the joint axis limits. Defaults to 1e1."""
+            self.target = target
+            """The target position or velocity (depending on the mode) of the joint axis.
+            If `mode` is `JOINT_MODE_TARGET_POSITION` and the initial `target` is outside the limits,
+            it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            self.target_ke = target_ke
+            """The proportional gain of the target drive PD controller. Defaults to 0.0."""
+            self.target_kd = target_kd
+            """The derivative gain of the target drive PD controller. Defaults to 0.0."""
+            self.mode = mode
+            """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
+            self.armature = armature
+            """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+
+            if self.mode == JOINT_MODE_TARGET_POSITION and (
+                self.target > self.limit_upper or self.target < self.limit_lower
+            ):
+                self.target = 0.5 * (self.limit_lower + self.limit_upper)
+
+    def __init__(self, up_axis: AxisType = Axis.Y, gravity: float = -9.81):
         self.num_envs = 0
+
+        # region defaults
+        self.default_shape_cfg = ModelBuilder.ShapeConfig()
+        self.default_joint_cfg = ModelBuilder.JointDofConfig()
+
+        # Default particle settings
+        self.default_particle_radius = 0.1
+
+        # Default triangle soft mesh settings
+        self.default_tri_ke = 100.0
+        self.default_tri_ka = 100.0
+        self.default_tri_kd = 10.0
+        self.default_tri_drag = 0.0
+        self.default_tri_lift = 0.0
+
+        # Default distance constraint properties
+        self.default_spring_ke = 100.0
+        self.default_spring_kd = 0.0
+
+        # Default edge bending properties
+        self.default_edge_ke = 100.0
+        self.default_edge_kd = 0.0
+
+        # Default body settings
+        self.default_body_armature = 0.0
+        # endregion
 
         # particles
         self.particle_q = []
@@ -153,8 +258,7 @@ class ModelBuilder:
         self.particle_radius = []
         self.particle_flags = []
         self.particle_max_velocity = 1e5
-        # list of np.array
-        self.particle_color_groups = []
+        self.particle_color_groups: list[nparray] = []
 
         # shapes (each shape has an entry in these arrays)
         self.shape_key = []  # shape keys
@@ -241,6 +345,7 @@ class ModelBuilder:
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_f = []
 
         self.joint_type = []
         self.joint_key = []
@@ -252,13 +357,11 @@ class ModelBuilder:
         self.joint_limit_upper = []
         self.joint_limit_ke = []
         self.joint_limit_kd = []
-        self.joint_act = []
+        self.joint_target = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
 
-        self.joint_linear_compliance = []
-        self.joint_angular_compliance = []
         self.joint_enabled = []
 
         self.joint_q_start = []
@@ -273,21 +376,15 @@ class ModelBuilder:
         self.joint_coord_count = 0
         self.joint_axis_total_count = 0
 
-        self.up_vector = wp.vec3(up_vector)
-        self.up_axis = int(np.argmax(np.abs(up_vector)))
-        self.gravity = gravity
+        self.up_axis: Axis = Axis.from_any(up_axis)
+        self.gravity: float = gravity
         # indicates whether a ground plane has been created
         self._ground_created = False
         # constructor parameters for ground plane shape
         self._ground_params = {
-            "plane": (*up_vector, 0.0),
+            "plane": None,
             "width": 0.0,
             "length": 0.0,
-            "ke": self.default_shape_ke,
-            "kd": self.default_shape_kd,
-            "kf": self.default_shape_kf,
-            "mu": self.default_shape_mu,
-            "restitution": self.default_shape_restitution,
         }
 
         # Maximum number of soft contacts that can be registered
@@ -308,6 +405,18 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+    @property
+    def up_vector(self) -> Vec3:
+        """Computes the 3D up vector from :attr:`up_axis`."""
+        return axis_to_vec3(self.up_axis)
+
+    @up_vector.setter
+    def up_vector(self, _):
+        raise AttributeError(
+            "The 'up_vector' property is read-only and cannot be set. Instead, use 'up_axis' to set the up axis."
+        )
+
+    # region counts
     @property
     def shape_count(self):
         return len(self.shape_geo_type)
@@ -352,6 +461,8 @@ class ModelBuilder:
     def articulation_count(self):
         return len(self.articulation_start)
 
+    # endregion
+
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
         # these are used for computing forward kinematics e.g.:
@@ -370,7 +481,7 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
-            xform (:external+warp:ref:`transform <transform>`): offset transform applied to root bodies.
+            xform (Transform): offset transform applied to root bodies.
             update_num_env_count (bool): if True, the number of environments is incremented by 1.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
         """
@@ -498,15 +609,14 @@ class ModelBuilder:
             "joint_axis_mode",
             "joint_key",
             "joint_qd",
-            "joint_act",
+            "joint_f",
+            "joint_target",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
-            "joint_linear_compliance",
-            "joint_angular_compliance",
             "shape_key",
             "shape_flags",
             "shape_geo_type",
@@ -548,18 +658,17 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
         self.joint_axis_total_count += builder.joint_axis_total_count
 
-        self.up_vector = builder.up_vector
+        self.up_axis = builder.up_axis
         self.gravity = builder.gravity
         self._ground_params = builder._ground_params
 
         if update_num_env_count:
             self.num_envs += 1
 
-    # register a rigid body and return its index.
     def add_body(
         self,
-        origin: Transform | None = None,
-        armature: float = 0.0,
+        xform: Transform | None = None,
+        armature: float | None = None,
         com: Vec3 | None = None,
         I_m: Mat33 | None = None,
         mass: float = 0.0,
@@ -568,10 +677,10 @@ class ModelBuilder:
         """Adds a rigid body to the model.
 
         Args:
-            origin: The location of the body in the world frame.
-            armature: Artificial inertia added to the body.
-            com: The center of mass of the body w.r.t its origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass).
+            xform: The location of the body in the world frame.
+            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
 
@@ -583,18 +692,20 @@ class ModelBuilder:
 
         """
 
-        if origin is None:
-            origin = wp.transform()
-
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
-
         if I_m is None:
             I_m = wp.mat33()
 
         body_id = len(self.body_mass)
 
         # body data
+        if armature is None:
+            armature = self.default_body_armature
         inertia = I_m + wp.mat33(np.eye(3)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
@@ -610,26 +721,25 @@ class ModelBuilder:
         else:
             self.body_inv_inertia.append(inertia)
 
-        self.body_q.append(origin)
+        self.body_q.append(xform)
         self.body_qd.append(wp.spatial_vector())
 
         self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
         return body_id
 
+    # region joints
+
     def add_joint(
         self,
         joint_type: wp.constant,
         parent: int,
         child: int,
-        linear_axes: list[JointAxis] | None = None,
-        angular_axes: list[JointAxis] | None = None,
+        linear_axes: list[JointDofConfig] | None = None,
+        angular_axes: list[JointDofConfig] | None = None,
         key: str | None = None,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -637,34 +747,33 @@ class ModelBuilder:
         Generic method to add any type of joint to this ModelBuilder.
 
         Args:
-            joint_type (constant): The type of joint to add (see `Joint types`_)
-            parent (int): The index of the parent body (-1 is the world)
-            child (int): The index of the child body
-            linear_axes (list(:class:`JointAxis`)): The linear axes (see :class:`JointAxis`) of the joint
-            angular_axes (list(:class:`JointAxis`)): The angular axes (see :class:`JointAxis`) of the joint
-            key (str): The key of the joint (optional)
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance (float): The linear compliance of the joint
-            angular_compliance (float): The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axes (only considered by :class:`FeatherstoneIntegrator`)
-            collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies
-            enabled (bool): Whether the joint is enabled (not considered by :class:`FeatherstoneIntegrator`)
+            joint_type (constant): The type of joint to add (see `Joint types`_).
+            parent (int): The index of the parent body (-1 is the world).
+            child (int): The index of the child body.
+            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
+            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint.
+            key (str): The key of the joint (optional).
+            parent_xform (Transform): The transform of the joint in the parent body's local frame. If None, the identity transform is used.
+            child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
+            collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
+            enabled (bool): Whether the joint is enabled (not considered by :class:`FeatherstoneSolver`).
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
         """
         if linear_axes is None:
             linear_axes = []
-
         if angular_axes is None:
             angular_axes = []
 
         if parent_xform is None:
             parent_xform = wp.transform()
-
+        else:
+            parent_xform = wp.transform(*parent_xform)
         if child_xform is None:
             child_xform = wp.transform()
+        else:
+            child_xform = wp.transform(*child_xform)
 
         if len(self.articulation_start) == 0:
             # automatically add an articulation if none exists
@@ -682,19 +791,17 @@ class ModelBuilder:
         self.joint_axis_start.append(len(self.joint_axis))
         self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
-
-        self.joint_linear_compliance.append(linear_compliance)
-        self.joint_angular_compliance.append(angular_compliance)
         self.joint_enabled.append(enabled)
 
-        def add_axis_dim(dim: JointAxis):
+        def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
             self.joint_axis_mode.append(dim.mode)
-            self.joint_act.append(dim.action)
+            self.joint_target.append(dim.target)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
+            self.joint_armature.append(dim.armature)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -711,16 +818,18 @@ class ModelBuilder:
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
 
-        for _i in range(coord_count):
+        for _ in range(coord_count):
             self.joint_q.append(0.0)
-
-        for _i in range(dof_count):
+        for _ in range(dof_count):
             self.joint_qd.append(0.0)
-            self.joint_armature.append(armature)
+            self.joint_f.append(0.0)
 
         if joint_type == JOINT_FREE or joint_type == JOINT_DISTANCE or joint_type == JOINT_BALL:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
+            # ensure we have armature defined for all velocity dofs
+            for _ in range(dof_count - 1):
+                self.joint_armature.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -739,20 +848,18 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        axis: Vec3 = (1.0, 0.0, 0.0),
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        axis: AxisType | Vec3 | JointDofConfig | None = None,
         target: float | None = None,
-        target_ke: float = 0.0,
-        target_kd: float = 0.0,
-        mode: int = JOINT_MODE_FORCE,
-        limit_lower: float = -2 * math.pi,
-        limit_upper: float = 2 * math.pi,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        mode: int | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -760,56 +867,46 @@ class ModelBuilder:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
-            target: The target angle (in radians) or target velocity of the joint (if None, the joint is considered to be in force control mode)
-            target_ke: The stiffness of the joint target
-            target_kd: The damping of the joint target
-            limit_lower: The lower limit of the joint
-            limit_upper: The upper limit of the joint
-            limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_kd`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axis
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            target: The target angle (in radians) or target velocity of the joint.
+            target_ke: The stiffness of the joint target.
+            target_kd: The damping of the joint target.
+            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
 
-        if child_xform is None:
-            child_xform = wp.transform()
-
-        limit_ke = limit_ke if limit_ke is not None else self.default_joint_limit_ke
-        limit_kd = limit_kd if limit_kd is not None else self.default_joint_limit_kd
-
-        action = 0.0
-        if target is None and mode == JOINT_MODE_TARGET_POSITION:
-            action = 0.5 * (limit_lower + limit_upper)
-        elif target is not None:
-            action = target
-            if mode == JOINT_MODE_FORCE:
-                mode = JOINT_MODE_TARGET_POSITION
-        ax = JointAxis(
-            axis=axis,
-            limit_lower=limit_lower,
-            limit_upper=limit_upper,
-            action=action,
-            target_ke=target_ke,
-            target_kd=target_kd,
-            mode=mode,
-            limit_ke=limit_ke,
-            limit_kd=limit_kd,
-        )
+        if axis is None:
+            axis = self.default_joint_cfg.axis
+        if isinstance(axis, ModelBuilder.JointDofConfig):
+            ax = axis
+        else:
+            ax = ModelBuilder.JointDofConfig(
+                axis=axis,
+                limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
+                limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
+                target=target if target is not None else self.default_joint_cfg.target,
+                target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
+                target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                mode=mode if mode is not None else self.default_joint_cfg.mode,
+                limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
+                limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
+                armature=armature if armature is not None else self.default_joint_cfg.armature,
+            )
         return self.add_joint(
             JOINT_REVOLUTE,
             parent,
@@ -817,9 +914,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             angular_axes=[ax],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -829,20 +923,18 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        axis: Vec3 = (1.0, 0.0, 0.0),
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        axis: AxisType | Vec3 | JointDofConfig = Axis.X,
         target: float | None = None,
-        target_ke: float = 0.0,
-        target_kd: float = 0.0,
-        mode: int = JOINT_MODE_FORCE,
-        limit_lower: float = -1e4,
-        limit_upper: float = 1e4,
+        target_ke: float | None = None,
+        target_kd: float | None = None,
+        mode: int | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        armature: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -850,56 +942,46 @@ class ModelBuilder:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            axis (3D vector or JointAxis): The axis of rotation in the parent body's local frame, can be a JointAxis object whose settings will be used instead of the other arguments
-            target: The target position or velocity of the joint (if None, the joint is considered to be in force control mode)
-            target_ke: The stiffness of the joint target
-            target_kd: The damping of the joint target
-            limit_lower: The lower limit of the joint
-            limit_upper: The upper limit of the joint
-            limit_ke: The stiffness of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            limit_kd: The damping of the joint limit (None to use the default value :attr:`default_joint_limit_ke`)
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axis
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            axis (AxisType | Vec3 | JointAxis): The axis of rotation in the parent body's local frame, can be a :class:`JointAxis` object whose settings will be used instead of the other arguments.
+            target: The target angle (in radians) or target velocity of the joint.
+            target_ke: The stiffness of the joint target.
+            target_kd: The damping of the joint target.
+            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
 
-        if child_xform is None:
-            child_xform = wp.transform()
-
-        limit_ke = limit_ke if limit_ke is not None else self.default_joint_limit_ke
-        limit_kd = limit_kd if limit_kd is not None else self.default_joint_limit_kd
-
-        action = 0.0
-        if target is None and mode == JOINT_MODE_TARGET_POSITION:
-            action = 0.5 * (limit_lower + limit_upper)
-        elif target is not None:
-            action = target
-            if mode == JOINT_MODE_FORCE:
-                mode = JOINT_MODE_TARGET_POSITION
-        ax = JointAxis(
-            axis=axis,
-            limit_lower=limit_lower,
-            limit_upper=limit_upper,
-            action=action,
-            target_ke=target_ke,
-            target_kd=target_kd,
-            mode=mode,
-            limit_ke=limit_ke,
-            limit_kd=limit_kd,
-        )
+        if axis is None:
+            axis = self.default_joint_cfg.axis
+        if isinstance(axis, ModelBuilder.JointDofConfig):
+            ax = axis
+        else:
+            ax = ModelBuilder.JointDofConfig(
+                axis=axis,
+                limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
+                limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
+                target=target if target is not None else self.default_joint_cfg.target,
+                target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
+                target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                mode=mode if mode is not None else self.default_joint_cfg.mode,
+                limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
+                limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
+                armature=armature if armature is not None else self.default_joint_cfg.armature,
+            )
         return self.add_joint(
             JOINT_PRISMATIC,
             parent,
@@ -907,9 +989,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             linear_axes=[ax],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -919,11 +998,8 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -931,26 +1007,18 @@ class ModelBuilder:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_BALL,
@@ -958,9 +1026,6 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -970,11 +1035,8 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -983,26 +1045,18 @@ class ModelBuilder:
         See :meth:`collapse_fixed_joints` for a helper function that removes these fixed joints and merges the connecting bodies to simplify the model and improve stability.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
             The index of the added joint
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_FIXED,
@@ -1010,9 +1064,6 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -1021,9 +1072,8 @@ class ModelBuilder:
     def add_joint_free(
         self,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        armature: float = 0.0,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         parent: int = -1,
         key: str | None = None,
         collision_filter_parent: bool = True,
@@ -1033,24 +1083,18 @@ class ModelBuilder:
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
 
         Args:
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            armature (float): Artificial inertia added around the joint axis (only considered by FeatherstoneIntegrator)
-            parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism)
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_FREE,
@@ -1058,7 +1102,6 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -1068,11 +1111,10 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
-        compliance: float = 0.0,
         collision_filter_parent: bool = True,
         enabled: bool = True,
     ) -> int:
@@ -1080,29 +1122,23 @@ class ModelBuilder:
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            min_distance: The minimum distance between the bodies (no limit if negative)
-            max_distance: The maximum distance between the bodies (no limit if negative)
-            compliance: The compliance of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            min_distance: The minimum distance between the bodies (no limit if negative).
+            max_distance: The maximum distance between the bodies (no limit if negative).
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in the :class:`XPBDSolver` at the moment.
+        .. note:: Distance joints are currently only supported in the :class:`newton.solvers.XPBDSolver`.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
 
-        if child_xform is None:
-            child_xform = wp.transform()
-
-        ax = JointAxis(
+        ax = ModelBuilder.JointDofConfig(
             axis=(1.0, 0.0, 0.0),
             limit_lower=min_distance,
             limit_upper=max_distance,
@@ -1114,7 +1150,6 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             linear_axes=[ax],
-            linear_compliance=compliance,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1123,13 +1158,11 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        axis_0: JointAxis,
-        axis_1: JointAxis,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        axis_0: JointDofConfig,
+        axis_1: JointDofConfig,
+        axis_2: JointDofConfig,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1137,39 +1170,31 @@ class ModelBuilder:
         """Adds a universal joint to the model. U-joints have two degrees of freedom, one for each axis.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            axis_0 (JointDofConfig): The first axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
+            axis_1 (JointDofConfig): The second axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
+            axis_2 (JointDofConfig): The third axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
+
+        .. note:: This joint type will be deprecated in favor of the :meth:`add_joint_d6` method.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_UNIVERSAL,
             parent,
             child,
-            angular_axes=[JointAxis(axis_0), JointAxis(axis_1)],
+            angular_axes=[axis_0, axis_1, axis_2],
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -1179,14 +1204,11 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        axis_0: JointAxis,
-        axis_1: JointAxis,
-        axis_2: JointAxis,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        axis_0: JointDofConfig,
+        axis_1: JointDofConfig,
+        axis_2: JointDofConfig,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1197,40 +1219,32 @@ class ModelBuilder:
         Depending on the choice of axes, the orientation can be specified through Euler angles, e.g. `z-x-z` or `x-y-x`, or through a Tait-Bryan angle sequence, e.g. `z-y-x` or `x-y-z`.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            key: The key of the joint
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame.
+            child_xform (Transform): The transform of the joint in the child body's local frame.
+            armature: Artificial inertia added around the joint axes.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
+
+        .. note:: This joint type will be deprecated in favor of the :meth:`add_joint_d6` method.
 
         """
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_COMPOUND,
             parent,
             child,
-            angular_axes=[JointAxis(axis_0), JointAxis(axis_1), JointAxis(axis_2)],
+            angular_axes=[axis_0, axis_1, axis_2],
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -1240,48 +1254,36 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
-        linear_axes: list[JointAxis] | None = None,
-        angular_axes: list[JointAxis] | None = None,
+        linear_axes: Sequence[JointDofConfig] | None = None,
+        angular_axes: Sequence[JointDofConfig] | None = None,
         key: str | None = None,
-        parent_xform: wp.transform | None = None,
-        child_xform: wp.transform | None = None,
-        linear_compliance: float = 0.0,
-        angular_compliance: float = 0.0,
-        armature: float = 1e-2,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-    ):
+    ) -> int:
         """Adds a generic joint with custom linear and angular axes. The number of axes determines the number of degrees of freedom of the joint.
 
         Args:
-            parent: The index of the parent body
-            child: The index of the child body
-            linear_axes: A list of linear axes
-            angular_axes: A list of angular axes
-            key: The key of the joint
-            parent_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the parent body's local frame
-            child_xform (:external+warp:ref:`transform <transform>`): The transform of the joint in the child body's local frame
-            linear_compliance: The linear compliance of the joint
-            angular_compliance: The angular compliance of the joint
-            armature: Artificial inertia added around the joint axes
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies
-            enabled: Whether the joint is enabled
+            parent: The index of the parent body.
+            child: The index of the child body.
+            linear_axes: A list of linear axes.
+            angular_axes: A list of angular axes.
+            key: The key of the joint.
+            parent_xform (Transform): The transform of the joint in the parent body's local frame
+            child_xform (Transform): The transform of the joint in the child body's local frame
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
 
         Returns:
-            The index of the added joint
+            The index of the added joint.
 
         """
         if linear_axes is None:
             linear_axes = []
-
         if angular_axes is None:
             angular_axes = []
-
-        if parent_xform is None:
-            parent_xform = wp.transform()
-
-        if child_xform is None:
-            child_xform = wp.transform()
 
         return self.add_joint(
             JOINT_D6,
@@ -1289,15 +1291,14 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[JointAxis(a) for a in linear_axes],
-            angular_axes=[JointAxis(a) for a in angular_axes],
-            linear_compliance=linear_compliance,
-            angular_compliance=angular_compliance,
-            armature=armature,
+            linear_axes=list(linear_axes),
+            angular_axes=list(angular_axes),
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
+
+    # endregion
 
     def plot_articulation(
         self,
@@ -1475,8 +1476,6 @@ class ModelBuilder:
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
-                "linear_compliance": self.joint_linear_compliance[i],
-                "angular_compliance": self.joint_angular_compliance[i],
                 "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
@@ -1500,7 +1499,7 @@ class ModelBuilder:
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "act": self.joint_act[j],
+                        "act": self.joint_target[j],
                     }
                 )
 
@@ -1653,8 +1652,6 @@ class ModelBuilder:
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
         self.joint_enabled.clear()
-        self.joint_linear_compliance.clear()
-        self.joint_angular_compliance.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
         self.joint_X_c.clear()
@@ -1668,7 +1665,7 @@ class ModelBuilder:
         self.joint_limit_kd.clear()
         self.joint_axis_dim.clear()
         self.joint_axis_start.clear()
-        self.joint_act.clear()
+        self.joint_target.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1680,8 +1677,6 @@ class ModelBuilder:
             self.joint_qd.extend(joint["qd"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
-            self.joint_linear_compliance.append(joint["linear_compliance"])
-            self.joint_angular_compliance.append(joint["angular_compliance"])
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
             self.joint_axis_dim.append(joint["axis_dim"])
@@ -1695,7 +1690,7 @@ class ModelBuilder:
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_act.append(axis["act"])
+                self.joint_target.append(axis["act"])
 
         return {
             "body_remap": body_remap,
@@ -1740,689 +1735,44 @@ class ModelBuilder:
         # return the index of the muscle
         return len(self.muscle_start) - 1
 
-    # shapes
-    def add_shape_plane(
-        self,
-        plane: Vec4 | tuple[float, float, float, float] = (0.0, 1.0, 0.0, 0.0),
-        pos: Vec3 | None = None,
-        rot: Quat | None = None,
-        width: float = 10.0,
-        length: float = 10.0,
-        body: int = -1,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        thickness: float | None = None,
-        has_ground_collision: bool = False,
-        has_shape_collision: bool = True,
-        is_visible: bool = True,
-        collision_group: int = -1,
-        key: str | None = None,
-    ):
-        """
-        Adds a plane collision shape.
-        If pos and rot are defined, the plane is assumed to have its normal as (0, 1, 0).
-        Otherwise, the plane equation defined through the `plane` argument is used.
+    # region shapes
 
-        Args:
-            plane: The plane equation in form a*x + b*y + c*z + d = 0
-            pos: The position of the plane in world coordinates
-            rot: The rotation of the plane in world coordinates
-            width: The extent along x of the plane (infinite if 0)
-            length: The extent along z of the plane (infinite if 0)
-            body: The body index to attach the shape to (-1 by default to keep the plane static)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            thickness: The thickness of the plane (0 by default) for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            is_visible: Whether the plane is visible
-            collision_group: The collision group of the shape
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-        if pos is None or rot is None:
-            # compute position and rotation from plane equation
-            normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
-            if np.allclose(normal, (0.0, 1.0, 0.0)):
-                # no rotation necessary
-                rot = (0.0, 0.0, 0.0, 1.0)
-            else:
-                c = np.cross(normal, (0.0, 1.0, 0.0))
-                angle = np.arcsin(np.linalg.norm(c))
-                axis = np.abs(c) / np.linalg.norm(c)
-                rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
-        scale = wp.vec3(width, length, 0.0)
-
-        return self._add_shape(
-            body,
-            pos,
-            rot,
-            GEO_PLANE,
-            scale,
-            None,
-            0.0,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            is_visible=is_visible,
-            collision_group=collision_group,
-            key=key,
-        )
-
-    def add_shape_sphere(
-        self,
-        body,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a sphere collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the sphere
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the sphere is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow sphere, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the sphere is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        thickness = self.default_shape_thickness if thickness is None else thickness
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_SPHERE,
-            wp.vec3(radius, 0.0, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness + radius,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_box(
+    def add_shape(
         self,
         body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        hx: float = 0.5,
-        hy: float = 0.5,
-        hz: float = 0.5,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a box collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            hx: The half-extent along the x-axis
-            hy: The half-extent along the y-axis
-            hz: The half-extent along the z-axis
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the box is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow box, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the box is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-        """
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_BOX,
-            wp.vec3(hx, hy, hz),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_capsule(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a capsule collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the capsule
-            half_height: The half length of the center cylinder along the up axis
-            up_axis: The axis along which the capsule is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the capsule is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow capsule, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the capsule is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = wp.quat(rot)
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(q, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(q, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        thickness = self.default_shape_thickness if thickness is None else thickness
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CAPSULE,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness + radius,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_cylinder(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a cylinder collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the cylinder
-            half_height: The half length of the cylinder along the up axis
-            up_axis: The axis along which the cylinder is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the cylinder is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow cylinder, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the cylinder is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = rot
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(rot, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(rot, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CYLINDER,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_cone(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        radius: float = 1.0,
-        half_height: float = 0.5,
-        up_axis: int = 1,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a cone collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            radius: The radius of the cone
-            half_height: The half length of the cone along the up axis
-            up_axis: The axis along which the cone is aligned (0=x, 1=y, 2=z)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: Whether the cone is solid or hollow
-            thickness: Thickness to use for computing inertia of a hollow cone, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the cone is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        q = rot
-        sqh = math.sqrt(0.5)
-        if up_axis == 0:
-            q = wp.mul(rot, wp.quat(0.0, 0.0, -sqh, sqh))
-        elif up_axis == 2:
-            q = wp.mul(rot, wp.quat(sqh, 0.0, 0.0, sqh))
-
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(q),
-            GEO_CONE,
-            wp.vec3(radius, half_height, 0.0),
-            None,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_mesh(
-        self,
-        body: int,
-        pos: Vec3 | None = None,
-        rot: Quat | None = None,
-        mesh: Mesh | None = None,
+        type: int,
+        xform: Transform | None = None,
+        cfg: ShapeConfig | None = None,
         scale: Vec3 | None = None,
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds a triangle mesh collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-              (None to use the default value ``wp.vec3(0.0, 0.0, 0.0)``)
-            rot: The rotation of the shape with respect to the parent frame
-              (None to use the default value ``wp.quat(0.0, 0.0, 0.0, 1.0)``)
-            mesh: The mesh object
-            scale: Scale to use for the collider. (None to use the default value ``wp.vec3(1.0, 1.0, 1.0)``)
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: If True, the mesh is solid, otherwise it is a hollow surface with the given wall thickness
-            thickness: Thickness to use for computing inertia of a hollow mesh, and for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the mesh is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-
-        if pos is None:
-            pos = wp.vec3(0.0, 0.0, 0.0)
-
-        if rot is None:
-            rot = wp.quat(0.0, 0.0, 0.0, 1.0)
-
-        if scale is None:
-            scale = wp.vec3(1.0, 1.0, 1.0)
-
-        return self._add_shape(
-            body,
-            pos,
-            rot,
-            GEO_MESH,
-            wp.vec3(scale[0], scale[1], scale[2]),
-            mesh,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def add_shape_sdf(
-        self,
-        body: int,
-        pos: Vec3 | tuple[float, float, float] = (0.0, 0.0, 0.0),
-        rot: Quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
-        sdf: SDF | None = None,
-        scale: Vec3 | tuple[float, float, float] = (1.0, 1.0, 1.0),
-        density: float | None = None,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        ka: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
-        is_solid: bool = True,
-        thickness: float | None = None,
-        has_ground_collision: bool = True,
-        has_shape_collision: bool = True,
-        collision_group: int = -1,
-        is_visible: bool = True,
-        key: str | None = None,
-    ):
-        """Adds SDF collision shape to a body.
-
-        Args:
-            body: The index of the parent body this shape belongs to (use -1 for static shapes)
-            pos: The location of the shape with respect to the parent frame
-            rot: The rotation of the shape with respect to the parent frame
-            sdf: The sdf object
-            scale: Scale to use for the collider
-            density: The density of the shape (None to use the default value :attr:`default_shape_density`)
-            ke: The contact elastic stiffness (None to use the default value :attr:`default_shape_ke`)
-            kd: The contact damping stiffness (None to use the default value :attr:`default_shape_kd`)
-            kf: The contact friction stiffness (None to use the default value :attr:`default_shape_kf`)
-            ka: The contact adhesion distance (None to use the default value :attr:`default_shape_ka`)
-            mu: The coefficient of friction (None to use the default value :attr:`default_shape_mu`)
-            restitution: The coefficient of restitution (None to use the default value :attr:`default_shape_restitution`)
-            is_solid: If True, the SDF is solid, otherwise it is a hollow surface with the given wall thickness
-            thickness: Thickness to use for collision handling (None to use the default value :attr:`default_shape_thickness`)
-            has_ground_collision: If True, the shape will collide with the ground plane if `Model.ground` is True
-            has_shape_collision: If True, the shape will collide with other shapes
-            collision_group: The collision group of the shape
-            is_visible: Whether the shape is visible
-            key: The key of the shape
-
-        Returns:
-            The index of the added shape
-
-        """
-        return self._add_shape(
-            body,
-            wp.vec3(pos),
-            wp.quat(rot),
-            GEO_SDF,
-            wp.vec3(scale[0], scale[1], scale[2]),
-            sdf,
-            density,
-            ke,
-            kd,
-            kf,
-            ka,
-            mu,
-            restitution,
-            thickness,
-            is_solid,
-            has_ground_collision=has_ground_collision,
-            has_shape_collision=has_shape_collision,
-            collision_group=collision_group,
-            is_visible=is_visible,
-            key=key,
-        )
-
-    def _shape_radius(self, type, scale, src):
-        """
-        Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
-        """
-        if type == GEO_SPHERE:
-            return scale[0]
-        elif type == GEO_BOX:
-            return np.linalg.norm(scale)
-        elif type == GEO_CAPSULE or type == GEO_CYLINDER or type == GEO_CONE:
-            return scale[0] + scale[1]
-        elif type == GEO_MESH:
-            vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-            return np.linalg.norm(vmax)
-        elif type == GEO_PLANE:
-            if scale[0] > 0.0 and scale[1] > 0.0:
-                # finite plane
-                return np.linalg.norm(scale)
-            else:
-                return 1.0e6
-        else:
-            return 10.0
-
-    def _add_shape(
-        self,
-        body,
-        pos,
-        rot,
-        type,
-        scale,
-        src=None,
-        density=None,
-        ke=None,
-        kd=None,
-        kf=None,
-        ka=None,
-        mu=None,
-        restitution=None,
-        thickness=None,
-        is_solid=True,
-        collision_group=-1,
-        collision_filter_parent=True,
-        has_ground_collision=True,
-        has_shape_collision=True,
-        is_visible: bool = True,
+        src: SDF | Mesh | Any | None = None,
+        is_static: bool = False,
         key: str | None = None,
     ) -> int:
+        """Adds a generic collision shape to the model.
+
+        This is the base method for adding shapes; prefer using specific helpers like :meth:`add_shape_sphere` where possible.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body (e.g., static environment geometry).
+            type (int): The geometry type of the shape (e.g., `GEO_BOX`, `GEO_SPHERE`).
+            xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
+            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GEO_MESH` or an :class:`SDF` object for `GEO_SDF`. Defaults to `None`.
+            is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        if scale is None:
+            scale = (1.0, 1.0, 1.0)
         self.shape_body.append(body)
         shape = self.shape_count
         if body in self.body_shapes:
@@ -2432,48 +1782,377 @@ class ModelBuilder:
             self.body_shapes[body].append(shape)
         else:
             self.body_shapes[body] = [shape]
-        ke = ke if ke is not None else self.default_shape_ke
-        kd = kd if kd is not None else self.default_shape_kd
-        kf = kf if kf is not None else self.default_shape_kf
-        ka = ka if ka is not None else self.default_shape_ka
-        mu = mu if mu is not None else self.default_shape_mu
-        restitution = restitution if restitution is not None else self.default_shape_restitution
-        thickness = thickness if thickness is not None else self.default_shape_thickness
-        density = density if density is not None else self.default_shape_density
-        shape_flags = int(SHAPE_FLAG_VISIBLE) if is_visible else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if has_shape_collision else 0
-        shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if has_ground_collision and body != -1 else 0
         self.shape_key.append(key or f"shape_{shape}")
-        self.shape_transform.append(wp.transform(pos, rot))
-        self.shape_flags.append(shape_flags)
+        self.shape_transform.append(xform)
+        self.shape_flags.append(cfg.flags)
         self.shape_geo_type.append(type)
         self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
         self.shape_geo_src.append(src)
-        self.shape_geo_thickness.append(thickness)
-        self.shape_geo_is_solid.append(is_solid)
-        self.shape_material_ke.append(ke)
-        self.shape_material_kd.append(kd)
-        self.shape_material_kf.append(kf)
-        self.shape_material_ka.append(ka)
-        self.shape_material_mu.append(mu)
-        self.shape_material_restitution.append(restitution)
-        self.shape_collision_group.append(collision_group)
-        if collision_group not in self.shape_collision_group_map:
-            self.shape_collision_group_map[collision_group] = []
-        self.last_collision_group = max(self.last_collision_group, collision_group)
-        self.shape_collision_group_map[collision_group].append(shape)
-        self.shape_collision_radius.append(self._shape_radius(type, scale, src))
-        if collision_filter_parent and body > -1 and body in self.joint_parents:
+        self.shape_geo_thickness.append(cfg.thickness)
+        self.shape_geo_is_solid.append(cfg.is_solid)
+        self.shape_material_ke.append(cfg.ke)
+        self.shape_material_kd.append(cfg.kd)
+        self.shape_material_kf.append(cfg.kf)
+        self.shape_material_ka.append(cfg.ka)
+        self.shape_material_mu.append(cfg.mu)
+        self.shape_material_restitution.append(cfg.restitution)
+        self.shape_collision_group.append(cfg.collision_group)
+        if cfg.collision_group not in self.shape_collision_group_map:
+            self.shape_collision_group_map[cfg.collision_group] = []
+        self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
+        self.shape_collision_group_map[cfg.collision_group].append(shape)
+        self.shape_collision_radius.append(get_shape_radius(type, scale, src))
+        if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.add((parent_shape, shape))
 
-        if density > 0.0:
-            (m, c, I) = compute_shape_inertia(type, scale, src, density, is_solid, thickness)
-            com_body = wp.transform_point(wp.transform(pos, rot), c)
-            self._update_body_mass(body, m, I, com_body, rot)
+        if not is_static and cfg.density > 0.0:
+            (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
+            com_body = wp.transform_point(xform, c)
+            self._update_body_mass(body, m, I, com_body, xform.q)
         return shape
+
+    def add_shape_plane(
+        self,
+        plane: Vec4 | None = (0.0, 1.0, 0.0, 0.0),
+        xform: Transform | None = None,
+        width: float = 10.0,
+        length: float = 10.0,
+        body: int = -1,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """
+        Adds a plane collision shape to the model.
+
+        If `xform` is provided, it directly defines the plane's position and orientation. The plane's collision normal
+        is assumed to be along the local Y-axis of this `xform`.
+        If `xform` is `None`, it will be derived from the `plane` equation `a*x + b*y + c*z + d = 0`.
+        Plane shapes added via this method are always static (massless).
+
+        Args:
+            plane (Vec4 | None): The plane equation `(a, b, c, d)`. If `xform` is `None`, this defines the plane.
+                The normal is `(a,b,c)` and `d` is the offset. Defaults to `(0.0, 1.0, 0.0, 0.0)` (an XZ ground plane at Y=0) if `xform` is also `None`.
+            xform (Transform | None): The transform of the plane in the world or parent body's frame. If `None`, transform is derived from `plane`. Defaults to `None`.
+            width (float): The visual/collision extent of the plane along its local X-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
+            length (float): The visual/collision extent of the plane along its local Z-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
+            body (int): The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        if xform is None:
+            assert plane is not None, "Either xform or plane must be provided"
+            # compute position and rotation from plane equation
+            normal = np.array(plane[:3])
+            normal /= np.linalg.norm(normal)
+            pos = plane[3] * normal
+            if np.allclose(normal, (0.0, 1.0, 0.0)):
+                # no rotation necessary
+                rot = wp.quat_identity()
+            else:
+                c = np.cross(normal, (0.0, 1.0, 0.0))
+                angle = np.arcsin(np.linalg.norm(c))
+                axis = np.abs(c) / np.linalg.norm(c)
+                rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
+            xform = wp.transform(pos, rot)
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(width, length, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_PLANE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            is_static=True,
+            key=key,
+        )
+
+    def add_shape_sphere(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a sphere collision shape to a body.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the sphere in the parent body's local frame. The sphere is centered at this transform's position. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the sphere. Defaults to `1.0`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale: Any = wp.vec3(radius, 0.0, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_SPHERE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+        )
+
+    def add_shape_box(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        hx: float = 0.5,
+        hy: float = 0.5,
+        hz: float = 0.5,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a box collision shape to a body.
+
+        The box is centered at its local origin as defined by `xform`.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the box in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            hx (float): The half-extent of the box along its local X-axis. Defaults to `0.5`.
+            hy (float): The half-extent of the box along its local Y-axis. Defaults to `0.5`.
+            hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(hx, hy, hz)
+        return self.add_shape(
+            body=body,
+            type=GEO_BOX,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+        )
+
+    def add_shape_capsule(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: AxisType = Axis.Y,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a capsule collision shape to a body.
+
+        The capsule is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the capsule in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the capsule's hemispherical ends and its cylindrical segment. Defaults to `1.0`.
+            half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the capsule along which its length is aligned (typically `Axis.X`, `Axis.Y`, or `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        # up axis is always +Y for capsules
+        q = quat_between_axes(up_axis, Axis.Y)
+        xform = wp.transform(xform.p, xform.q * q)
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_CAPSULE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+        )
+
+    def add_shape_cylinder(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: AxisType = Axis.Y,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a cylinder collision shape to a body.
+
+        The cylinder is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the cylinder. Defaults to `1.0`.
+            half_height (float): The half-length of the cylinder along the `up_axis`. Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the cylinder along which its length is aligned (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        # up axis is always +Y for cylinders
+        q = quat_between_axes(up_axis, Axis.Y)
+        xform = wp.transform(xform.p, xform.q * q)
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_CYLINDER,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+        )
+
+    def add_shape_cone(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        radius: float = 1.0,
+        half_height: float = 0.5,
+        up_axis: AxisType = Axis.Y,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a cone collision shape to a body.
+
+        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `up_axis` towards its apex.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the cone in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            radius (float): The radius of the cone's base. Defaults to `1.0`.
+            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `up_axis`). Defaults to `0.5`.
+            up_axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if xform is None:
+            xform = wp.transform()
+        else:
+            xform = wp.transform(*xform)
+        # up axis is always +Y for cones
+        q = quat_between_axes(up_axis, Axis.Y)
+        xform = wp.transform(xform.p, xform.q * q)
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        scale = wp.vec3(radius, half_height, 0.0)
+        return self.add_shape(
+            body=body,
+            type=GEO_CONE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+        )
+
+    def add_shape_mesh(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        mesh: Mesh | None = None,
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a triangle mesh collision shape to a body.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the mesh in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            mesh (Mesh | None): The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
+            scale (Vec3 | None): The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        return self.add_shape(
+            body=body,
+            type=GEO_MESH,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=mesh,
+            key=key,
+        )
+
+    def add_shape_sdf(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        sdf: SDF | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a signed distance field (SDF) collision shape to a body.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the SDF in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            sdf (SDF | None): The :class:`SDF` object representing the signed distance field. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        return self.add_shape(
+            body=body,
+            type=GEO_SDF,
+            xform=xform,
+            cfg=cfg,
+            src=sdf,
+            key=key,
+        )
+
+    # endregion
 
     # particles
     def add_particle(
@@ -2484,20 +2163,20 @@ class ModelBuilder:
         radius: float | None = None,
         flags: wp.uint32 = PARTICLE_FLAG_ACTIVE,
     ) -> int:
-        """Adds a single particle to the model
+        """Adds a single particle to the model.
 
         Args:
-            pos: The initial position of the particle
-            vel: The initial velocity of the particle
-            mass: The mass of the particle
+            pos: The initial position of the particle.
+            vel: The initial velocity of the particle.
+            mass: The mass of the particle.
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants
+            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants.
 
         Note:
-            Set the mass equal to zero to create a 'kinematic' particle that does is not subject to dynamics.
+            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
 
         Returns:
-            The index of the particle in the system
+            The index of the particle in the system.
         """
         self.particle_q.append(pos)
         self.particle_qd.append(vel)
@@ -3437,36 +3116,25 @@ class ModelBuilder:
         self,
         normal: Vec3 | None = None,
         offset: float = 0.0,
-        ke: float | None = None,
-        kd: float | None = None,
-        kf: float | None = None,
-        mu: float | None = None,
-        restitution: float | None = None,
+        cfg: ShapeConfig | None = None,
     ):
         """
         Creates a ground plane for the world. If the normal is not specified,
         the up_vector of the ModelBuilder is used.
         """
-        ke = ke if ke is not None else self.default_shape_ke
-        kd = kd if kd is not None else self.default_shape_kd
-        kf = kf if kf is not None else self.default_shape_kf
-        mu = mu if mu is not None else self.default_shape_mu
-        restitution = restitution if restitution is not None else self.default_shape_restitution
-
         if normal is None:
             normal = self.up_vector
         self._ground_params = {
             "plane": (*normal, offset),
             "width": 0.0,
             "length": 0.0,
-            "ke": ke,
-            "kd": kd,
-            "kf": kf,
-            "mu": mu,
-            "restitution": restitution,
+            "cfg": cfg,
+            "key": "ground_plane",
         }
 
     def _create_ground_plane(self):
+        if self._ground_params["plane"] is None:
+            self._ground_params["plane"] = (*self.up_vector, 0.0)
         ground_id = self.add_shape_plane(**self._ground_params)
         self._ground_created = True
         # disable ground collisions as they will be treated separately
@@ -3530,7 +3198,7 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device=None, requires_grad=False) -> Model:
+    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
         """Convert this builder object to a concrete model for simulation.
 
         After building simulation elements this method should be called to transfer
@@ -3725,18 +3393,13 @@ class ModelBuilder:
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
-            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_linear_compliance = wp.array(
-                self.joint_linear_compliance, dtype=wp.float32, requires_grad=requires_grad
-            )
-            m.joint_angular_compliance = wp.array(
-                self.joint_angular_compliance, dtype=wp.float32, requires_grad=requires_grad
-            )
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value

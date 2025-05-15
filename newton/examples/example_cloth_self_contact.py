@@ -32,7 +32,7 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.utils
-from newton.core.types import PARTICLE_FLAG_ACTIVE
+from newton.core import PARTICLE_FLAG_ACTIVE
 
 
 @wp.kernel
