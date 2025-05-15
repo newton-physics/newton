@@ -111,7 +111,8 @@ def parse_usd(
 
     # load joint defaults
     default_joint_limit_ke = builder.default_joint_cfg.target_ke
-    default_joint_limit_kd: float = builder.default_joint_cfg.target_kd
+    default_joint_limit_kd = builder.default_joint_cfg.target_kd
+    default_joint_armature = builder.default_joint_cfg.armature
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -353,9 +354,7 @@ def parse_usd(
             parent_tf = wp.mul(incoming_xform, parent_tf)
         child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
 
-        joint_armature = None
-        if has_attribute(joint_prim, "physxJoint:armature"):
-            joint_armature = parse_float(joint_prim, "physxJoint:armature")
+        joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -363,7 +362,6 @@ def parse_usd(
             "child_xform": child_tf,
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
-            "armature": joint_armature,
         }
         current_joint_limit_ke = parse_float_with_fallback(
             (joint_prim, physics_scene_prim), "warp:joint_limit_ke", default_joint_limit_ke
@@ -380,6 +378,7 @@ def parse_usd(
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
             joint_params["limit_kd"] = current_joint_limit_kd
+            joint_params["armature"] = joint_armature
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
@@ -491,6 +490,7 @@ def parse_usd(
                             mode=mode,
                             target_ke=target_ke,
                             target_kd=target_kd,
+                            armature=joint_armature,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -505,6 +505,7 @@ def parse_usd(
                             mode=mode,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
+                            armature=joint_armature,
                         )
                     )
                     joint_prim.CreateAttribute(
