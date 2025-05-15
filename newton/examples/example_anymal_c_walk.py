@@ -21,6 +21,7 @@
 import math
 
 import numpy as np
+import torch
 import warp as wp
 
 import newton
@@ -35,7 +36,6 @@ from newton.core import Control, State
 def compute_observations_anymal_dflex(
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
-    inv_start_rot: wp.quat,
     basis_vec0: wp.vec3,
     basis_vec1: wp.vec3,
     dof_q: int,
@@ -88,6 +88,16 @@ def compute_observations_anymal_dflex(
     obs[env_id, 36] = heading_vec[0]  # 36
 
 
+class T(torch.nn.Module):
+    def __init__(self, mean, var):
+        super().__init__()
+        self.mean = mean
+        self.var = var
+
+    def forward(self, obs):
+        return torch.clamp((obs - self.mean) / torch.sqrt(1e-5 + self.var), min=-5, max=5).float()
+
+
 @wp.kernel
 def apply_joint_position_pd_control(
     actions: wp.array(dtype=wp.float32, ndim=1),
@@ -104,7 +114,7 @@ def apply_joint_position_pd_control(
     joint_axis_start: wp.array(dtype=wp.int32),
     # outputs
     target_joint_q: wp.array(dtype=wp.float32),
-    joint_act: wp.array(dtype=wp.float32)
+    joint_act: wp.array(dtype=wp.float32),
 ):
     joint_id = wp.tid()
     ai = joint_axis_start[joint_id]
@@ -118,7 +128,7 @@ def apply_joint_position_pd_control(
         q = joint_q[qj]
         qd = joint_qd[qdj]
 
-        tq = actions[aj] * action_scale + default_joint_q[qj]
+        tq = wp.clamp(actions[aj], -1.0, 1.0) * action_scale + default_joint_q[qj]
 
         target_joint_q[aj] = tq
 
@@ -126,6 +136,25 @@ def apply_joint_position_pd_control(
         # tq = wp.clamp(tq, -joint_torque_limit[aj], joint_torque_limit[aj])
 
         joint_act[aj] = tq
+
+
+def load_sequential_policy(obs_dim, hidden_dims, action_dim, state_dict, prefix=""):
+    """Create a sequential model and load the policy"""
+    layers = []
+    cur_dim = obs_dim
+
+    for hidden_dim in hidden_dims:
+        layers.append(torch.nn.Linear(cur_dim, hidden_dim))
+        layers.append(torch.nn.ReLU())
+        cur_dim = hidden_dim
+
+    layers.append(torch.nn.Linear(cur_dim, action_dim))
+    net = torch.nn.Sequential(*layers)
+    p = len(prefix)
+    layers = {name[p:]: data for name, data in state_dict.items() if name.startswith(prefix)}
+    net.load_state_dict(layers)
+    return net
+
 
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
@@ -150,20 +179,50 @@ class Example:
             limit_kd=1.0e1,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
-            ignore_inertial_definitions=False
+            ignore_inertial_definitions=False,
         )
 
         self.sim_time = 0.0
-        fps = 100
-        self.frame_dt = 1.0 / fps
+        self.sim_step = 0
+        fps = 60
+        self.frame_dt = 1.0e0 / fps
 
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
+        self.control_dim = 12
+        action_strength = 150.0
+        self.control_gains_wp = wp.array(
+            np.array(
+                [
+                    50.0,  # LF_HAA
+                    40.0,  # LF_HFE
+                    8.0,  # LF_KFE
+                    50.0,  # RF_HAA
+                    40.0,  # RF_HFE
+                    8.0,  # RF_KFE
+                    50.0,  # LH_HAA
+                    40.0,  # LH_HFE
+                    8.0,  # LH_KFE
+                    50.0,  # RH_HAA
+                    40.0,  # RH_HFE
+                    8.0,  # RH_KFE
+                ]
+            )
+            * action_strength
+            / 100.0,
+            dtype=float,
+        )
         self.num_envs = num_envs
 
         self.start_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)
-        self.inv_start_rot = wp.quat_inverse(self.start_rot)
+
+        self.basis_vec0 = wp.vec3(1.0, 0.0, 0.0)
+        self.basis_vec1 = wp.vec3(0.0, 0.0, 1.0)
+
+        self.bodies_per_env = 1
+        self.dof_q_per_env = builder.joint_coord_count
+        self.dof_qd_per_env = builder.joint_dof_count
 
         builder.joint_q[:7] = [
             0.0,
@@ -204,29 +263,30 @@ class Example:
         self.default_joint_q = self.model.joint_q
         self.joint_torque_limit = self.control_gains_wp
         self.action_scale = 0.5
-        self.Kp = 85.
-        self.Kd = 2.
+        self.Kp = 85.0
+        self.Kd = 2.0
 
-        self.target_joint_q = wp.empty(
-            (self.num_envs * self.control_dim),
-            dtype=wp.float32,
-            device=self.device
-        )
+        self.target_joint_q = wp.empty((self.num_envs * self.control_dim), dtype=wp.float32, device=self.device)
+
+        self.policy_model = torch.load(newton.examples.get_asset("anymal_walking_policy.pt"), weights_only=False).cuda()
 
         self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
-        if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
-        else:
-            self.renderer = None
+        self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
+        obs_dim = 37
+        self.obs_buf = wp.empty(
+            (1, obs_dim),
+            dtype=wp.float32,
+            device=self.device,
+        )
+
         newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
 
-        # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
@@ -234,14 +294,13 @@ class Example:
             self.graph = capture.graph
         else:
             self.graph = None
+        self.compute_observations(self.state_0, self.control, self.obs_buf)
 
     def compute_observations(
         self,
         state: State,
         control: Control,
         observations: wp.array,
-        step: int,
-        horizon_length: int,
     ):
         # dflex observations
         wp.launch(
@@ -250,7 +309,6 @@ class Example:
             inputs=[
                 state.joint_q,
                 state.joint_qd,
-                self.inv_start_rot,
                 self.basis_vec0,
                 self.basis_vec1,
                 self.dof_q_per_env,
@@ -260,12 +318,7 @@ class Example:
             device=self.device,
         )
 
-    def assign_control(
-        self,
-        actions: wp.array,
-        control: Control,
-        state: State
-    ):
+    def assign_control(self, actions: wp.array, control: Control, state: State):
         wp.launch(
             kernel=apply_joint_position_pd_control,
             dim=self.model.joint_count,
@@ -283,14 +336,12 @@ class Example:
                 self.model.joint_axis_dim,
                 self.model.joint_axis_start,
             ],
-            outputs=[
-                self.target_joint_q,
-                control.joint_act
-            ],
-            device=self.model.device
+            outputs=[self.target_joint_q, control.joint_act],
+            device=self.model.device,
         )
 
     def simulate(self):
+        self.compute_observations(self.state_0, self.control, self.obs_buf)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.collision.collide(self.model, self.state_0)
@@ -303,7 +354,15 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
+        obs_torch = wp.to_torch(self.obs_buf).detach()
+        ctrl = wp.array(self.policy_model(obs_torch).detach(), dtype=float)
+        print(ctrl.numpy())
+        self.assign_control(ctrl, self.control, self.state_0)
         self.sim_time += self.frame_dt
+
+        print("Joint_act:", self.control.joint_act.numpy())
+        print("Observations:", self.obs_buf.numpy())
+        # wp.launch(fill_array, 12, inputs=[self.control.joint_act, wp.array(np.random.randn(12), dtype=float)])
 
     def render(self):
         if self.renderer is None:
