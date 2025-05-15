@@ -857,15 +857,14 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     plane_eq = [0.0, 1.0, 0.0, 0.0]  # Warp uses +Y convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Y:
+                        xform = shape_params["xform"]
                         plane_normal = wp.vec3(0.0, 0.0, 0.0)
                         plane_normal[int(shape_spec.axis)] = 1.0
-                        plane_normal = wp.quat_rotate(shape_params["rot"], plane_normal)
+                        plane_normal = wp.quat_rotate(xform.q, plane_normal)
                         plane_eq[:3] = plane_normal
-                        plane_eq[3] = wp.dot(plane_normal, shape_params["pos"])
-
-                        # rot needs to be recomputed relative to a plane with +Y normal
-                        del shape_params["rot"]
-                    del shape_params["density"]
+                        plane_eq[3] = wp.dot(plane_normal, xform.p)
+                        # xform needs to be recomputed relative to a plane with +Y normal
+                        shape_params["xform"] = None
                     shape_id = builder.add_shape_plane(
                         **shape_params,
                         plane=plane_eq,
