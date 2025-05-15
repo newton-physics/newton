@@ -149,7 +149,7 @@ class Axis(IntEnum):
             return value
         if isinstance(value, str):
             return cls.from_string(value)
-        if type(value) in {wp.int32, wp.int64, np.int32, np.int64}:
+        if type(value) in {int, wp.int32, wp.int64, np.int32, np.int64}:
             return cls(value)
         raise TypeError(f"Cannot convert {type(value)} to Axis")
 
@@ -165,12 +165,7 @@ class Axis(IntEnum):
     def __eq__(self, other):
         if isinstance(other, str):
             return self.name.lower() == other.lower()
-        # Axis members are also ints, so this check covers comparison
-        # with other Axis members (e.g., Axis.X == Axis.Y) and
-        # with plain integers (e.g., Axis.X == 0).
-        if isinstance(other, int):
-            return self.value == other
-        if type(other) in {wp.int32, wp.int64, np.int32, np.int64}:
+        if type(other) in {int, wp.int32, wp.int64, np.int32, np.int64}:
             return self.value == int(other)
         return NotImplemented
 
@@ -192,18 +187,12 @@ AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     """Convert an axis representation to a 3D vector."""
-    if isinstance(axis, Axis):
-        return axis.to_vec3()
-    elif isinstance(axis, str):
-        return Axis.from_string(axis).to_vec3()
-    elif isinstance(axis, int):
-        return Axis(axis).to_vec3()
-    elif isinstance(axis, (list, tuple, np.ndarray)):
+    if isinstance(axis, (list, tuple, np.ndarray)):
         return wp.vec3(*axis)
     elif wp.types.type_is_vector(type(axis)):
         return wp.vec3(*axis)
     else:
-        raise TypeError(f"Invalid type for axis: {type(axis)}")
+        return Axis.from_any(axis).to_vec3()
 
 
 @wp.struct

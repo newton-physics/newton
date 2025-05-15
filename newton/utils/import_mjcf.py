@@ -40,7 +40,7 @@ import warp as wp
 
 import newton
 from newton.core import Mesh, ModelBuilder, quat_between_axes
-from newton.core.builder import ShapeConfig
+from newton.core.builder import ShapeConfig, JointDofConfig
 from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
@@ -48,7 +48,7 @@ def parse_mjcf(
     mjcf_filename: str,
     builder: ModelBuilder,
     xform: Transform | None = None,
-    floating: bool = False,
+    floating: bool | None = None,
     base_joint: dict | str | None = None,
     armature_scale: float = 1.0,
     scale: float = 1.0,
@@ -76,7 +76,7 @@ def parse_mjcf(
         mjcf_filename (str): The filename of the MuJoCo file to parse.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         xform (Transform): The transform to apply to the imported mechanism.
-        floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
+        floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
@@ -108,6 +108,16 @@ def parse_mjcf(
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
+
+    # load joint defaults
+    default_joint_limit_lower = builder.default_joint_cfg.limit_lower
+    default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_stiffness = builder.default_joint_cfg.target_ke
+    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_armature = builder.default_joint_cfg.armature
+
+    # load shape defaults
+    default_shape_density = builder.default_shape_cfg.density
 
     compiler = root.find("compiler")
     if compiler is not None:
@@ -359,7 +369,7 @@ def parse_mjcf(
 
                     geom_radius = geom_size[0]
                     geom_height = wp.length(end - start) * 0.5
-                    geom_up_axis = 1
+                    geom_up_axis = Axis.Y
 
                 else:
                     geom_radius = geom_size[0]
@@ -457,10 +467,10 @@ def parse_mjcf(
                 joint_name.append(joint_attrib.get("name") or f"{body_name}_joint_{i}")
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
                 joint_range = parse_vec(
-                    joint_attrib, "range", (builder.default_joint_limit_lower, builder.default_joint_limit_upper)
+                    joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper)
                 )
                 joint_armature.append(
-                    parse_float(joint_attrib, "armature", builder.default_joint_armature) * armature_scale
+                    parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale
                 )
 
                 if joint_type_str == "free":
@@ -473,12 +483,12 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
-                ax = newton.JointAxis(
+                ax = JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
                     limit_upper=limit_upper,
-                    target_ke=parse_float(joint_attrib, "stiffness", None),
-                    target_kd=parse_float(joint_attrib, "damping", None),
+                    target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
+                    target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -487,7 +497,7 @@ def parse_mjcf(
 
         link = builder.add_body(
             xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
-            armature=joint_armature[0] if len(joint_armature) > 0 else None,
+            armature=joint_armature[0] if len(joint_armature) > 0 else default_joint_armature,
             key=body_name,
         )
 
@@ -526,8 +536,8 @@ def parse_mjcf(
                         "z": [0.0, 0.0, 1.0],
                     }
                     builder.add_joint_d6(
-                        linear_axes=[newton.JointAxis(axes[a]) for a in linear_axes],
-                        angular_axes=[newton.JointAxis(axes[a]) for a in angular_axes],
+                        linear_axes=[JointDofConfig(axis=axes[a]) for a in linear_axes],
+                        angular_axes=[JointDofConfig(axis=axes[a]) for a in angular_axes],
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
                         parent=-1,
@@ -545,7 +555,7 @@ def parse_mjcf(
                     raise ValueError(
                         "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
                     )
-            elif floating:
+            elif floating is not None and floating:
                 builder.add_joint_free(link, key="floating_base")
 
                 # set dofs to transform
@@ -571,7 +581,6 @@ def parse_mjcf(
                     link,
                     key="_".join(joint_name),
                     parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori),
-                    armature=joint_armature[0] if len(joint_armature) > 0 else None,
                 )
                 builder.joint_q[-7:-4] = [*body_pos]
             else:
@@ -585,7 +594,6 @@ def parse_mjcf(
                     key="_".join(joint_name),
                     parent_xform=wp.transform(body_pos + joint_pos, body_ori),
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                    armature=joint_armature[0] if len(joint_armature) > 0 else None,
                 )
 
         # -----------------
@@ -668,7 +676,7 @@ def parse_mjcf(
             body_name,
             link,
             geoms=colliders,
-            density=None,
+            density=default_shape_density,
             visible=show_colliders,
         )
 
@@ -686,7 +694,7 @@ def parse_mjcf(
             inertial_frame = wp.transform(inertial_pos, inertial_rot)
             com = inertial_frame.p
             if inertial_attrib.get("diaginertia") is not None:
-                diaginertia = parse_vec(inertial_attrib, "diaginertia", None)
+                diaginertia = parse_vec(inertial_attrib, "diaginertia", (0.0, 0.0, 0.0))
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
@@ -760,11 +768,11 @@ def parse_mjcf(
     # add static geoms
 
     parse_shapes(
-        world_defaults,
+        defaults=world_defaults,
         body_name="world",
         link=-1,
         geoms=world.findall("geom"),
-        density=None,
+        density=default_shape_density,
         incoming_xform=xform,
     )
 
