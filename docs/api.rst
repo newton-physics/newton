@@ -12,9 +12,15 @@ Core Data Structures
 
 .. autoclass:: newton.ModelBuilder
 
-.. autoclass:: newton.core.builder.JointDofConfig
+.. autoclass:: newton.Mesh
 
-.. autoclass:: newton.core.builder.ShapeConfig
+.. autoclass:: newton.SDF
+
+.. autodata:: newton.AxisType
+   :annotation:
+
+.. autoclass:: newton.Axis
+
 
 Solvers
 -------
@@ -26,6 +32,10 @@ Solvers
 .. autoclass:: newton.solvers.VBDSolver
 
 .. autoclass:: newton.solvers.MuJoCoSolver
+
+.. autoclass:: newton.solvers.SemiImplicitSolver
+
+.. autoclass:: newton.solvers.FeatherstoneSolver
 
 Importers
 ---------

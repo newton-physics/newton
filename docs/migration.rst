@@ -51,7 +51,7 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 ``Model``
 ---------
 
-:attr:`newton.core.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
 
 ``Control``
 -----------
@@ -60,13 +60,13 @@ The :class:`newton.Control` class now has a :attr:`newton.Control.joint_f` attri
 In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` now includes the dofs of the free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
 The control mode ``JOINT_MODE_FORCE`` has been removed, since it is now realized by setting :attr:`Control.joint_f` instead of ``joint_act``.
 
-The :class:`newton.Control` class now has a :attr:`Control.target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
+The :class:`newton.Control` class now has a :attr:`newton.Control.joint_target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
 depending on the control mode selected for the joint dof.
-Using joints with zero stiffness (:class:`newton.core.builder.JointDofConfig.target_ke`) and damping (:class:`newton.core.builder.JointDofConfig.target_kd`) will disable the target control.
+Using joints with zero stiffness (:class:`newton.ModelBuilder.JointDofConfig.target_ke`) and damping (:class:`newton.ModelBuilder.JointDofConfig.target_kd`) will disable the target control.
 
 .. note::
 
-    :attr:`Control.target` is likely a temporary attribute and may be removed in a future release in favor of a more general actuation interface.
+    :attr:`newton.Control.joint_target` is likely a temporary attribute and may be removed in a future release in favor of a more general actuation interface.
 
 
 ``ModelBuilder``
@@ -77,21 +77,23 @@ Using joints with zero stiffness (:class:`newton.core.builder.JointDofConfig.tar
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_body(origin=..., m=...)``           | ``ModelBuilder.add_body(xform=..., mass=...)``                         |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder._add_shape()``                          | :func:`ModelBuilder.add_shape`                                         |
+| ``ModelBuilder._add_shape()``                          | :func:`newton.ModelBuilder.add_shape`                                  |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_shape_*(pos=..., rot=...)``         | ``ModelBuilder.add_shape_*(xform=...)``                                |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder.add_shape_*(..., ke=..., ka=..., ...)`` | ``ModelBuilder.add_shape_*(cfg=ShapeProperties(ke=..., ka=..., ...))`` |
+| ``ModelBuilder.add_shape_*(..., ke=..., ka=..., ...)`` | ``ModelBuilder.add_shape_*(cfg=ShapeConfig(ke=..., ka=..., ...))``     |
+|                                                        | see :class:`newton.ModelBuilder.ShapeConfig`                           |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., action=...)``                          |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")`` or ``ModelBuilder(up_axis=Axis.Y)``      |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``JointAxis``                                          | :class:`newton.core.builder.JointDofConfig`                            |
+| ``JointAxis``                                          | :class:`newton.ModelBuilder.JointDofConfig`                            |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 
-It is now possible to set the up axis of the builder using the :attr:`~newton.core.builder.ModelBuilder.up_axis` attribute.
-:attr:`ModelBuilder.up_vector` is now a read-only property computed from :attr:`ModelBuilder.up_axis`.
+It is now possible to set the up axis of the builder using the :attr:`~newton.ModelBuilder.up_axis` attribute,
+which can be defined from any value compatible with the :obj:`~newton.core.types.AxisType` alias.
+:attr:`newton.ModelBuilder.up_vector` is now a read-only property computed from :attr:`newton.ModelBuilder.up_axis`.
 
 The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args values to be filled in by the ``ModelBuilder.default_joint_*`` attributes.
 
