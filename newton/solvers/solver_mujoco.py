@@ -668,6 +668,7 @@ class MuJoCoSolver(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_env = model.joint_count // nworld
+
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_env),
@@ -684,6 +685,7 @@ class MuJoCoSolver(SolverBase):
             outputs=[qpos, qvel],
             device=model.device,
         )
+
         if not is_mjwarp:
             mj_data.qpos[:] = qpos.numpy().flatten()[: len(mj_data.qpos)]
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
@@ -1278,6 +1280,9 @@ class MuJoCoSolver(SolverBase):
 
         MuJoCoSolver.update_mjc_data(d, model, state)
 
+        # make sure qpos0 matches model.joint_q
+        m.qpos0 = d.qpos
+
         mujoco.mj_forward(m, d)
 
         mj_model = mujoco_warp.put_model(m)
@@ -1290,7 +1295,7 @@ class MuJoCoSolver(SolverBase):
         # expand model fields that can be expanded:
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
-        # joint_1 -> qpos0
+        # model.joint_q -> qpos0
         wp.launch(
             convert_joint_q_qpos0,
             dim=(nworld, joints_per_env),
@@ -1305,7 +1310,7 @@ class MuJoCoSolver(SolverBase):
             outputs=[mj_model.qpos0],
             device=model.device,
         )
-        
+
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
             nconmax = nworld * ncon_per_env
@@ -1320,6 +1325,9 @@ class MuJoCoSolver(SolverBase):
 
     @staticmethod
     def expand_model_fields(mj_model: MjWarpModel, nworld: int):
+
+        if nworld == 1:
+            return
 
         model_fields_to_expand = [
             "qpos0",

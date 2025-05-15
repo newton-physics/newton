@@ -79,6 +79,9 @@ class Example:
         self.model = builder.finalize()
         self.model.ground = True
 
+        # randomize qpos0
+        self.model.joint_q = wp.array(self.model.joint_q.numpy() + self.rng.uniform(-.1, 0.1, size=(self.model.joint_coord_count)), dtype=wp.float32)
+
         self.control = self.model.control()
 
         self.solver = newton.solvers.MuJoCoSolver(
