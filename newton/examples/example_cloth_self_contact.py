@@ -27,10 +27,10 @@ import os
 
 import numpy as np
 import warp as wp
+import warp.examples
 from pxr import Usd, UsdGeom
 
 import newton
-import newton.examples
 import newton.utils
 from newton.core.types import PARTICLE_FLAG_ACTIVE
 
@@ -141,7 +141,7 @@ class Example:
         self.rot_end_time = 10
         self.use_cuda_graph = wp.get_device().is_cuda
 
-        usd_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "square_cloth.usd"))
+        usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "square_cloth.usd"))
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth/cloth"))
 
         mesh_points = np.array(usd_geom.GetPointsAttr().Get())
