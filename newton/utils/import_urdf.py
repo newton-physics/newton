@@ -22,7 +22,6 @@ import numpy as np
 import warp as wp
 
 from newton.core import Axis, AxisType, Mesh, ModelBuilder, quat_between_axes
-from newton.core.builder import JointDofConfig, ShapeConfig
 from newton.core.types import Transform
 
 
@@ -114,7 +113,7 @@ def parse_urdf(
         return wp.transform(xyz, wp.quat_rpy(*rpy))
 
     def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
-        cfg = ShapeConfig(
+        cfg = ModelBuilder.ShapeConfig(
             density=density,
             is_visible=visible,
             has_ground_collision=not just_visual,
@@ -404,8 +403,8 @@ def parse_urdf(
                 "z": [0.0, 0.0, 1.0],
             }
             builder.add_joint_d6(
-                linear_axes=[JointDofConfig(axes[a]) for a in linear_axes],
-                angular_axes=[JointDofConfig(axes[a]) for a in angular_axes],
+                linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
+                angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
                 parent_xform=base_parent_xform,
                 child_xform=base_child_xform,
                 parent=-1,
@@ -499,13 +498,13 @@ def parse_urdf(
 
             builder.add_joint_d6(
                 linear_axes=[
-                    JointDofConfig(
+                    ModelBuilder.JointDofConfig(
                         u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
                     ),
-                    JointDofConfig(
+                    ModelBuilder.JointDofConfig(
                         v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,

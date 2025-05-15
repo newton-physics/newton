@@ -23,14 +23,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import quat_between_axes
-from newton.core.builder import JointDofConfig, ShapeConfig
+from newton.core import ModelBuilder, quat_between_axes
 from newton.core.types import Axis, Transform
 
 
 def parse_usd(
     source,
-    builder: newton.ModelBuilder,
+    builder: ModelBuilder,
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
@@ -61,7 +60,7 @@ def parse_usd(
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-        cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `newton.ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
+        cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
@@ -249,7 +248,7 @@ def parse_usd(
         # create a new builder for the cloned env, then instantiate
         # it back in the original builder
         multi_env_builder = builder
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
     # ret_dict = PhysicsUtils.LoadUsdPhysicsFromRange(
     #     stage, PhysicsUtils.ParsePrimIteratorRange(Usd.PrimRange(stage.GetPseudoRoot()))
@@ -480,7 +479,7 @@ def parse_usd(
                 }
                 if free_axis and dof in _trans_axes:
                     linear_axes.append(
-                        JointDofConfig(
+                        ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
                             limit_lower=limit_lower,
                             limit_upper=limit_upper,
@@ -495,7 +494,7 @@ def parse_usd(
                     )
                 elif free_axis and dof in _rot_axes:
                     angular_axes.append(
-                        JointDofConfig(
+                        ModelBuilder.JointDofConfig(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
@@ -774,7 +773,7 @@ def parse_usd(
                 shape_params = {
                     "body": body_id,
                     "xform": wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot)),
-                    "cfg": ShapeConfig(
+                    "cfg": ModelBuilder.ShapeConfig(
                         ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", builder.default_shape_cfg.ke),
                         kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", builder.default_shape_cfg.kd),
                         kf=parse_float_with_fallback(prim_and_scene, "warp:contact_kf", builder.default_shape_cfg.kf),

@@ -40,7 +40,6 @@ import warp as wp
 
 import newton
 from newton.core import Mesh, ModelBuilder, quat_between_axes
-from newton.core.builder import JointDofConfig, ShapeConfig
 from newton.core.types import Axis, AxisType, Sequence, Transform
 
 
@@ -278,7 +277,7 @@ def parse_mjcf(
             tf = wp.transform(geom_pos, geom_rot)
             geom_density = parse_float(geom_attrib, "density", density)
 
-            shape_cfg = ShapeConfig(
+            shape_cfg = ModelBuilder.ShapeConfig(
                 is_visible=visible,
                 has_ground_collision=not just_visual,
                 has_shape_collision=not just_visual,
@@ -479,7 +478,7 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
-                ax = JointDofConfig(
+                ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
                     limit_upper=limit_upper,
@@ -532,8 +531,8 @@ def parse_mjcf(
                         "z": [0.0, 0.0, 1.0],
                     }
                     builder.add_joint_d6(
-                        linear_axes=[JointDofConfig(axis=axes[a]) for a in linear_axes],
-                        angular_axes=[JointDofConfig(axis=axes[a]) for a in angular_axes],
+                        linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
+                        angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
                         parent=-1,

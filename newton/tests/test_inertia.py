@@ -146,7 +146,7 @@ class TestInertia(unittest.TestCase):
             b,
             xform=tf,
             mesh=newton.Mesh(vertices=vertices, indices=indices),
-            cfg=newton.core.builder.ShapeConfig(density=1000.0),
+            cfg=newton.ModelBuilder.ShapeConfig(density=1000.0),
         )
         transformed_com = wp.transform_point(tf, wp.vec3(*offset))
         assert_np_equal(np.array(builder.body_com[0]), np.array(transformed_com), tol=3e-3)
