@@ -228,6 +228,61 @@ def convert_warp_coords_to_mj_kernel(
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
 
+@wp.kernel
+def convert_joint_q_qpos0(
+    joint_q: wp.array(dtype=wp.float32),
+    joints_per_env: int,
+    up_axis: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
+    # outputs
+    qpos0: wp.array2d(dtype=wp.float32),
+):
+    worldid, jntid = wp.tid()
+
+    type = joint_type[jntid]
+    q_i = joint_q_start[jntid]
+    wq_i = joint_q_start[joints_per_env * worldid + jntid]
+
+    if type == newton.JOINT_FREE:
+        # convert position components
+        if up_axis == 1:
+            qpos0[worldid, q_i + 0] = joint_q[wq_i + 0]
+            qpos0[worldid, q_i + 1] = -joint_q[wq_i + 2]
+            qpos0[worldid, q_i + 2] = joint_q[wq_i + 1]
+        else:
+            for i in range(3):
+                qpos0[worldid, q_i + i] = joint_q[wq_i + i]
+
+        rot = wp.quat(
+            joint_q[wq_i + 3],
+            joint_q[wq_i + 4],
+            joint_q[wq_i + 5],
+            joint_q[wq_i + 6],
+        )
+        if up_axis == 1:
+            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+            rot = rot_y2z * rot
+        # change quaternion order from xyzw to wxyz
+        qpos0[worldid, q_i + 3] = rot[3]
+        qpos0[worldid, q_i + 4] = rot[0]
+        qpos0[worldid, q_i + 5] = rot[1]
+        qpos0[worldid, q_i + 6] = rot[2]
+
+    elif type == newton.JOINT_BALL:
+        # change quaternion order from xyzw to wxyz
+        qpos0[worldid, q_i + 0] = joint_q[wq_i + 1]
+        qpos0[worldid, q_i + 1] = joint_q[wq_i + 2]
+        qpos0[worldid, q_i + 2] = joint_q[wq_i + 3]
+        qpos0[worldid, q_i + 3] = joint_q[wq_i + 0]
+    else:
+        axis_count = joint_axis_dim[jntid, 0] + joint_axis_dim[jntid, 1]
+        for i in range(axis_count):
+            # convert position components
+            qpos0[worldid, q_i + i] = joint_q[wq_i + i]
+
+
 
 @wp.kernel
 def apply_mjc_control_kernel(
@@ -541,7 +596,7 @@ class MuJoCoSolver(SolverBase):
             control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
         """
 
-        if self.use_mujoco:
+        if self.use_mujoco:                
             self.apply_mjc_control(self.model, control, self.mj_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
@@ -550,6 +605,9 @@ class MuJoCoSolver(SolverBase):
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
+            # AD: this does not work with graph capture.. maybe use a conditional?
+            #self.update_mjc_model(self.model, self.mjw_model)
+
             self.apply_mjc_control(self.model, control, self.mjw_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
@@ -613,6 +671,7 @@ class MuJoCoSolver(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_env = model.joint_count // nworld
+
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_env),
@@ -629,6 +688,7 @@ class MuJoCoSolver(SolverBase):
             outputs=[qpos, qvel],
             device=model.device,
         )
+
         if not is_mjwarp:
             mj_data.qpos[:] = qpos.numpy().flatten()[: len(mj_data.qpos)]
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
@@ -741,7 +801,7 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms=True,
-        add_axes: bool = True,
+        add_axes: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1223,13 +1283,24 @@ class MuJoCoSolver(SolverBase):
 
         MuJoCoSolver.update_mjc_data(d, model, state)
 
+        # make sure qpos0 matches model.joint_q
+        m.qpos0 = d.qpos
+
         mujoco.mj_forward(m, d)
 
         mj_model = mujoco_warp.put_model(m)
+
         if separate_envs_to_worlds:
             nworld = model.num_envs
         else:
             nworld = 1
+
+        # expand model fields that can be expanded:
+        MuJoCoSolver.expand_model_fields(mj_model, nworld)
+
+        # make sure the randomized valued are being propagated to mjwarp
+        MuJoCoSolver.update_model_joint_q(model, mj_model)
+
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
             nconmax = nworld * ncon_per_env
@@ -1240,3 +1311,135 @@ class MuJoCoSolver(SolverBase):
         mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
         return mj_model, mj_data, m, d
+    
+
+    @staticmethod
+    def expand_model_fields(mj_model: MjWarpModel, nworld: int):
+
+        if nworld == 1:
+            return
+
+        model_fields_to_expand = [
+            "qpos0",
+            "qpos_spring",
+            "body_pos",
+            "body_quat",
+            "body_ipos",
+            "body_iquat",
+            "body_mass",
+            "body_subtreemass",
+            "subtree_mass",
+            "body_inertia",
+            "body_invweight0",
+            "body_gravcomp",
+            "jnt_solref",
+            "jnt_solimp",
+            "jnt_pos",
+            "jnt_axis",
+            "jnt_stiffness",
+            "jnt_range",
+            "jnt_actfrcrange",
+            "jnt_margin",
+            "dof_armature",
+            "dof_damping",
+            "dof_invweight0",
+            "dof_frictionloss",
+            "dof_solimp",
+            "dof_solref",
+            "geom_matid",
+            "geom_solmix",
+            "geom_solref",
+            "geom_solimp",
+            "geom_size",
+            "geom_rbound",
+            "geom_pos",
+            "geom_quat",
+            "geom_friction",
+            "geom_margin",
+            "geom_gap",
+            "geom_rgba",
+            "site_pos",
+            "site_quat",
+            "cam_pos",
+            "cam_quat",
+            "cam_poscom0",
+            "cam_pos0",
+            "cam_mat0",
+            "light_pos",
+            "light_dir",
+            "light_poscom0",
+            "light_pos0",
+            "eq_solref",
+            "eq_solimp",
+            "eq_data",
+            "actuator_dynprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_ctrlrange",
+            "actuator_forcerange",
+            "actuator_actrange",
+            "actuator_gear",
+            "pair_solref",
+            "pair_solreffriction",
+            "pair_solimp",
+            "pair_margin",
+            "pair_gap",
+            "pair_friction",
+            "tendon_solref_lim",
+            "tendon_solimp_lim",
+            "tendon_range",
+            "tendon_margin",
+            "tendon_length0",
+            "tendon_invweight0",
+            "mat_rgba",
+        ]
+
+        def arr(x, dtype=None):
+            if not isinstance(x, np.ndarray):
+                x = np.array(x)
+            if dtype is None:
+                if np.issubdtype(x.dtype, np.integer):
+                    dtype = wp.int32
+                elif np.issubdtype(x.dtype, np.floating):
+                    dtype = wp.float32
+                elif np.issubdtype(x.dtype, np.bool):
+                    dtype = wp.bool
+                else:
+                    raise ValueError(f"Unsupported dtype: {x.dtype}")
+            wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[x.ndim]
+            return wp_array(x, dtype=dtype)
+
+        def tile(x, dtype=None):
+            return arr(np.repeat(x.numpy(), nworld, axis=0), dtype)
+
+        for field in mj_model.__dataclass_fields__:
+            # todo: avoid numpy roundtrip
+            if field in model_fields_to_expand:
+                array = getattr(mj_model, field)
+                setattr(mj_model, field, tile(array, dtype=array.dtype))
+
+
+    def update_mjc_model(self, model: Model, mjw_model: MjWarpModel):
+        if model._joint_q_dirty:
+            MuJoCoSolver.update_model_joint_q(model, mjw_model)
+
+    @staticmethod
+    def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
+        
+        model._joint_q_dirty = False
+
+        # model.joint_q -> qpos0
+        wp.launch(
+            convert_joint_q_qpos0,
+            dim=(model.num_envs, model.joint_count),
+            inputs=[
+                model.joint_q,
+                model.joint_count,
+                model.up_axis,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_axis_dim,
+            ],
+            outputs=[mjw_model.qpos0],
+            device=model.device,
+        )
