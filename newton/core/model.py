@@ -338,8 +338,6 @@ class Model:
         self.rigid_contact_torsional_friction = 0.0
         self.rigid_contact_rolling_friction = 0.0
         self.enable_tri_collisions = False
-        self.contact_particle_pairs = None
-        self.contact_shape_pairs = None
 
         self.rigid_contact_count = None
         self.rigid_contact_point0 = None
