@@ -741,7 +741,7 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms=True,
-        add_axes: bool = True,
+        add_axes: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1226,10 +1226,16 @@ class MuJoCoSolver(SolverBase):
         mujoco.mj_forward(m, d)
 
         mj_model = mujoco_warp.put_model(m)
+
         if separate_envs_to_worlds:
             nworld = model.num_envs
         else:
             nworld = 1
+
+        # expand model fields that can be expanded:
+        MuJoCoSolver.expand_model_fields(mj_model, nworld)
+
+        
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
             nconmax = nworld * ncon_per_env
@@ -1240,3 +1246,106 @@ class MuJoCoSolver(SolverBase):
         mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
         return mj_model, mj_data, m, d
+    
+
+    @staticmethod
+    def expand_model_fields(mj_model: MjWarpModel, nworld: int):
+
+        model_fields_to_expand = [
+            "qpos0",
+            "qpos_spring",
+            "body_pos",
+            "body_quat",
+            "body_ipos",
+            "body_iquat",
+            "body_mass",
+            "body_subtreemass",
+            "subtree_mass",
+            "body_inertia",
+            "body_invweight0",
+            "body_gravcomp",
+            "jnt_solref",
+            "jnt_solimp",
+            "jnt_pos",
+            "jnt_axis",
+            "jnt_stiffness",
+            "jnt_range",
+            "jnt_actfrcrange",
+            "jnt_margin",
+            "dof_armature",
+            "dof_damping",
+            "dof_invweight0",
+            "dof_frictionloss",
+            "dof_solimp",
+            "dof_solref",
+            "geom_matid",
+            "geom_solmix",
+            "geom_solref",
+            "geom_solimp",
+            "geom_size",
+            "geom_rbound",
+            "geom_pos",
+            "geom_quat",
+            "geom_friction",
+            "geom_margin",
+            "geom_gap",
+            "geom_rgba",
+            "site_pos",
+            "site_quat",
+            "cam_pos",
+            "cam_quat",
+            "cam_poscom0",
+            "cam_pos0",
+            "cam_mat0",
+            "light_pos",
+            "light_dir",
+            "light_poscom0",
+            "light_pos0",
+            "eq_solref",
+            "eq_solimp",
+            "eq_data",
+            "actuator_dynprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_ctrlrange",
+            "actuator_forcerange",
+            "actuator_actrange",
+            "actuator_gear",
+            "pair_solref",
+            "pair_solreffriction",
+            "pair_solimp",
+            "pair_margin",
+            "pair_gap",
+            "pair_friction",
+            "tendon_solref_lim",
+            "tendon_solimp_lim",
+            "tendon_range",
+            "tendon_margin",
+            "tendon_length0",
+            "tendon_invweight0",
+            "mat_rgba",
+        ]
+
+        def arr(x, dtype=None):
+            if not isinstance(x, np.ndarray):
+                x = np.array(x)
+            if dtype is None:
+                if np.issubdtype(x.dtype, np.integer):
+                    dtype = wp.int32
+                elif np.issubdtype(x.dtype, np.floating):
+                    dtype = wp.float32
+                elif np.issubdtype(x.dtype, np.bool):
+                    dtype = wp.bool
+                else:
+                    raise ValueError(f"Unsupported dtype: {x.dtype}")
+            wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[x.ndim]
+            return wp_array(x, dtype=dtype)
+
+        def tile(x, dtype=None):
+            return arr(np.repeat(x.numpy(), nworld, axis=0), dtype)
+
+        for field in mj_model.__dataclass_fields__:
+            # todo: avoid numpy roundtrip
+            if field in model_fields_to_expand:
+                array = getattr(mj_model, field)
+                setattr(mj_model, field, tile(array, dtype=array.dtype))
