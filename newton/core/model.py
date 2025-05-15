@@ -282,8 +282,9 @@ class Model:
         self.body_mass = None
         self.body_inv_mass = None
         self.body_key = []
-
-        self.joint_q = None
+        
+        self._joint_q = None
+        self._joint_q_dirty = False
         self.joint_qd = None
         self.joint_act = None
         self.joint_type = None
@@ -337,6 +338,8 @@ class Model:
         self.rigid_contact_torsional_friction = 0.0
         self.rigid_contact_rolling_friction = 0.0
         self.enable_tri_collisions = False
+        self.contact_particle_pairs = None
+        self.contact_shape_pairs = None
 
         self.rigid_contact_count = None
         self.rigid_contact_point0 = None
@@ -381,6 +384,15 @@ class Model:
         self.particle_colors = None
 
         self.device = wp.get_device(device)
+
+    @property
+    def joint_q(self):
+        return self._joint_q
+
+    @joint_q.setter
+    def joint_q(self, value):
+        self._joint_q = value
+        self._joint_q_dirty = True
 
     def state(self, requires_grad=None) -> State:
         """Returns a state object for the model

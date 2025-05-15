@@ -596,7 +596,7 @@ class MuJoCoSolver(SolverBase):
             control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
         """
 
-        if self.use_mujoco:
+        if self.use_mujoco:                
             self.apply_mjc_control(self.model, control, self.mj_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
@@ -605,6 +605,10 @@ class MuJoCoSolver(SolverBase):
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
+            if self.model._joint_q_dirty:
+                self.update_model_joint_q(self.model, self.mjw_model)
+
+
             self.apply_mjc_control(self.model, control, self.mjw_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
@@ -1295,21 +1299,8 @@ class MuJoCoSolver(SolverBase):
         # expand model fields that can be expanded:
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
-        # model.joint_q -> qpos0
-        wp.launch(
-            convert_joint_q_qpos0,
-            dim=(nworld, joints_per_env),
-            inputs=[
-                model.joint_q,
-                joints_per_env,
-                model.up_axis,
-                model.joint_type,
-                model.joint_q_start,
-                model.joint_axis_dim,
-            ],
-            outputs=[mj_model.qpos0],
-            device=model.device,
-        )
+        # make sure the randomized valued are being propagated to mjwarp
+        MuJoCoSolver.update_model_joint_q(model, mj_model)
 
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
@@ -1427,3 +1418,25 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array, dtype=array.dtype))
+
+
+    @staticmethod
+    def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
+        
+        model._joint_q_dirty = False
+
+        # model.joint_q -> qpos0
+        wp.launch(
+            convert_joint_q_qpos0,
+            dim=(model.num_envs, model.joint_count),
+            inputs=[
+                model.joint_q,
+                model.joint_count,
+                model.up_axis,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_axis_dim,
+            ],
+            outputs=[mjw_model.qpos0],
+            device=model.device,
+        )
