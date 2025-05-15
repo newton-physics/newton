@@ -33,6 +33,7 @@ from .inertia import (
 from .model import Model
 from .spatial import quat_between_axes
 from .types import (
+    Devicelike,
     GEO_BOX,
     GEO_CAPSULE,
     GEO_CONE,
@@ -346,6 +347,7 @@ class ModelBuilder:
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_f = []
 
         self.joint_type = []
         self.joint_key = []
@@ -357,7 +359,7 @@ class ModelBuilder:
         self.joint_limit_upper = []
         self.joint_limit_ke = []
         self.joint_limit_kd = []
-        self.joint_act = []
+        self.joint_target = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -416,6 +418,7 @@ class ModelBuilder:
             "The 'up_vector' property is read-only and cannot be set. Instead, use 'up_axis' to set the up axis."
         )
 
+    # region counts
     @property
     def shape_count(self):
         return len(self.shape_geo_type)
@@ -459,6 +462,8 @@ class ModelBuilder:
     @property
     def articulation_count(self):
         return len(self.articulation_start)
+
+    # endregion
 
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
@@ -606,7 +611,8 @@ class ModelBuilder:
             "joint_axis_mode",
             "joint_key",
             "joint_qd",
-            "joint_act",
+            "joint_f",
+            "joint_target",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -792,7 +798,7 @@ class ModelBuilder:
         def add_axis_dim(dim: JointDofConfig):
             self.joint_axis.append(dim.axis)
             self.joint_axis_mode.append(dim.mode)
-            self.joint_act.append(dim.target)
+            self.joint_target.append(dim.target)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
@@ -818,6 +824,7 @@ class ModelBuilder:
             self.joint_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
+            self.joint_f.append(0.0)
 
         if joint_type == JOINT_FREE or joint_type == JOINT_DISTANCE or joint_type == JOINT_BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -1494,7 +1501,7 @@ class ModelBuilder:
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "act": self.joint_act[j],
+                        "act": self.joint_target[j],
                     }
                 )
 
@@ -1660,7 +1667,7 @@ class ModelBuilder:
         self.joint_limit_kd.clear()
         self.joint_axis_dim.clear()
         self.joint_axis_start.clear()
-        self.joint_act.clear()
+        self.joint_target.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1685,7 +1692,7 @@ class ModelBuilder:
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_act.append(axis["act"])
+                self.joint_target.append(axis["act"])
 
         return {
             "body_remap": body_remap,
@@ -3193,7 +3200,7 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device=None, requires_grad=False) -> Model:
+    def finalize(self, device: Devicelike | None=None, requires_grad:bool=False) -> Model:
         """Convert this builder object to a concrete model for simulation.
 
         After building simulation elements this method should be called to transfer
@@ -3388,7 +3395,8 @@ class ModelBuilder:
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
-            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)

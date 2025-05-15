@@ -197,8 +197,10 @@ class Model:
         """Generalized joint positions used for state initialization, shape [joint_coord_count], float."""
         self.joint_qd = None
         """Generalized joint velocities used for state initialization, shape [joint_dof_count], float."""
-        self.joint_act = None
-        """Generalized joint control inputs, shape [joint_axis_count], float."""
+        self.joint_f = None
+        """Generalized joint forces used for state initialization, shape [joint_dof_count], float."""
+        self.joint_target = None
+        """Generalized joint target inputs, shape [joint_axis_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_parent = None
@@ -375,7 +377,7 @@ class Model:
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-    def state(self, requires_grad=None) -> State:
+    def state(self, requires_grad: bool | None = None) -> State:
         """Returns a state object for the model
 
         The returned state will be initialized with the initial configuration given in
@@ -410,7 +412,7 @@ class Model:
 
         return s
 
-    def control(self, requires_grad=None, clone_variables=True) -> Control:
+    def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
         """
         Returns a control object for the model.
 
@@ -428,7 +430,8 @@ class Model:
             requires_grad = self.requires_grad
         if clone_variables:
             if self.joint_count:
-                c.joint_target = wp.clone(self.joint_act, requires_grad=requires_grad)
+                c.joint_target = wp.clone(self.joint_target, requires_grad=requires_grad)
+                c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
             if self.tet_count:
@@ -436,13 +439,14 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
         else:
-            c.joint_target = self.joint_act
+            c.joint_target = self.joint_target
+            c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         return c
 
-    def contact(self, requires_grad=None) -> Contact:
+    def contact(self, requires_grad: bool | None = None) -> Contact:
         return Contact()
 
     def _allocate_soft_contacts(self, target, count, requires_grad=False):
