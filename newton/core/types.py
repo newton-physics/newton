@@ -19,10 +19,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import IntEnum
-from typing import Literal, override
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
+from typing_extensions import override
 from warp.context import Devicelike
 
 # Particle flags
@@ -120,6 +121,9 @@ Mat33 = list[float] | wp.mat33
 Transform = tuple[Vec3, Quat] | wp.transform
 """A 3D transformation represented as a tuple of 3D translation and rotation quaternion (in XYZW order)."""
 
+# type alias for numpy arrays
+nparray = np.ndarray[Any, np.dtype[Any]]
+
 
 class Axis(IntEnum):
     """Enum for representing the three axes in 3D space."""
@@ -202,80 +206,6 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
         raise TypeError(f"Invalid type for axis: {type(axis)}")
 
 
-class JointAxis:
-    """
-    Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
-
-    Attributes:
-
-        axis (3D vector or JointAxis): The 3D axis that this JointAxis object describes, or alternatively another JointAxis object to copy from.
-        limit_lower (float): The lower position limit of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_limit_lower` is used.
-        limit_upper (float): The upper position limit of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_limit_upper` is used.
-        limit_ke (float): The elastic stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`. If None, the default value from :attr:`ModelBuilder.default_joint_limit_ke` is used.
-        limit_kd (float): The damping stiffness of the joint axis limits, only respected by :class:`SemiImplicitIntegrator` and :class:`FeatherstoneIntegrator`. If None, the default value from :attr:`ModelBuilder.default_joint_limit_kd` is used.
-        action (float): The force applied by default to this joint axis, or the target position or velocity (depending on the mode) of the joint axis. If None, the default value is set based on the mode.
-                        0.0 for target velocity modes, or 0.5 * (limit_lower + limit_upper) for target position mode with limits.
-        target_ke (float): The proportional gain of the target drive PD controller. If None, the default value from :attr:`ModelBuilder.default_joint_stiffness` is used.
-        target_kd (float): The derivative gain of the target drive PD controller. If None, the default value from :attr:`ModelBuilder.default_joint_damping` is used.
-        mode (int): The mode of the joint axis. If None, the default value from :attr:`ModelBuilder.default_joint_control_mode` is used.
-    """
-
-    def __init__(
-        self,
-        axis: JointAxis | AxisType | Vec3,
-        limit_lower: float | None = None,
-        limit_upper: float | None = None,
-        limit_ke: float | None = None,
-        limit_kd: float | None = None,
-        action: float | None = None,
-        target_ke: float | None = None,
-        target_kd: float | None = None,
-        mode: int | None = None,
-    ):
-        from .builder import ModelBuilder
-
-        if isinstance(axis, JointAxis):
-            self.axis = axis.axis
-            self.limit_lower = axis.limit_lower
-            self.limit_upper = axis.limit_upper
-            self.limit_ke = axis.limit_ke
-            self.limit_kd = axis.limit_kd
-            self.action = axis.action
-            self.target_ke = axis.target_ke
-            self.target_kd = axis.target_kd
-            self.mode = axis.mode
-        else:
-            self.axis = wp.normalize(axis_to_vec3(axis))
-            self.limit_lower = limit_lower
-            self.limit_upper = limit_upper
-            self.limit_ke = limit_ke
-            self.limit_kd = limit_kd
-            self.action = action
-            self.target_ke = target_ke
-            self.target_kd = target_kd
-            self.mode = mode
-        if self.limit_lower is None:
-            self.limit_lower = ModelBuilder.default_joint_limit_lower
-        if self.limit_upper is None:
-            self.limit_upper = ModelBuilder.default_joint_limit_upper
-        if self.limit_ke is None:
-            self.limit_ke = ModelBuilder.default_joint_limit_ke
-        if self.limit_kd is None:
-            self.limit_kd = ModelBuilder.default_joint_limit_kd
-        if self.target_ke is None:
-            self.target_ke = ModelBuilder.default_joint_stiffness
-        if self.target_kd is None:
-            self.target_kd = ModelBuilder.default_joint_damping
-        if self.mode is None:
-            self.mode = ModelBuilder.default_joint_control_mode
-
-        if self.action is None:
-            if self.mode == JOINT_MODE_TARGET_POSITION and (self.limit_lower > 0.0 or self.limit_upper < 0.0):
-                self.action = 0.5 * (self.limit_lower + self.limit_upper)
-            else:
-                self.action = 0.0
-
-
 @wp.struct
 class ModelShapeMaterials:
     """
@@ -338,6 +268,7 @@ class SDF:
     def finalize(self) -> wp.uint64:
         return self.volume.id
 
+    @override
     def __hash__(self) -> int:
         return hash(self.volume.id)
 
@@ -390,6 +321,7 @@ class Mesh:
         self.indices = np.array(indices, dtype=np.int32).flatten()
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
+        self.mesh = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -455,16 +387,15 @@ __all__ = [
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
-    "JointAxis",
     "Mat33",
     "Mesh",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
     "Quat",
+    "Sequence",
     "Transform",
     "Vec3",
     "Vec4",
     "flag_to_int",
     "get_joint_dof_count",
-    "Sequence",
 ]

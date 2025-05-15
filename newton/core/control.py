@@ -27,8 +27,11 @@ class Control:
     """
 
     def __init__(self):
-        self.joint_act: wp.array | None = None
-        """Array of joint control inputs with shape ``(joint_axis_count,)`` and type ``float``."""
+        self.joint_f: wp.array | None = None
+        """Array of generalized joint forces with shape ``(joint_axis_count,)`` and type ``float``."""
+
+        self.joint_target: wp.array | None = None
+        """Array of joint targets with shape ``(joint_axis_count,)`` and type ``float``."""
 
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
@@ -42,22 +45,11 @@ class Control:
     def clear(self) -> None:
         """Reset the control inputs to zero."""
 
-        if self.joint_act is not None:
-            self.joint_act.zero_()
+        if self.joint_f is not None:
+            self.joint_f.zero_()
         if self.tri_activations is not None:
             self.tri_activations.zero_()
         if self.tet_activations is not None:
             self.tet_activations.zero_()
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
-
-    def reset(self) -> None:
-        """Reset the control inputs to zero."""
-
-        wp.utils.warn(
-            "Control.reset() is deprecated and will be removed\nin a future version. Use Control.clear() instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        self.clear()

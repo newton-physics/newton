@@ -37,21 +37,36 @@ Importers
 +-----------------------------------------------+----------------------------------------------------+
 
 The joint-specific arguments to the importers have been removed.
-Instead, you can set the default joint properties on the :class:`newton.ModelBuilder` class.
-For example, ``limit_lower`` is now defined using :attr:`ModelBuilder.default_joint_limit_lower`.
+Instead, you can set the default joint properties on a :class:`newton.ModelBuilder` instance in the :attr:`newton.ModelBuilder.default_joint_cfg` attribute.
+For example, ``limit_lower`` is now defined using ``builder.default_joint_cfg.limit_lower``, where ``builder`` is an instance of :class:`newton.ModelBuilder`.
 
 Similarly, the shape contact parameters have been removed from the importers.
-Instead, you can set the default contact parameters on the :attr:`newton.ModelBuilder.default_shape_cfg` object before loading the asset.
-For example, ``ke`` is now defined using :attr:`ModelBuilder.default_shape_cfg.ke`.
+Instead, you can set the default contact parameters on a :class:`newton.ModelBuilder` instance in the :attr:`newton.ModelBuilder.default_shape_cfg` object before loading the asset.
+For example, ``ke`` is now defined using ``builder.default_shape_cfg.ke``, where ``builder`` is an instance of :class:`newton.ModelBuilder`.
 
 The MJCF and URDF importers both have an ``up_axis`` argument that defaults to +Z.
-All importers will rotate the asset now to match the builder's ``up_axis`` (instead of overwriting the ``up_axis`` in the builder, as was the case for the USD importer).
+All importers will rotate the asset now to match the builder's ``up_axis`` (instead of overwriting the ``up_axis`` in the builder, as was the case previously for the USD importer).
 
 
 ``Model``
 ---------
 
-``ModelShapeGeometry.is_solid`` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.core.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+
+``Control``
+-----------
+
+The :class:`newton.Control` class now has a :attr:`newton.Control.joint_f` attribute which encodes the generalized force (torque) input to the joints.
+In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` now includes the dofs of the free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
+The control mode ``JOINT_MODE_FORCE`` has been removed, since it is now realized by setting :attr:`Control.joint_f` instead of ``joint_act``.
+
+The :class:`newton.Control` class now has a :attr:`Control.target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
+depending on the control mode selected for the joint dof.
+Using joints with zero stiffness (:class:`newton.core.builder.JointDofConfig.target_ke`) and damping (:class:`newton.core.builder.JointDofConfig.target_kd`) will disable the target control.
+
+.. note::
+
+    :attr:`Control.target` is likely a temporary attribute and may be removed in a future release in favor of a more general actuation interface.
 
 
 ``ModelBuilder``
@@ -70,14 +85,15 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``ModelBuilder.add_joint_*(..., target=...)``          | ``ModelBuilder.add_joint_*(..., action=...)``                          |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-| ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")``                                          |
+| ``ModelBuilder(up_vector=(0, 1, 0))``                  | ``ModelBuilder(up_axis="Y")`` or ``ModelBuilder(up_axis=Axis.Y)``      |
++--------------------------------------------------------+------------------------------------------------------------------------+
+| ``JointAxis``                                          | :class:`newton.core.builder.JointDofConfig`                            |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 
-It is now possible to set the up axis of the builder using the :attr:`ModelBuilder.up_axis` attribute.
+It is now possible to set the up axis of the builder using the :attr:`~newton.core.builder.ModelBuilder.up_axis` attribute.
 :attr:`ModelBuilder.up_vector` is now a read-only property computed from :attr:`ModelBuilder.up_axis`.
 
 The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args values to be filled in by the ``ModelBuilder.default_joint_*`` attributes.
-The :class:`JointAxis` class similarly uses those defaults if the provided constructor args are ``None``.
 
 Renderers
 ---------
