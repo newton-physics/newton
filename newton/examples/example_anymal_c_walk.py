@@ -113,7 +113,6 @@ def apply_joint_position_pd_control(
     joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_axis_start: wp.array(dtype=wp.int32),
     # outputs
-    target_joint_q: wp.array(dtype=wp.float32),
     joint_act: wp.array(dtype=wp.float32),
 ):
     joint_id = wp.tid()
@@ -130,30 +129,10 @@ def apply_joint_position_pd_control(
 
         tq = wp.clamp(actions[aj], -1.0, 1.0) * action_scale + default_joint_q[qj]
 
-        target_joint_q[aj] = tq
-
         tq = Kp * (tq - q) - Kd * qd
         # tq = wp.clamp(tq, -joint_torque_limit[aj], joint_torque_limit[aj])
 
         joint_act[aj] = tq
-
-
-def load_sequential_policy(obs_dim, hidden_dims, action_dim, state_dict, prefix=""):
-    """Create a sequential model and load the policy"""
-    layers = []
-    cur_dim = obs_dim
-
-    for hidden_dim in hidden_dims:
-        layers.append(torch.nn.Linear(cur_dim, hidden_dim))
-        layers.append(torch.nn.ReLU())
-        cur_dim = hidden_dim
-
-    layers.append(torch.nn.Linear(cur_dim, action_dim))
-    net = torch.nn.Sequential(*layers)
-    p = len(prefix)
-    layers = {name[p:]: data for name, data in state_dict.items() if name.startswith(prefix)}
-    net.load_state_dict(layers)
-    return net
 
 
 class Example:
@@ -238,12 +217,6 @@ class Example:
         for i in range(builder.joint_axis_count):
             builder.joint_axis_mode[i] = newton.core.JOINT_MODE_FORCE
 
-        self.torques = wp.zeros(
-            self.num_envs * builder.joint_axis_count,
-            dtype=wp.float32,
-            device=self.device,
-        )
-
         np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
@@ -254,8 +227,6 @@ class Example:
         self.action_scale = 0.5
         self.Kp = 85.0
         self.Kd = 2.0
-
-        self.target_joint_q = wp.empty((self.num_envs * self.control_dim), dtype=wp.float32, device=self.device)
 
         self.policy_model = torch.load(newton.examples.get_asset("anymal_walking_policy.pt"), weights_only=False).cuda()
 
@@ -283,12 +254,11 @@ class Example:
             self.graph = capture.graph
         else:
             self.graph = None
-        self.compute_observations(self.state_0, self.control, self.obs_buf)
+        self.compute_observations(self.state_0, self.obs_buf)
 
     def compute_observations(
         self,
         state: State,
-        control: Control,
         observations: wp.array,
     ):
         # dflex observations
@@ -325,12 +295,12 @@ class Example:
                 self.model.joint_axis_dim,
                 self.model.joint_axis_start,
             ],
-            outputs=[self.target_joint_q, control.joint_target],
+            outputs=[control.joint_target],
             device=self.model.device,
         )
 
     def simulate(self):
-        self.compute_observations(self.state_0, self.control, self.obs_buf)
+        self.compute_observations(self.state_0, self.obs_buf)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.collision.collide(self.model, self.state_0)
@@ -344,7 +314,7 @@ class Example:
             else:
                 self.simulate()
         obs_torch = wp.to_torch(self.obs_buf).detach()
-        ctrl = wp.array(self.policy_model(obs_torch).detach(), dtype=float)
+        ctrl = wp.array(torch.clamp(self.policy_model(obs_torch).detach(), -1, 1), dtype=float)
         print(ctrl.numpy())
         self.assign_control(ctrl, self.control, self.state_0)
         self.sim_time += self.frame_dt
