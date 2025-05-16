@@ -1437,12 +1437,3 @@ class MuJoCoSolver(SolverBase):
         )
 
         wp.copy(mjw_model.qpos_spring, mjw_model.qpos0)
-
-    #@staticmethod
-    #def update_model_body_q(model: Model, mjw_model: MjWarpModel):
-
-    #    wp.launch(
-    #        outputs=[mjw_model.body_pos, mjw_model.body_quat],
-    #        device=model.device,
-    #    )
-            
