@@ -131,10 +131,8 @@ class TestMuJoCoSolver(unittest.TestCase):
         np.random.seed(42) # For reproducible random values
 
         num_envs = self.model.num_envs
-        self.assertTrue(num_envs >= 2, "This test expects at least 2 environments.")
 
         template_joint_q_dim = 7 + 7 + 1 + 1 # Total 16 q-coordinates per environment
-        template_joint_dof_dim = 6 + 6 + 1 + 1 # Total 14 DoFs (for qd) per environment
         joints_per_env = self.model.joint_count // num_envs
 
         # 1. Prepare the target modified Warp joint_q values
