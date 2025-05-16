@@ -36,7 +36,7 @@ class Example:
 
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_shape_cfg.density = 100.0
-        articulation_builder.default_joint_armature = 0.1
+        articulation_builder.default_joint_cfg.armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
         newton.utils.parse_urdf(
