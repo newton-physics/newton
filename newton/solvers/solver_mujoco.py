@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -1393,29 +1393,36 @@ class MuJoCoSolver(SolverBase):
             "mat_rgba",
         ]
 
-        def arr(x, dtype=None):
-            if not isinstance(x, np.ndarray):
-                x = np.array(x)
-            if dtype is None:
-                if np.issubdtype(x.dtype, np.integer):
-                    dtype = wp.int32
-                elif np.issubdtype(x.dtype, np.floating):
-                    dtype = wp.float32
-                elif np.issubdtype(x.dtype, np.bool):
-                    dtype = wp.bool
-                else:
-                    raise ValueError(f"Unsupported dtype: {x.dtype}")
-            wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[x.ndim]
-            return wp_array(x, dtype=dtype)
+        @wp.kernel
+        def repeat_array_kernel(
+            src: wp.array(dtype=Any),
+            dst: wp.array(dtype=Any),
+            nworld: int,
+        ):
+            i = wp.tid()
+            # Copy from first nworld elements to actual element
+            src_idx = i % nworld
+            dst[i] = src[src_idx]
 
-        def tile(x, dtype=None):
-            return arr(np.repeat(x.numpy(), nworld, axis=0), dtype)
+        def tile(x):
+            # Create new array with same shape but first dim multiplied by nworld
+            new_shape = list(x.shape)
+            new_shape[0] = nworld
+            wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[len(new_shape)]
+            dst = wp_array(shape=new_shape, dtype=x.dtype, device=x.device)
+            
+            # Flatten arrays for kernel
+            src_flat = x.flatten()
+            dst_flat = dst.flatten()
+            
+            # Launch kernel to repeat data - one thread per destination element
+            wp.launch(repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, dst_flat, nworld])
+            return dst
 
         for field in mj_model.__dataclass_fields__:
-            # todo: avoid numpy roundtrip
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
-                setattr(mj_model, field, tile(array, dtype=array.dtype))
+                setattr(mj_model, field, tile(array))
 
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
