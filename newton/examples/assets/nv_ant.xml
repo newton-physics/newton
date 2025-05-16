@@ -31,7 +31,7 @@
   </asset>
 
   <worldbody>
-    <geom name="floor" pos="0 0 0" size="0 0 .25" type="plane" material="matplane" condim="3"/>
+    <geom name="floor" pos="0 0 0" size="0 0 .25" type="plane" material="matplane" condim="3" zaxis="0 1 0"/>
 
     <light directional="false" diffuse=".2 .2 .2" specular="0 0 0" pos="0 0 5" dir="0 0 -1" castshadow="false"/>
     <light mode="targetbodycom" target="torso" directional="false" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 0 4.0" dir="0 0 -1"/>
