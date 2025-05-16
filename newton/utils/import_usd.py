@@ -40,6 +40,7 @@ def parse_usd(
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
     collapse_fixed_joints: bool = False,
+    enable_self_collisions: bool = True,
     root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] = "bfs",
 ) -> dict[str, Any]:
@@ -62,6 +63,7 @@ def parse_usd(
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
+        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
 
@@ -109,8 +111,8 @@ def parse_usd(
         density: float = builder.default_shape_cfg.density
 
     # load joint defaults
-    default_joint_limit_ke = builder.default_joint_cfg.target_ke
-    default_joint_limit_kd = builder.default_joint_cfg.target_kd
+    default_joint_limit_ke = builder.default_joint_cfg.limit_ke
+    default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
 
     # load shape defaults
@@ -191,12 +193,11 @@ def parse_usd(
     if ignore_paths is None:
         ignore_paths = []
 
-    def convert_axis(axis):
-        return {
-            UsdPhysics.Axis.X: (1.0, 0.0, 0.0),
-            UsdPhysics.Axis.Y: (0.0, 1.0, 0.0),
-            UsdPhysics.Axis.Z: (0.0, 0.0, 1.0),
-        }[axis]
+    usd_axis_to_axis = {
+        UsdPhysics.Axis.X: Axis.X,
+        UsdPhysics.Axis.Y: Axis.Y,
+        UsdPhysics.Axis.Z: Axis.Z,
+    }
 
     if isinstance(source, str):
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
@@ -372,7 +373,7 @@ def parse_usd(
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
-            joint_params["axis"] = convert_axis(joint_desc.axis)
+            joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
@@ -398,19 +399,15 @@ def parse_usd(
             if key == UsdPhysics.ObjectType.PrismaticJoint:
                 builder.add_joint_prismatic(**joint_params)
             else:
-                joint_prim.CreateAttribute("physics:tensor:angular:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
-
                 if joint_desc.drive.enabled:
                     joint_params["target"] *= DegreesToRadian
-                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                    # joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                    # joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                # joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                # joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -715,7 +712,7 @@ def parse_usd(
             articulation_has_self_collision[articulation_id] = parse_generic(
                 prim,
                 "physxArticulation:enabledSelfCollisions",
-                default=True,
+                default=enable_self_collisions,
             )
             articulation_id += 1
 
@@ -770,9 +767,14 @@ def parse_usd(
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
                 prim_and_scene = (prim, physics_scene_prim)
+                local_xform = wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot))
+                if body_id == -1:
+                    shape_xform = incoming_world_xform * local_xform
+                else:
+                    shape_xform = local_xform
                 shape_params = {
                     "body": body_id,
-                    "xform": wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot)),
+                    "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", builder.default_shape_cfg.ke),
                         kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", builder.default_shape_cfg.kd),
@@ -855,19 +857,15 @@ def parse_usd(
                         **shape_params,
                     )
                 elif key == UsdPhysics.ObjectType.PlaneShape:
-                    plane_eq = [0.0, 1.0, 0.0, 0.0]  # Warp uses +Y convention for planes
+                    # Warp uses +Y convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Y:
                         xform = shape_params["xform"]
-                        plane_normal = wp.vec3(0.0, 0.0, 0.0)
-                        plane_normal[int(shape_spec.axis)] = 1.0
-                        plane_normal = wp.quat_rotate(xform.q, plane_normal)
-                        plane_eq[:3] = plane_normal
-                        plane_eq[3] = wp.dot(plane_normal, xform.p)
-                        # xform needs to be recomputed relative to a plane with +Y normal
-                        shape_params["xform"] = None
+                        axis_q = newton.core.spatial.quat_between_axes(Axis.Y, usd_axis_to_axis[shape_spec.axis])
+                        shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
                     shape_id = builder.add_shape_plane(
                         **shape_params,
-                        plane=plane_eq,
+                        width=0.0,
+                        length=0.0,
                     )
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
