@@ -6,7 +6,6 @@
 .. autoclass:: SimRendererOpenGL
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

@@ -5,7 +5,7 @@ This section documents the model importers available in Newton Physics. Use thes
 
 .. autosummary::
    :toctree: generated/importers
-   :template: autosummary/function.rst
+   :template: class.rst
 
    newton.utils.parse_urdf
    newton.utils.parse_mjcf

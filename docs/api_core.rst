@@ -5,7 +5,7 @@ This section documents the core data structures and simulation objects in Newton
 
 .. autosummary::
    :toctree: generated/core
-   :template: autosummary/class.rst
+   :template: class.rst
 
    newton.Model
    newton.State

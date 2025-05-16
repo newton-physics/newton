@@ -6,7 +6,6 @@
 .. autoclass:: SDF
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

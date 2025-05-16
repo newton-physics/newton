@@ -3,4 +3,13 @@
 
 .. currentmodule:: newton.utils
 
-.. autofunction:: parse_mjcf
+.. autoclass:: parse_mjcf
+
+   
+
+   
+   
+
+   
+   
+   

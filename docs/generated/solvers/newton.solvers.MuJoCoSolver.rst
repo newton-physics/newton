@@ -6,7 +6,6 @@
 .. autoclass:: MuJoCoSolver
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

@@ -6,7 +6,6 @@
 .. autoclass:: State
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

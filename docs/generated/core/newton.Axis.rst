@@ -6,7 +6,6 @@
 .. autoclass:: Axis
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

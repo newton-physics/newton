@@ -4,7 +4,7 @@ API Reference
 This section provides a comprehensive reference for the Newton Physics Python API. All classes, functions, and modules are documented here, with links to detailed docstrings and usage examples.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: API Reference
 
    api_core
@@ -13,14 +13,6 @@ This section provides a comprehensive reference for the Newton Physics Python AP
    api_renderers
    api_utilities
 
-.. note::
-   For conceptual overviews and usage patterns, see the :doc:`guide/user-guide` and :doc:`guide/tutorials`.
-
-.. automodule:: newton
-   :members:
-   :undoc-members:
-   :inherited-members:
-   :show-inheritance:
 
 Core API
 --------
@@ -121,3 +113,13 @@ See :doc:`api_utilities` for details.
 
 .. note::
    For a full list of all modules and classes, see the generated API documentation in the sidebar or use the search feature.
+
+
+.. note::
+   For conceptual overviews and usage patterns, see the :doc:`guide/user-guide` and :doc:`guide/tutorials`.
+
+.. .. automodule:: newton
+..    :members:
+..    :undoc-members:
+..    :inherited-members:
+..    :show-inheritance:

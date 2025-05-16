@@ -3,4 +3,13 @@
 
 .. currentmodule:: newton.utils
 
-.. autofunction:: parse_urdf
+.. autoclass:: parse_urdf
+
+   
+
+   
+   
+
+   
+   
+   

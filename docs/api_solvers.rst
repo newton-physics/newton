@@ -5,7 +5,7 @@ This section documents the available physics solvers in Newton Physics. Each sol
 
 .. autosummary::
    :toctree: generated/solvers
-   :template: autosummary/class.rst
+   :template: class.rst
 
    newton.solvers.SolverBase
    newton.solvers.XPBDSolver

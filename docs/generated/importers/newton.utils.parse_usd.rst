@@ -3,4 +3,13 @@
 
 .. currentmodule:: newton.utils
 
-.. autofunction:: parse_usd
+.. autoclass:: parse_usd
+
+   
+
+   
+   
+
+   
+   
+   

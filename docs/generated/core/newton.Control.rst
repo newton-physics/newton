@@ -6,7 +6,6 @@
 .. autoclass:: Control
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

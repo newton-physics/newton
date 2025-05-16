@@ -6,7 +6,6 @@
 .. autoclass:: SolverBase
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

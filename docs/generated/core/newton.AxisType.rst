@@ -6,7 +6,6 @@
 .. autoclass:: AxisType
 
    
-   .. automethod:: __init__
 
    
    

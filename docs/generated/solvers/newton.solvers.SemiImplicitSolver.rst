@@ -6,7 +6,6 @@
 .. autoclass:: SemiImplicitSolver
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

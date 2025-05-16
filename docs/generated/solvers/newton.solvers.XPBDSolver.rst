@@ -6,7 +6,6 @@
 .. autoclass:: XPBDSolver
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

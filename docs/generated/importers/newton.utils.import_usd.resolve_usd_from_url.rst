@@ -3,4 +3,13 @@
 
 .. currentmodule:: newton.utils.import_usd
 
-.. autofunction:: resolve_usd_from_url
+.. autoclass:: resolve_usd_from_url
+
+   
+
+   
+   
+
+   
+   
+   

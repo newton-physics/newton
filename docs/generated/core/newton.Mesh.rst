@@ -6,7 +6,6 @@
 .. autoclass:: Mesh
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

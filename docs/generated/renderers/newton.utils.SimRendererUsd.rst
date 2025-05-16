@@ -6,7 +6,6 @@
 .. autoclass:: SimRendererUsd
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

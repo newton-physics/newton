@@ -1,19 +1,21 @@
-Newton Physics Engine
-====================
+Newton Physics 
+===============
 
 .. image:: _static/newton-logo.png
    :alt: Newton Physics Engine Logo
    :align: center
    :class: newton-logo
 
+.. toctree::
+   :maxdepth: 1
+
+   overview
+   quickstart
+   tutorials
+   key-concepts
+
+
 **Newton** is a modern physics engine designed for simulation, robotics, and graphics applications. It provides a flexible architecture with multiple solvers and integrators to suit your specific needs.
-
-.. admonition:: Version Info
-   :class: newton-version-info
-
-   You're viewing documentation for Newton version |version|. 
-   For the latest features and APIs, make sure you're using the most recent release.
-
 
 Key Features
 -----------
@@ -51,7 +53,7 @@ Key Features
 
 .. toctree::
    :maxdepth: 1
-   :caption: Guide
+   :caption: User Guide
 
    guide/overview
 

@@ -6,7 +6,6 @@
 .. autoclass:: FeatherstoneSolver
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods

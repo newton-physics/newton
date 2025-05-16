@@ -6,7 +6,6 @@
 .. autoclass:: VBDSolver
 
    
-   .. automethod:: __init__
 
    
    .. rubric:: Methods
