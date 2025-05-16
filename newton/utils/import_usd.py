@@ -193,12 +193,11 @@ def parse_usd(
     if ignore_paths is None:
         ignore_paths = []
 
-    def convert_axis(axis):
-        return {
-            UsdPhysics.Axis.X: (1.0, 0.0, 0.0),
-            UsdPhysics.Axis.Y: (0.0, 1.0, 0.0),
-            UsdPhysics.Axis.Z: (0.0, 0.0, 1.0),
-        }[axis]
+    usd_axis_to_axis = {
+        UsdPhysics.Axis.X: Axis.X,
+        UsdPhysics.Axis.Y: Axis.Y,
+        UsdPhysics.Axis.Z: Axis.Z,
+    }
 
     if isinstance(source, str):
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
@@ -374,7 +373,7 @@ def parse_usd(
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
-            joint_params["axis"] = convert_axis(joint_desc.axis)
+            joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
@@ -772,9 +771,14 @@ def parse_usd(
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
                 prim_and_scene = (prim, physics_scene_prim)
+                local_xform = wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot))
+                if body_id == -1:
+                    shape_xform = incoming_world_xform * local_xform
+                else:
+                    shape_xform = local_xform
                 shape_params = {
                     "body": body_id,
-                    "xform": wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot)),
+                    "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", builder.default_shape_cfg.ke),
                         kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", builder.default_shape_cfg.kd),
@@ -857,19 +861,13 @@ def parse_usd(
                         **shape_params,
                     )
                 elif key == UsdPhysics.ObjectType.PlaneShape:
-                    plane_eq = [0.0, 1.0, 0.0, 0.0]  # Warp uses +Y convention for planes
+                    # Warp uses +Y convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Y:
                         xform = shape_params["xform"]
-                        plane_normal = wp.vec3(0.0, 0.0, 0.0)
-                        plane_normal[int(shape_spec.axis)] = 1.0
-                        plane_normal = wp.quat_rotate(xform.q, plane_normal)
-                        plane_eq[:3] = plane_normal
-                        plane_eq[3] = wp.dot(plane_normal, xform.p)
-                        # xform needs to be recomputed relative to a plane with +Y normal
-                        shape_params["xform"] = None
+                        axis_q = newton.core.spatial.quat_between_axes(Axis.Y, usd_axis_to_axis[shape_spec.axis])
+                        shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
                     shape_id = builder.add_shape_plane(
                         **shape_params,
-                        plane=plane_eq,
                         width=0.0,
                         length=0.0,
                     )

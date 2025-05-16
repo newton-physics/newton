@@ -1983,7 +1983,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for capsules
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2030,7 +2030,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for cylinders
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2077,7 +2077,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for cones
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
