@@ -1276,6 +1276,9 @@ class MuJoCoSolver(SolverBase):
 
         MuJoCoSolver.update_mjc_data(d, model, state)
 
+        # make sure qpos0 matches
+        m.qpos0 = d.qpos
+
         mujoco.mj_forward(m, d)
 
         mj_model = mujoco_warp.put_model(m)
