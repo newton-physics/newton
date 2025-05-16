@@ -275,6 +275,11 @@ def parse_mjcf(
             geom_pos = parse_vec(geom_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             geom_rot = parse_orientation(geom_attrib)
             tf = wp.transform(geom_pos, geom_rot)
+            if link == -1 and incoming_xform is not None:
+                tf = incoming_xform * tf
+                geom_pos = tf.p
+                geom_rot = tf.q
+
             geom_density = parse_float(geom_attrib, "density", density)
 
             shape_cfg = ModelBuilder.ShapeConfig(
