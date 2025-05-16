@@ -111,8 +111,8 @@ def parse_usd(
         density: float = builder.default_shape_cfg.density
 
     # load joint defaults
-    default_joint_limit_ke = builder.default_joint_cfg.target_ke
-    default_joint_limit_kd = builder.default_joint_cfg.target_kd
+    default_joint_limit_ke = builder.default_joint_cfg.limit_ke
+    default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
 
     # load shape defaults
