@@ -40,6 +40,7 @@ def parse_usd(
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
     collapse_fixed_joints: bool = False,
+    enable_self_collisions: bool = True,
     root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] = "bfs",
 ) -> dict[str, Any]:
@@ -62,6 +63,7 @@ def parse_usd(
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
+        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
 
@@ -715,7 +717,7 @@ def parse_usd(
             articulation_has_self_collision[articulation_id] = parse_generic(
                 prim,
                 "physxArticulation:enabledSelfCollisions",
-                default=True,
+                default=enable_self_collisions,
             )
             articulation_id += 1
 
@@ -857,18 +859,19 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     plane_eq = [0.0, 1.0, 0.0, 0.0]  # Warp uses +Y convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Y:
+                        xform = shape_params["xform"]
                         plane_normal = wp.vec3(0.0, 0.0, 0.0)
                         plane_normal[int(shape_spec.axis)] = 1.0
-                        plane_normal = wp.quat_rotate(shape_params["rot"], plane_normal)
+                        plane_normal = wp.quat_rotate(xform.q, plane_normal)
                         plane_eq[:3] = plane_normal
-                        plane_eq[3] = wp.dot(plane_normal, shape_params["pos"])
-
-                        # rot needs to be recomputed relative to a plane with +Y normal
-                        del shape_params["rot"]
-                    del shape_params["density"]
+                        plane_eq[3] = wp.dot(plane_normal, xform.p)
+                        # xform needs to be recomputed relative to a plane with +Y normal
+                        shape_params["xform"] = None
                     shape_id = builder.add_shape_plane(
                         **shape_params,
                         plane=plane_eq,
+                        width=0.0,
+                        length=0.0,
                     )
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
