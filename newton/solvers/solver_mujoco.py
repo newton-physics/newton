@@ -432,8 +432,8 @@ def convert_body_xforms_to_warp_kernel(
 ):
     worldid, bodyid = wp.tid()
     wbi = bodies_per_env * worldid + bodyid
-    pos = xpos[worldid, bodyid+1]
-    quat = xquat[worldid, bodyid+1]
+    pos = xpos[worldid, bodyid + 1]
+    quat = xquat[worldid, bodyid + 1]
     # convert from wxyz to xyzw
     quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
     # quat = wp.quat_inverse(quat)
