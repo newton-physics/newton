@@ -67,6 +67,17 @@ def initialize_rotation(
 
 
 @wp.kernel
+def update_time(
+    t: wp.array(dtype=float),
+    dt: float,
+    end_time: float,
+):
+    cur_t = t[0]
+    if cur_t <= end_time:
+        t[0] = cur_t + dt
+
+
+@wp.kernel
 def apply_rotation(
     # input
     vertex_indices_to_rot: wp.array(dtype=wp.int32),
@@ -75,7 +86,6 @@ def apply_rotation(
     roots_to_ps: wp.array(dtype=wp.vec3),
     t: wp.array(dtype=float),
     angular_velocity: float,
-    dt: float,
     end_time: float,
     # output
     pos_0: wp.array(dtype=wp.vec3),
@@ -116,12 +126,9 @@ def apply_rotation(
     pos_0[v_index] = p_rot
     pos_1[v_index] = p_rot
 
-    if tid == 0:
-        t[0] = cur_t + dt
-
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_self_contact.usd", enable_timers=True, num_frames=600):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -134,6 +141,7 @@ class Example:
         self.bvh_rebuild_frames = 10
 
         self.num_frames = num_frames
+        self.enable_timers = enable_timers
         self.sim_time = 0.0
         self.profiler = {}
 
@@ -248,7 +256,6 @@ class Example:
                     self.roots_to_ps,
                     self.t,
                     self.rot_angular_velocity,
-                    self.dt,
                     self.rot_end_time,
                 ],
                 outputs=[
@@ -257,23 +264,32 @@ class Example:
                 ],
             )
 
+            wp.launch(
+                kernel=update_time,
+                dim=1,
+                inputs=[
+                    self.t,
+                    self.dt,
+                    self.rot_end_time,
+                ],
+            )
+
             self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def advance_frame(self):
-        with wp.ScopedTimer("step", print=False, dict=self.profiler):
+        with wp.ScopedTimer("step", dict=self.profiler, active=self.enable_timers):
             if self.use_cuda_graph:
                 wp.capture_launch(self.cuda_graph)
             else:
                 self.integrate_frame_substeps()
 
-            self.sim_time += self.dt
+            self.sim_time += self.frame_dt
 
     def run(self):
         for i in range(self.num_frames):
             self.advance_frame()
             self.render()
-            print(f"[{i:4d}/{self.num_frames}]")
 
             if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph:
                 self.solver.rebuild_bvh(self.state0)
@@ -285,9 +301,34 @@ class Example:
         if self.renderer is None:
             return
 
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state0)
-        self.renderer.end_frame()
+        with wp.ScopedTimer("render", active=self.enable_timers):
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state0)
+            self.renderer.end_frame()
+
+
+def run_cloth_self_contact(
+    num_frames=300,
+    device=None,
+    stage_path=None,
+    enable_timers=True,
+    **_ignored,
+):
+    with wp.ScopedDevice(device):
+        example = Example(stage_path=stage_path, num_frames=num_frames, enable_timers=enable_timers)
+        example.run()
+
+        if example.renderer:
+            example.renderer.save()
+
+        def to_numpy(arr):
+            return None if arr is None else arr.numpy()
+
+        state = example.state0
+        return {
+            "particle_q": to_numpy(state.particle_q),
+            "particle_qd": to_numpy(state.particle_qd),
+        }
 
 
 if __name__ == "__main__":
@@ -305,13 +346,8 @@ if __name__ == "__main__":
 
     args = parser.parse_known_args()[0]
 
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        example.run()
-
-        frame_times = example.profiler["step"]
-        print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
-
-        if example.renderer:
-            example.renderer.save()
+    run_cloth_self_contact(
+        num_frames=args.num_frames,
+        device=args.device,
+        stage_path=args.stage_path,
+    )
