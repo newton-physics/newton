@@ -1,131 +1,123 @@
 API Reference
 =============
 
-Core Data Structures
---------------------
+This section provides a comprehensive reference for the Newton Physics Python API. All classes, functions, and modules are documented here, with links to detailed docstrings and usage examples.
 
-.. autoclass:: newton.Model
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
 
-.. autoclass:: newton.State
+   api_core
+   api_solvers
+   api_importers
+   api_renderers
+   api_utilities
 
-.. autoclass:: newton.Control
+.. note::
+   For conceptual overviews and usage patterns, see the :doc:`guide/user-guide` and :doc:`guide/tutorials`.
 
-.. autoclass:: newton.ModelBuilder
+.. automodule:: newton
+   :members:
+   :undoc-members:
+   :inherited-members:
+   :show-inheritance:
 
-.. autoclass:: newton.Mesh
+Core API
+--------
 
-.. autoclass:: newton.SDF
+Core data structures and simulation objects.
 
-.. autodata:: newton.AxisType
-   :annotation:
+.. list-table:: Core API Classes
+   :widths: 30 70
+   :header-rows: 1
 
-.. autoclass:: newton.Axis
+   * - Class
+     - Description
+   * - Model
+     - Simulation model structure
+   * - State
+     - Dynamic simulation state
+   * - Control
+     - Actuator/control inputs
+   * - ModelBuilder
+     - Model construction API
+   * - Mesh, SDF, Axis
+     - Geometry and math types
 
+See :doc:`api_core` for details.
 
 Solvers
 -------
 
-.. autoclass:: newton.solvers.SolverBase
-    
-.. autoclass:: newton.solvers.XPBDSolver
+Physics solvers for advancing simulation. Each solver implements a common interface and can be selected based on your needs.
 
-.. autoclass:: newton.solvers.VBDSolver
+.. list-table:: Solver Classes
+   :widths: 30 70
+   :header-rows: 1
 
-.. autoclass:: newton.solvers.MuJoCoSolver
+   * - Class
+     - Description
+   * - SolverBase
+     - Abstract solver interface
+   * - XPBDSolver
+     - Position-based dynamics
+   * - VBDSolver
+     - Velocity-based dynamics
+   * - MuJoCoSolver
+     - MuJoCo backend
+   * - FeatherstoneSolver
+     - Articulated rigid bodies
+   * - SemiImplicitSolver
+     - Semi-implicit Euler
 
-.. autoclass:: newton.solvers.SemiImplicitSolver
-
-.. autoclass:: newton.solvers.FeatherstoneSolver
+See :doc:`api_solvers` for details.
 
 Importers
 ---------
 
-Newton supports the loading of simulation models from URDF, MuJoCo (MJCF), and USD Physics files.
+Load models from standard formats.
 
-.. autofunction:: newton.utils.parse_urdf
+.. list-table:: Importer Functions
+   :widths: 40 60
+   :header-rows: 1
 
-.. autofunction:: newton.utils.parse_mjcf
+   * - Function
+     - Description
+   * - parse_urdf
+     - Import URDF models
+   * - parse_mjcf
+     - Import MJCF (MuJoCo XML)
+   * - parse_usd
+     - Import USD scenes
+   * - resolve_usd_from_url
+     - Download/resolve USD assets
 
-.. autofunction:: newton.utils.parse_usd
-
-.. autofunction:: newton.utils.import_usd.resolve_usd_from_url
-
-Collision Detection
--------------------
-
-.. _Joint types:
-
-Joint Types
------------
-
-.. data:: JOINT_PRISMATIC
-
-    Prismatic (slider) joint
-
-.. data:: JOINT_REVOLUTE
-
-    Revolute (hinge) joint
-
-.. data:: JOINT_BALL
-
-    Ball (spherical) joint with quaternion state representation
-
-.. data:: JOINT_FIXED
-
-    Fixed (static) joint
-
-.. data:: JOINT_FREE
-
-    Free (floating) joint
-
-.. data:: JOINT_COMPOUND
-
-    Compound joint with 3 rotational degrees of freedom
-
-.. data:: JOINT_UNIVERSAL
-
-    Universal joint with 2 rotational degrees of freedom
-
-.. data:: JOINT_DISTANCE
-
-    Distance joint that keeps two bodies at a distance within its joint limits (only supported in :class:`XPBDIntegrator` at the moment)
-
-.. data:: JOINT_D6
-
-    Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
-
-.. _Joint modes:
-
-Joint Control Modes
--------------------
-
-Joint modes control whether the respective :attr:`newton.Control.joint_target` input is a joint position or velocity target.
-
-.. data:: JOINT_MODE_TARGET_POSITION
-
-    The control input is the target position :math:`\mathbf{q}_{\text{target}}` which is achieved via PD control of torque :math:`\tau` where the proportional and derivative gains are set by :attr:`Model.joint_target_ke` and :attr:`Model.joint_target_kd`:
-
-    .. math::
-
-        \tau = k_e (\mathbf{q}_{\text{target}} - \mathbf{q}) - k_d \mathbf{\dot{q}}
-
-.. data:: JOINT_MODE_TARGET_VELOCITY
-   
-    The control input is the target velocity :math:`\mathbf{\dot{q}}_{\text{target}}` which is achieved via a controller of torque :math:`\tau` that brings the velocity at the joint axis to the target through proportional gain :attr:`Model.joint_target_ke`: 
-    
-    .. math::
-
-        \tau = k_e (\mathbf{\dot{q}}_{\text{target}} - \mathbf{\dot{q}})    
+See :doc:`api_importers` for details.
 
 Renderers
 ---------
 
-Based on the renderers from :mod:`warp.render`, the :class:`newton.utils.SimRendererUsd` (which equals :class:`newton.utils.SimRenderer`) and
-:class:`newton.utils.SimRendererOpenGL` classes from :mod:`newton.utils.render` are derived to populate the renderers directly from
-:class:`newton.ModelBuilder` scenes and update them from :class:`newton.State` objects.
+Visualize simulations in real-time or offline.
 
-.. autoclass:: newton.utils.SimRendererUsd
-    :members:
+.. list-table:: Renderer Classes
+   :widths: 40 60
+   :header-rows: 1
 
-.. autoclass:: newton.utils.SimRendererOpenGL
-    :members:
+   * - Class
+     - Description
+   * - SimRendererUsd
+     - USD/Omniverse renderer
+   * - SimRendererOpenGL
+     - Real-time OpenGL renderer
+
+See :doc:`api_renderers` for details.
+
+Utilities
+---------
+
+Additional utilities for simulation, topology, and rendering.
+
+See :doc:`api_utilities` for details.
+
+.. note::
+   For a full list of all modules and classes, see the generated API documentation in the sidebar or use the search feature.

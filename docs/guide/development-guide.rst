@@ -1,7 +1,9 @@
 Development Guide
 =================
 
-This document is a guide for developers who want to contribute to the project.
+This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
+
+For the overall design philosophy and high-level architectural decisions, please refer to the :doc:`architecture` document.
 
 Environment setup
 -----------------
@@ -143,62 +145,40 @@ The hooks can be uninstalled with ``pre-commit uninstall``.
 Building the documentation
 --------------------------
 
-Here are a few ways to build the documentation.
-
-Using uv
-^^^^^^^^
-
-.. code-block:: console
-
-    rm -rf docs/_build
-    uv run --extra docs sphinx-build -W -b html docs docs/_build/html
-
-    # Alternatively using the Makefile
-    uv sync --extra docs
-    source .venv/bin/activate
-    cd docs
-    make clean
-    make html
-
-Using venv
-^^^^^^^^^^
+To build the documentation locally, ensure you have the documentation dependencies installed. If using `venv`, you can install them with:
 
 .. code-block:: console
 
     python -m pip install -e .[docs]
-    python -m sphinx -W -b html docs docs/_build/html
 
-    # Alternatively using the Makefile
-    cd docs
-    make clean
+Then, navigate to the ``docs`` directory and run:
+
+.. code-block:: console
+
     make html
 
-Testing documentation code snippets
------------------------------------
-
-The ``doctest`` Sphinx builder is used to ensure that code snippets in the documentation remains up-to-date.
-
-The doctests can be run with:
+Alternatively, using `uv`:
 
 .. code-block:: console
 
-    # With uv installed
-    uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+    uv run -m sphinx -b html docs docs/_build/html
 
-    # With venv
-    python -m sphinx -W -b doctest docs docs/_build/doctest
+The built documentation will be available in ``docs/_build/html``.
 
-For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
-documentation.
+Style Guide
+-----------
+- Follow PEP 8 for Python code.
+- Use Google-style docstrings (compatible with Napoleon extension).
+- Write clear, concise commit messages.
+- Keep pull requests focused on a single feature or bug fix.
 
-Packaging
----------
+Roadmap and Future Work
+-----------------------
 
-To build a ``.whl`` file (e.g. to test the creation of a
-`distribution package <https://packaging.python.org/en/latest/glossary/#term-Distribution-Package>`__), run:
+(Placeholder for future roadmap and planned features)
 
-.. code-block:: console
+- Advanced solver coupling
+- More comprehensive sensor models
+- Expanded robotics examples
 
-    uv build --wheel
-
-The output will be placed in the ``dist/`` subdirectory.
+See the [GitHub Discussions](https://github.com/newton-physics/newton/discussions) for ongoing feature planning.

@@ -101,5 +101,28 @@ autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "furo"
+html_theme = "pydata_sphinx_theme"
 # html_static_path = ["_static"]
+# html_css_files = ["custom.css"]
+
+# PyData theme configuration
+html_theme_options = {
+    # Remove navigation from the top navbar
+    # "navbar_start": [],
+    # "navbar_center": [],
+    # "navbar_end": ["search-button"],
+    # Navigation configuration
+    "navigation_depth": 4,
+    "show_nav_level": 2,
+    "show_toc_level": 2,
+    "collapse_navigation": False,
+    # Show the indices in the sidebar
+    "show_prev_next": False,
+    "use_edit_page_button": False,
+    # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
+}
+
+# # Ensure sidebar contains navigation
+# html_sidebars = {
+#     "**": ["sidebar-nav-bs.html"]
+# }
