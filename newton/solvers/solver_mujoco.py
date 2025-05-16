@@ -1231,8 +1231,8 @@ class MuJoCoSolver(SolverBase):
             nworld = 1
 
         # expand model fields that can be expanded:
-        MuJoCoSolver.expand_model_fields(mj_model, nworld)$
-        
+        MuJoCoSolver.expand_model_fields(mj_model, nworld)
+
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
             nconmax = nworld * ncon_per_env
