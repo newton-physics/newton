@@ -432,13 +432,13 @@ def convert_body_xforms_to_warp_kernel(
 ):
     worldid, bodyid = wp.tid()
     wbi = bodies_per_env * worldid + bodyid
-    pos = xpos[worldid, bodyid]
-    quat = xquat[worldid, bodyid]
+    pos = xpos[worldid, bodyid+1]
+    quat = xquat[worldid, bodyid+1]
     # convert from wxyz to xyzw
     quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
     # quat = wp.quat_inverse(quat)
-    pos = wp.quat_rotate(quat, pos)
     # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+    # pos = wp.quat_rotate(rot_y2z, pos)
     # quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
@@ -679,7 +679,7 @@ class MuJoCoSolver(SolverBase):
                 qpos,
                 qvel,
                 joints_per_env,
-                model.up_axis,
+                int(model.up_axis),
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
