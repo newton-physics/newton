@@ -1606,7 +1606,10 @@ class ModelBuilder:
         self.body_com.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
+        static_shapes = self.body_shapes[-1]
         self.body_shapes.clear()
+        # restore static shapes
+        self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
             new_id = len(self.body_key)
