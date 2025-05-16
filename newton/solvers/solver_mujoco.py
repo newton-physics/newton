@@ -1234,6 +1234,7 @@ class MuJoCoSolver(SolverBase):
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
         # now fill with all the data from the Newton model.
+        MuJoCoSolver.update_model_joint_q(model, mj_model)
 
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
