@@ -200,6 +200,17 @@ class TestMuJoCoSolver(unittest.TestCase):
             err_msg="Back-converted Warp joint_q does not match the initial modified self.model.joint_q"
         )
 
+        # 5. Additional check: Verify that qpos_spring is the same as qpos0 in the MuJoCo model
+        mjw_model_qpos0_numpy = solver.mjw_model.qpos0.numpy()
+        mjw_model_qpos_spring_numpy = solver.mjw_model.qpos_spring.numpy()
+
+        np.testing.assert_allclose(
+            mjw_model_qpos_spring_numpy,
+            mjw_model_qpos0_numpy,
+            atol=1e-6, # Using a slightly tighter tolerance as these should be direct copies or set from the same source
+            err_msg="mjw_model.qpos_spring does not match mjw_model.qpos0"
+        )
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""

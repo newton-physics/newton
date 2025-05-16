@@ -1276,8 +1276,14 @@ class MuJoCoSolver(SolverBase):
 
         MuJoCoSolver.update_mjc_data(d, model, state)
 
-        # make sure qpos0 matches
+        # fill some MjWarp model fields that outdated of update_mjc_data.
+
+        # update qpos0 to match joint_q. Technically qpos0 is the
+        # reference positions which could differ from the initial position 
+        # though.
         m.qpos0 = d.qpos
+        # qpos_spring defaults to qpos0
+        m.qpos_spring = d.qpos
 
         mujoco.mj_forward(m, d)
 
@@ -1311,8 +1317,8 @@ class MuJoCoSolver(SolverBase):
             return
 
         model_fields_to_expand = [
-            "qpos0",
-            "qpos_spring",
+            "qpos0",       # init to model.joint_q
+            "qpos_spring", # init to model.joint_q
             "body_pos",
             "body_quat",
             "body_ipos",
@@ -1429,3 +1435,5 @@ class MuJoCoSolver(SolverBase):
             outputs=[mjw_model.qpos0],
             device=model.device,
         )
+
+        wp.copy(mjw_model.qpos_spring, mjw_model.qpos0)
