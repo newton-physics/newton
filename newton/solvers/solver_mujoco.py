@@ -240,11 +240,13 @@ def convert_joint_q_qpos0(
     # outputs
     qpos0: wp.array2d(dtype=wp.float32),
 ):
-    worldid, jntid = wp.tid()
+    jntid = wp.tid()
+    worldid = jntid // joints_per_env
+    jnt_in_env = jntid % joints_per_env
 
     type = joint_type[jntid]
-    q_i = joint_q_start[jntid]
-    wq_i = joint_q_start[joints_per_env * worldid + jntid]
+    q_i = joint_q_start[jnt_in_env]
+    wq_i = joint_q_start[joints_per_env * worldid + jnt_in_env]
 
     if type == newton.JOINT_FREE:
         # convert position components
@@ -1418,15 +1420,13 @@ class MuJoCoSolver(SolverBase):
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
         
-        model._joint_q_dirty = False
-
         # model.joint_q -> qpos0
         wp.launch(
             convert_joint_q_qpos0,
-            dim=(model.num_envs, model.joint_count),
+            dim=(model.joint_count),
             inputs=[
                 model.joint_q,
-                model.joint_count,
+                mjw_model.njnt,
                 model.up_axis,
                 model.joint_type,
                 model.joint_q_start,
@@ -1437,3 +1437,12 @@ class MuJoCoSolver(SolverBase):
         )
 
         wp.copy(mjw_model.qpos_spring, mjw_model.qpos0)
+
+    #@staticmethod
+    #def update_model_body_q(model: Model, mjw_model: MjWarpModel):
+
+    #    wp.launch(
+    #        outputs=[mjw_model.body_pos, mjw_model.body_quat],
+    #        device=model.device,
+    #    )
+            
