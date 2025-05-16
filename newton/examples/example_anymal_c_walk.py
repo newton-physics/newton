@@ -162,21 +162,10 @@ class Example:
         builder = newton.ModelBuilder()
 
         newton.utils.parse_urdf(
-            newton.examples.get_asset("anymal_c_simple_description/urdf/anymal.urdf"),
+            newton.examples.get_asset("../../assets/anymal_c_simple_description/urdf/anymal.urdf"),
             builder,
             xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=True,
-            stiffness=85.0,
-            # stiffness=10.,
-            # stiffness=0.0,
-            damping=2.0,
-            armature=0.06,
-            contact_ke=2.0e3,
-            contact_kd=5.0e2,
-            contact_kf=1.0e2,
-            contact_mu=0.75,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
