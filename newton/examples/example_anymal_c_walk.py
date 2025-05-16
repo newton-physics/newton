@@ -325,7 +325,7 @@ class Example:
                 self.model.joint_axis_dim,
                 self.model.joint_axis_start,
             ],
-            outputs=[self.target_joint_q, control.joint_act],
+            outputs=[self.target_joint_q, control.joint_target],
             device=self.model.device,
         )
 
@@ -349,7 +349,7 @@ class Example:
         self.assign_control(ctrl, self.control, self.state_0)
         self.sim_time += self.frame_dt
 
-        print("Joint_act:", self.control.joint_act.numpy())
+        print("Joint_act:", self.control.joint_target.numpy())
         print("Observations:", self.obs_buf.numpy())
         # wp.launch(fill_array, 12, inputs=[self.control.joint_act, wp.array(np.random.randn(12), dtype=float)])
 
