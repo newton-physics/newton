@@ -1350,3 +1350,24 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array, dtype=array.dtype))
+
+    @staticmethod
+    def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
+        
+        model._joint_q_dirty = False
+
+        # model.joint_q -> qpos0
+        wp.launch(
+            convert_joint_q_qpos0,
+            dim=(model.num_envs, model.joint_count),
+            inputs=[
+                model.joint_q,
+                model.joint_count,
+                model.up_axis,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_axis_dim,
+            ],
+            outputs=[mjw_model.qpos0],
+            device=model.device,
+        )
