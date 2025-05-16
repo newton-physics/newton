@@ -1682,7 +1682,7 @@ class FeatherstoneSolver(SolverBase):
             target.joint_qdd = wp.zeros_like(model.joint_qd, requires_grad=requires_grad)
             target.joint_tau = wp.empty_like(model.joint_qd, requires_grad=requires_grad)
             # store additional joint torques to be directly added to joint_tau
-            target.joint_torques = wp.empty_like(model.joint_act, requires_grad=requires_grad)
+            target.joint_torques = wp.empty_like(model.joint_target, requires_grad=requires_grad)
             if requires_grad:
                 # used in the custom grad implementation of eval_dense_solve_batched
                 target.joint_solve_tmp = wp.zeros_like(model.joint_qd, requires_grad=True)
