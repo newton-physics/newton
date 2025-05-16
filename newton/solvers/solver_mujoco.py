@@ -1300,7 +1300,7 @@ class MuJoCoSolver(SolverBase):
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
         # now fill with all the data from the Newton model.
-        MuJoCoSolver.update_model_joint_q(model, mj_model)
+        #MuJoCoSolver.update_model_joint_q(model, mj_model)
 
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
@@ -1401,7 +1401,7 @@ class MuJoCoSolver(SolverBase):
         ):
             i = wp.tid()
             # Copy from first nworld elements to actual element
-            src_idx = i % nworld
+            src_idx = i // nworld
             dst[i] = src[src_idx]
 
         def tile(x):
@@ -1423,6 +1423,9 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+                if field == "qpos0":
+                    print(array.shape)
+                    print(getattr(mj_model, field).shape)
 
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
