@@ -399,19 +399,15 @@ def parse_usd(
             if key == UsdPhysics.ObjectType.PrismaticJoint:
                 builder.add_joint_prismatic(**joint_params)
             else:
-                joint_prim.CreateAttribute("physics:tensor:angular:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-                joint_prim.CreateAttribute("state:angular:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
-
                 if joint_desc.drive.enabled:
                     joint_params["target"] *= DegreesToRadian
-                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                    # joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                    # joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                # joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                # joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
