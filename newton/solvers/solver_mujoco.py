@@ -1423,9 +1423,6 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
-                if field == "qpos0":
-                    print(array.shape)
-                    print(getattr(mj_model, field).shape)
 
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
