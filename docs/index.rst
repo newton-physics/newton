@@ -1,24 +1,14 @@
-Newton documentation
-====================
+.. raw:: html
+
+   <meta http-equiv="refresh" content="0; url=guide/overview.html" />
+
+
+Newton Physics 
+===============
 
 .. toctree::
-    :maxdepth: 2
-
-    quickstart
-    key-concepts
-    api
-    integrations/index
-    migration
-    extending-newton
-    development-guide
-    contributing
-    faq
-    stability-policy
-    changelog
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   :maxdepth: 4
+   :hidden:
+   
+   User Guide <guide/overview>
+   API Reference <api>

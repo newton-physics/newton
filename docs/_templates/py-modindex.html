@@ -1,0 +1,54 @@
+{#
+    basic/modindex.html
+    ~~~~~~~~~~~~~~~~~~~
+
+    Template for the module index.
+
+    :copyright: Copyright 2007-2023 by the Sphinx team, see AUTHORS.
+    :license: BSD, see LICENSE for details.
+#}
+{% extends "layout.html" %}
+{% set title = _('Python Module Index') %}
+{% block body %}
+
+<h1>{{ _('Python Module Index') }}</h1>
+
+{% if modulenames %}
+<div class="modindex-jumpbox">
+{%- for letter in letters %}
+<a href="#cap-{{ letter }}"><strong>{{ letter }}</strong></a>{% if not loop.last %} | {% endif %}
+{%- endfor %}
+</div>
+{% endif %}
+
+<table class="indextable modindextable">
+{% if modulenames %}
+{%- for letter, entries in modindexentries %}
+<tr class="pcap"><td></td><td>&#160;</td><td></td></tr>
+<tr class="cap" id="cap-{{ letter }}"><td></td><td>
+<strong>{{ letter }}</strong></td><td></td></tr>
+{%- for name, (uri, synopsis, platform, deprecated) in entries %}
+<tr{% if deprecated %} class="deprecated"{% endif %}>
+    <td>{% if deprecated %}
+      <strong>
+    {% endif %}
+    {%- if uri %}
+    <a href="{{ uri }}">{{ name }}</a>
+    {%- else %}
+    {{ name }}
+    {%- endif %}
+    {% if deprecated %}
+      </strong>
+    {% endif %}
+    </td>
+    <td>{% if synopsis %} <em>({{ synopsis }})</em>{% endif %}</td>
+    <td>{% if platform %} <em>({{ platform }})</em>{% endif %}</td>
+</tr>
+{%- endfor %}
+{%- endfor %}
+{% else %}
+<tr><td><p>{{ _('No modules found in project.') }}</p></td></tr>
+{% endif %}
+</table>
+
+{% endblock %} 
