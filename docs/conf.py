@@ -105,6 +105,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_show_sourcelink = False
 
 # PyData theme configuration
 html_theme_options = {
@@ -112,7 +113,7 @@ html_theme_options = {
     # "navbar_start": [],
     # "navbar_center": [],
     # "navbar_end": ["search-button"],
-    # Navigation configuration
+    # Navigation configuration    
     "font_size": "14px",  # or smaller
     "navigation_depth": 4,
     "show_nav_level": 2,
@@ -127,7 +128,7 @@ html_theme_options = {
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
 
-# # Ensure sidebar contains navigation
-# html_sidebars = {
-#     "**": ["sidebar-nav-bs.html"]
-# }
+html_sidebars = {
+    '**': ['sidebar-nav-bs.html'],
+    'index': ['sidebar-nav-bs.html']
+}

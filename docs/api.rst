@@ -14,12 +14,12 @@ This section provides a comprehensive reference for the Newton Physics Python AP
    api_utilities
 
 
-Core API
---------
+Core
+----
 
 Core data structures and simulation objects.
 
-.. list-table:: Core API Classes
+.. list-table:: Core Classes
    :widths: 30 70
    :header-rows: 1
 

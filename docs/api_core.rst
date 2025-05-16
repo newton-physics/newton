@@ -1,5 +1,5 @@
-Core API
-=======
+Core
+====
 
 This section documents the core data structures and simulation objects in Newton Physics.
 
