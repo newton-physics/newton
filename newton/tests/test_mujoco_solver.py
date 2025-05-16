@@ -178,7 +178,7 @@ class TestMuJoCoSolver(unittest.TestCase):
             dim=(num_envs, joints_per_env), # Process all environments
             inputs=[
                 solver.mjw_model.qpos0,     # MuJoCo qpos0 for all envs
-                solver.mjw_data.qvel,     # MuJoCo qvel for all envs
+                solver.mjw_data.qvel,     # MuJoCo qvel for all envs - just to make the kernel happy
                 joints_per_env,            
                 self.model.up_axis,
                 self.model.joint_type,     
