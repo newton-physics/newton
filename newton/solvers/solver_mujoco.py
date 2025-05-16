@@ -971,11 +971,11 @@ class MuJoCoSolver(SolverBase):
                     continue
                 elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
-                    # this is a shape in a different environment, skip it
-                    # TODO fix handling of static shapes here, see cartpole.xml replication
-                    # that is missing the rail shapes
-                    continue
+                # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
+                #     # this is a shape in a different environment, skip it
+                #     # TODO fix handling of static shapes here, see cartpole.xml replication
+                #     # that is missing the rail shapes
+                #     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
                 if stype == newton.GEO_PLANE and warp_body_id != -1:
