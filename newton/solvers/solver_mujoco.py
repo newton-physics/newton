@@ -285,6 +285,7 @@ def convert_joint_q_qpos0(
             # convert position components
             qpos0[worldid, q_i + i] = joint_q[wq_i + i]
 
+
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
@@ -1281,7 +1282,7 @@ class MuJoCoSolver(SolverBase):
         # fill some MjWarp model fields that outdated of update_mjc_data.
 
         # update qpos0 to match joint_q. Technically qpos0 is the
-        # reference positions which could differ from the initial position 
+        # reference positions which could differ from the initial position
         # though.
         m.qpos0 = d.qpos
         # qpos_spring defaults to qpos0
@@ -1314,13 +1315,12 @@ class MuJoCoSolver(SolverBase):
 
     @staticmethod
     def expand_model_fields(mj_model: MjWarpModel, nworld: int):
-
         if nworld == 1:
             return
 
         model_fields_to_expand = [
-            "qpos0",       # init to model.joint_q
-            "qpos_spring", # init to model.joint_q
+            "qpos0",  # init to model.joint_q
+            "qpos_spring",  # init to model.joint_q
             "body_pos",
             "body_quat",
             "body_ipos",
@@ -1410,11 +1410,11 @@ class MuJoCoSolver(SolverBase):
             new_shape[0] = nworld
             wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[len(new_shape)]
             dst = wp_array(shape=new_shape, dtype=x.dtype, device=x.device)
-            
+
             # Flatten arrays for kernel
             src_flat = x.flatten()
             dst_flat = dst.flatten()
-            
+
             # Launch kernel to repeat data - one thread per destination element
             wp.launch(repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, dst_flat, nworld])
             return dst
@@ -1426,7 +1426,6 @@ class MuJoCoSolver(SolverBase):
 
     @staticmethod
     def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
-        
         # model.joint_q -> qpos0
         wp.launch(
             convert_joint_q_qpos0,
