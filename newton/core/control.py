@@ -28,7 +28,7 @@ class Control:
 
     def __init__(self):
         self.joint_f: wp.array | None = None
-        """Array of generalized joint forces with shape ``(joint_axis_count,)`` and type ``float``."""
+        """Array of generalized joint forces with shape ``(joint_dof_count,)`` and type ``float``."""
 
         self.joint_target: wp.array | None = None
         """Array of joint targets with shape ``(joint_axis_count,)`` and type ``float``."""
