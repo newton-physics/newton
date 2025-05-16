@@ -1,0 +1,1305 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="#" /><link rel="search" title="Search" href="search.html" />
+
+    <!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 --><title>Index - Newton 0.1.1.a1 documentation</title>
+<link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=354aac6f" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=302659d7" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f8f8f8;
+  --color-code-foreground: black;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc">
+<label class="overlay sidebar-overlay" for="__navigation">
+  <div class="visually-hidden">Hide navigation sidebar</div>
+</label>
+<label class="overlay toc-overlay" for="__toc">
+  <div class="visually-hidden">Hide table of contents sidebar</div>
+</label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <div class="visually-hidden">Toggle site navigation sidebar</div>
+        <i class="icon"><svg><use href="#svg-menu"></use></svg></i>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="index.html"><div class="brand">Newton 0.1.1.a1 documentation</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle">
+          <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon no-toc" for="__toc">
+        <div class="visually-hidden">Toggle table of contents sidebar</div>
+        <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
+  
+  
+  <span class="sidebar-brand-text">Newton 0.1.1.a1 documentation</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <ul>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="integrations/index.html">Newton Integrations</a><input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><div class="visually-hidden">Toggle navigation of Newton Integrations</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2"><a class="reference internal" href="integrations/isaac-lab.html">Isaac Lab Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integrations/mujoco.html">MuJoCo Integration</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="migration.html"><code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extending-newton.html">Extending Newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development-guide.html">Development Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faq.html">Frequently Asked Questions (FAQ)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="stability-policy.html">Stability Policy</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog.html">Changelog</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle">
+              <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon no-toc" for="__toc">
+            <div class="visually-hidden">Toggle table of contents sidebar</div>
+            <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          
+<section class="genindex-section">
+  <h1 id="index">Index</h1>
+  <div class="genindex-jumpbox"><a href="#_"><strong>_</strong></a> | <a href="#A"><strong>A</strong></a> | <a href="#B"><strong>B</strong></a> | <a href="#C"><strong>C</strong></a> | <a href="#D"><strong>D</strong></a> | <a href="#E"><strong>E</strong></a> | <a href="#F"><strong>F</strong></a> | <a href="#G"><strong>G</strong></a> | <a href="#H"><strong>H</strong></a> | <a href="#I"><strong>I</strong></a> | <a href="#J"><strong>J</strong></a> | <a href="#K"><strong>K</strong></a> | <a href="#L"><strong>L</strong></a> | <a href="#M"><strong>M</strong></a> | <a href="#N"><strong>N</strong></a> | <a href="#P"><strong>P</strong></a> | <a href="#R"><strong>R</strong></a> | <a href="#S"><strong>S</strong></a> | <a href="#T"><strong>T</strong></a> | <a href="#U"><strong>U</strong></a> | <a href="#V"><strong>V</strong></a> | <a href="#X"><strong>X</strong></a> | <a href="#Y"><strong>Y</strong></a> | <a href="#Z"><strong>Z</strong></a></div>
+</section>
+<section id="_" class="genindex-section">
+  <h2>_</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Control.__init__">__init__() (newton.Control method)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Mesh.__init__">(newton.Mesh method)</a>
+</li>
+          <li><a href="api.html#newton.Model.__init__">(newton.Model method)</a>
+</li>
+          <li><a href="api.html#newton.ModelBuilder.__init__">(newton.ModelBuilder method)</a>
+</li>
+          <li><a href="api.html#newton.ModelBuilder.JointDofConfig.__init__">(newton.ModelBuilder.JointDofConfig method)</a>
+</li>
+          <li><a href="api.html#newton.ModelBuilder.ShapeConfig.__init__">(newton.ModelBuilder.ShapeConfig method)</a>
+</li>
+          <li><a href="api.html#newton.SDF.__init__">(newton.SDF method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.FeatherstoneSolver.__init__">(newton.solvers.FeatherstoneSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.MuJoCoSolver.__init__">(newton.solvers.MuJoCoSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.SemiImplicitSolver.__init__">(newton.solvers.SemiImplicitSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.SolverBase.__init__">(newton.solvers.SolverBase method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.VBDSolver.__init__">(newton.solvers.VBDSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.XPBDSolver.__init__">(newton.solvers.XPBDSolver method)</a>
+</li>
+          <li><a href="api.html#newton.State.__init__">(newton.State method)</a>
+</li>
+        </ul></li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="A" class="genindex-section">
+  <h2>A</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.add_articulation">add_articulation() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_body">add_body() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_builder">add_builder() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_cloth_grid">add_cloth_grid() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_cloth_mesh">add_cloth_mesh() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_edge">add_edge() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_edges">add_edges() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint">add_joint() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_ball">add_joint_ball() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_compound">add_joint_compound() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_d6">add_joint_d6() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_distance">add_joint_distance() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_fixed">add_joint_fixed() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_free">add_joint_free() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_prismatic">add_joint_prismatic() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_revolute">add_joint_revolute() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_joint_universal">add_joint_universal() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_muscle">add_muscle() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_particle">add_particle() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_particle_grid">add_particle_grid() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape">add_shape() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_box">add_shape_box() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_capsule">add_shape_capsule() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_cone">add_shape_cone() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_cylinder">add_shape_cylinder() (newton.ModelBuilder method)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_mesh">add_shape_mesh() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_plane">add_shape_plane() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_sdf">add_shape_sdf() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_shape_sphere">add_shape_sphere() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_soft_grid">add_soft_grid() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_soft_mesh">add_soft_mesh() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_spring">add_spring() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_tetrahedron">add_tetrahedron() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_triangle">add_triangle() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.add_triangles">add_triangles() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.FeatherstoneSolver.allocate_model_aux_vars">allocate_model_aux_vars() (newton.solvers.FeatherstoneSolver method)</a>
+</li>
+        <li><a href="api.html#newton.Model.allocate_rigid_contacts">allocate_rigid_contacts() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.Model.allocate_soft_contacts">allocate_soft_contacts() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.FeatherstoneSolver.allocate_state_aux_vars">allocate_state_aux_vars() (newton.solvers.FeatherstoneSolver method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.XPBDSolver.apply_body_deltas">apply_body_deltas() (newton.solvers.XPBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.MuJoCoSolver.apply_mjc_control">apply_mjc_control() (newton.solvers.MuJoCoSolver static method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.XPBDSolver.apply_particle_deltas">apply_particle_deltas() (newton.solvers.XPBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.armature">armature (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.articulation_count">articulation_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.articulation_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.articulation_key">articulation_key (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.articulation_start">articulation_start (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Axis">Axis (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.axis">axis (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.AxisType">AxisType (in module newton)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="B" class="genindex-section">
+  <h2>B</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.body_com">body_com (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_count">body_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.body_count">(newton.ModelBuilder property)</a>
+</li>
+          <li><a href="api.html#newton.State.body_count">(newton.State property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.State.body_f">body_f (newton.State attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_inertia">body_inertia (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_inv_inertia">body_inv_inertia (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.body_inv_mass">body_inv_mass (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_key">body_key (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_mass">body_mass (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.body_q">body_q (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.body_q">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.body_qd">body_qd (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.body_qd">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.body_shapes">body_shapes (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="C" class="genindex-section">
+  <h2>C</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Control.clear">clear() (newton.Control method)</a>
+</li>
+        <li><a href="api.html#newton.State.clear_forces">clear_forces() (newton.State method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.collapse_fixed_joints">collapse_fixed_joints() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.collision_detection_penetration_free">collision_detection_penetration_free() (newton.solvers.VBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.collision_filter_parent">collision_filter_parent (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.collision_group">collision_group (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.color">color() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.Mesh.com">com (newton.Mesh attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.SDF.com">(newton.SDF attribute)</a>
+</li>
+        </ul></li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.FeatherstoneSolver.compute_articulation_indices">compute_articulation_indices() (newton.solvers.FeatherstoneSolver method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.compute_force_element_adjacency">compute_force_element_adjacency() (newton.solvers.VBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.Model.contact">contact() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.Control">Control (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.Model.control">control() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.MuJoCoSolver.convert_to_mjc">convert_to_mjc() (newton.solvers.MuJoCoSolver static method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.copy">copy() (newton.ModelBuilder.ShapeConfig method)</a>
+</li>
+        <li><a href="api.html#newton.Model.count_contact_points">count_contact_points() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.count_num_adjacent_edges">count_num_adjacent_edges (newton.solvers.VBDSolver attribute)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.count_num_adjacent_faces">count_num_adjacent_faces (newton.solvers.VBDSolver attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="D" class="genindex-section">
+  <h2>D</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.density">density (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.device">device (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.solvers.SolverBase.device">(newton.solvers.SolverBase property)</a>
+</li>
+        </ul></li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="E" class="genindex-section">
+  <h2>E</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.edge_bending_properties">edge_bending_properties (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.edge_constraint_lambdas">edge_constraint_lambdas (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.edge_count">edge_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.edge_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.edge_indices">edge_indices (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.edge_rest_angle">edge_rest_angle (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.edge_rest_length">edge_rest_length (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.enable_tri_collisions">enable_tri_collisions (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="F" class="genindex-section">
+  <h2>F</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.FeatherstoneSolver">FeatherstoneSolver (class in newton.solvers)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.fill_adjacent_edges">fill_adjacent_edges (newton.solvers.VBDSolver attribute)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.fill_adjacent_faces">fill_adjacent_faces (newton.solvers.VBDSolver attribute)</a>
+</li>
+        <li><a href="api.html#newton.Mesh.finalize">finalize() (newton.Mesh method)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.finalize">(newton.ModelBuilder method)</a>
+</li>
+          <li><a href="api.html#newton.SDF.finalize">(newton.SDF method)</a>
+</li>
+        </ul></li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.find_shape_contact_pairs">find_shape_contact_pairs() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
+</li>
+        <li><a href="api.html#newton.Axis.from_any">from_any() (newton.Axis class method)</a>
+</li>
+        <li><a href="api.html#newton.Axis.from_string">from_string() (newton.Axis class method)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="G" class="genindex-section">
+  <h2>G</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.geo_meshes">geo_meshes (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.geo_sdfs">geo_sdfs (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.gravity">gravity (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.ground">ground (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.ground_plane">ground_plane (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.ground_plane_params">ground_plane_params (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="H" class="genindex-section">
+  <h2>H</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.has_ground_collision">has_ground_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.has_shape_collision">has_shape_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="I" class="genindex-section">
+  <h2>I</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Mesh.I">I (newton.Mesh attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.SDF.I">(newton.SDF attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Mesh.indices">indices (newton.Mesh attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.SolverBase.integrate_bodies">integrate_bodies() (newton.solvers.SolverBase method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.SolverBase.integrate_particles">integrate_particles() (newton.solvers.SolverBase method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.is_solid">is_solid (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.is_visible">is_visible (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="J" class="genindex-section">
+  <h2>J</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.joint_ancestor">joint_ancestor (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_armature">joint_armature (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_axis">joint_axis (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_axis_count">joint_axis_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.joint_axis_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_axis_dim">joint_axis_dim (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_axis_mode">joint_axis_mode (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_axis_start">joint_axis_start (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_BALL">JOINT_BALL (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_child">joint_child (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_COMPOUND">JOINT_COMPOUND (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_coord_count">joint_coord_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.joint_coord_count">(newton.State property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_count">joint_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.joint_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#JOINT_D6">JOINT_D6 (built-in variable)</a>
+</li>
+        <li><a href="api.html#JOINT_DISTANCE">JOINT_DISTANCE (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_dof_count">joint_dof_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.joint_dof_count">(newton.State property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_enabled">joint_enabled (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Control.joint_f">joint_f (newton.Control attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Model.joint_f">(newton.Model attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#JOINT_FIXED">JOINT_FIXED (built-in variable)</a>
+</li>
+        <li><a href="api.html#JOINT_FREE">JOINT_FREE (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_key">joint_key (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.joint_limit_kd">joint_limit_kd (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_limit_ke">joint_limit_ke (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_limit_lower">joint_limit_lower (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_limit_upper">joint_limit_upper (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_MODE_TARGET_POSITION">JOINT_MODE_TARGET_POSITION (built-in variable)</a>
+</li>
+        <li><a href="api.html#JOINT_MODE_TARGET_VELOCITY">JOINT_MODE_TARGET_VELOCITY (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_parent">joint_parent (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_PRISMATIC">JOINT_PRISMATIC (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_q">joint_q (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.joint_q">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_q_start">joint_q_start (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_qd">joint_qd (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.joint_qd">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_qd_start">joint_qd_start (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_REVOLUTE">JOINT_REVOLUTE (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Control.joint_target">joint_target (newton.Control attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Model.joint_target">(newton.Model attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.joint_target_kd">joint_target_kd (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_target_ke">joint_target_ke (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_twist_lower">joint_twist_lower (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_twist_upper">joint_twist_upper (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_type">joint_type (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#JOINT_UNIVERSAL">JOINT_UNIVERSAL (built-in variable)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_X_c">joint_X_c (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.joint_X_p">joint_X_p (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="K" class="genindex-section">
+  <h2>K</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.ka">ka (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.kd">kd (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.ke">ke (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.kf">kf (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="L" class="genindex-section">
+  <h2>L</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.limit_kd">limit_kd (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.limit_ke">limit_ke (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.limit_lower">limit_lower (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.limit_upper">limit_upper (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="M" class="genindex-section">
+  <h2>M</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Mesh.mass">mass (newton.Mesh attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.SDF.mass">(newton.SDF attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Mesh">Mesh (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.mode">mode (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model">Model (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder">ModelBuilder (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig">ModelBuilder.JointDofConfig (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig">ModelBuilder.ShapeConfig (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.mu">mu (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.MuJoCoSolver">MuJoCoSolver (class in newton.solvers)</a>
+</li>
+        <li><a href="api.html#newton.Control.muscle_activations">muscle_activations (newton.Control attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Model.muscle_activations">(newton.Model attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.muscle_bodies">muscle_bodies (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.muscle_count">muscle_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.muscle_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.muscle_params">muscle_params (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.muscle_points">muscle_points (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.muscle_start">muscle_start (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="N" class="genindex-section">
+  <h2>N</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.num_envs">num_envs (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="P" class="genindex-section">
+  <h2>P</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.utils.parse_mjcf">parse_mjcf() (in module newton.utils)</a>
+</li>
+        <li><a href="api.html#newton.utils.parse_urdf">parse_urdf() (in module newton.utils)</a>
+</li>
+        <li><a href="api.html#newton.utils.parse_usd">parse_usd() (in module newton.utils)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_adhesion">particle_adhesion (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_cohesion">particle_cohesion (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_color_groups">particle_color_groups (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_colors">particle_colors (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_count">particle_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.particle_count">(newton.ModelBuilder property)</a>
+</li>
+          <li><a href="api.html#newton.State.particle_count">(newton.State property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.State.particle_f">particle_f (newton.State attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_flags">particle_flags (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_grid">particle_grid (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.particle_inv_mass">particle_inv_mass (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_kd">particle_kd (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_ke">particle_ke (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_kf">particle_kf (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_mass">particle_mass (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_max_radius">particle_max_radius (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_max_velocity">particle_max_velocity (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_mu">particle_mu (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.particle_q">particle_q (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.particle_q">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.particle_qd">particle_qd (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.particle_qd">(newton.State attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.particle_radius">particle_radius (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.plot_articulation">plot_articulation() (newton.ModelBuilder method)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="R" class="genindex-section">
+  <h2>R</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.VBDSolver.rebuild_bvh">rebuild_bvh() (newton.solvers.VBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.Model.requires_grad">requires_grad (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.State.requires_grad">(newton.State property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.utils.import_usd.resolve_usd_from_url">resolve_usd_from_url() (in module newton.utils.import_usd)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.restitution">restitution (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_broad_shape0">rigid_contact_broad_shape0 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_broad_shape1">rigid_contact_broad_shape1 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_count">rigid_contact_count (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_margin">rigid_contact_margin (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_max">rigid_contact_max (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_max_limited">rigid_contact_max_limited (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_normal">rigid_contact_normal (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_offset0">rigid_contact_offset0 (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.rigid_contact_offset1">rigid_contact_offset1 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_pairwise_counter">rigid_contact_pairwise_counter (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_point0">rigid_contact_point0 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_point1">rigid_contact_point1 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_point_id">rigid_contact_point_id (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_point_limit">rigid_contact_point_limit (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_rolling_friction">rigid_contact_rolling_friction (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_shape0">rigid_contact_shape0 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_shape1">rigid_contact_shape1 (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_thickness">rigid_contact_thickness (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_tids">rigid_contact_tids (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_contact_torsional_friction">rigid_contact_torsional_friction (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.rigid_mesh_contact_max">rigid_mesh_contact_max (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="S" class="genindex-section">
+  <h2>S</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.SDF">SDF (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.solvers.SemiImplicitSolver">SemiImplicitSolver (class in newton.solvers)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.set_coloring">set_coloring() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.set_ground_plane">set_ground_plane() (newton.ModelBuilder method)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_body">shape_body (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_collision_filter_pairs">shape_collision_filter_pairs (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_collision_group">shape_collision_group (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_collision_group_map">shape_collision_group_map (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_collision_radius">shape_collision_radius (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_contact_pair_count">shape_contact_pair_count (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_contact_pairs">shape_contact_pairs (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_count">shape_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.shape_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.shape_flags">shape_flags (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_geo">shape_geo (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_geo_src">shape_geo_src (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_ground_contact_pair_count">shape_ground_contact_pair_count (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_ground_contact_pairs">shape_ground_contact_pairs (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_key">shape_key (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_materials">shape_materials (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.shape_transform">shape_transform (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.utils.SimRendererOpenGL">SimRendererOpenGL (in module newton.utils)</a>
+</li>
+        <li><a href="api.html#newton.utils.SimRendererUsd">SimRendererUsd (in module newton.utils)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.simulate_one_step_no_self_contact">simulate_one_step_no_self_contact() (newton.solvers.VBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.VBDSolver.simulate_one_step_with_collisions_penetration_free">simulate_one_step_with_collisions_penetration_free() (newton.solvers.VBDSolver method)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_body_pos">soft_contact_body_pos (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_body_vel">soft_contact_body_vel (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_count">soft_contact_count (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.soft_contact_kd">soft_contact_kd (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_ke">soft_contact_ke (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_kf">soft_contact_kf (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_margin">soft_contact_margin (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_max">soft_contact_max (newton.Model property)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_mu">soft_contact_mu (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_normal">soft_contact_normal (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_particle">soft_contact_particle (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_radius">soft_contact_radius (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_restitution">soft_contact_restitution (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_shape">soft_contact_shape (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.soft_contact_tids">soft_contact_tids (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.solvers.SolverBase">SolverBase (class in newton.solvers)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_constraint_lambdas">spring_constraint_lambdas (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_control">spring_control (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_count">spring_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.spring_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.spring_damping">spring_damping (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_indices">spring_indices (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_rest_length">spring_rest_length (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.spring_stiffness">spring_stiffness (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.State">State (class in newton)</a>
+</li>
+        <li><a href="api.html#newton.Model.state">state() (newton.Model method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.FeatherstoneSolver.step">step() (newton.solvers.FeatherstoneSolver method)</a>
+
+        <ul>
+          <li><a href="api.html#newton.solvers.MuJoCoSolver.step">(newton.solvers.MuJoCoSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.SemiImplicitSolver.step">(newton.solvers.SemiImplicitSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.SolverBase.step">(newton.solvers.SolverBase method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.VBDSolver.step">(newton.solvers.VBDSolver method)</a>
+</li>
+          <li><a href="api.html#newton.solvers.XPBDSolver.step">(newton.solvers.XPBDSolver method)</a>
+</li>
+        </ul></li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="T" class="genindex-section">
+  <h2>T</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.target">target (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.target_kd">target_kd (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.ModelBuilder.JointDofConfig.target_ke">target_ke (newton.ModelBuilder.JointDofConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.Control.tet_activations">tet_activations (newton.Control attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Model.tet_activations">(newton.Model attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.tet_count">tet_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.tet_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.tet_indices">tet_indices (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.tet_materials">tet_materials (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.tet_poses">tet_poses (newton.Model attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.ModelBuilder.ShapeConfig.thickness">thickness (newton.ModelBuilder.ShapeConfig attribute)</a>
+</li>
+        <li><a href="api.html#newton.Axis.to_vec3">to_vec3() (newton.Axis method)</a>
+</li>
+        <li><a href="api.html#newton.Axis.to_vector">to_vector() (newton.Axis method)</a>
+</li>
+        <li><a href="api.html#newton.Control.tri_activations">tri_activations (newton.Control attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.Model.tri_activations">(newton.Model attribute)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.tri_areas">tri_areas (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.tri_count">tri_count (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.tri_count">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+        <li><a href="api.html#newton.Model.tri_indices">tri_indices (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.tri_materials">tri_materials (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.tri_poses">tri_poses (newton.Model attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="U" class="genindex-section">
+  <h2>U</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Model.up_axis">up_axis (newton.Model attribute)</a>
+</li>
+        <li><a href="api.html#newton.Model.up_vector">up_vector (newton.Model attribute)</a>
+
+        <ul>
+          <li><a href="api.html#newton.ModelBuilder.up_vector">(newton.ModelBuilder property)</a>
+</li>
+        </ul></li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.MuJoCoSolver.update_mjc_data">update_mjc_data() (newton.solvers.MuJoCoSolver static method)</a>
+</li>
+        <li><a href="api.html#newton.solvers.MuJoCoSolver.update_newton_state">update_newton_state() (newton.solvers.MuJoCoSolver static method)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="V" class="genindex-section">
+  <h2>V</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.VBDSolver">VBDSolver (class in newton.solvers)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Mesh.vertices">vertices (newton.Mesh attribute)</a>
+</li>
+        <li><a href="api.html#newton.SDF.volume">volume (newton.SDF attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="X" class="genindex-section">
+  <h2>X</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Axis.X">X (newton.Axis attribute)</a>
+</li>
+    </ul></td>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.solvers.XPBDSolver">XPBDSolver (class in newton.solvers)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="Y" class="genindex-section">
+  <h2>Y</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Axis.Y">Y (newton.Axis attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+<section id="Z" class="genindex-section">
+  <h2>Z</h2>
+  <table style="width: 100%" class="indextable genindextable"><tr>
+    <td style="width: 33%; vertical-align: top;"><ul>
+        <li><a href="api.html#newton.Axis.Z">Z (newton.Axis attribute)</a>
+</li>
+    </ul></td>
+  </tr></table>
+</section>
+
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          
+          
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025, The Newton Developers
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer no-toc">
+      
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=02d95e01"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/scripts/furo.js?v=5fa4622c"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    </body>
+</html>
