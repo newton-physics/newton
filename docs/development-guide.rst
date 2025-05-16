@@ -1,7 +1,7 @@
 Development Guide
 =================
 
-This document is a guide for developers who want to contribute to the project.
+This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
 
 Environment setup
 -----------------
@@ -143,62 +143,106 @@ The hooks can be uninstalled with ``pre-commit uninstall``.
 Building the documentation
 --------------------------
 
-Here are a few ways to build the documentation.
-
-Using uv
-^^^^^^^^
+To build the documentation locally, ensure you have the documentation dependencies installed. If using `venv`, you can install them with:
 
 .. code-block:: console
 
-    rm -rf docs/_build
-    uv run --extra docs sphinx-build -W -b html docs docs/_build/html
+    python -m pip install -e .[docs]
 
-    # Alternatively using the Makefile
-    uv sync --extra docs
-    source .venv/bin/activate
-    cd docs
-    make clean
+Then, navigate to the ``docs`` directory and run:
+
+.. code-block:: console
+
     make html
 
-Using venv
-^^^^^^^^^^
+Alternatively, using `uv`:
 
 .. code-block:: console
 
     python -m pip install -e .[docs]
     python -m sphinx -W -b html docs docs/_build/html
 
-    # Alternatively using the Makefile
-    cd docs
-    make clean
-    make html
+The built documentation will be available in ``docs/_build/html``.
 
-Testing documentation code snippets
------------------------------------
+Style Guide
+-----------
+- Follow PEP 8 for Python code.
+- Use Google-style docstrings (compatible with Napoleon extension).
+- Write clear, concise commit messages.
+- Keep pull requests focused on a single feature or bug fix.
 
-The ``doctest`` Sphinx builder is used to ensure that code snippets in the documentation remains up-to-date.
+Roadmap and Future Work
+-----------------------
 
-The doctests can be run with:
+(Placeholder for future roadmap and planned features)
 
-.. code-block:: console
+- Advanced solver coupling
+- More comprehensive sensor models
+- Expanded robotics examples
 
-    # With uv installed
-    uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+See the [GitHub Discussions](https://github.com/newton-physics/newton/discussions) for ongoing feature planning.
 
-    # With venv
-    python -m sphinx -W -b doctest docs docs/_build/doctest
+Contribution Guide
+==================
 
-For more information, see the `sphinx.ext.doctest <https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html>`__
-documentation.
+Some ways to contribute to the development of Newton include:
 
-Packaging
----------
+* Reporting bugs and requesting new features on `GitHub <https://github.com/newton-physics/newton/issues>`__.
+* Asking questions, sharing your work, or participating in discussion threads on
+  `GitHub <https://github.com/newton-physics/newton/discussions>`__.
+* Adding new examples to the Newton repository.
+* Documentation improvements.
+* Contributing bug fixes or new features.
 
-To build a ``.whl`` file (e.g. to test the creation of a
-`distribution package <https://packaging.python.org/en/latest/glossary/#term-Distribution-Package>`__), run:
+Code contributions
+------------------
 
-.. code-block:: console
+Code contributions from the community are welcome.
+Rather than requiring a formal Contributor License Agreement (CLA), we use the
+`Developer Certificate of Origin <https://developercertificate.org/>`__ to
+ensure contributors have the right to submit their contributions to this project.
+Please ensure that all commits have a
+`sign-off <https://git-scm.com/docs/git-commit#Documentation/git-commit.txt--s>`__ 
+added with an email address that matches the commit author
+to agree to the DCO terms for each particular contribution.
 
-    uv build --wheel
+The full text of the DCO is as follows:
 
-The output will be placed in the ``dist/`` subdirectory.
+.. code-block:: text
+
+    Version 1.1
+
+    Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+
+    Everyone is permitted to copy and distribute verbatim copies of this
+    license document, but changing it is not allowed.
+
+
+    Developer's Certificate of Origin 1.1
+
+    By making a contribution to this project, I certify that:
+
+    (a) The contribution was created in whole or in part by me and I
+        have the right to submit it under the open source license
+        indicated in the file; or
+
+    (b) The contribution is based upon previous work that, to the best
+        of my knowledge, is covered under an appropriate open source
+        license and I have the right under that license to submit that
+        work with modifications, whether created in whole or in part
+        by me, under the same open source license (unless I am
+        permitted to submit under a different license), as indicated
+        in the file; or
+
+    (c) The contribution was provided directly to me by some other
+        person who certified (a), (b) or (c) and I have not modified
+        it.
+
+    (d) I understand and agree that this project and the contribution
+        are public and that a record of the contribution (including all
+        personal information I submit with it, including my sign-off) is
+        maintained indefinitely and may be redistributed consistent with
+        this project or the open source license(s) involved.
+
+Contributors are encouraged to first open an issue on GitHub to discuss proposed
+feature contributions and gauge potential interest.

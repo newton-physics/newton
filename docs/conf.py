@@ -10,7 +10,7 @@ from pathlib import Path
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "Newton"
+project = "Newton Physics"
 copyright = f"{datetime.date.today().year}, The Newton Developers"
 author = "The Newton Developers"
 
@@ -101,5 +101,38 @@ autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "furo"
-# html_static_path = ["_static"]
+html_title = "Newton Physics"
+html_theme = "pydata_sphinx_theme"
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+html_show_sourcelink = False
+
+# PyData theme configuration
+html_theme_options = {
+    # Remove navigation from the top navbar
+    # "navbar_start": ["navbar-logo"],
+    # "navbar_center": [],
+    # "navbar_end": ["search-button"],
+    # Navigation configuration
+    # "font_size": "14px",  # or smaller
+    "navigation_depth": 4,
+    "show_nav_level": 2,
+    "show_toc_level": 2,
+    "collapse_navigation": True,
+    # Show the indices in the sidebar
+    "show_prev_next": False,
+    "use_edit_page_button": False,
+    "logo": {
+        "text": f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
+    },
+    # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
+}
+
+exclude_patterns = [
+    "sphinx-env/**",
+    "sphinx-env",
+    "**/site-packages/**",
+    "**/lib/**",
+]
+
+html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
