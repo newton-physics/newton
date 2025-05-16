@@ -16,11 +16,14 @@
 import unittest
 import os # For path manipulation
 import time # Added for the interactive loop
+import numpy as np # For numerical operations and random values
 import warp as wp
 import newton
 from newton.core import ModelBuilder, State, Control, Contact, JOINT_FREE
 from newton.solvers import MuJoCoSolver
 from newton.utils import SimRendererOpenGL
+# Import the kernels for coordinate conversion
+from newton.solvers.solver_mujoco import convert_mj_coords_to_warp_kernel, convert_warp_coords_to_mj_kernel
 
 class TestMuJoCoSolver(unittest.TestCase):
 
@@ -123,6 +126,81 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
+    def test_randomize_joint_q(self):
+        """Tests if MuJoCo's internal qpos (derived from model.joint_q) converts back to the original model.joint_q correctly."""
+        np.random.seed(42) # For reproducible random values
+
+        num_envs = self.model.num_envs
+        self.assertTrue(num_envs >= 2, "This test expects at least 2 environments.")
+
+        template_joint_q_dim = 7 + 7 + 1 + 1 # Total 16 q-coordinates per environment
+        template_joint_dof_dim = 6 + 6 + 1 + 1 # Total 14 DoFs (for qd) per environment
+        joints_per_env = self.model.joint_count // num_envs
+
+        # 1. Prepare the target modified Warp joint_q values
+        full_joint_q_numpy_modified = self.model.joint_q.numpy().copy()
+        delta_val = 0.1
+
+        for env_idx in range(num_envs):
+            q_start_offset_for_current_env = env_idx * template_joint_q_dim
+            current_delta = -delta_val if env_idx == 0 else delta_val
+
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 0 : q_start_offset_for_current_env + 3] += current_delta
+            # Generate and normalize random quaternion
+            raw_q0 = np.random.rand(4) * 2.0 - 1.0 # Random numbers in [-1, 1]
+            q_tmp_0 = wp.normalize(wp.quat(raw_q0[0], raw_q0[1], raw_q0[2], raw_q0[3]))
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 3 : q_start_offset_for_current_env + 7] = [q_tmp_0[0], q_tmp_0[1], q_tmp_0[2], q_tmp_0[3]]
+            
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 7 : q_start_offset_for_current_env + 10] += current_delta
+            # Generate and normalize random quaternion
+            raw_q1 = np.random.rand(4) * 2.0 - 1.0 # Random numbers in [-1, 1]
+            q_tmp_1 = wp.normalize(wp.quat(raw_q1[0], raw_q1[1], raw_q1[2], raw_q1[3]))
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 10 : q_start_offset_for_current_env + 14] = [q_tmp_1[0], q_tmp_1[1], q_tmp_1[2], q_tmp_1[3]]
+            
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 14] += current_delta
+            full_joint_q_numpy_modified[q_start_offset_for_current_env + 15] += current_delta
+
+        # Set the model's joint_q to these modified values
+        self.model.joint_q = wp.array(full_joint_q_numpy_modified, dtype=wp.float32, device=self.model.device)
+        
+        # 2. Initialize MuJoCoSolver. This will internally convert self.model.joint_q to MuJoCo's qpos0 and mjw_data.qpos.
+        try:
+            solver = MuJoCoSolver(self.model, use_mujoco=False, separate_envs_to_worlds=True)
+        except Exception as e:
+            self.fail(f"MuJoCoSolver initialization failed: {e}")
+
+        # 3. Convert MuJoCo data (solver.mjw_data.qpos) back to Warp joint_q format
+        output_full_warp_joint_q = wp.empty_like(self.model.joint_q) # Same shape as original modified joint_q
+        output_full_warp_joint_qd = wp.empty_like(self.model.joint_qd)
+
+        wp.launch(
+            kernel=convert_mj_coords_to_warp_kernel, 
+            dim=(num_envs, joints_per_env), # Process all environments
+            inputs=[
+                solver.mjw_model.qpos0,     # MuJoCo qpos for all envs
+                solver.mjw_data.qvel,     # MuJoCo qvel for all envs
+                joints_per_env,            
+                self.model.up_axis,
+                self.model.joint_type,     
+                self.model.joint_q_start,  
+                self.model.joint_qd_start, 
+                self.model.joint_axis_dim, 
+            ],
+            outputs=[output_full_warp_joint_q, output_full_warp_joint_qd],
+            device=self.model.device,
+        )
+
+        # 4. Verify that the back-converted Warp joint_q matches the original modified Warp joint_q
+        converted_warp_joint_q_numpy = output_full_warp_joint_q.numpy()
+        
+        np.testing.assert_allclose(
+            converted_warp_joint_q_numpy,
+            full_joint_q_numpy_modified, # Compare against the NumPy array we set self.model.joint_q from
+            atol=1e-5, 
+            err_msg="Back-converted Warp joint_q does not match the initial modified self.model.joint_q"
+        )
+
+    @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
         print("\nDebug: Starting test_render_trajectory...")
