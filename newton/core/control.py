@@ -19,19 +19,34 @@ import warp as wp
 class Control:
     """Time-varying control data for a :class:`Model`.
 
-    Time-varying control data includes joint control inputs, muscle activations,
+    Time-varying control data includes joint torques, control inputs, muscle activations,
     and activation forces for triangle and tetrahedral elements.
 
     The exact attributes depend on the contents of the model. Control objects
-    should generally be created using the :func:`Model.control()` function.
+    should generally be created using the :func:`newton.Model.control()` function.
     """
 
     def __init__(self):
         self.joint_f: wp.array | None = None
-        """Array of generalized joint forces with shape ``(joint_dof_count,)`` and type ``float``."""
+        """
+        Array of generalized joint forces with shape ``(joint_dof_count,)`` and type ``float``.
+
+        The degrees of freedom for free joints are included in this array and have the same
+        convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
+        ``(t_x, t_y, t_z, f_x, f_y, f_z)``, where ``t_x``, ``t_y``, and ``t_z`` are the
+        components of the torque vector (angular) and ``f_x``, ``f_y``, and ``f_z`` are the components
+        of the force vector (linear). Both linear forces and angular torques applied to free joints are
+        applied in world frame (same as :attr:`newton.State.body_f`).
+        """
 
         self.joint_target: wp.array | None = None
-        """Array of joint targets with shape ``(joint_axis_count,)`` and type ``float``."""
+        """
+        Array of joint targets with shape ``(joint_axis_count,)`` and type ``float``.
+        Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
+        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_axis_mode`.
+
+        The joint targets are defined for any joint type, except for free joints.
+        """
 
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
@@ -40,7 +55,12 @@ class Control:
         """Array of tetrahedral element activations with shape with shape ``(tet_count,) and type ``float``."""
 
         self.muscle_activations: wp.array | None = None
-        """Array of muscle activations with shape ``(muscle_count,)`` and type ``float``."""
+        """
+        Array of muscle activations with shape ``(muscle_count,)`` and type ``float``.
+
+        .. note::
+            Support for muscle dynamics is not yet implemented.
+        """
 
     def clear(self) -> None:
         """Reset the control inputs to zero."""

@@ -244,6 +244,54 @@ def apply_mjc_control_kernel(
         mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
 
 
+@wp.kernel
+def apply_mjc_qfrc_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    joint_f: wp.array(dtype=wp.float32),
+    joint_type: wp.array(dtype=wp.int32),
+    body_com: wp.array(dtype=wp.vec3),
+    joint_child: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_axis_dim: wp.array2d(dtype=wp.int32),
+    joints_per_env: int,
+    bodies_per_env: int,
+    # outputs
+    qfrc_applied: wp.array2d(dtype=wp.float32),
+):
+    worldid, jntid = wp.tid()
+    child = joint_child[jntid]
+    q_i = joint_q_start[jntid]
+    qd_i = joint_qd_start[jntid]
+    wq_i = joint_q_start[joints_per_env * worldid + jntid]
+    wqd_i = joint_qd_start[joints_per_env * worldid + jntid]
+    jtype = joint_type[jntid]
+    if jtype == newton.JOINT_FREE or jtype == newton.JOINT_DISTANCE:
+        tf = body_q[worldid * bodies_per_env + child]
+        rot = wp.transform_get_rotation(tf)
+        com_world = wp.transform_point(tf, body_com[child])
+        # swap angular and linear components
+        w = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
+        v = wp.vec3(joint_f[wqd_i + 3], joint_f[wqd_i + 4], joint_f[wqd_i + 5])
+
+        # rotate angular torque to world frame
+        w = wp.quat_rotate_inv(rot, w)
+
+        qfrc_applied[worldid, qd_i + 0] = v[0]
+        qfrc_applied[worldid, qd_i + 1] = v[1]
+        qfrc_applied[worldid, qd_i + 2] = v[2]
+        qfrc_applied[worldid, qd_i + 3] = w[0]
+        qfrc_applied[worldid, qd_i + 4] = w[1]
+        qfrc_applied[worldid, qd_i + 5] = w[2]
+    elif jtype == newton.JOINT_BALL:
+        qfrc_applied[worldid, qd_i + 0] = joint_f[wqd_i + 0]
+        qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
+        qfrc_applied[worldid, qd_i + 2] = joint_f[wqd_i + 2]
+    else:
+        for i in range(joint_axis_dim[jntid, 0] + joint_axis_dim[jntid, 1]):
+            qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
+
+
 @wp.func
 def eval_single_articulation_fk(
     joint_start: int,
@@ -561,7 +609,7 @@ class MuJoCoSolver(SolverBase):
         """
 
         if self.use_mujoco:
-            self.apply_mjc_control(self.model, control, self.mj_data)
+            self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self.update_mjc_data(self.mj_data, model, state_in)
@@ -569,7 +617,7 @@ class MuJoCoSolver(SolverBase):
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
-            self.apply_mjc_control(self.model, control, self.mjw_data)
+            self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
@@ -584,17 +632,21 @@ class MuJoCoSolver(SolverBase):
         return hasattr(data, "nworld")
 
     @staticmethod
-    def apply_mjc_control(model: Model, control: Control | None, mj_data: MjWarpData | MjData):
-        if control is None:
+    def apply_mjc_control(model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
+        if control is None or control.joint_f is None:
             return
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             ctrl = mj_data.ctrl
+            qfrc = mj_data.qfrc_applied
             nworld = mj_data.nworld
         else:
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32)
+            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
+        joints_per_env = model.joint_count // nworld
+        bodies_per_env = model.body_count // nworld
         # TODO consider assigning a reshaped control.joint_target to ctrl directly
         wp.launch(
             apply_mjc_control_kernel,
@@ -609,8 +661,29 @@ class MuJoCoSolver(SolverBase):
             ],
             device=model.device,
         )
+        wp.launch(
+            apply_mjc_qfrc_kernel,
+            dim=(nworld, joints_per_env),
+            inputs=[
+                state.body_q,
+                control.joint_f,
+                model.joint_type,
+                model.body_com,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_axis_dim,
+                joints_per_env,
+                bodies_per_env,
+            ],
+            outputs=[
+                qfrc,
+            ],
+            device=model.device,
+        )
         if not is_mjwarp:
             mj_data.ctrl[:] = ctrl.numpy().flatten()
+            mj_data.qfrc_applied[:] = qfrc.numpy()
 
     @staticmethod
     def update_mjc_data(mj_data: MjWarpData | MjData, model: Model, state: State | None = None):

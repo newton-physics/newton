@@ -1049,6 +1049,7 @@ def eval_body_joints(
     joint_axis_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     joint_axis_mode: wp.array(dtype=int),
+    joint_f: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
@@ -1063,12 +1064,25 @@ def eval_body_joints(
     tid = wp.tid()
     type = joint_type[tid]
 
-    # early out for free joints
-    if joint_enabled[tid] == 0 or type == newton.JOINT_FREE:
-        return
-
     c_child = joint_child[tid]
     c_parent = joint_parent[tid]
+
+    if joint_enabled[tid] == 0:
+        return
+
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
+        qd_start = joint_qd_start[tid]
+        wrench = wp.spatial_vector(
+            joint_f[qd_start + 0],
+            joint_f[qd_start + 1],
+            joint_f[qd_start + 2],
+            joint_f[qd_start + 3],
+            joint_f[qd_start + 4],
+            joint_f[qd_start + 5],
+        )
+
+        wp.atomic_add(body_f, c_child, wrench)
+        return
 
     X_pj = joint_X_p[tid]
     X_cj = joint_X_c[tid]
@@ -1792,6 +1806,7 @@ def eval_body_joint_forces(
                 model.joint_axis_start,
                 model.joint_axis_dim,
                 model.joint_axis_mode,
+                control.joint_f,
                 control.joint_target,
                 model.joint_target_ke,
                 model.joint_target_kd,

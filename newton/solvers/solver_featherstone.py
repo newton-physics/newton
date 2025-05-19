@@ -432,6 +432,7 @@ def jcalc_tau(
     joint_S_s: wp.array(dtype=wp.spatial_vector),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
+    joint_f: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
     joint_axis_mode: wp.array(dtype=int),
     joint_limit_lower: wp.array(dtype=float),
@@ -445,30 +446,30 @@ def jcalc_tau(
     # outputs
     tau: wp.array(dtype=float),
 ):
-    if type == newton.JOINT_PRISMATIC or type == newton.JOINT_REVOLUTE:
-        S_s = joint_S_s[dof_start]
+    # if type == newton.JOINT_PRISMATIC or type == newton.JOINT_REVOLUTE:
+    #     S_s = joint_S_s[dof_start]
 
-        q = joint_q[coord_start]
-        qd = joint_qd[dof_start]
-        act = joint_target[axis_start]
+    #     q = joint_q[coord_start]
+    #     qd = joint_qd[dof_start]
+    #     act = joint_target[axis_start]
 
-        lower = joint_limit_lower[axis_start]
-        upper = joint_limit_upper[axis_start]
+    #     lower = joint_limit_lower[axis_start]
+    #     upper = joint_limit_upper[axis_start]
 
-        limit_ke = joint_limit_ke[axis_start]
-        limit_kd = joint_limit_kd[axis_start]
-        target_ke = joint_target_ke[axis_start]
-        target_kd = joint_target_kd[axis_start]
-        mode = joint_axis_mode[axis_start]
+    #     limit_ke = joint_limit_ke[axis_start]
+    #     limit_kd = joint_limit_kd[axis_start]
+    #     target_ke = joint_target_ke[axis_start]
+    #     target_kd = joint_target_kd[axis_start]
+    #     mode = joint_axis_mode[axis_start]
 
-        # total torque / force on the joint
-        t = -wp.dot(S_s, body_f_s) + eval_joint_force(
-            q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode
-        )
+    #     # total torque / force on the joint
+    #     t = -wp.dot(S_s, body_f_s) + eval_joint_force(
+    #         q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode
+    #     )
 
-        tau[dof_start] = t
+    #     tau[dof_start] = t
 
-        return
+    #     return
 
     if type == newton.JOINT_BALL:
         # target_ke = joint_target_ke[axis_start]
@@ -480,18 +481,25 @@ def jcalc_tau(
             # w = joint_qd[dof_start + i]
             # r = joint_q[coord_start + i]
 
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s)  # - w * target_kd - r * target_ke
+            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            # tau -= w * target_kd - r * target_ke
 
         return
 
     if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
         for i in range(6):
             S_s = joint_S_s[dof_start + i]
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s)
+            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
 
         return
 
-    if type == newton.JOINT_COMPOUND or type == newton.JOINT_UNIVERSAL or type == newton.JOINT_D6:
+    if (
+        type == newton.JOINT_PRISMATIC
+        or type == newton.JOINT_REVOLUTE
+        or type == newton.JOINT_COMPOUND
+        or type == newton.JOINT_UNIVERSAL
+        or type == newton.JOINT_D6
+    ):
         axis_count = lin_axis_count + ang_axis_count
 
         for i in range(axis_count):
@@ -509,10 +517,10 @@ def jcalc_tau(
             target_kd = joint_target_kd[axis_start + i]
             mode = joint_axis_mode[axis_start + i]
 
-            f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
+            drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
 
             # total torque / force on the joint
-            t = -wp.dot(S_s, body_f_s) + f
+            t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[dof_start + i]
 
             tau[dof_start + i] = t
 
@@ -951,6 +959,7 @@ def eval_rigid_tau(
     joint_axis_mode: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
+    joint_f: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
@@ -1002,6 +1011,7 @@ def eval_rigid_tau(
             joint_S_s,
             joint_q,
             joint_qd,
+            joint_f,
             joint_target,
             joint_axis_mode,
             joint_limit_lower,
@@ -1880,6 +1890,7 @@ class FeatherstoneSolver(SolverBase):
                             model.joint_axis_mode,
                             state_in.joint_q,
                             state_in.joint_qd,
+                            control.joint_f,
                             control.joint_target,
                             model.joint_target_ke,
                             model.joint_target_kd,
