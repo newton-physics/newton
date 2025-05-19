@@ -36,7 +36,7 @@ class Example:
 
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_shape_cfg.density = 100.0
-        articulation_builder.default_joint_armature = 0.1
+        articulation_builder.default_joint_cfg.armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
         newton.utils.parse_urdf(
@@ -68,7 +68,7 @@ class Example:
         self.model = builder.finalize()
         self.model.ground = False
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        self.solver = newton.solvers.MuJoCoSolver(self.model, disable_contacts=True)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
 

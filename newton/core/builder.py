@@ -828,8 +828,14 @@ class ModelBuilder:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
             # ensure we have armature defined for all velocity dofs
-            for _ in range(dof_count - 1):
-                self.joint_armature.append(0.0)
+            if joint_type == JOINT_DISTANCE:
+                # distance joint has already 1 armature setting defined from the linear dof
+                for _ in range(dof_count - 1):
+                    self.joint_armature.append(0.0)
+            else:
+                # free and ball joints need armature defined for all velocity dofs
+                for _ in range(dof_count):
+                    self.joint_armature.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -1600,7 +1606,11 @@ class ModelBuilder:
         self.body_com.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
-        self.body_shapes.clear()
+        if -1 in self.body_shapes:
+            static_shapes = self.body_shapes[-1]
+            self.body_shapes.clear()
+            # restore static shapes
+            self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
             new_id = len(self.body_key)
@@ -1977,7 +1987,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for capsules
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2024,7 +2034,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for cylinders
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2071,7 +2081,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
         # up axis is always +Y for cones
-        q = quat_between_axes(up_axis, Axis.Y)
+        q = quat_between_axes(Axis.Y, up_axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -3465,23 +3475,36 @@ class ModelBuilder:
         import itertools
 
         filters = copy.copy(self.shape_collision_filter_pairs)
-        for a, b in self.shape_collision_filter_pairs:
-            filters.add((b, a))
+        # for a, b in self.shape_collision_filter_pairs:
+        #     filters.add((b, a))
         contact_pairs = []
         # iterate over collision groups (islands)
         for group, shapes in self.shape_collision_group_map.items():
-            for shape_a, shape_b in itertools.product(shapes, shapes):
-                if not (self.shape_flags[shape_a] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+            for s1, s2 in itertools.combinations(shapes, 2):
+                # Original flag checks, using s1 and s2
+                if not (self.shape_flags[s1] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                if not (self.shape_flags[shape_b] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+                if not (self.shape_flags[s2] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                if shape_a < shape_b and (shape_a, shape_b) not in filters:
+
+                # Ensure canonical order (smaller_element, larger_element)
+                # This effectively replaces the `if shape_a < shape_b` condition logic
+                shape_a, shape_b = min(s1, s2), max(s1, s2)
+
+                if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
+                    filters.add((shape_a, shape_b))
             if group != -1 and -1 in self.shape_collision_group_map:
                 # shapes with collision group -1 collide with all other shapes
-                for shape_a, shape_b in itertools.product(shapes, self.shape_collision_group_map[-1]):
-                    if shape_a < shape_b and (shape_a, shape_b) not in filters:
+                for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
+                    if not (self.shape_flags[s1] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+                        continue
+                    if not (self.shape_flags[s2] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
+                        continue
+                    shape_a, shape_b = min(s1, s2), max(s1, s2)
+                    if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
+                        filters.add((shape_a, shape_b))
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
         # find ground contact pairs

@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -75,18 +74,18 @@ def CreateSimRenderer(renderer):
             path: str,
             scaling: float = 1.0,
             fps: int = 60,
-            up_axis: Literal["X", "Y", "Z"] | None = None,
+            up_axis: newton.AxisType | None = None,
             show_rigid_contact_points: bool = False,
             contact_points_radius: float = 1e-3,
             show_joints: bool = False,
             **render_kwargs,
         ):
-            # create USD stage
             if up_axis is None:
-                up_axis = "XYZ"[model.up_axis]
-            super().__init__(path, scaling=scaling, fps=fps, up_axis=up_axis, **render_kwargs)
+                up_axis = model.up_axis
+            up_axis = newton.Axis.from_any(up_axis)
+            super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
             self.scaling = scaling
-            self.cam_axis = "XYZ".index(up_axis.upper())
+            self.cam_axis = up_axis.value
             self.show_rigid_contact_points = show_rigid_contact_points
             self.show_joints = show_joints
             self.contact_points_radius = contact_points_radius

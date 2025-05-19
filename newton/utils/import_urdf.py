@@ -77,7 +77,7 @@ def parse_urdf(
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
-        up_axis (AxisType): The up axis of the URDF. This is used to transform the URDF to the builder's up axis. The default is Z.
+        up_axis (AxisType): The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
@@ -158,7 +158,7 @@ def parse_urdf(
                     xform=tf,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    up_axis=Axis.Z,  # cylinders in URDF are aligned with z-axis
+                    up_axis=up_axis,
                     cfg=cfg,
                 )
                 shapes.append(s)
@@ -169,7 +169,7 @@ def parse_urdf(
                     xform=tf,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
-                    up_axis=2,  # capsules in URDF are aligned with z-axis
+                    up_axis=up_axis,
                     cfg=cfg,
                 )
                 shapes.append(s)

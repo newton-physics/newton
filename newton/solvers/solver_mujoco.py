@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
+from typing_extensions import override
 
 import newton
 from newton.core import Contact, Control, Model, State
@@ -488,13 +489,13 @@ def convert_body_xforms_to_warp_kernel(
 ):
     worldid, bodyid = wp.tid()
     wbi = bodies_per_env * worldid + bodyid
-    pos = xpos[worldid, bodyid]
-    quat = xquat[worldid, bodyid]
+    pos = xpos[worldid, bodyid + 1]
+    quat = xquat[worldid, bodyid + 1]
     # convert from wxyz to xyzw
     quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
     # quat = wp.quat_inverse(quat)
-    pos = wp.quat_rotate(quat, pos)
     # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+    # pos = wp.quat_rotate(rot_y2z, pos)
     # quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
@@ -533,14 +534,14 @@ class MuJoCoSolver(SolverBase):
         mjw_model: MjWarpModel | None = None,
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
-        nefc_per_env=100,  # number of constraints per world
-        ncon_per_env=None,  # number of contacts per world, if None we use model.rigid_contact_max
-        iterations=20,
-        ls_iterations=10,
+        nefc_per_env: int = 100,
+        ncon_per_env: int | None = None,
+        iterations: int = 20,
+        ls_iterations: int = 10,
         solver: int | str = "cg",
         integrator: int | str = "euler",
-        use_mujoco=False,
-        disable_contacts=False,
+        use_mujoco: bool = False,
+        disable_contacts: bool = False,
         register_collision_groups: bool = True,
         joint_damping: float = 0.05,
         default_actuator_gear: float | None = None,
@@ -551,11 +552,28 @@ class MuJoCoSolver(SolverBase):
         """
         Args:
             model (Model): the model to be simulated.
+            mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
+            mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
+            separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
+            nefc_per_env (int): Number of constraints per environment (world).
+            ncon_per_env (int | None): Number of contacts per environment (world). If None, `model.rigid_contact_max` is used.
+            iterations (int): Number of solver iterations.
+            ls_iterations (int): Number of line search iterations for the solver.
+            solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
+            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
+            use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
+            disable_contacts (bool): If True, disable contact computation in MuJoCo.
+            register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
+            joint_damping (float): Default joint damping value to apply to all joints during conversion to MJCF.
+            default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
+            actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
+            update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
 
         """
+        super().__init__(model)
         self.mujoco, self.mujoco_warp = import_mujoco()
 
-        self.model = model
         disableflags = 0
         if disable_contacts:
             disableflags |= self.mujoco.mjtDisableBit.mjDSBL_CONTACT
@@ -586,6 +604,7 @@ class MuJoCoSolver(SolverBase):
         self.update_data_every = update_data_every
         self._step = 0
 
+    @override
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         """
         Simulate the model for a given time step using the given control input.
@@ -717,7 +736,7 @@ class MuJoCoSolver(SolverBase):
                 qpos,
                 qvel,
                 joints_per_env,
-                model.up_axis,
+                int(model.up_axis),
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
@@ -1009,11 +1028,11 @@ class MuJoCoSolver(SolverBase):
                     continue
                 elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
-                    # this is a shape in a different environment, skip it
-                    # TODO fix handling of static shapes here, see cartpole.xml replication
-                    # that is missing the rail shapes
-                    continue
+                # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
+                #     # this is a shape in a different environment, skip it
+                #     # TODO fix handling of static shapes here, see cartpole.xml replication
+                #     # that is missing the rail shapes
+                #     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
                 if stype == newton.GEO_PLANE and warp_body_id != -1:
