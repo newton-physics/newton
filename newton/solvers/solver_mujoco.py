@@ -1299,13 +1299,8 @@ class MuJoCoSolver(SolverBase):
         MuJoCoSolver.update_mjc_data(d, model, state)
 
         # fill some MjWarp model fields that outdated of update_mjc_data.
-
-        # update qpos0 to match joint_q. Technically qpos0 is the
-        # reference positions which could differ from the initial position
-        # though.
-        m.qpos0 = d.qpos
-        # qpos_spring defaults to qpos0
-        m.qpos_spring = d.qpos
+        # just setting qpos0 to d.qpos leads to weird behavior here, needs
+        # to be investigated.
 
         mujoco.mj_forward(m, d)
 
@@ -1319,7 +1314,6 @@ class MuJoCoSolver(SolverBase):
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
         # now fill with all the data from the Newton model.
-        MuJoCoSolver.update_model_joint_q(model, mj_model)
 
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
@@ -1443,22 +1437,3 @@ class MuJoCoSolver(SolverBase):
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
 
-    @staticmethod
-    def update_model_joint_q(model: Model, mjw_model: MjWarpModel):
-        # model.joint_q -> qpos0
-        wp.launch(
-            convert_joint_q_qpos0,
-            dim=(model.joint_count),
-            inputs=[
-                model.joint_q,
-                mjw_model.njnt,
-                model.up_axis,
-                model.joint_type,
-                model.joint_q_start,
-                model.joint_axis_dim,
-            ],
-            outputs=[mjw_model.qpos0],
-            device=model.device,
-        )
-
-        wp.copy(mjw_model.qpos_spring, mjw_model.qpos0)
