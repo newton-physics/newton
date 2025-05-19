@@ -499,6 +499,7 @@ def convert_body_xforms_to_warp_kernel(
     # quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
+newton_mjc_body_mapping = {}
 
 class MuJoCoSolver(SolverBase):
     """
@@ -830,6 +831,8 @@ class MuJoCoSolver(SolverBase):
         """
         mujoco, mujoco_warp = import_mujoco()
 
+        global newton_mjc_body_mapping
+
         actuator_args = {
             "ctrllimited": True,
             "ctrlrange": (-1.0, 1.0),
@@ -889,7 +892,7 @@ class MuJoCoSolver(SolverBase):
         defaults.geom.solimp = geom_solimp
         defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
-        spec.compiler.inertiafromgeom = True
+        #spec.compiler.inertiafromgeom = True
 
         if add_axes:
             # TODO figure out how to create noncolliding geoms
@@ -1144,6 +1147,7 @@ class MuJoCoSolver(SolverBase):
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
             )
             mj_bodies.append(body)
+            newton_mjc_body_mapping[child] = len(mj_bodies) - 1
 
             # add joint
             j_type = joint_type[ji]
@@ -1298,7 +1302,7 @@ class MuJoCoSolver(SolverBase):
 
         MuJoCoSolver.update_mjc_data(d, model, state)
 
-        # fill some MjWarp model fields that outdated of update_mjc_data.
+        # fill some MjWarp model fields that outdated after update_mjc_data.
         # just setting qpos0 to d.qpos leads to weird behavior here, needs
         # to be investigated.
 
@@ -1313,7 +1317,17 @@ class MuJoCoSolver(SolverBase):
         # expand model fields that can be expanded:
         MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
+        # complete the body mapping
+        size = max(newton_mjc_body_mapping.keys()) + 1
+        arr = np.full(size, -1, dtype=int)
+        for k, v in newton_mjc_body_mapping.items():
+            arr[k] = v
+        
+        newton_mjc_body_mapping = arr
+        
         # now fill with all the data from the Newton model.
+        MuJoCoSolver.update_model_body_com(mj_model, model)
+        MuJoCoSolver.update_model_body_mass(mj_model, model)
 
         # TODO find better heuristics to determine nconmax and njmax
         if ncon_per_env:
@@ -1332,78 +1346,78 @@ class MuJoCoSolver(SolverBase):
             return
 
         model_fields_to_expand = [
-            "qpos0",
-            "qpos_spring",
-            "body_pos",
-            "body_quat",
+            # "qpos0",
+            # "qpos_spring",
+            # "body_pos",
+            # "body_quat",
             "body_ipos",
-            "body_iquat",
+            # "body_iquat",
             "body_mass",
-            "body_subtreemass",
-            "subtree_mass",
-            "body_inertia",
-            "body_invweight0",
-            "body_gravcomp",
-            "jnt_solref",
-            "jnt_solimp",
-            "jnt_pos",
-            "jnt_axis",
-            "jnt_stiffness",
-            "jnt_range",
-            "jnt_actfrcrange",
-            "jnt_margin",
-            "dof_armature",
-            "dof_damping",
-            "dof_invweight0",
-            "dof_frictionloss",
-            "dof_solimp",
-            "dof_solref",
-            "geom_matid",
-            "geom_solmix",
-            "geom_solref",
-            "geom_solimp",
-            "geom_size",
-            "geom_rbound",
-            "geom_pos",
-            "geom_quat",
-            "geom_friction",
-            "geom_margin",
-            "geom_gap",
-            "geom_rgba",
-            "site_pos",
-            "site_quat",
-            "cam_pos",
-            "cam_quat",
-            "cam_poscom0",
-            "cam_pos0",
-            "cam_mat0",
-            "light_pos",
-            "light_dir",
-            "light_poscom0",
-            "light_pos0",
-            "eq_solref",
-            "eq_solimp",
-            "eq_data",
-            "actuator_dynprm",
-            "actuator_gainprm",
-            "actuator_biasprm",
-            "actuator_ctrlrange",
-            "actuator_forcerange",
-            "actuator_actrange",
-            "actuator_gear",
-            "pair_solref",
-            "pair_solreffriction",
-            "pair_solimp",
-            "pair_margin",
-            "pair_gap",
-            "pair_friction",
-            "tendon_solref_lim",
-            "tendon_solimp_lim",
-            "tendon_range",
-            "tendon_margin",
-            "tendon_length0",
-            "tendon_invweight0",
-            "mat_rgba",
+            # "body_subtreemass",
+            # "subtree_mass",
+            # "body_inertia",
+            # "body_invweight0",
+            # "body_gravcomp",
+            # "jnt_solref",
+            # "jnt_solimp",
+            # "jnt_pos",
+            # "jnt_axis",
+            # "jnt_stiffness",
+            # "jnt_range",
+            # "jnt_actfrcrange",
+            # "jnt_margin",
+            # "dof_armature",
+            # "dof_damping",
+            # "dof_invweight0",
+            # "dof_frictionloss",
+            # "dof_solimp",
+            # "dof_solref",
+            # "geom_matid",
+            # "geom_solmix",
+            # "geom_solref",
+            # "geom_solimp",
+            # "geom_size",
+            # "geom_rbound",
+            # "geom_pos",
+            # "geom_quat",
+            # "geom_friction",
+            # "geom_margin",
+            # "geom_gap",
+            # "geom_rgba",
+            # "site_pos",
+            # "site_quat",
+            # "cam_pos",
+            # "cam_quat",
+            # "cam_poscom0",
+            # "cam_pos0",
+            # "cam_mat0",
+            # "light_pos",
+            # "light_dir",
+            # "light_poscom0",
+            # "light_pos0",
+            # "eq_solref",
+            # "eq_solimp",
+            # "eq_data",
+            # "actuator_dynprm",
+            # "actuator_gainprm",
+            # "actuator_biasprm",
+            # "actuator_ctrlrange",
+            # "actuator_forcerange",
+            # "actuator_actrange",
+            # "actuator_gear",
+            # "pair_solref",
+            # "pair_solreffriction",
+            # "pair_solimp",
+            # "pair_margin",
+            # "pair_gap",
+            # "pair_friction",
+            # "tendon_solref_lim",
+            # "tendon_solimp_lim",
+            # "tendon_range",
+            # "tendon_margin",
+            # "tendon_length0",
+            # "tendon_invweight0",
+            # "mat_rgba",
         ]
 
         @wp.kernel
@@ -1436,4 +1450,66 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+    @staticmethod
+    def update_model_body_com(mj_model: MjWarpModel, model: Model):
+        @wp.kernel
+        def update_body_ipos_kernel(
+            body_com: wp.array(dtype=wp.vec3f),
+            bodies_per_env: int,
+            up_axis: int,
+            body_mapping: wp.array(dtype=int),
+            # outputs
+            body_ipos: wp.array2d(dtype=wp.vec3f),
+        ):
+            tid = wp.tid()
+            worldid = wp.tid() // bodies_per_env
+            index_in_env = wp.tid() % bodies_per_env
+            mjc_idx = body_mapping[index_in_env]
+            # convert position components
+            if mjc_idx == -1:
+                return
+            
+            if up_axis == 1:
+                body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], -body_com[tid][1])
+            else:
+                body_ipos[worldid, mjc_idx] = body_com[tid]
+
+        bodies_per_env = model.body_count // model.num_envs
+        body_mapping = wp.array(newton_mjc_body_mapping, dtype=int)
+
+        wp.launch(
+            update_body_ipos_kernel,
+            dim=model.body_count,
+            inputs=[model.body_com, bodies_per_env, model.up_axis, body_mapping],
+            outputs=[mj_model.body_ipos],
+        )
+
+    @staticmethod
+    def update_model_body_mass(mj_model: MjWarpModel, model: Model):
+            @wp.kernel
+            def update_body_mass_kernel(
+                body_mass: wp.array(dtype=float),
+                bodies_per_env: int,
+                body_mapping: wp.array(dtype=int),
+                # outputs
+                body_mass_out: wp.array2d(dtype=float),
+            ):
+                tid = wp.tid()
+                worldid = wp.tid() // bodies_per_env
+                index_in_env = wp.tid() % bodies_per_env
+                mjc_idx = body_mapping[index_in_env]
+                if mjc_idx == -1:
+                    return
+                body_mass_out[worldid, mjc_idx] = body_mass[tid]
+
+            bodies_per_env = model.body_count // model.num_envs
+            body_mapping = wp.array(newton_mjc_body_mapping, dtype=int)
+
+            wp.launch(
+                update_body_mass_kernel,
+                dim=model.body_count,
+                inputs=[model.body_mass, bodies_per_env, body_mapping],
+                outputs=[mj_model.body_mass],
+            )
 
