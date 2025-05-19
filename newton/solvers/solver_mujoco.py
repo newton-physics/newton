@@ -1414,14 +1414,13 @@ class MuJoCoSolver(SolverBase):
 
         @wp.kernel
         def repeat_array_kernel(
-            src: wp.array(dtype=Any),
-            dst: wp.array(dtype=Any),
-            nworld: int,
+            src: wp.array(dtype=float),
+            nelems_per_world: int,
+            dst: wp.array(dtype=float),
         ):
-            i = wp.tid()
-            # Copy from first nworld elements to actual element
-            src_idx = i // nworld
-            dst[i] = src[src_idx]
+            tid = wp.tid()
+            src_idx = tid % nelems_per_world
+            dst[tid] = src[src_idx]
 
         def tile(x):
             # Create new array with same shape but first dim multiplied by nworld
@@ -1435,7 +1434,8 @@ class MuJoCoSolver(SolverBase):
             dst_flat = dst.flatten()
 
             # Launch kernel to repeat data - one thread per destination element
-            wp.launch(repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, dst_flat, nworld])
+            n_elems_per_world = dst_flat.shape[0] // nworld
+            wp.launch(repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, n_elems_per_world], outputs=[dst_flat])
             return dst
 
         for field in mj_model.__dataclass_fields__:
