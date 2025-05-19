@@ -1332,8 +1332,8 @@ class MuJoCoSolver(SolverBase):
             return
 
         model_fields_to_expand = [
-            "qpos0",  # init to model.joint_q
-            "qpos_spring",  # init to model.joint_q
+            "qpos0",
+            "qpos_spring",
             "body_pos",
             "body_quat",
             "body_ipos",
