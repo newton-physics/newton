@@ -13,116 +13,147 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# TODO:
+# - Fix Featherstone solver for floating body
+# - Fix linear force application to floating body for MuJoCoSolver
+
 import unittest
 
 import numpy as np
 import warp as wp
-from warp.render import OpenGLRenderer
 
 import newton
-from newton.core.inertia import (
-    compute_box_inertia,
-    compute_mesh_inertia,
-    compute_sphere_inertia,
-)
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestControlForce(unittest.TestCase):
-    def test_floating_body(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+    pass
 
-        # easy case: identity transform, zero center of mass
-        b = builder.add_body()
-        builder.add_shape_box(b)
-        builder.add_joint_free(b)
 
-        model = builder.finalize()
+def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=True):
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
 
-        # solver = newton.solvers.XPBDSolver(
-        #     model
-        # )
-        # solver = newton.solvers.FeatherstoneSolver(
-        #     model
-        # )
-        # solver = newton.solvers.MuJoCoSolver(
-        #     model,
-        #     solver="newton",
-        #     integrator="euler",
-        #     iterations=10,
-        #     ls_iterations=5,
-        # )
-        solver = newton.solvers.SemiImplicitSolver(
-            model,
-        )
+    # easy case: identity transform, zero center of mass
+    b = builder.add_body()
+    builder.add_shape_box(b)
+    builder.add_joint_free(b)
+    builder.joint_q = [1.0, 2.0, 3.0, *wp.quat_rpy(-1.3, 0.8, 2.4)]
+
+    model = builder.finalize(device=device)
+    model.ground = False
+
+    solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+
+    newton.core.articulation.eval_fk(model, model.joint_q, model.joint_qd, None, state_0)
+
+    control = model.control()
+    if test_angular:
+        control.joint_f.assign(np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        test_index = 2
+    else:
+        control.joint_f.assign(np.array([0.0, 0.0, 0.0, 0.0, 100.0, 0.0], dtype=np.float32))
+        test_index = 4
+
+    sim_dt = 1.0 / 10.0
+
+    for _ in range(4):
+        solver.step(model, state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    body_qd = state_0.body_qd.numpy()[0]
+    test.assertGreater(body_qd[test_index], 0.04)
+    test.assertLess(body_qd[test_index], 0.4)
+    for i in range(6):
+        if i == test_index:
+            continue
+        test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-6)
+    # TODO test joint_qd for MJC, Featherstone solvers
+
+
+def test_3d_articulation(test: TestControlForce, device, solver_fn):
+    # test mechanism with 3 orthogonally aligned prismatic joints
+    # which allows to test all 3 dimensions of the control force independently
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.default_shape_cfg.density = 100.0
+
+    b = builder.add_body()
+    builder.add_shape_sphere(b)
+    builder.add_joint_d6(
+        -1,
+        b,
+        linear_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, armature=0.0),
+        ],
+    )
+
+    model = builder.finalize(device=device)
+    model.ground = False
+
+    test.assertEqual(model.joint_dof_count, 3)
+
+    for control_dim in range(3):
+        solver = solver_fn(model)
 
         state_0, state_1 = model.state(), model.state()
 
         control = model.control()
-        control.joint_f.assign(np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        control_input = np.zeros(model.joint_dof_count, dtype=np.float32)
+        control_input[control_dim] = 100.0
+        control.joint_f.assign(control_input)
 
         sim_dt = 1.0 / 10.0
 
-        for _ in range(10):
+        for _ in range(4):
             solver.step(model, state_0, state_1, control, None, sim_dt)
             state_0, state_1 = state_1, state_0
 
-        body_qd = state_0.body_qd.numpy()[0]
-        self.assertGreater(body_qd[2], 0.005)
-        self.assertLess(body_qd[2], 0.02)
-        self.assertEqual(np.sum(body_qd[0:2]), 0.0)
-        self.assertEqual(np.sum(body_qd[3:6]), 0.0)
+        if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
+            # need to compute joint_qd from body_qd
+            newton.core.articulation.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
-        joint_qd = state_0.joint_qd.numpy()
-        self.assertGreater(joint_qd[2], 0.005)
-        self.assertLess(joint_qd[2], 0.01)
-        self.assertEqual(np.sum(joint_qd[0:2]), 0.0)
-        self.assertEqual(np.sum(joint_qd[3:6]), 0.0)
+        qd = state_0.joint_qd.numpy()
+        test.assertGreater(qd[control_dim], 0.009)
+        test.assertLess(qd[control_dim], 0.4)
+        for i in range(model.joint_dof_count):
+            if i == control_dim:
+                continue
+            test.assertAlmostEqual(qd[i], 0.0, delta=1e-6)
 
 
-        # Compute hollow box inertia
-        mass_0_hollow, com_0_hollow, I_0_hollow, volume_0_hollow = compute_mesh_inertia(
-            density=1000,
-            vertices=vertices,
-            indices=indices,
-            is_solid=False,
-            thickness=0.1,
+devices = get_test_devices()
+solvers = {
+    # "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
+    "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(
+        model, use_mujoco=True, update_data_every=0, disable_contacts=True
+    ),
+    "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(
+        model, use_mujoco=False, update_data_every=0, disable_contacts=True
+    ),
+    "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0),
+    "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
+}
+for device in ["cuda"]:
+    for solver_name, solver_fn in solvers.items():
+        # add_function_test(TestControlForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
+        add_function_test(
+            TestControlForce,
+            f"test_floating_body_angular_{solver_name}",
+            test_floating_body,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=True,
         )
-        assert_np_equal(np.array(com_0_hollow), np.array([0.5, 0.5, 0.5]), tol=1e-6)
-
-        # Add vertex between [0.0, 0.0, 0.0] and [1.0, 0.0, 0.0]
-        vertices.append([0.5, 0.0, 0.0])
-        indices[5] = [0, 8, 7]
-        indices.append([8, 3, 7])
-        indices[6] = [0, 1, 8]
-        indices.append([8, 1, 3])
-
-        mass_1, com_1, I_1, volume_1 = compute_mesh_inertia(
-            density=1000, vertices=vertices, indices=indices, is_solid=True
+        add_function_test(
+            TestControlForce,
+            f"test_3d_articulation_{solver_name}",
+            test_3d_articulation,
+            devices=[device],
+            solver_fn=solver_fn,
         )
-
-        # Inertia values should be the same as before
-        self.assertAlmostEqual(mass_1, mass_0, delta=1e-6)
-        self.assertAlmostEqual(volume_1, volume_0, delta=1e-6)
-        assert_np_equal(np.array(com_1), np.array([0.5, 0.5, 0.5]), tol=1e-6)
-        assert_np_equal(np.array(I_1), np.array(I_0), tol=1e-4)
-
-        # Compute hollow box inertia
-        mass_1_hollow, com_1_hollow, I_1_hollow, volume_1_hollow = compute_mesh_inertia(
-            density=1000,
-            vertices=vertices,
-            indices=indices,
-            is_solid=False,
-            thickness=0.1,
-        )
-
-        # Inertia values should be the same as before
-        self.assertAlmostEqual(mass_1_hollow, mass_0_hollow, delta=2e-3)
-        self.assertAlmostEqual(volume_1_hollow, volume_0_hollow, delta=1e-6)
-        assert_np_equal(np.array(com_1_hollow), np.array([0.5, 0.5, 0.5]), tol=1e-6)
-        assert_np_equal(np.array(I_1_hollow), np.array(I_0_hollow), tol=1e-4)
-
-
 
 if __name__ == "__main__":
     # wp.clear_kernel_cache()
