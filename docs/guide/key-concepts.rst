@@ -29,4 +29,4 @@ Further Reading
 - :doc:`quickstart` — Minimal working example
 - :doc:`tutorials` — Step-by-step guides
 - :doc:`../api` — Full API reference
-- [DeepWiki: Newton Physics](https://deepwiki.com/newton-physics/newton) — Conceptual background
+- `DeepWiki: Newton Physics <https://deepwiki.com/newton-physics/newton>`__ — Conceptual background

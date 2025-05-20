@@ -19,6 +19,7 @@
       ~SimRendererUsd.populate
       ~SimRendererUsd.register_body
       ~SimRendererUsd.render
+      ~SimRendererUsd.render_arrow
       ~SimRendererUsd.render_box
       ~SimRendererUsd.render_capsule
       ~SimRendererUsd.render_cone
