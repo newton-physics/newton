@@ -131,6 +131,36 @@ A code coverage report requires installing ``coverage[toml]`` and can be generat
 
 The file ``htmlcov/index.html`` can be opened with a web browser to view the coverage report.
 
+Golden State Tests
+------------------
+
+Some tests compare simulation results against "golden states" (pre-recorded ``.npz`` files).
+If these tests fail, you might need to regenerate the golden states.
+
+To regenerate golden states, run:
+
+.. code-block:: console
+
+    # With uv
+    uv run newton/tests/goldenstate_utils.py
+
+    # With venv
+    python newton/tests/goldenstate_utils.py
+
+
+A golden state test failure indicates a discrepancy between the current simulation output and the stored golden state. This can occur for a few reasons:
+
+1.  **Bug Introduced**: A code change may have introduced a bug. This should be fixed.
+2.  **Numerical Drift**: Minor, legitimate changes might cause small numerical differences.
+    If so, regenerate the golden states (see command above). You might also consider
+    adjusting test tolerances in ``newton/tests/test_solvers_on_examples.py``.
+3.  **Intentional Behavior Change**: If the simulation's behavior has correctly changed,
+    the golden states are outdated and must be regenerated (see command above).
+
+When a test fails, the error message provides details. It's often helpful to
+interactively run and visually inspect the failing example to understand the
+discrepancy before deciding on the appropriate action.
+
 Code formatting and linting
 ---------------------------
 
