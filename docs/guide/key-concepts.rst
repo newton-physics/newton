@@ -14,19 +14,6 @@ Core Abstractions
 - **Importer**: Loads models from external formats and populates the ModelBuilder.
 - **Renderer**: Visualizes the simulation in real-time (OpenGL) or offline (USD, Omniverse).
 
-.. mermaid::
-
-   graph TD
-     A[ModelBuilder] -->|builds| B[Model]
-     B --> C[State]
-     C --> D[Solver]
-     D --> E[State (next)]
-     B --> F[Control]
-     B --> G[Importer]
-     G --> B
-     B --> H[Renderer]
-     H --> I[Visualization]
-
 Simulation Loop
 ---------------
 
@@ -43,6 +30,3 @@ Further Reading
 - :doc:`tutorials` — Step-by-step guides
 - :doc:`../api` — Full API reference
 - [DeepWiki: Newton Physics](https://deepwiki.com/newton-physics/newton) — Conceptual background
-
-.. autoclasstree:: newton.solvers.MuJoCoSolver
-   :full:

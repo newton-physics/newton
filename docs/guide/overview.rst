@@ -34,16 +34,16 @@ High-Level Architecture
 
 .. mermaid::
 
-    graph TD
-        A[ModelBuilder] -->|builds| B[Model]
-        B --> C[State]
-        C --> D[Solver]
-        D --> E[State (next)]
-        B --> F[Renderer]
-        B --> G[Importer]
-        G --> B
-        F --> H[Visualization]
-
+   graph TD
+   A[ModelBuilder] -->|builds| B[Model]
+   B --> C[State]
+   C --> D[Solver]
+   D --> C
+   B --> F[Renderer]
+   C --> F
+   G[Importer] --> A
+   I[Application] --> A
+   F --> H[Visualization]
 
 - **ModelBuilder**: Constructs models from primitives or imported assets.
 - **Model**: Encapsulates the physical structure, parameters, and configuration.
