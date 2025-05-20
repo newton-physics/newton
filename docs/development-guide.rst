@@ -199,7 +199,7 @@ Roadmap and Future Work
 - More comprehensive sensor models
 - Expanded robotics examples
 
-See the [GitHub Discussions](https://github.com/newton-physics/newton/discussions) for ongoing feature planning.
+See the `GitHub Discussions <https://github.com/newton-physics/newton/discussions>`__ for ongoing feature planning.
 
 Contribution Guide
 ==================
