@@ -268,15 +268,15 @@ def apply_mjc_qfrc_kernel(
 ):
     worldid, jntid = wp.tid()
     child = joint_child[jntid]
-    q_i = joint_q_start[jntid]
+    # q_i = joint_q_start[jntid]
     qd_i = joint_qd_start[jntid]
-    wq_i = joint_q_start[joints_per_env * worldid + jntid]
+    # wq_i = joint_q_start[joints_per_env * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_env * worldid + jntid]
     jtype = joint_type[jntid]
     if jtype == newton.JOINT_FREE or jtype == newton.JOINT_DISTANCE:
         tf = body_q[worldid * bodies_per_env + child]
         rot = wp.transform_get_rotation(tf)
-        com_world = wp.transform_point(tf, body_com[child])
+        # com_world = wp.transform_point(tf, body_com[child])
         # swap angular and linear components
         w = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
         v = wp.vec3(joint_f[wqd_i + 3], joint_f[wqd_i + 4], joint_f[wqd_i + 5])
