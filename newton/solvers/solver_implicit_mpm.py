@@ -898,6 +898,9 @@ class ImplicitMPMSolver(SolverBase):
         )
         divergence_space = fem.make_collocated_function_space(strain_basis, dtype=float)
 
+        vel_space_partition = fem.make_space_partition(space_topology=full_strain_space.topology)
+        strain_space_partition = fem.make_space_partition(space_topology=velocity_space.topology)
+
         with wp.ScopedTimer(
             "Create fields",
             active=self._fined_grained_timers,
@@ -917,25 +920,38 @@ class ImplicitMPMSolver(SolverBase):
             velocity_field = velocity_space.make_field()
             self.velocity_field = velocity_field
 
-            impulse_field = velocity_space.make_field()
+        with wp.ScopedTimer(
+            "Interpolate",
+            active=self._fined_grained_timers,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=True,
+        ):
+            impulse_field = fem.field.NodalField(velocity_space, vel_space_partition)
             if self.impulse_field is not None:
                 prev_impulse_field = fem.NonconformingField(domain, self.impulse_field)
                 fem.interpolate(prev_impulse_field, dest=impulse_field)
             self.impulse_field = impulse_field
 
             # Interpolate previous stress
-            stress_field = sym_strain_space.make_field()
+            stress_field = fem.field.NodalField(sym_strain_space, strain_space_partition)
             if self.stress_field is not None:
                 prev_stress_field = fem.NonconformingField(domain, self.stress_field)
                 fem.interpolate(prev_stress_field, dest=stress_field)
             self.stress_field = stress_field
 
-            elastic_strain_field = full_strain_space.make_field()
-            elastic_strain_delta_field = full_strain_space.make_field()
-            int_symmetric_strain_field = sym_strain_space.make_field()
-            elastic_rotation_field = rotation_space.make_field()
+        with wp.ScopedTimer(
+            "Cretae",
+            active=self._fined_grained_timers,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=True,
+        ):
+            collider_velocity_field = fem.field.NodalField(velocity_space, vel_space_partition)
 
-            collider_velocity_field = velocity_space.make_field()
+            elastic_strain_field = fem.field.NodalField(full_strain_space, strain_space_partition)
+            elastic_strain_delta_field = fem.field.NodalField(full_strain_space, strain_space_partition)
+
+            elastic_rotation = wp.empty(rotation_space.node_count(), dtype=wp.quatf)
+            int_symmetric_strain = wp.zeros_like(self.stress_field.dof_values)
 
         # Bin particles to grid cells
         with wp.ScopedTimer(
@@ -1134,7 +1150,7 @@ class ImplicitMPMSolver(SolverBase):
                     ],
                 )
 
-        prev_symmetric_strain = wp.zeros_like(int_symmetric_strain_field.dof_values)
+        prev_symmetric_strain = wp.zeros_like(int_symmetric_strain)
         if self._elastic:
             with wp.ScopedTimer(
                 "Elastic strain rhs",
@@ -1159,8 +1175,8 @@ class ImplicitMPMSolver(SolverBase):
                     inputs=[
                         elastic_strain_field.dof_values,
                         strain_node_particle_volume.array,
-                        elastic_rotation_field.dof_values,
-                        int_symmetric_strain_field.dof_values,
+                        elastic_rotation,
+                        int_symmetric_strain,
                         prev_symmetric_strain,
                     ],
                 )
@@ -1191,7 +1207,7 @@ class ImplicitMPMSolver(SolverBase):
                     "dt": dt,
                     "inv_cell_volume": inv_cell_volume,
                     "elastic_strain": prev_symmetric_strain,
-                    "rotation": elastic_rotation_field.dof_values,
+                    "rotation": elastic_rotation,
                 },
                 output_dtype=float,
                 output=self._strain_matrix,
@@ -1216,7 +1232,7 @@ class ImplicitMPMSolver(SolverBase):
                         strain_node_collider_volume.array,
                         strain_node_volume.array,
                         prev_symmetric_strain,
-                        int_symmetric_strain_field.dof_values,
+                        int_symmetric_strain,
                     ],
                 )
 
@@ -1238,7 +1254,7 @@ class ImplicitMPMSolver(SolverBase):
                 inv_mass_matrix.array,
                 scaled_yield_stress.array,
                 scaled_stress_strain_mat.array,
-                int_symmetric_strain_field.dof_values,
+                int_symmetric_strain,
                 stress_field.dof_values,
                 velocity_field.dof_values,
                 collider_friction.array,
@@ -1267,7 +1283,7 @@ class ImplicitMPMSolver(SolverBase):
                         "dt": dt,
                         "inv_cell_volume": inv_cell_volume,
                         "elastic_strain": prev_symmetric_strain,
-                        "rotation": elastic_rotation_field.dof_values,
+                        "rotation": elastic_rotation,
                     },
                     output_dtype=wp.mat33,
                 )
@@ -1277,8 +1293,8 @@ class ImplicitMPMSolver(SolverBase):
                     dim=strain_node_count,
                     inputs=[
                         strain_node_particle_volume.array,
-                        elastic_rotation_field.dof_values,
-                        int_symmetric_strain_field.dof_values,
+                        elastic_rotation,
+                        int_symmetric_strain,
                         full_strain,
                         elastic_strain_field.dof_values,
                         elastic_strain_delta_field.dof_values,
