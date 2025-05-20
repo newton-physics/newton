@@ -39,6 +39,10 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.shape_count, 13)
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
+        self.assertEqual(builder.joint_dof_count, 14)
+        self.assertEqual(builder.joint_coord_count, 15)
+        self.assertEqual(builder.joint_axis_count, 8)
+        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
 
