@@ -500,13 +500,10 @@ def convert_body_xforms_to_warp_kernel(
 
 class MuJoCoSolver(SolverBase):
     """
-    This solver provides an interface to simulate physics using the `MuJoCo`_ physics engine,
-    optimized with GPU acceleration through `mujoco_warp`_. It supports both MuJoCo and
+    This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
+    optimized with GPU acceleration through `mujoco_warp <https://github.com/google-deepmind/mujoco_warp>`_. It supports both MuJoCo and
     mujoco_warp backends, enabling efficient simulation of articulated systems with
     contacts and constraints.
-
-    .. _mujoco: https://github.com/google-deepmind/mujoco
-    .. _mujoco_warp: https://github.com/google-deepmind/mujoco_warp
 
     .. note::
 
