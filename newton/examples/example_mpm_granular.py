@@ -37,7 +37,8 @@ class Example:
         self.state_1: State = model.state()
 
         self.sim_time = 0.0
-        self.solver = ImplicitMPMSolver(model, options, colliders=colliders)
+        self.solver = ImplicitMPMSolver(model, options)
+        self.solver.setup_collider(model, colliders=colliders)
 
         self.solver.enrich_state(self.state_0)
         self.solver.enrich_state(self.state_1)
