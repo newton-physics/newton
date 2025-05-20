@@ -101,9 +101,12 @@ def convert_mj_coords_to_warp_kernel(
         #     joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
 
         # XXX swap angular and linear velocities
-        joint_qd[wqd_i + 0] = qvel[worldid, qd_i + 3]
-        joint_qd[wqd_i + 1] = qvel[worldid, qd_i + 4]
-        joint_qd[wqd_i + 2] = qvel[worldid, qd_i + 5]
+        w = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
+        # rotate angular velocity to world frame
+        w = wp.quat_rotate(rot, w)
+        joint_qd[wqd_i + 0] = w[0]
+        joint_qd[wqd_i + 1] = w[1]
+        joint_qd[wqd_i + 2] = w[2]
         # convert linear velocity
         if up_axis == 1:
             joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
@@ -207,9 +210,13 @@ def convert_warp_coords_to_mj_kernel(
             qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
             qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 4]
             qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 5]
-        qvel[worldid, qd_i + 3] = joint_qd[wqd_i + 0]
-        qvel[worldid, qd_i + 4] = joint_qd[wqd_i + 1]
-        qvel[worldid, qd_i + 5] = joint_qd[wqd_i + 2]
+
+        # rotate angular velocity to body frame
+        w = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
+        w = wp.quat_rotate_inv(rot, w)
+        qvel[worldid, qd_i + 3] = w[0]
+        qvel[worldid, qd_i + 4] = w[1]
+        qvel[worldid, qd_i + 5] = w[2]
 
     elif type == newton.JOINT_BALL:
         # change quaternion order from xyzw to wxyz
