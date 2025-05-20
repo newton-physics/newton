@@ -9,6 +9,11 @@ Environment setup
 Clone the repository
 ^^^^^^^^^^^^^^^^^^^^
 
+Newton currently uses `Git LFS <https://git-lfs.com/>`__ to manage large files
+(e.g. model assets) used in some examples and tests. Please set up Git LFS on
+your system if you plan to run something that needs these files
+(`GitHub Docs <https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage>`__).
+
 .. code-block:: console
 
     git clone git@github.com:newton-physics/newton.git
@@ -39,12 +44,26 @@ Run basic examples:
     # An example that requires extras
     uv run --all-extras newton/examples/example_humanoid.py
 
-Updating all dependencies in the project `lockfile <https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile>`__,
-remember to commit ``uv.lock`` after running:
+When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile>`__
+(``uv.lock``) is used to resolve project dependencies
+into exact versions for reproducibility among different machines.
+
+Sometimes, a dependency in the lockfile needs to be updated to a newer version.
+This can be done by running ``uv lock --upgrade-package <package-name>``:
+
+.. code-block:: console
+
+    uv lock --upgrade-package warp-lang
+
+    uv lock --upgrade-package mujoco-warp
+
+uv also provides a command to update all dependencies in the lockfile:
 
 .. code-block:: console
 
     uv lock -U
+
+Remember to commit ``uv.lock`` after running a command that updates the lockfile.
 
 Using venv
 ^^^^^^^^^^
