@@ -990,30 +990,23 @@ def apply_body_delta_velocities(
 
 
 @wp.kernel
-def apply_joint_actions(
+def apply_joint_forces(
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
+    joint_qd_start: wp.array(dtype=int),
     joint_axis_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_mode: wp.array(dtype=int),
-    joint_act: wp.array(dtype=float),
+    joint_f: wp.array(dtype=float),
     body_f: wp.array(dtype=wp.spatial_vector),
 ):
     tid = wp.tid()
     type = joint_type[tid]
     if type == newton.JOINT_FIXED:
-        return
-    if type == newton.JOINT_FREE:
-        return
-    if type == newton.JOINT_DISTANCE:
-        return
-    if type == newton.JOINT_BALL:
         return
 
     # rigid body indices of the child and parent
@@ -1045,6 +1038,7 @@ def apply_joint_actions(
 
     # joint properties (for 1D joints)
     axis_start = joint_axis_start[tid]
+    qd_start = joint_qd_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
     ang_axis_count = joint_axis_dim[tid, 1]
 
@@ -1052,124 +1046,56 @@ def apply_joint_actions(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    # handle angular constraints
-    if type == newton.JOINT_REVOLUTE:
-        mode = joint_axis_mode[axis_start]
-        if mode == newton.JOINT_MODE_FORCE:
-            axis = joint_axis[axis_start]
-            act = joint_act[axis_start]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += act * a_p
-    elif type == newton.JOINT_PRISMATIC:
-        mode = joint_axis_mode[axis_start]
-        if mode == newton.JOINT_MODE_FORCE:
-            axis = joint_axis[axis_start]
-            act = joint_act[axis_start]
-            a_p = wp.transform_vector(X_wp, axis)
-            f_total += act * a_p
-    elif type == newton.JOINT_COMPOUND:
-        # q_off = wp.transform_get_rotation(X_cj)
-        # q_pc = wp.quat_inverse(q_off)*wp.quat_inverse(q_p)*q_c*q_off
-        # # decompose to a compound rotation each axis
-        # angles = quat_decompose(q_pc)
+    if type == newton.JOINT_FREE or type == newton.JOINT_DISTANCE:
+        t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
+        f_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+    elif type == newton.JOINT_BALL:
+        t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 
-        # # reconstruct rotation axes
-        # axis_0 = wp.vec3(1.0, 0.0, 0.0)
-        # q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
-
-        # axis_1 = wp.quat_rotate(q_0, wp.vec3(0.0, 1.0, 0.0))
-        # q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
-
-        # axis_2 = wp.quat_rotate(q_1*q_0, wp.vec3(0.0, 0.0, 1.0))
-
-        # q_w = q_p*q_off
-        # t_total += joint_act[qd_start+0] * wp.quat_rotate(q_w, axis_0)
-        # t_total += joint_act[qd_start+1] * wp.quat_rotate(q_w, axis_1)
-        # t_total += joint_act[qd_start+2] * wp.quat_rotate(q_w, axis_2)
-
-        if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
-            axis_0 = joint_axis[axis_start + 0]
-            t_total += joint_act[axis_start + 0] * wp.transform_vector(X_wp, axis_0)
-        if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
-            axis_1 = joint_axis[axis_start + 1]
-            t_total += joint_act[axis_start + 1] * wp.transform_vector(X_wp, axis_1)
-        if joint_axis_mode[axis_start + 2] == newton.JOINT_MODE_FORCE:
-            axis_2 = joint_axis[axis_start + 2]
-            t_total += joint_act[axis_start + 2] * wp.transform_vector(X_wp, axis_2)
-
-    elif type == newton.JOINT_UNIVERSAL:
-        # q_off = wp.transform_get_rotation(X_cj)
-        # q_pc = wp.quat_inverse(q_off)*wp.quat_inverse(q_p)*q_c*q_off
-
-        # # decompose to a compound rotation each axis
-        # angles = quat_decompose(q_pc)
-
-        # # reconstruct rotation axes
-        # axis_0 = wp.vec3(1.0, 0.0, 0.0)
-        # q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
-
-        # axis_1 = wp.quat_rotate(q_0, wp.vec3(0.0, 1.0, 0.0))
-        # q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
-
-        # axis_2 = wp.quat_rotate(q_1*q_0, wp.vec3(0.0, 0.0, 1.0))
-
-        # q_w = q_p*q_off
-
-        # free axes
-        # t_total += joint_act[qd_start+0] * wp.quat_rotate(q_w, axis_0)
-        # t_total += joint_act[qd_start+1] * wp.quat_rotate(q_w, axis_1)
-
-        if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
-            axis_0 = joint_axis[axis_start + 0]
-            t_total += joint_act[axis_start + 0] * wp.transform_vector(X_wp, axis_0)
-        if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
-            axis_1 = joint_axis[axis_start + 1]
-            t_total += joint_act[axis_start + 1] * wp.transform_vector(X_wp, axis_1)
-
-    elif type == newton.JOINT_D6:
+    elif (
+        type == newton.JOINT_REVOLUTE
+        or type == newton.JOINT_PRISMATIC
+        or type == newton.JOINT_D6
+        or type == newton.JOINT_UNIVERSAL
+        or type == newton.JOINT_COMPOUND
+    ):
         # unroll for loop to ensure joint actions remain differentiable
         # (since differentiating through a dynamic for loop that updates a local variable is not supported)
 
         if lin_axis_count > 0:
-            if joint_axis_mode[axis_start + 0] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + 0]
-                act = joint_act[axis_start + 0]
-                a_p = wp.transform_vector(X_wp, axis)
-                f_total += act * a_p
+            axis = joint_axis[axis_start + 0]
+            f = joint_f[qd_start + 0]
+            a_p = wp.transform_vector(X_wp, axis)
+            f_total += f * a_p
         if lin_axis_count > 1:
-            if joint_axis_mode[axis_start + 1] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + 1]
-                act = joint_act[axis_start + 1]
-                a_p = wp.transform_vector(X_wp, axis)
-                f_total += act * a_p
+            axis = joint_axis[axis_start + 1]
+            f = joint_f[qd_start + 1]
+            a_p = wp.transform_vector(X_wp, axis)
+            f_total += f * a_p
         if lin_axis_count > 2:
-            if joint_axis_mode[axis_start + 2] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + 2]
-                act = joint_act[axis_start + 2]
-                a_p = wp.transform_vector(X_wp, axis)
-                f_total += act * a_p
+            axis = joint_axis[axis_start + 2]
+            f = joint_f[qd_start + 2]
+            a_p = wp.transform_vector(X_wp, axis)
+            f_total += f * a_p
 
         if ang_axis_count > 0:
-            if joint_axis_mode[axis_start + lin_axis_count + 0] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + lin_axis_count + 0]
-                act = joint_act[axis_start + lin_axis_count + 0]
-                a_p = wp.transform_vector(X_wp, axis)
-                t_total += act * a_p
+            axis = joint_axis[axis_start + lin_axis_count + 0]
+            f = joint_f[qd_start + lin_axis_count + 0]
+            a_p = wp.transform_vector(X_wp, axis)
+            t_total += f * a_p
         if ang_axis_count > 1:
-            if joint_axis_mode[axis_start + lin_axis_count + 1] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + lin_axis_count + 1]
-                act = joint_act[axis_start + lin_axis_count + 1]
-                a_p = wp.transform_vector(X_wp, axis)
-                t_total += act * a_p
+            axis = joint_axis[axis_start + lin_axis_count + 1]
+            f = joint_f[qd_start + lin_axis_count + 1]
+            a_p = wp.transform_vector(X_wp, axis)
+            t_total += f * a_p
         if ang_axis_count > 2:
-            if joint_axis_mode[axis_start + lin_axis_count + 2] == newton.JOINT_MODE_FORCE:
-                axis = joint_axis[axis_start + lin_axis_count + 2]
-                act = joint_act[axis_start + lin_axis_count + 2]
-                a_p = wp.transform_vector(X_wp, axis)
-                t_total += act * a_p
+            axis = joint_axis[axis_start + lin_axis_count + 2]
+            f = joint_f[qd_start + lin_axis_count + 2]
+            a_p = wp.transform_vector(X_wp, axis)
+            t_total += f * a_p
 
     else:
-        print("joint type not handled in apply_joint_actions")
+        print("joint type not handled in apply_joint_forces")
 
     # write forces
     if id_p >= 0:
@@ -2854,7 +2780,7 @@ class XPBDSolver(SolverBase):
 
                 if model.joint_count:
                     wp.launch(
-                        kernel=apply_joint_actions,
+                        kernel=apply_joint_forces,
                         dim=model.joint_count,
                         inputs=[
                             state_in.body_q,
@@ -2863,12 +2789,11 @@ class XPBDSolver(SolverBase):
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
-                            model.joint_X_c,
+                            model.joint_qd_start,
                             model.joint_axis_start,
                             model.joint_axis_dim,
                             model.joint_axis,
-                            model.joint_axis_mode,
-                            control.joint_target,
+                            control.joint_f,
                         ],
                         outputs=[state_in.body_f],
                         device=model.device,
