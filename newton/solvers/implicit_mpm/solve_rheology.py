@@ -1,12 +1,11 @@
 import gc
 import math
-from typing import Optional
+from typing import Any, Optional
 
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.utils import symmetric_eigenvalues_qr
-from warp.utils import array_inner
 
 _DELASSUS_DIAG_CUTOFF = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
@@ -15,6 +14,8 @@ vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
 mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
+
+wp.set_module_options({"enable_backward": False})
 
 
 @wp.kernel
@@ -584,6 +585,95 @@ def solve_nodal_friction(
     collider_velocities[i] -= collider_inv_mass[i] * delta_impulse
 
 
+class ArraySquaredNorm:
+    def __init__(self, max_length: int, tile_size=512, device=None, temporary_store=None):
+        self.tile_size = tile_size
+        self.device = device
+
+        num_blocks = (max_length + self.tile_size - 1) // self.tile_size
+        self.partial_sums_a = fem.borrow_temporary(
+            temporary_store, shape=(num_blocks,), dtype=float, device=self.device
+        )
+        self.partial_sums_b = fem.borrow_temporary(
+            temporary_store, shape=(num_blocks,), dtype=float, device=self.device
+        )
+
+        self.sum_squared_kernel = self._create_block_sum_kernel(square_input=True)
+        self.sum_kernel = self._create_block_sum_kernel(square_input=False)
+
+    # Result contains a single value, the sum of the array (will get updated by this function)
+    def compute_squared_norm(self, data: wp.array(dtype=Any)):
+        # cast vector types to float
+        if data.dtype != float:
+            data = wp.array(data, dtype=float).flatten()
+
+        kernel = self.sum_squared_kernel
+        array_length = data.shape[0]
+
+        flip_flop = False
+        while True:
+            num_blocks = (array_length + self.tile_size - 1) // self.tile_size
+
+            partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b).array[:num_blocks]
+
+            wp.launch_tiled(
+                kernel,
+                dim=num_blocks,
+                inputs=(data,),
+                outputs=(partial_sums,),
+                block_dim=self.tile_size,
+            )
+
+            array_length = num_blocks
+            data = partial_sums
+            kernel = self.sum_kernel
+
+            flip_flop = not flip_flop
+
+            if num_blocks == 1:
+                break
+
+        return data[:1]
+
+    def _create_block_sum_kernel(self, square_input):
+        tile_size = self.tile_size
+
+        @fem.cache.dynamic_kernel(suffix=(tile_size, square_input))
+        def block_sum_kernel(
+            data: wp.array(dtype=float, ndim=1),
+            partial_sums: wp.array(dtype=float),
+        ):
+            block_id, tid_block = wp.tid()
+            start = block_id * tile_size
+
+            t = wp.tile_load(data, shape=tile_size, offset=start)
+
+            if wp.static(square_input):
+                t = wp.tile_map(wp.mul, t, t)
+
+            tile_sum = wp.tile_sum(t)
+            if tid_block == 0:
+                partial_sums[block_id] = tile_sum[0]
+
+        return block_sum_kernel
+
+
+@wp.kernel
+def update_condition(
+    residual_threshold: float,
+    min_iterations: int,
+    max_iterations: int,
+    residual: wp.array(dtype=float),
+    iteration: wp.array(dtype=int),
+    condition: wp.array(dtype=int),
+):
+    cur_it = iteration[0] + 1
+    stop = (wp.sqrt(residual[0]) < residual_threshold and cur_it >= min_iterations) or cur_it >= max_iterations
+
+    iteration[0] = cur_it
+    condition[0] = wp.where(stop, 0, 1)
+
+
 def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity):
     """Apply rigidity matrix to the collider velocity delta
 
@@ -811,22 +901,13 @@ def solve_rheology(
         record_cmd=True,
     )
 
-    # Gauss-Seidel solve
-    def do_gs_batch(num_iterations):
-        for i in range(num_iterations):
+    def do_iteration():
+        if gs:
             for k in range(color_count):
                 solve_local_launch.set_param_at_index(0, color_offsets[k])
                 solve_local_launch.set_dim((int(color_offsets[k + 1] - color_offsets[k]),))
                 solve_local_launch.launch()
-
-            # solve contacts
-            solve_collider_launch.launch()
-            if rigidity_mat is not None:
-                apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
-
-    # Jacobi solve
-    def do_jacobi_batch(num_iterations):
-        for i in range(num_iterations):
+        else:
             solve_local_launch.launch()
             # Add jacobi delta
             sp.bsr_mv(
@@ -837,38 +918,75 @@ def solve_rheology(
                 beta=1.0,
             )
 
-            # solve contacts
-            solve_collider_launch.launch()
-            if rigidity_mat is not None:
-                apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+        # solve contacts
+        solve_collider_launch.launch()
+        if rigidity_mat is not None:
+            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
 
     # Run solver loop
-    # TODO use conditional nodes instead
 
-    solve_granularity = 25 if gs else 50
     use_graph = True
-    solve_graph = None
+    residual_scale = 1 + stress.shape[0]
 
-    do_batch = do_gs_batch if gs else do_jacobi_batch
+    # Utility to compute the squared norm of the residual
+    residual_squared_norm_computer = ArraySquaredNorm(
+        max_length=delta_stress.array.shape[0] * 6,
+        device=delta_stress.array.device,
+        temporary_store=temporary_store,
+    )
 
     if use_graph:
+        min_iterations = 5
+        iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
+
         gc.disable()
-        wp.capture_begin(force_module_load=False)
-        do_batch(solve_granularity)
-        gc.collect(0)
-        solve_graph = wp.capture_end()
+        with wp.ScopedCapture(force_module_load=False) as iteration_capture:
+            do_iteration()
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            wp.launch(
+                update_condition,
+                dim=1,
+                inputs=[
+                    tolerance * residual_scale,
+                    min_iterations,
+                    max_iterations,
+                    residual,
+                    iteration_and_condition.array[:1],
+                    iteration_and_condition.array[1:],
+                ],
+            )
+        iteration_graph = iteration_capture.graph
+
+        with wp.ScopedCapture(force_module_load=False) as capture:
+            wp.capture_while(
+                condition=iteration_and_condition.array[1:],
+                while_body=iteration_graph,
+            )
+        solve_graph = capture.graph
         gc.enable()
 
-    for batch in range(max_iterations // solve_granularity):
-        if solve_graph is None:
-            do_batch(solve_granularity)
-        else:
-            wp.capture_launch(solve_graph)
+        iteration_and_condition.array.assign([0, 1])
+        wp.capture_launch(solve_graph)
 
-        res = math.sqrt(array_inner(delta_stress.array, delta_stress.array)) / (1 + stress.shape[0])
-        print(f"{'Gauss-Seidel' if gs else 'Jacobi'} iterations #{(batch + 1) * solve_granularity} \t res(l2)={res}")
-        if res < tolerance:
-            break
+        res = math.sqrt(residual.numpy()[0]) / residual_scale
+        print(
+            f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after {iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
+        )
+    else:
+        solve_granularity = 25 if gs else 50
+
+        for batch in range(max_iterations // solve_granularity):
+            for k in range(solve_granularity):
+                do_iteration()
+
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            res = math.sqrt(residual.numpy()[0]) / residual_scale
+
+            print(
+                f"{'Gauss-Seidel' if gs else 'Jacobi'} iterations #{(batch + 1) * solve_granularity} \t res(l2)={res}"
+            )
+            if res < tolerance:
+                break
 
     wp.launch(
         kernel=postprocess_stress,
