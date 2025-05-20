@@ -26,7 +26,7 @@ Key Features
 .. admonition:: Learn More
    :class: tip
 
-   For a deep conceptual introduction, see the [DeepWiki Newton Physics page](https://deepwiki.com/newton-physics/newton).
+   For a deep conceptual introduction, see the `DeepWiki Newton Physics page <https://deepwiki.com/newton-physics/newton>`__.
 
 
 High-Level Architecture
