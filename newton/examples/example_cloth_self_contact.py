@@ -228,6 +228,9 @@ class Example:
         self.renderer = None
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
+            self.renderer.enable_backface_culling = False
+            self.renderer.draw_grid = False
+            self.renderer.render_wireframe = True
 
         self.cuda_graph = None
         if self.use_cuda_graph:
