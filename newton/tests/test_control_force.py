@@ -136,7 +136,7 @@ solvers = {
     "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
 }
-for device in ["cuda"]:
+for device in devices:
     for solver_name, solver_fn in solvers.items():
         # add_function_test(TestControlForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
@@ -156,5 +156,5 @@ for device in ["cuda"]:
         )
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
+    wp.clear_kernel_cache()
     unittest.main(verbosity=2)
