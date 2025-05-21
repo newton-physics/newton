@@ -104,7 +104,7 @@ def apply_joint_position_pd_control(
     joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_axis_start: wp.array(dtype=wp.int32),
     # outputs
-    joint_act: wp.array(dtype=wp.float32),
+    joint_f: wp.array(dtype=wp.float32),
 ):
     joint_id = wp.tid()
     ai = joint_axis_start[joint_id]
@@ -121,7 +121,8 @@ def apply_joint_position_pd_control(
         tq = wp.clamp(actions[aj], -1.0, 1.0) * action_scale + default_joint_q[qj]
         tq = Kp * (tq - q) - Kd * qd
 
-        joint_act[aj] = tq
+        # skip the 6 dofs of the free joint
+        joint_f[6+aj] = tq
 
 
 class AnymalController:
@@ -154,7 +155,7 @@ class AnymalController:
             dtype=float,
         )
         self.action_scale = 0.5
-        self.Kp = 85.0
+        self.Kp = 140.0
         self.Kd = 2.0
         self.joint_torque_limit = self.control_gains_wp
         self.default_joint_q = self.model.joint_q
