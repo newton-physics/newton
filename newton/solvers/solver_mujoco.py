@@ -625,7 +625,8 @@ class MuJoCoSolver(SolverBase):
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
-            self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+            with wp.ScopedDevice(self.model.device):
+                self.mujoco_warp.step(self.mjw_model, self.mjw_data)
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
@@ -645,8 +646,8 @@ class MuJoCoSolver(SolverBase):
             qfrc = mj_data.qfrc_applied
             nworld = mj_data.nworld
         else:
-            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32)
-            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32)
+            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
+            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
         joints_per_env = model.joint_count // nworld
@@ -699,8 +700,8 @@ class MuJoCoSolver(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have a MjData object from Mujoco
-            qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32)
-            qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32)
+            qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32, device=model.device)
+            qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
             nworld = 1
         if state is None:
             joint_q = model.joint_q
@@ -742,12 +743,12 @@ class MuJoCoSolver(SolverBase):
             xquat = mj_data.xquat
         else:
             # we have a MjData object from Mujoco
-            qpos = wp.array([mj_data.qpos], dtype=wp.float32)
-            qvel = wp.array([mj_data.qvel], dtype=wp.float32)
+            qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+            qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
 
-            xpos = wp.array([mj_data.xpos], dtype=wp.vec3)
-            xquat = wp.array([mj_data.xquat], dtype=wp.quat)
+            xpos = wp.array([mj_data.xpos], dtype=wp.vec3, device=model.device)
+            xquat = wp.array([mj_data.xquat], dtype=wp.quat, device=model.device)
         joints_per_env = model.joint_count // nworld
         wp.launch(
             convert_mj_coords_to_warp_kernel,
@@ -1298,9 +1299,6 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        # add axis_to_actuator mapping to the Newton model
-        model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
-
         d = mujoco.MjData(m)
 
         d.nefc = nefc_per_env
@@ -1320,18 +1318,22 @@ class MuJoCoSolver(SolverBase):
 
         mujoco.mj_forward(m, d)
 
-        mj_model = mujoco_warp.put_model(m)
-        if separate_envs_to_worlds:
-            nworld = model.num_envs
-        else:
-            nworld = 1
-        # TODO find better heuristics to determine nconmax and njmax
-        if ncon_per_env:
-            nconmax = nworld * ncon_per_env
-        else:
-            nconmax = model.rigid_contact_max * 4
-        nconmax = max(nconmax, d.ncon)
-        njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
-        mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
+        with wp.ScopedDevice(model.device):
+            # add axis_to_actuator mapping to the Newton model
+            model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+
+            mj_model = mujoco_warp.put_model(m)
+            if separate_envs_to_worlds:
+                nworld = model.num_envs
+            else:
+                nworld = 1
+            # TODO find better heuristics to determine nconmax and njmax
+            if ncon_per_env:
+                nconmax = nworld * ncon_per_env
+            else:
+                nconmax = model.rigid_contact_max * 4
+            nconmax = max(nconmax, d.ncon)
+            njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
+            mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
         return mj_model, mj_data, m, d

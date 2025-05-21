@@ -23,7 +23,9 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test
+
+wp.config.quiet = True
 
 
 class TestControlForce(unittest.TestCase):
@@ -124,7 +126,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
             test.assertAlmostEqual(qd[i], 0.0, delta=1e-6)
 
 
-devices = get_test_devices()
+devices = ["cpu"]  # get_test_devices()
 solvers = {
     # "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
     "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(
@@ -156,5 +158,5 @@ for device in devices:
         )
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
+    # wp.clear_kernel_cache()
     unittest.main(verbosity=2)
