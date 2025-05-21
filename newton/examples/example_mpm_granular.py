@@ -1,23 +1,19 @@
 import argparse
-from typing import Optional
 
 import numpy as np
 import warp as wp
-import warp.examples
-import warp.sim.render
-from warp.sim import Model, State
 
 import newton
 from newton.solvers.solver_implicit_mpm import ImplicitMPMSolver
 
 
 class Example:
-    def __init__(self, options: argparse.Namespace, collider_mesh_path: Optional[str] = None):
+    def __init__(self, options: argparse.Namespace):
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
-        if collider_mesh_path is not None:
-            collider = load_collider_mesh(collider_mesh_path)
+        if options.collider is not None:
+            collider = _create_collider_mesh(options.collider)
             builder.set_ground_plane(offset=np.min(collider.points.numpy()[:, 1]))
             colliders = [collider]
         else:
@@ -26,15 +22,16 @@ class Example:
 
         builder.gravity = wp.vec3(options.gravity)
 
-        model: Model = builder.finalize()
+        model: newton.Model = builder.finalize()
+        model.particle_mu = options.friction_coeff
 
         self.frame_dt = 1.0 / options.fps
         self.sim_substeps = options.substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.model = model
-        self.state_0: State = model.state()
-        self.state_1: State = model.state()
+        self.state_0: newton.State = model.state()
+        self.state_1: newton.State = model.state()
 
         self.sim_time = 0.0
         self.solver = ImplicitMPMSolver(model, options)
@@ -45,16 +42,10 @@ class Example:
 
         self.particle_radius = self.solver.voxel_size / 6
 
-        if options.grains:
-            self.grains = self.solver.sample_grains(
-                self.state_0,
-                particle_radius=self.particle_radius,
-                grains_per_particle=10,
-            )
+        if options.headless:
+            self.renderer = None
         else:
-            self.grains = None
-
-        self.renderer = newton.utils.SimRendererOpenGL(self.model, "MPM Granular")
+            self.renderer = newton.utils.SimRendererOpenGL(self.model, "MPM Granular")
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -163,22 +154,8 @@ def mesh_triangle_indices(face_index_counts, face_indices):
     return tri_indices
 
 
-def load_collider_mesh(stage_path, prim_path):
-    # Create collider mesh
-    from pxr import Usd, UsdGeom
-
-    collider_stage = Usd.Stage.Open(stage_path)
-    usd_mesh = UsdGeom.Mesh(collider_stage.GetPrimAtPath(prim_path))
-    usd_counts = np.array(usd_mesh.GetFaceVertexCountsAttr().Get())
-    usd_indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get())
-
-    collider_points = wp.array(usd_mesh.GetPointsAttr().Get(), dtype=wp.vec3)
-    collider_indices = mesh_triangle_indices(usd_counts, usd_indices)
-    return wp.Mesh(collider_points, collider_indices)
-
-
-def _create_collider_mesh(kind: str):
-    if kind == "wedge":
+def _create_collider_mesh(collider: str):
+    if collider == "wedge":
         cube_faces = np.array(
             [
                 [0, 2, 6, 4],
@@ -203,58 +180,52 @@ def _create_collider_mesh(kind: str):
                 [1, 1, 1],
             ]
         )
-        cube_points = (cube_points * [10, 10, 25]) @ np.array(
+        cube_points = (cube_points * [1, 1, 2.5]) @ np.array(
             [
                 [np.cos(np.pi / 4), -np.sin(np.pi / 4), 0],
                 [np.sin(np.pi / 4), np.cos(np.pi / 4), 0],
                 [0, 0, 1],
             ]
         )
-        cube_points = cube_points + np.array([-9, 0, -12])
-
+        cube_points = cube_points + np.array([-0.9, 0, -1.2])
         cube_indices = mesh_triangle_indices(np.full(6, 4), cube_faces.flatten())
 
         return wp.Mesh(wp.array(cube_points, dtype=wp.vec3), wp.array(cube_indices, dtype=int))
 
-    return None
+    mesh_points, mesh_indices = newton.utils.load_mesh(collider)
+    return wp.Mesh(wp.array(mesh_points, dtype=wp.vec3), wp.array(mesh_indices, dtype=int))
+
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--emit_lo", type=float, nargs=3, default=[-10, 0, -10])
-    parser.add_argument("--emit_hi", type=float, nargs=3, default=[10, 20, 10])
-    parser.add_argument("--gravity", type=float, nargs=3, default=[0, -10, 0])
+    parser.add_argument("--collider", type=str)
+
+    parser.add_argument("--emit_lo", type=float, nargs=3, default=[-1, 0, -1])
+    parser.add_argument("--emit_hi", type=float, nargs=3, default=[1, 2, 1])
+    parser.add_argument("--gravity", type=float, nargs=3, default=[0, -1, 0])
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
-    parser.add_argument("--grains", action=argparse.BooleanOptionalAction, default=False)
 
-    parser.add_argument("--density", type=float, default=1.0)
     parser.add_argument("--max_fraction", type=float, default=1.0)
 
     parser.add_argument("--compliance", type=float, default=0.0)
-    parser.add_argument("--poisson", type=float, default=0.3)
-    parser.add_argument("--friction", type=float, default=0.48)
+    parser.add_argument("--poisson_ratio", "-nu", type=float, default=0.3)
+    parser.add_argument("--friction_coeff", "-mu", type=float, default=0.48)
     parser.add_argument("--yield_stress", "-ys", type=float, default=0.0)
-    parser.add_argument(
-        "--compression_yield_stress", "-cys", type=float, default=1.0e8
-    )
-    parser.add_argument(
-        "--stretching_yield_stress", "-sys", type=float, default=1.0e8
-    )
-    parser.add_argument(
-        "--unilateral", action=argparse.BooleanOptionalAction, default=True
-    )
-    parser.add_argument(
-        "--pad_grid", action=argparse.BooleanOptionalAction, default=False
-    )
-    parser.add_argument("--gs", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--compression_yield_stress", "-cys", type=float, default=1.0e8)
+    parser.add_argument("--stretching_yield_stress", "-sys", type=float, default=1.0e8)
+    parser.add_argument("--unilateral", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pad_grid", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--gauss_seidel", "-gs", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--max_iters", type=int, default=250)
     parser.add_argument("--tol", type=float, default=1.0e-5)
-    parser.add_argument("--voxel_size", type=float, default=1.0)
+    parser.add_argument("--voxel_size", "-dx", type=float, default=0.1)
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     options = parser.parse_args()
 
@@ -263,6 +234,3 @@ if __name__ == "__main__":
     for _ in range(options.num_frames):
         example.step()
         example.render()
-
-    if example.renderer:
-        example.renderer.save()
