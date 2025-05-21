@@ -637,7 +637,7 @@ class MuJoCoSolver(SolverBase):
             self.use_mujoco = use_mujoco
             if separate_envs_to_worlds is None:
                 separate_envs_to_worlds = not use_mujoco
-            (self.mjw_model, self.mjw_data, self.mj_model, self.mj_data) = self.convert_to_mjc(
+            self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
                 default_joint_damping=joint_damping,
@@ -687,6 +687,10 @@ class MuJoCoSolver(SolverBase):
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
+    
+    @override
+    def notify_model_changed(self, flags: int):
+        self.update_model_inertial_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1348,7 +1352,7 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
-        m = spec.compile()
+        self.mj_model = spec.compile()
 
         if target_filename:
             import os
@@ -1357,41 +1361,41 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        d = mujoco.MjData(m)
+        self.mj_data = mujoco.MjData(self.mj_model)
 
-        d.nefc = nefc_per_env
+        self.mj_data.nefc = nefc_per_env
 
-        m.opt.tolerance = tolerance
-        m.opt.ls_tolerance = ls_tolerance
-        m.opt.cone = cone
-        m.opt.iterations = iterations
-        m.opt.ls_iterations = ls_iterations
-        m.opt.integrator = integrator
-        m.opt.solver = solver
+        self.mj_model.opt.tolerance = tolerance
+        self.mj_model.opt.ls_tolerance = ls_tolerance
+        self.mj_model.opt.cone = cone
+        self.mj_model.opt.iterations = iterations
+        self.mj_model.opt.ls_iterations = ls_iterations
+        self.mj_model.opt.integrator = integrator
+        self.mj_model.opt.solver = solver
         # m.opt.disableflags = disableflags
-        m.opt.impratio = impratio
-        m.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        self.mj_model.opt.impratio = impratio
+        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
-        MuJoCoSolver.update_mjc_data(d, model, state)
+        MuJoCoSolver.update_mjc_data(self.mj_data, model, state)
 
         # fill some MjWarp model fields that outdated after update_mjc_data.
         # just setting qpos0 to d.qpos leads to weird behavior here, needs
         # to be investigated.
 
-        mujoco.mj_forward(m, d)
+        mujoco.mj_forward(self.mj_model, self.mj_data)
 
         with wp.ScopedDevice(model.device):
             # add axis_to_actuator mapping to the Newton model
             model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
-            mj_model = mujoco_warp.put_model(m)
+            self.mjw_model = mujoco_warp.put_model(self.mj_model)
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:
                 nworld = 1
 
             # expand model fields that can be expanded:
-            self.expand_model_fields(mj_model, nworld)
+            self.expand_model_fields(self.mjw_model, nworld)
 
             # complete the body mapping
             size = max(body_mapping.keys()) + 1
@@ -1403,19 +1407,16 @@ class MuJoCoSolver(SolverBase):
             self.body_mapping = wp.array(arr, dtype=int)
 
             # now fill with all the data from the Newton model.
-            self.update_model_body_properties(mj_model, model)
-            self.update_model_body_inertia(mj_model, model)
+            self.notify_model_changed(0)
             
             # TODO find better heuristics to determine nconmax and njmax
             if ncon_per_env:
                 nconmax = nworld * ncon_per_env
             else:
                 nconmax = model.rigid_contact_max * 4
-            nconmax = max(nconmax, d.ncon)
-            njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
-            mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
-
-        return mj_model, mj_data, m, d
+            nconmax = max(nconmax, self.mj_data.ncon)
+            njmax = max(nworld * nefc_per_env * 4, nworld * self.mj_data.nefc)
+            self.mjw_data = mujoco_warp.put_data(self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -1526,6 +1527,10 @@ class MuJoCoSolver(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+    def update_model_inertial_properties(self):
+        self.update_model_body_properties(self.mjw_model, self.model)
+        self.update_model_body_inertia(self.mjw_model, self.model)
 
     def update_model_body_properties(self, mj_model: MjWarpModel, model: Model):
         @wp.kernel
