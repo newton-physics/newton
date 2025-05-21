@@ -1391,7 +1391,7 @@ class MuJoCoSolver(SolverBase):
                 nworld = 1
 
             # expand model fields that can be expanded:
-            MuJoCoSolver.expand_model_fields(mj_model, nworld)
+            self.expand_model_fields(mj_model, nworld)
 
             # complete the body mapping
             size = max(body_mapping.keys()) + 1
@@ -1403,8 +1403,7 @@ class MuJoCoSolver(SolverBase):
             self.body_mapping = wp.array(arr, dtype=int)
 
             # now fill with all the data from the Newton model.
-            self.update_model_body_com(mj_model, model)
-            self.update_model_body_mass(mj_model, model)
+            self.update_model_body_properties(mj_model, model)
             self.update_model_body_inertia(mj_model, model)
             
             # TODO find better heuristics to determine nconmax and njmax
@@ -1418,8 +1417,7 @@ class MuJoCoSolver(SolverBase):
 
         return mj_model, mj_data, m, d
 
-    @staticmethod
-    def expand_model_fields(mj_model: MjWarpModel, nworld: int):
+    def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
 
@@ -1529,63 +1527,42 @@ class MuJoCoSolver(SolverBase):
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
 
-    def update_model_body_com(self, mj_model: MjWarpModel, model: Model):
+    def update_model_body_properties(self, mj_model: MjWarpModel, model: Model):
         @wp.kernel
-        def update_body_ipos_kernel(
+        def update_body_properties_kernel(
             body_com: wp.array(dtype=wp.vec3f),
+            body_mass: wp.array(dtype=float),
             bodies_per_env: int,
             up_axis: int,
             body_mapping: wp.array(dtype=int),
             # outputs
             body_ipos: wp.array2d(dtype=wp.vec3f),
+            body_mass_out: wp.array2d(dtype=float),
         ):
             tid = wp.tid()
             worldid = wp.tid() // bodies_per_env
             index_in_env = wp.tid() % bodies_per_env
             mjc_idx = body_mapping[index_in_env]
-            # convert position components
             if mjc_idx == -1:
                 return
             
+            # Update COM position
             if up_axis == 1:
                 body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
             else:
                 body_ipos[worldid, mjc_idx] = body_com[tid]
+            
+            # Update mass
+            body_mass_out[worldid, mjc_idx] = body_mass[tid]
 
         bodies_per_env = model.body_count // model.num_envs
 
         wp.launch(
-            update_body_ipos_kernel,
+            update_body_properties_kernel,
             dim=model.body_count,
-            inputs=[model.body_com, bodies_per_env, model.up_axis, self.body_mapping],
-            outputs=[mj_model.body_ipos],
+            inputs=[model.body_com, model.body_mass, bodies_per_env, model.up_axis, self.body_mapping],
+            outputs=[mj_model.body_ipos, mj_model.body_mass],
         )
-
-    def update_model_body_mass(self, mj_model: MjWarpModel, model: Model):
-            @wp.kernel
-            def update_body_mass_kernel(
-                body_mass: wp.array(dtype=float),
-                bodies_per_env: int,
-                body_mapping: wp.array(dtype=int),
-                # outputs
-                body_mass_out: wp.array2d(dtype=float),
-            ):
-                tid = wp.tid()
-                worldid = wp.tid() // bodies_per_env
-                index_in_env = wp.tid() % bodies_per_env
-                mjc_idx = body_mapping[index_in_env]
-                if mjc_idx == -1:
-                    return
-                body_mass_out[worldid, mjc_idx] = body_mass[tid]
-
-            bodies_per_env = model.body_count // model.num_envs
-
-            wp.launch(
-                update_body_mass_kernel,
-                dim=model.body_count,
-                inputs=[model.body_mass, bodies_per_env, self.body_mapping],
-                outputs=[mj_model.body_mass],
-            )
 
     def update_model_body_inertia(self, mj_model: MjWarpModel, model: Model):
             @wp.kernel
