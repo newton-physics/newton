@@ -860,8 +860,8 @@ class MuJoCoSolver(SolverBase):
                 outputs=[state.body_q],
             )
 
-    @staticmethod
     def convert_to_mjc(
+        self,
         model: Model,
         state: State | None = None,
         *,
@@ -970,7 +970,7 @@ class MuJoCoSolver(SolverBase):
         defaults.geom.solimp = geom_solimp
         defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
-        #spec.compiler.inertiafromgeom = True
+        spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
         if add_axes:
             # TODO figure out how to create noncolliding geoms
@@ -1225,7 +1225,6 @@ class MuJoCoSolver(SolverBase):
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
             )
             mj_bodies.append(body)
-            newton_mjc_body_mapping[child] = len(mj_bodies) - 1
 
             # add joint
             j_type = joint_type[ji]
@@ -1351,6 +1350,8 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
+        print(body_mapping)
+
         m = spec.compile()
 
         if target_filename:
@@ -1397,16 +1398,16 @@ class MuJoCoSolver(SolverBase):
             MuJoCoSolver.expand_model_fields(mj_model, nworld)
 
             # complete the body mapping
-            size = max(newton_mjc_body_mapping.keys()) + 1
+            size = max(body_mapping.keys()) + 1
             arr = np.full(size, -1, dtype=int)
-            for k, v in newton_mjc_body_mapping.items():
+            for k, v in body_mapping.items():
                 arr[k] = v
         
-            newton_mjc_body_mapping = arr
+            self.body_mapping = wp.array(arr, dtype=int)
         
             # now fill with all the data from the Newton model.
-            MuJoCoSolver.update_model_body_com(mj_model, model)
-            MuJoCoSolver.update_model_body_mass(mj_model, model)
+            self.update_model_body_com(mj_model, model)
+            self.update_model_body_mass(mj_model, model)
             
             # TODO find better heuristics to determine nconmax and njmax
             if ncon_per_env:
@@ -1530,8 +1531,7 @@ class MuJoCoSolver(SolverBase):
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
 
-    @staticmethod
-    def update_model_body_com(mj_model: MjWarpModel, model: Model):
+    def update_model_body_com(self, mj_model: MjWarpModel, model: Model):
         @wp.kernel
         def update_body_ipos_kernel(
             body_com: wp.array(dtype=wp.vec3f),
@@ -1555,17 +1555,15 @@ class MuJoCoSolver(SolverBase):
                 body_ipos[worldid, mjc_idx] = body_com[tid]
 
         bodies_per_env = model.body_count // model.num_envs
-        body_mapping = wp.array(newton_mjc_body_mapping, dtype=int)
 
         wp.launch(
             update_body_ipos_kernel,
             dim=model.body_count,
-            inputs=[model.body_com, bodies_per_env, model.up_axis, body_mapping],
+            inputs=[model.body_com, bodies_per_env, model.up_axis, self.body_mapping],
             outputs=[mj_model.body_ipos],
         )
 
-    @staticmethod
-    def update_model_body_mass(mj_model: MjWarpModel, model: Model):
+    def update_model_body_mass(self, mj_model: MjWarpModel, model: Model):
             @wp.kernel
             def update_body_mass_kernel(
                 body_mass: wp.array(dtype=float),
@@ -1583,12 +1581,11 @@ class MuJoCoSolver(SolverBase):
                 body_mass_out[worldid, mjc_idx] = body_mass[tid]
 
             bodies_per_env = model.body_count // model.num_envs
-            body_mapping = wp.array(newton_mjc_body_mapping, dtype=int)
 
             wp.launch(
                 update_body_mass_kernel,
                 dim=model.body_count,
-                inputs=[model.body_mass, bodies_per_env, body_mapping],
+                inputs=[model.body_mass, bodies_per_env, self.body_mapping],
                 outputs=[mj_model.body_mass],
             )
 
