@@ -1,24 +1,48 @@
-Newton documentation
-====================
+.. raw:: html
+
+   <meta http-equiv="refresh" content="0; url=guide/overview.html" />
+
+
+Newton Physics 
+===============
 
 .. toctree::
-    :maxdepth: 2
+   :maxdepth: 1
+   :hidden:
+   :caption: User Guide
+   
+   Overview <guide/overview>
+   guide/quickstart
+   guide/key-concepts
+   development-guide
+   guide/tutorials
 
-    quickstart
-    key-concepts
-    api
-    integrations/index
-    migration
-    extending-newton
-    development-guide
-    contributing
-    faq
-    stability-policy
-    changelog
+.. toctree::
+   :maxdepth: 0
+   :hidden:
+   :caption: API Reference
+   
+   Overview <api>
+   api_core
+   api_solvers
+   api_importers
+   api_renderers
 
-Indices and tables
-==================
 
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+
+.. toctree::
+   :hidden:
+   :caption: Further Reading
+
+   FAQ <faq>
+   Changelog <changelog>
+   Migration Guide <migration>
+   Developer Guide <development-guide>
+   Integrations <integrations/index>
+
+
+.. toctree::
+   :hidden:
+   :caption: Project Links
+
+    GitHub <https://github.com/newton-physics/newton>

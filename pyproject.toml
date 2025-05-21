@@ -37,9 +37,9 @@ dev = [
 ]
 docs = [
     "myst-parser>=3.0.1",
- "sphinx>=7.4.7",
- "furo>=2024.8.6",
- "sphinxcontrib-mermaid>=1.0.0",
+    "sphinx>=7.4.7",
+    "pydata_sphinx_theme>=0.16.1",
+    "sphinxcontrib-mermaid>=1.0.0",
 ]
 
 [tool.hatch.version]
@@ -47,6 +47,7 @@ path = "newton/_version.py"
 
 [tool.hatch.build.targets.wheel]
 include = ["/newton", "/newton/licenses"]
+exclude = ["/newton/assets/g1_description/"]
 
 [[tool.uv.index]]
 url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
@@ -103,7 +104,7 @@ ignore = [
     "UP018",  # Warp kernels often use float(val) and int(val)
     "RUF046", # Warp kernels often use int(val)
     "F811",   # Allow Warp kernel/function overloads
-    "TC001", # Allow quotations in type annotations, e.g. Literal["a"]
+    "TC001",  # Allow quotations in type annotations, e.g. Literal["a"]
     "TC002",
     "TC003",
     "F821",
