@@ -417,7 +417,6 @@ def integrate_elastic_strain(
 @wp.kernel
 def add_unilateral_strain_offset(
     max_fraction: float,
-    compliance: float,
     particle_volume: wp.array(dtype=float),
     collider_volume: wp.array(dtype=float),
     node_volume: wp.array(dtype=float),
@@ -553,16 +552,16 @@ def fill_collider_rigidity_matrices(
         J_cols[2 * i + 1] = 2 * collider_id + 1
 
         W = wp.skew(collider_coms[collider_id] - x)
-        I = wp.identity(n=3, dtype=float)
+        Id = wp.identity(n=3, dtype=float)
         J_values[2 * i] = W
-        J_values[2 * i + 1] = I
+        J_values[2 * i + 1] = Id
 
         bc_mass = node_volumes[i] * cvol * collider_density(collider_id, collider, collider_volumes)
 
         IJtm_values[2 * i] = -bc_mass * collider_inv_inertia[collider_id] * W
-        IJtm_values[2 * i + 1] = bc_mass / collider.masses[collider_id] * I
+        IJtm_values[2 * i + 1] = bc_mass / collider.masses[collider_id] * Id
 
-        non_rigid_diagonal[i] = -I
+        non_rigid_diagonal[i] = -Id
 
     else:
         J_cols[2 * i] = -1
@@ -744,23 +743,18 @@ class ImplicitMPMOptions(NamedTuple):
     gauss_seidel: bool = True
     pad_grid: bool = False
 
-    # material -- TODO move to model
-
-    # mass
-    density: float = 1.0
-    max_fraction: float = 1.0
-
     # plasticity
+    max_fraction: float = 1.0
     unilateral: bool = True
     friction: float = 0.48
     yield_stresses: Tuple[float, float, float] = (0.0, 1.0e8, 1.0e8)
 
     # elasticity (experimental)
     compliance: float = 0.0
-    poisson: float = 0.3
+    poisson_ratio: float = 0.3
 
 
-class ImplicitMPMScratchpad:
+class _ImplicitMPMScratchpad:
     """Stratch data for the implicit MPM solver"""
 
     def __init__(self):
@@ -798,7 +792,6 @@ class ImplicitMPMScratchpad:
         self.collider_total_volumes = None
         self.vel_node_volume = None
 
-        self.elastic_strain_delta_field = None
         self.scaled_stress_strain_mat = None
 
         self.elastic_rotation = None
@@ -841,36 +834,32 @@ class ImplicitMPMScratchpad:
             space_topology=sym_strain_space.topology, geometry_partition=domain.geometry_partition, with_halo=False
         )
 
-        with wp.ScopedTimer(
-            "Create fields",
-            synchronize=True,
-        ):
-            self.velocity_test = fem.make_test(velocity_space, domain=domain, space_partition=vel_space_partition)
-            self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
-            self.fraction_test = fem.make_test(
-                fraction_space,
-                space_restriction=self.velocity_test.space_restriction,
-            )
-            self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        # test, trial and discrete fields
+        self.velocity_test = fem.make_test(velocity_space, domain=domain, space_partition=vel_space_partition)
+        self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
+        self.fraction_test = fem.make_test(
+            fraction_space,
+            space_restriction=self.velocity_test.space_restriction,
+        )
+        self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
 
-            self.sym_strain_test = fem.make_test(
-                sym_strain_space, domain=domain, space_partition=strain_space_partition
-            )
-            self.full_strain_test = fem.make_test(
-                full_strain_space, space_restriction=self.sym_strain_test.space_restriction
-            )
-            self.divergence_test = fem.make_test(
-                divergence_space,
-                space_restriction=self.sym_strain_test.space_restriction,
-            )
-            self.elastic_strain_field = full_strain_space.make_field(space_partition=strain_space_partition)
-            self.elastic_strain_delta_field = full_strain_space.make_field(space_partition=strain_space_partition)
+        self.sym_strain_test = fem.make_test(sym_strain_space, domain=domain, space_partition=strain_space_partition)
+        self.full_strain_test = fem.make_test(
+            full_strain_space, space_restriction=self.sym_strain_test.space_restriction
+        )
+        self.divergence_test = fem.make_test(
+            divergence_space,
+            space_restriction=self.sym_strain_test.space_restriction,
+        )
+        self.elastic_strain_field = full_strain_space.make_field(space_partition=strain_space_partition)
+        self.elastic_strain_delta_field = full_strain_space.make_field(space_partition=strain_space_partition)
 
-            state_out.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
-            state_out.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-            state_out.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+        state_out.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
+        state_out.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        state_out.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
 
-            state_out.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
+        # other
+        state_out.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
 
         collider_quadrature_order = strain_degree + 1
         self.collider_quadrature = fem.RegularQuadrature(
@@ -973,8 +962,12 @@ class ImplicitMPMSolver(SolverBase):
         model: Model,
         options: ImplicitMPMOptions,
     ):
-        self.density = options.density
-        self.friction_coeff = options.friction
+        # TODO support for varying properties
+        self.density = model.particle_mass[:1].numpy()[0] / (
+            4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
+        )
+        self.friction_coeff = model.particle_mu
+
         self.yield_stresses = wp.vec3(
             options.yield_stress,
             -options.stretching_yield_stress,
@@ -991,11 +984,10 @@ class ImplicitMPMSolver(SolverBase):
         self.degree = 1 if options.unilateral else 0
 
         self.pad_grid = options.pad_grid
-        self.coloring = options.gs
+        self.coloring = options.gauss_seidel
 
-        self.compliance = options.compliance
-        poisson = options.poisson
-        lame = 1.0 / (1.0 + poisson) * np.array([poisson / (1.0 - 2.0 * poisson), 0.5])
+        poisson_ratio = options.poisson_ratio
+        lame = 1.0 / (1.0 + poisson_ratio) * np.array([poisson_ratio / (1.0 - 2.0 * poisson_ratio), 0.5])
         K = options.compliance
         self.stress_strain_mat = mat66(K / (2.0 * lame[1]) * np.eye(6))
         # self.stress_strain_mat = mat66(K * np.zeros((6, 6)))
@@ -1006,12 +998,8 @@ class ImplicitMPMSolver(SolverBase):
 
         self.setup_collider(model)
 
-        # Warp.sim model
-        print("Particle count:", model.particle_count)
-
         self.temporary_store = fem.TemporaryStore()
-
-        self._fined_grained_timers = True
+        self._enable_timers = True
         self._timers_use_nvtx = False
 
     @staticmethod
@@ -1035,6 +1023,8 @@ class ImplicitMPMSolver(SolverBase):
         collider_masses: List[float] = None,
         collider_friction: List[float] = None,
     ):
+        self._collider_meshes = colliders  # Keep a ref so that meshes are not garbage collected
+
         if colliders is None:
             colliders = []
 
@@ -1074,7 +1064,7 @@ class ImplicitMPMSolver(SolverBase):
     def _allocate_grid(self, positions: wp.array, voxel_size, padding_iterations: int = 0):
         with wp.ScopedTimer(
             "Allocate grid",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1088,18 +1078,24 @@ class ImplicitMPMSolver(SolverBase):
             state_in.particle_q, voxel_size=self.voxel_size, padding_iterations=1 if self.pad_grid else 0
         )
 
-        scratch = ImplicitMPMScratchpad()
-        scratch.create_function_spaces_and_fields(geo_partition, state_out=state_out, strain_degree=self.degree)
+        with wp.ScopedTimer(
+            "Scratchpad",
+            active=self._enable_timers,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=True,
+        ):
+            scratch = _ImplicitMPMScratchpad()
+            scratch.create_function_spaces_and_fields(geo_partition, state_out=state_out, strain_degree=self.degree)
 
-        scratch.allocate_temporaries(
-            self.temporary_store,
-            collider_count=self.collider.meshes.shape[0],
-            has_compliant_bodies=self._has_compliant_bodies,
-            elastic=self._elastic,
-        )
+            scratch.allocate_temporaries(
+                self.temporary_store,
+                collider_count=self.collider.meshes.shape[0],
+                has_compliant_bodies=self._has_compliant_bodies,
+                elastic=self._elastic,
+            )
 
-        if self.coloring:
-            scratch.compute_coloring(self.temporary_store)
+            if self.coloring:
+                scratch.compute_coloring(self.temporary_store)
 
         return scratch
 
@@ -1112,18 +1108,34 @@ class ImplicitMPMSolver(SolverBase):
         contacts: Contact,
         dt: float,
     ):
-        fem.set_default_temporary_store(self.temporary_store)
         scratch = self._rebuild_scratchpad(state_in, state_out)
 
+        fem.set_default_temporary_store(self.temporary_store)
+        self._step_impl(model, state_in, state_out, dt, scratch)
+
+    def _step_impl(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        dt: float,
+        scratch: _ImplicitMPMScratchpad,
+    ):
         domain = scratch.velocity_test.domain
         inv_cell_volume = 1.0 / self.voxel_size**3
 
-        self._warmstart_fields_from_previous_state(domain, state_in, state_out)
+        with wp.ScopedTimer(
+            "Warmstart fields",
+            active=self._enable_timers,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=True,
+        ):
+            self._warmstart_fields_from_previous_state(domain, state_in, state_out)
 
         # Bin particles to grid cells
         with wp.ScopedTimer(
             "Bin particles",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1139,7 +1151,7 @@ class ImplicitMPMSolver(SolverBase):
         # Velocity right-hand side and inverse mass matrix
         with wp.ScopedTimer(
             "Free velocity",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1177,8 +1189,8 @@ class ImplicitMPMSolver(SolverBase):
             )
 
         with wp.ScopedTimer(
-            "collider",
-            active=self._fined_grained_timers,
+            "Collider",
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1226,18 +1238,19 @@ class ImplicitMPMSolver(SolverBase):
 
         with wp.ScopedTimer(
             "Rigidity",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
             rigidity_matrix = self._build_rigidity_matrix(
                 _get_array(scratch.collider_total_volumes),
                 _get_array(scratch.vel_node_volume),
+                state_out.collider_ids,
             )
 
         with wp.ScopedTimer(
             "Compute strain-node volumes",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1268,7 +1281,7 @@ class ImplicitMPMSolver(SolverBase):
         if self._elastic:
             with wp.ScopedTimer(
                 "Elastic strain rhs",
-                active=self._fined_grained_timers,
+                active=self._enable_timers,
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=True,
             ):
@@ -1309,7 +1322,7 @@ class ImplicitMPMSolver(SolverBase):
         if self.unilateral:
             with wp.ScopedTimer(
                 "Unilateral offset",
-                active=self._fined_grained_timers,
+                active=self._enable_timers,
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=True,
             ):
@@ -1318,7 +1331,6 @@ class ImplicitMPMSolver(SolverBase):
                     dim=strain_node_count,
                     inputs=[
                         self.max_fraction,
-                        self.compliance,
                         scratch.strain_node_particle_volume.array,
                         scratch.strain_node_collider_volume.array,
                         scratch.strain_node_volume.array,
@@ -1334,7 +1346,7 @@ class ImplicitMPMSolver(SolverBase):
 
         with wp.ScopedTimer(
             "Strain matrix",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1363,7 +1375,7 @@ class ImplicitMPMSolver(SolverBase):
 
         with wp.ScopedTimer(
             "Strain solve",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1394,7 +1406,7 @@ class ImplicitMPMSolver(SolverBase):
         # (A)PIC advection
         with wp.ScopedTimer(
             "Advection",
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
@@ -1416,7 +1428,7 @@ class ImplicitMPMSolver(SolverBase):
         if self._elastic:
             with wp.ScopedTimer(
                 "Elastic strain update",
-                active=self._fined_grained_timers,
+                active=self._enable_timers,
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=True,
             ):
@@ -1603,7 +1615,7 @@ class ImplicitMPMSolver(SolverBase):
             ],
         )
 
-    def _build_rigidity_matrix(self, collider_volumes, node_volumes):
+    def _build_rigidity_matrix(self, collider_volumes, node_volumes, collider_ids):
         """Assembles the rigidity matrix for the current time step
         (propagates local impulses to the rest of the rigid body)
         """
@@ -1620,7 +1632,7 @@ class ImplicitMPMSolver(SolverBase):
         IJtm_values = wp.empty(vel_node_count * 2, dtype=wp.mat33)
         Iphi_diag = wp.empty(vel_node_count, dtype=wp.mat33)
 
-        with wp.ScopedTimer("Fill rigidity matrix", synchronize=True, active=self._fined_grained_timers):
+        with wp.ScopedTimer("Fill rigidity matrix", synchronize=True, active=self._enable_timers):
             wp.launch(
                 fill_collider_rigidity_matrices,
                 dim=vel_node_count,
@@ -1630,7 +1642,7 @@ class ImplicitMPMSolver(SolverBase):
                     node_volumes,
                     self.collider,
                     self.voxel_size,
-                    state_out.collider_ids,
+                    collider_ids,
                     self.collider_coms,
                     self.collider_inv_inertia,
                     J_rows,
@@ -1644,7 +1656,7 @@ class ImplicitMPMSolver(SolverBase):
         with wp.ScopedTimer(
             "Build rigidity matrix",
             synchronize=True,
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
         ):
             J = sp.bsr_from_triplets(
@@ -1666,7 +1678,7 @@ class ImplicitMPMSolver(SolverBase):
         with wp.ScopedTimer(
             "Assemble rigidity matrix",
             synchronize=True,
-            active=self._fined_grained_timers,
+            active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
         ):
             Iphi = sp.bsr_diag(Iphi_diag)
