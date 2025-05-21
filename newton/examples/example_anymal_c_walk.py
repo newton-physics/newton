@@ -122,7 +122,7 @@ def apply_joint_position_pd_control(
         tq = Kp * (tq - q) - Kd * qd
 
         # skip the 6 dofs of the free joint
-        joint_f[6+aj] = tq
+        joint_f[6 + aj] = tq
 
 
 class AnymalController:
