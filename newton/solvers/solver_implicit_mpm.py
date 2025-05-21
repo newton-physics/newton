@@ -714,13 +714,13 @@ def node_color_8_stencil(
     color_indices[pid] = pid
 
 
-def allocate_by_voxels(particle_q, voxel_size, padding_iterations: int = 0):
+def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
     volume = wp.Volume.allocate_by_voxels(
         voxel_points=particle_q.flatten(),
         voxel_size=voxel_size,
     )
 
-    for _pad_i in range(padding_iterations):
+    for _pad_i in range(padding_voxels):
         voxels = wp.empty((volume.get_voxel_count(),), dtype=wp.vec3i)
         volume.get_voxels(voxels)
 
@@ -740,8 +740,9 @@ class ImplicitMPMOptions(NamedTuple):
     max_iterations: int = 250
     tolerance: float = 1.0e-5
     voxel_size: float = 1.0
+    grid_padding: int = 0
+    dynamic_grid: bool = True
     gauss_seidel: bool = True
-    pad_grid: bool = False
 
     # plasticity
     max_fraction: float = 1.0
@@ -802,7 +803,6 @@ class _ImplicitMPMScratchpad:
     def create_function_spaces_and_fields(
         self,
         geo_partition: fem.GeometryPartition,
-        state_out: State = None,
         strain_degree: int = 1,
     ):
         domain = fem.Cells(geo_partition)
@@ -853,13 +853,6 @@ class _ImplicitMPMScratchpad:
         )
         self.elastic_strain_field = full_strain_space.make_field(space_partition=strain_space_partition)
         self.elastic_strain_delta_field = full_strain_space.make_field(space_partition=strain_space_partition)
-
-        state_out.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
-        state_out.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-        state_out.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-
-        # other
-        state_out.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
 
         collider_quadrature_order = strain_degree + 1
         self.collider_quadrature = fem.RegularQuadrature(
@@ -918,14 +911,42 @@ class _ImplicitMPMScratchpad:
         color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
 
         if degree == 1:
-            voxels = grid.vertex_grid.get_voxels()
+            if isinstance(grid, fem.Nanogrid):
+                voxels = grid.vertex_grid.get_voxels()
+            else:
+                voxels = wp.array(
+                    np.stack(
+                        np.meshgrid(
+                            np.arange(grid.res[0] + 1),
+                            np.arange(grid.res[1] + 1),
+                            np.arange(grid.res[2] + 1),
+                            indexing="ij",
+                        ),
+                        axis=-1,
+                    ).reshape(-1, 3),
+                    dtype=int,
+                )
             wp.launch(
                 node_color_27_stencil,
                 dim=strain_node_count,
                 inputs=[voxels, colors.array, color_indices.array],
             )
         else:
-            voxels = grid.cell_grid.get_voxels()
+            if isinstance(grid, fem.Nanogrid):
+                voxels = grid.cell_grid.get_voxels()
+            else:
+                voxels = wp.array(
+                    np.stack(
+                        np.meshgrid(
+                            np.arange(grid.res[0]),
+                            np.arange(grid.res[1]),
+                            np.arange(grid.res[2]),
+                            indexing="ij",
+                        ),
+                        axis=-1,
+                    ).reshape(-1, 3),
+                    dtype=int,
+                )
             wp.launch(
                 node_color_8_stencil,
                 dim=strain_node_count,
@@ -983,7 +1004,8 @@ class ImplicitMPMSolver(SolverBase):
         self.voxel_size = options.voxel_size
         self.degree = 1 if options.unilateral else 0
 
-        self.pad_grid = options.pad_grid
+        self.grid_padding = options.grid_padding
+        self.dynamic_grid = options.dynamic_grid
         self.coloring = options.gauss_seidel
 
         poisson_ratio = options.poisson_ratio
@@ -1002,6 +1024,8 @@ class ImplicitMPMSolver(SolverBase):
         self._enable_timers = True
         self._timers_use_nvtx = False
 
+        self._fixed_scratchpad = None
+
     @staticmethod
     def enrich_state(state: State):
         state.particle_qd_grad = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33)
@@ -1012,6 +1036,7 @@ class ImplicitMPMSolver(SolverBase):
         state.velocity_field = None
         state.impulse_field = None
         state.stress_field = None
+        state.collider_ids = None
 
     def setup_collider(
         self,
@@ -1061,21 +1086,32 @@ class ImplicitMPMSolver(SolverBase):
 
         self.collider = collider
 
-    def _allocate_grid(self, positions: wp.array, voxel_size, padding_iterations: int = 0):
+    def _allocate_grid(self, positions: wp.array, voxel_size, padding_voxels: int = 0):
         with wp.ScopedTimer(
             "Allocate grid",
             active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
-            volume = allocate_by_voxels(positions, voxel_size, padding_iterations=padding_iterations)
-            grid = fem.Nanogrid(volume)
+            if self.dynamic_grid:
+                volume = allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
+                grid = fem.Nanogrid(volume)
+            else:
+                pos_np = positions.numpy()
+                bbox_min, bbox_max = np.min(pos_np, axis=0), np.max(pos_np, axis=0)
+                bbox_max += padding_voxels * voxel_size
+                bbox_min -= padding_voxels * voxel_size
+                grid = fem.Grid3D(
+                    bounds_lo=wp.vec3(bbox_min),
+                    bounds_hi=wp.vec3(bbox_max),
+                    res=wp.vec3i(np.ceil((bbox_max - bbox_min) // voxel_size).astype(int)),
+                )
 
         return grid
 
-    def _rebuild_scratchpad(self, state_in: State, state_out: State):
+    def _rebuild_scratchpad(self, state_in: State):
         geo_partition = self._allocate_grid(
-            state_in.particle_q, voxel_size=self.voxel_size, padding_iterations=1 if self.pad_grid else 0
+            state_in.particle_q, voxel_size=self.voxel_size, padding_voxels=self.grid_padding
         )
 
         with wp.ScopedTimer(
@@ -1085,7 +1121,7 @@ class ImplicitMPMSolver(SolverBase):
             synchronize=True,
         ):
             scratch = _ImplicitMPMScratchpad()
-            scratch.create_function_spaces_and_fields(geo_partition, state_out=state_out, strain_degree=self.degree)
+            scratch.create_function_spaces_and_fields(geo_partition, strain_degree=self.degree)
 
             scratch.allocate_temporaries(
                 self.temporary_store,
@@ -1108,8 +1144,14 @@ class ImplicitMPMSolver(SolverBase):
         contacts: Contact,
         dt: float,
     ):
-        scratch = self._rebuild_scratchpad(state_in, state_out)
+        if self.dynamic_grid:
+            scratch = self._rebuild_scratchpad(state_in)
+        else:
+            if self._fixed_scratchpad is None:
+                self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
+            scratch = self._fixed_scratchpad
 
+        self._reset_state(scratch, state_out)
         fem.set_default_temporary_store(self.temporary_store)
         self._step_impl(model, state_in, state_out, dt, scratch)
 
@@ -1694,12 +1736,33 @@ class ImplicitMPMSolver(SolverBase):
 
         return rigid
 
-    def _warmstart_fields_from_previous_state(self, domain, state_in: State, state_out: State):
+    def _reset_state(self, scratch: _ImplicitMPMScratchpad, state_out: State):
+        velocity_space = scratch.velocity_test.space
+        sym_strain_space = scratch.sym_strain_test.space
+        vel_space_partition = scratch.velocity_test.space_partition
+        strain_space_partition = scratch.sym_strain_test.space_partition
+
+        if self.dynamic_grid or state_out.impulse_field is None:
+            state_out.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
+        if self.dynamic_grid or state_out.velocity_field is None:
+            state_out.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        if self.dynamic_grid or state_out.stress_field is None:
+            state_out.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+        if self.dynamic_grid or state_out.collider_ids is None:
+            state_out.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
+
+    def _warmstart_fields_from_previous_state(self, domain: fem.GeometryDomain, state_in: State, state_out: State):
         if state_in.impulse_field is not None:
-            prev_impulse_field = fem.NonconformingField(domain, state_in.impulse_field)
-            fem.interpolate(prev_impulse_field, dest=state_out.impulse_field)
+            if self.dynamic_grid:
+                prev_impulse_field = fem.NonconformingField(domain, state_in.impulse_field)
+                fem.interpolate(prev_impulse_field, dest=state_out.impulse_field)
+            else:
+                state_out.impulse_field.dof_values.assign(state_in.impulse_field.dof_values)
 
         # Interpolate previous stress
         if state_in.stress_field is not None:
-            prev_stress_field = fem.NonconformingField(domain, state_in.stress_field)
-            fem.interpolate(prev_stress_field, dest=state_out.stress_field)
+            if self.dynamic_grid:
+                prev_stress_field = fem.NonconformingField(domain, state_in.stress_field)
+                fem.interpolate(prev_stress_field, dest=state_out.stress_field)
+            else:
+                state_out.stress_field.dof_values.assign(state_in.stress_field.dof_values)

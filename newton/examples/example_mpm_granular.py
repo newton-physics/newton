@@ -22,6 +22,8 @@ class Example:
 
         builder.gravity = wp.vec3(options.gravity)
 
+        options.grid_padding = 0 if options.dynamic_grid else 5
+
         model: newton.Model = builder.finalize()
         model.particle_mu = options.friction_coeff
 
@@ -218,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--compression_yield_stress", "-cys", type=float, default=1.0e8)
     parser.add_argument("--stretching_yield_stress", "-sys", type=float, default=1.0e8)
     parser.add_argument("--unilateral", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--pad_grid", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--dynamic_grid", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gauss_seidel", "-gs", action=argparse.BooleanOptionalAction, default=True)
 
     parser.add_argument("--max_iters", type=int, default=250)
