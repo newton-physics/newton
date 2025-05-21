@@ -193,6 +193,60 @@ class TestMuJoCoSolver(unittest.TestCase):
                             places=6,
                             msg=f"COM position mismatch for body {body_idx} in environment {env_idx}, dimension {dim}"
                         )
+
+    def test_randomize_body_inertia(self):
+        """
+        Tests if the body inertia is randomized correctly.
+        """
+        # Randomize inertia tensors for all bodies in all environments
+        # Simple inertia tensors that satisfy triangle inequality
+
+        new_inertias = np.zeros((self.model.body_count, 3, 3))
+        bodies_per_env = self.model.body_count // self.model.num_envs
+        for i in range(self.model.body_count):
+            env_idx = i // bodies_per_env
+            if env_idx == 0:
+                # First environment: ensure a + b > c with random values
+                a = 2.0 + np.random.uniform(0.0, 0.5)
+                b = 3.0 + np.random.uniform(0.0, 0.5)
+                c = min(a + b - 0.1, 4.0)  # Ensure a + b > c
+                new_inertias[i] = np.diag([a, b, c])
+            else:
+                # Second environment: ensure a + b > c with random values
+                a = 3.0 + np.random.uniform(0.0, 0.5)
+                b = 4.0 + np.random.uniform(0.0, 0.5)
+                c = min(a + b - 0.1, 5.0)  # Ensure a + b > c
+                new_inertias[i] = np.diag([a, b, c])
+        self.model.body_inertia.assign(new_inertias)
+
+        # Initialize solver
+        solver = MuJoCoSolver(self.model)
+        
+        # Check that inertia tensors were transferred correctly
+        bodies_per_env = self.model.body_count // self.model.num_envs
+        for env_idx in range(self.model.num_envs):
+            for body_idx in range(bodies_per_env):
+                newton_idx = env_idx * bodies_per_env + body_idx
+                mjc_idx = solver.body_mapping.numpy()[body_idx]
+                if mjc_idx != -1:  # Skip unmapped bodies
+                    newton_inertia = new_inertias[newton_idx]
+                    mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx]
+                    
+                    # Get eigenvalues of both tensors
+                    newton_eigvals = np.linalg.eigvalsh(newton_inertia)
+                    mjc_eigvals = mjc_inertia  # Already in diagonal form
+                    
+                    # Sort eigenvalues in descending order
+                    newton_eigvals.sort()
+                    newton_eigvals = newton_eigvals[::-1]
+                    
+                    for dim in range(3):
+                        self.assertAlmostEqual(
+                            newton_eigvals[dim],
+                            mjc_eigvals[dim],
+                            places=6,
+                            msg=f"Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}"
+                        )
         
 
     @unittest.skip("Trajectory rendering for debugging")
