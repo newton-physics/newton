@@ -32,7 +32,9 @@ dependencies = ["warp-lang>=1.7.0.dev20250326"]
 dev = [
     "coverage[toml]>=7.8.0",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
+    "torch>=2.7.0",
     "trimesh>=4.6.8",
 ]
 docs = [
@@ -73,6 +75,7 @@ dev = [
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
 ]
