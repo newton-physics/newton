@@ -61,7 +61,10 @@ def compute_delassus_diagonal(
     block_beg = strain_mat_offsets[tau_i]
     block_end = strain_mat_offsets[tau_i + 1]
 
-    diag_block = stress_strain_matrices[tau_i]
+    if stress_strain_matrices:
+        diag_block = stress_strain_matrices[tau_i]
+    else:
+        diag_block = mat66(0.0)
 
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
@@ -110,7 +113,8 @@ def compute_delassus_diagonal(
         for b in range(block_beg, block_end):
             local_strain_mat_values[b] = ev * strain_mat_values[b]
 
-        local_stress_strain_matrices[tau_i] = ev * stress_strain_matrices[tau_i] * delassus_rotation[tau_i]
+        if local_stress_strain_matrices:
+           local_stress_strain_matrices[tau_i] = ev * stress_strain_matrices[tau_i] * delassus_rotation[tau_i]
     else:
         # Not a valid constraint, disable
         delassus_diagonal[tau_i] = vec6(1.0)
@@ -118,7 +122,8 @@ def compute_delassus_diagonal(
         delassus_rotation[tau_i] = wp.identity(n=6, dtype=float)
         local_stress[tau_i] = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         local_strain_rhs[tau_i] = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        local_stress_strain_matrices[tau_i] = mat66(0.0)
+        if local_stress_strain_matrices:
+            local_stress_strain_matrices[tau_i] = mat66(0.0)
 
 
 @wp.kernel
@@ -175,7 +180,10 @@ def postprocess_stress(
     diag = delassus_diagonal[i]
 
     loc_stress = local_stress[i]
-    loc_strain = -(local_stress_strain_matrices[i] * loc_stress)
+    if local_stress_strain_matrices:
+        loc_strain = -(local_stress_strain_matrices[i] * loc_stress)
+    else:
+        loc_strain = vec6(0.0)
 
     stress[i] = rot * loc_stress
     elastic_strain[i] = rot * wp.cw_mul(loc_strain, diag)
@@ -310,7 +318,8 @@ def solve_local_stress(
     # substract elastic strain
     # this is the one thing that spearates elasticity from simple modification
     # of the the Delassus operator
-    tau += local_stress_strain_matrices[tau_i] * cur_stress
+    if local_stress_strain_matrices:
+        tau += local_stress_strain_matrices[tau_i] * cur_stress
 
     tau_new = solve_coulomb_aniso(
         D,
@@ -743,6 +752,7 @@ def solve_rheology(
     local_stress_strain_matrices = stress_strain_matrices
     local_strain_rhs = strain_rhs
     local_stress = stress
+
 
     wp.launch(
         kernel=compute_delassus_diagonal,
