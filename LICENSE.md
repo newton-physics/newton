@@ -275,3 +275,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ------------------------------------------------------------------------------
+
+This product bundles the Franka Description, which is available under
+Apache License 2.0, Copyright 2023 Franka Robotics GmbH.

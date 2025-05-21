@@ -1,0 +1,72 @@
+joint1:
+  kinematic:
+    x: 0
+    y: 0
+    z: 0.333
+    roll: 0
+    pitch: 0
+    yaw: 0
+
+joint2:
+  kinematic:
+    x: 0
+    y: 0
+    z: 0
+    roll: -1.570796326794897
+    pitch: 0
+    yaw: 0
+
+joint3:
+  kinematic:
+    x: 0
+    y: -0.316
+    z: 0
+    roll: 1.570796326794897
+    pitch: 0
+    yaw: 0
+
+joint4:
+  kinematic:
+    x: 0.0825
+    y: 0
+    z: 0
+    roll: 1.570796326794897
+    pitch: 0
+    yaw: 0
+
+joint5:
+  kinematic:
+    x: -0.0825
+    y: 0.384
+    z: 0
+    roll: -1.570796326794897
+    pitch: 0
+    yaw: 0
+
+joint6:
+  kinematic:
+    x: 0
+    y: 0
+    z: 0
+    roll: 1.570796326794897
+    pitch: 0
+    yaw: 0
+
+joint7:
+  kinematic:
+    x: 0.088
+    y: 0
+    z: 0
+    roll: 1.570796326794897
+    pitch: 0
+    yaw: 0
+
+# Joint to tool origin
+joint8:
+  kinematic:
+    x: 0
+    y: 0
+    z: 0.107
+    roll: 0
+    pitch: 0
+    yaw: 0

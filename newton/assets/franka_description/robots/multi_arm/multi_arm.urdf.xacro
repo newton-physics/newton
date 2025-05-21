@@ -1,0 +1,102 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="multi_arm">
+
+  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+
+  <!--
+    DEPRECATION NOTICE
+    argument arm_id is no longer supported and will be removed in the future.
+    This argument is ignored.
+  -->
+  <!-- Define arguments -->
+  <xacro:arg name="arm_ids" default="['fr3','fr3']" />
+  <xacro:property name="arm_ids_list" value="${$(arg arm_ids)}" />
+  <xacro:arg name="number_of_robots" default = "2"/>
+
+  <!-- Define arguments -->
+  <xacro:arg name="xyz_values" default="['0 0.1 0','0 -0.1 0']" />
+  <xacro:property name="xyz_list" value="${$(arg xyz_values)}" />
+
+  <!-- Define arguments -->
+  <xacro:arg name="rpy_values" default="['-0.7 0 0','0.7 0 0']" />
+  <xacro:property name="rpy_list" value="${$(arg rpy_values)}" />
+
+  <!-- Don't print a prefix for joints, visuals, and links? -->
+  <xacro:arg name="no_prefix" default="false"/>
+
+  <!-- Should an end-effector be mounted at the flange?" -->
+  <xacro:arg name="hand" default="true" />
+
+  <!-- Which end-effector would be mounted at the flange?" -->
+  <xacro:arg name="ee_id" default="franka_hand" />
+
+  <!-- Should self-collision be enabled? -->
+  <xacro:arg name="with_sc" default="false" />
+
+  <!-- Is the robot being controlled with ros2_control?" -->
+  <xacro:arg name="ros2_control" default="false" />
+
+  <!-- IP address or hostname of the robot" -->
+  <xacro:arg name="robot_ips" default="['172.16.0.2','172.16.0.3']" />
+  <xacro:property name="robot_ips_list" value="${$(arg robot_ips)}" />
+
+  <!-- Should a fake hardware be used? -->
+  <xacro:arg name="use_fake_hardware" default="false" />
+
+  <!-- Should fake sensors be used? -->
+  <xacro:arg name="fake_sensor_commands" default="false" />
+
+  <!-- Should the robot be spawned in Gazebo?" -->
+  <xacro:arg name="gazebo" default="false" />
+
+  <!-- Should the robot be spawned in Gazebo with effort interfaces?" -->
+  <xacro:arg name="gazebo_effort" default="false" />
+
+  <!-- Prefixes for arm -->
+  <!-- TODO: check if the list size is correct -->
+  <xacro:arg name="arm_prefixes" default="['left','right']" />
+  <xacro:property name="arm_prefixes_list" value="${$(arg arm_prefixes)}" />
+
+  <!-- For a multi arm setup, we need a threaded robot running async-->
+  <xacro:arg name="multi_arm" default="true" />
+
+  <link name="base">
+  </link>
+
+  <!-- The multi robot setup configures 'multi_arm' by default to true s.t. it uses the async threading approach for the hardware interface -->
+  <xacro:macro name="loop" params="i">
+    <xacro:unless value="${i == $(arg number_of_robots)}">
+      <joint name="${arm_prefixes_list[i]}_base_joint" type="fixed">
+        <parent link="base"/>
+        <child link="${arm_prefixes_list[i]}_base"/>
+        <origin rpy="${rpy_list[i]}" xyz="${xyz_list[i]}"/>
+      </joint>
+      <xacro:property name="arm_id_i" value="${arm_ids_list[i]}"/>
+      <xacro:arg name="inertials_path" default="$(find franka_description)/robots/${arm_id_i}/inertials.yaml"/>
+      <xacro:arg name="kinematics_path" default="$(find franka_description)/robots/${arm_id_i}/kinematics.yaml"/>
+      <xacro:arg name="dynamics_path" default="$(find franka_description)/robots/${arm_id_i}/dynamics.yaml"/>
+      <xacro:arg name="joint_limits_path" default="$(find franka_description)/robots/${arm_id_i}/joint_limits.yaml"/>
+      <xacro:franka_robot arm_id="${arm_id_i}"
+                          joint_limits="${xacro.load_yaml('$(arg joint_limits_path)')}"
+                          inertials="${xacro.load_yaml('$(arg inertials_path)')}"
+                          kinematics="${xacro.load_yaml('$(arg kinematics_path)')}"
+                          dynamics="${xacro.load_yaml('$(arg dynamics_path)')}"
+                          gazebo="$(arg gazebo)"
+                          hand="$(arg hand)"
+                          ee_id="$(arg ee_id)"
+                          with_sc="$(arg with_sc)"
+                          ros2_control="$(arg ros2_control)"
+                          robot_ip="${robot_ips_list[i]}"
+                          use_fake_hardware="$(arg use_fake_hardware)"
+                          fake_sensor_commands="$(arg fake_sensor_commands)"
+                          gazebo_effort="$(arg gazebo_effort)"
+                          no_prefix="$(arg no_prefix)"
+                          arm_prefix= "${arm_prefixes_list[i]}"
+                          connected_to="${arm_prefixes_list[i]}_base"
+                          multi_arm="$(arg multi_arm)">
+      </xacro:franka_robot>
+      <xacro:loop i="${i+1}"/>
+    </xacro:unless>
+  </xacro:macro>
+  <xacro:loop i="0"/>
+</robot>

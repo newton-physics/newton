@@ -1,0 +1,62 @@
+joint1:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint2:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint3:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint4:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint5:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint6:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16
+
+joint7:
+  dynamic:
+    D: 1  
+    K: 7000 
+    damping: 0.003
+    friction: 0.2
+    mu_coulomb: 0
+    mu_viscous: 16

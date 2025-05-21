@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:macro name="franka_arm_ros2_control"
+         params="arm_id
+             robot_ip
+             use_fake_hardware:=^|false
+             fake_sensor_commands:=^|false
+             gazebo:=^|false
+             hand:=^|false
+             gazebo_effort:=^|false
+             arm_prefix:=''
+             multi_arm:=false">
+             
+    <xacro:property name="arm_prefix_modified" value="${'' if arm_prefix == '' else arm_prefix + '_'}" />
+    <ros2_control name="${arm_prefix_modified}FrankaHardwareInterface" type="system">
+        <hardware>
+          <param name="arm_id">${arm_id}</param>
+          <param name="prefix">${arm_prefix}</param>
+          <xacro:if value="${use_fake_hardware}">
+            <plugin>fake_components/GenericSystem</plugin>
+            <param name="fake_sensor_commands">${fake_sensor_commands}</param>
+            <param name="state_following_offset">0.0</param>
+          </xacro:if>
+
+          <xacro:if value="${gazebo}">
+            <plugin>franka_ign_ros2_control/IgnitionSystem</plugin>
+          </xacro:if>
+
+          <xacro:if value="${use_fake_hardware == 0 and gazebo == 0 and multi_arm == 0}">
+            <plugin>franka_hardware/FrankaHardwareInterface</plugin>
+            <param name="robot_ip">${robot_ip}</param>
+            <param name="arm_prefix">${arm_prefix}</param>
+          </xacro:if>
+          <xacro:if value="${use_fake_hardware == 0 and gazebo == 0 and multi_arm == 1}">
+            <plugin>franka_hardware/MultiFrankaHardwareInterface</plugin>
+            <param name="robot_ip">${robot_ip}</param>
+            <param name="arm_prefix">${arm_prefix}</param>
+          </xacro:if>
+        </hardware>
+
+      <xacro:macro name="configure_joint" params="joint_name initial_position">
+        <joint name="${joint_name}">
+          <!--
+            deactivated for gazebo velocity and position interface due to a bug
+            https://github.com/ros-controls/gz_ros2_control/issues/343
+
+            Command Interfaces -->
+          <xacro:if value="${multi_arm == 0}">
+            <command_interface name="position"/>
+            <command_interface name="velocity"/>
+          </xacro:if>
+          <xacro:if value="${gazebo == 0 or gazebo_effort == 1}">
+            <command_interface name="effort"/>
+          </xacro:if>
+
+          <!-- State Interfaces -->
+          <state_interface name="position">
+            <param name="initial_value">${initial_position}</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+            <param name="initial_value">0.0</param>
+          <state_interface name="effort"/>
+        </joint>
+      </xacro:macro>
+
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint1" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint2" initial_position="${-pi/4}"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint3" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint4" initial_position="${-3*pi/4}"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint5" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint6" initial_position="${pi/2}"/>
+      <xacro:configure_joint joint_name="${arm_prefix_modified}${arm_id}_joint7" initial_position="${pi/4}"/>
+      <xacro:if value="${gazebo and hand}">
+        <xacro:configure_joint joint_name="${arm_id}_finger_joint1" initial_position="0.0" />
+      </xacro:if>
+
+    </ros2_control>
+    <xacro:if value="${gazebo}">
+      <gazebo>
+        <plugin filename="franka_ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+          <parameters>$(find franka_gazebo_bringup)/config/franka_gazebo_controllers.yaml</parameters>
+        </plugin>
+      </gazebo>
+    </xacro:if>
+
+  </xacro:macro>
+</robot>
