@@ -1501,9 +1501,9 @@ class MuJoCoSolver(SolverBase):
 
         @wp.kernel
         def repeat_array_kernel(
-            src: wp.array(dtype=float),
+            src: wp.array(dtype=Any),
             nelems_per_world: int,
-            dst: wp.array(dtype=float),
+            dst: wp.array(dtype=Any),
         ):
             tid = wp.tid()
             src_idx = tid % nelems_per_world
