@@ -554,7 +554,6 @@ def convert_body_xforms_to_warp_kernel(
     # quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
-newton_mjc_body_mapping = {}
 
 class MuJoCoSolver(SolverBase):
     """
@@ -908,8 +907,6 @@ class MuJoCoSolver(SolverBase):
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: A tuple containing the model and data objects for ``mujoco_warp`` and MuJoCo.
         """
         mujoco, mujoco_warp = import_mujoco()
-
-        global newton_mjc_body_mapping
 
         actuator_args = {
             "ctrllimited": True,
@@ -1350,8 +1347,6 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
-        print(body_mapping)
-
         m = spec.compile()
 
         if target_filename:
@@ -1401,7 +1396,8 @@ class MuJoCoSolver(SolverBase):
             size = max(body_mapping.keys()) + 1
             arr = np.full(size, -1, dtype=int)
             for k, v in body_mapping.items():
-                arr[k] = v
+                if k != -1:
+                    arr[k] = v
         
             self.body_mapping = wp.array(arr, dtype=int)
         
@@ -1550,7 +1546,7 @@ class MuJoCoSolver(SolverBase):
                 return
             
             if up_axis == 1:
-                body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], -body_com[tid][1])
+                body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
             else:
                 body_ipos[worldid, mjc_idx] = body_com[tid]
 
