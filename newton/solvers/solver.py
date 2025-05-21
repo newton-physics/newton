@@ -269,7 +269,7 @@ class SolverBase:
             dt (float): The time step (typically in seconds).
         """
         raise NotImplementedError()
-    
+
     def notify_model_changed(self, flags: int):
         """
         Notify the solver that the model has changed.
