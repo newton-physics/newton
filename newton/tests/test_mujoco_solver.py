@@ -24,7 +24,6 @@ import newton
 from newton.solvers import MuJoCoSolver
 
 # Import the kernels for coordinate conversion
-from newton.solvers.solver_mujoco import convert_mj_coords_to_warp_kernel
 from newton.utils import SimRendererOpenGL
 
 
