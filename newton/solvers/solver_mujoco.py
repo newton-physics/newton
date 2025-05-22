@@ -1331,9 +1331,9 @@ class MuJoCoSolver(SolverBase):
             if ncon_per_env:
                 nconmax = nworld * ncon_per_env
             else:
-                nconmax = model.rigid_contact_max * 4
-            nconmax = max(nconmax, d.ncon)
-            njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
+                nconmax = model.rigid_contact_max
+            nconmax = max(nconmax, d.ncon * nworld) # this avoids error in mujoco.
+            njmax = max(nworld * nefc_per_env, nworld * d.nefc)
             mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
         return mj_model, mj_data, m, d
