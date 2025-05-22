@@ -464,7 +464,7 @@ def compute_shape_inertia(
             sx, sy, sz = scale
 
             mass_ratio = sx * sy * sz * density
-            m_new = m * mass_ratio
+            m_new = float(m * mass_ratio)
 
             c_new = wp.cw_mul(c, scale)
 
