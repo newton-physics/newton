@@ -1,4 +1,5 @@
-from typing import List, NamedTuple, Tuple
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import numpy as np
 import warp as wp
@@ -735,7 +736,8 @@ def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
     return volume
 
 
-class ImplicitMPMOptions(NamedTuple):
+@dataclass
+class ImplicitMPMOptions:
     # numerics
     max_iterations: int = 250
     tolerance: float = 1.0e-5
@@ -747,8 +749,7 @@ class ImplicitMPMOptions(NamedTuple):
     # plasticity
     max_fraction: float = 1.0
     unilateral: bool = True
-    friction: float = 0.48
-    yield_stresses: Tuple[float, float, float] = (0.0, 1.0e8, 1.0e8)
+    yield_stresses: Tuple[float, float, float] = (0.0, -1.0e8, 1.0e8)
 
     # elasticity (experimental)
     compliance: float = 0.0
@@ -978,6 +979,8 @@ def _get_array(temp):
 
 
 class ImplicitMPMSolver(SolverBase):
+    Options = ImplicitMPMOptions
+
     def __init__(
         self,
         model: Model,
@@ -988,18 +991,12 @@ class ImplicitMPMSolver(SolverBase):
             4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
         )
         self.friction_coeff = model.particle_mu
-
-        self.yield_stresses = wp.vec3(
-            options.yield_stress,
-            -options.stretching_yield_stress,
-            options.compression_yield_stress,
-        )
-
+        self.yield_stresses = options.yield_stresses
         self.unilateral = options.unilateral
         self.max_fraction = options.max_fraction
 
-        self.max_iterations = options.max_iters
-        self.tolerance = options.tol
+        self.max_iterations = options.max_iterations
+        self.tolerance = options.tolerance
 
         self.voxel_size = options.voxel_size
         self.degree = 1 if options.unilateral else 0
