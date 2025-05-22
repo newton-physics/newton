@@ -186,21 +186,22 @@ class TestMuJoCoSolver(unittest.TestCase):
 
     def test_randomize_body_com(self):
         """
-        Tests if the body center of mass is randomized correctly.
+        Tests if the body center of mass is randomized correctly and updates properly after simulation steps.
         """
         # Randomize COM for all bodies in all environments
         new_coms = np.random.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
         self.model.body_com.assign(new_coms)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model)
+        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1)
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
+        body_mapping = solver.body_mapping.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
-                mjc_idx = solver.body_mapping.numpy()[body_idx]
+                mjc_idx = body_mapping[body_idx]
                 if mjc_idx != -1:  # Skip unmapped bodies
                     newton_pos = new_coms[newton_idx]
                     mjc_pos = solver.mjw_model.body_ipos.numpy()[env_idx, mjc_idx]
@@ -217,6 +218,40 @@ class TestMuJoCoSolver(unittest.TestCase):
                             mjc_pos[dim],
                             places=6,
                             msg=f"COM position mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
+                        )
+
+        # Run a simulation step
+        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update COM positions again
+        updated_coms = np.random.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
+        self.model.body_com.assign(updated_coms)
+
+        # Notify solver of COM changes
+        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+
+        # Check that updated COM positions were transferred correctly
+        for env_idx in range(self.model.num_envs):
+            for body_idx in range(bodies_per_env):
+                newton_idx = env_idx * bodies_per_env + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:  # Skip unmapped bodies
+                    newton_pos = updated_coms[newton_idx]
+                    mjc_pos = solver.mjw_model.body_ipos.numpy()[env_idx, mjc_idx]
+
+                    # Convert positions based on up_axis
+                    if self.model.up_axis == 1:  # Y-axis up
+                        expected_pos = np.array([newton_pos[0], -newton_pos[2], newton_pos[1]])
+                    else:  # Z-axis up
+                        expected_pos = newton_pos
+
+                    for dim in range(3):
+                        self.assertAlmostEqual(
+                            expected_pos[dim],
+                            mjc_pos[dim],
+                            places=6,
+                            msg=f"Updated COM position mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
                         )
 
     def test_randomize_body_inertia(self):
@@ -245,33 +280,64 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model)
+        solver = MuJoCoSolver(self.model, iterations=1, ls_iterations=1)
 
-        # Check that inertia tensors were transferred correctly
-        bodies_per_env = self.model.body_count // self.model.num_envs
-        for env_idx in range(self.model.num_envs):
-            for body_idx in range(bodies_per_env):
-                newton_idx = env_idx * bodies_per_env + body_idx
-                mjc_idx = solver.body_mapping.numpy()[body_idx]
-                if mjc_idx != -1:  # Skip unmapped bodies
-                    newton_inertia = new_inertias[newton_idx]
-                    mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx]
+        # Get body mapping once outside the loop
+        body_mapping = solver.body_mapping.numpy()
 
-                    # Get eigenvalues of both tensors
-                    newton_eigvals = np.linalg.eigvalsh(newton_inertia)
-                    mjc_eigvals = mjc_inertia  # Already in diagonal form
+        def check_inertias(inertias_to_check, msg_prefix=""):
+            for env_idx in range(self.model.num_envs):
+                for body_idx in range(bodies_per_env):
+                    newton_idx = env_idx * bodies_per_env + body_idx
+                    mjc_idx = body_mapping[body_idx]
+                    if mjc_idx != -1:  # Skip unmapped bodies
+                        newton_inertia = inertias_to_check[newton_idx]
+                        mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx]
 
-                    # Sort eigenvalues in descending order
-                    newton_eigvals.sort()
-                    newton_eigvals = newton_eigvals[::-1]
+                        # Get eigenvalues of both tensors
+                        newton_eigvals = np.linalg.eigvalsh(newton_inertia)
+                        mjc_eigvals = mjc_inertia  # Already in diagonal form
 
-                    for dim in range(3):
-                        self.assertAlmostEqual(
-                            newton_eigvals[dim],
-                            mjc_eigvals[dim],
-                            places=6,
-                            msg=f"Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
-                        )
+                        # Sort eigenvalues in descending order
+                        newton_eigvals.sort()
+                        newton_eigvals = newton_eigvals[::-1]
+
+                        for dim in range(3):
+                            self.assertAlmostEqual(
+                                newton_eigvals[dim],
+                                mjc_eigvals[dim],
+                                places=6,
+                                msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
+                            )
+
+        # Check initial inertia tensors
+        check_inertias(new_inertias, "Initial ")
+
+        # Run a simulation step
+        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update inertia tensors again with new random values
+        updated_inertias = np.zeros((self.model.body_count, 3, 3))
+        for i in range(self.model.body_count):
+            env_idx = i // bodies_per_env
+            if env_idx == 0:
+                a = 2.5 + np.random.uniform(0.0, 0.5)
+                b = 3.5 + np.random.uniform(0.0, 0.5)
+                c = min(a + b - 0.1, 4.5)
+                updated_inertias[i] = np.diag([a, b, c])
+            else:
+                a = 3.5 + np.random.uniform(0.0, 0.5)
+                b = 4.5 + np.random.uniform(0.0, 0.5)
+                c = min(a + b - 0.1, 5.5)
+                updated_inertias[i] = np.diag([a, b, c])
+        self.model.body_inertia.assign(updated_inertias)
+
+        # Notify solver of inertia changes
+        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+
+        # Check updated inertia tensors
+        check_inertias(updated_inertias, "Updated ")
 
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
