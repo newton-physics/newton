@@ -346,6 +346,12 @@ class Mesh:
         """
         return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
 
+# model update flags - WIP grouping and naming still being worked on.
+NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)
+NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 1)
+NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 2)
+NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(1 << 3)
+NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 4)
 
 __all__ = [
     "GEO_BOX",
@@ -387,4 +393,9 @@ __all__ = [
     "Vec4",
     "flag_to_int",
     "get_joint_dof_count",
+    "NOTIFY_FLAG_JOINT_PROPERTIES",
+    "NOTIFY_FLAG_DOF_PROPERTIES",
+    "NOTIFY_FLAG_BODY_PROPERTIES",
+    "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
+    "NOTIFY_FLAG_SHAPE_PROPERTIES",
 ]

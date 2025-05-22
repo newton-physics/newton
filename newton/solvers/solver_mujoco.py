@@ -22,7 +22,7 @@ import warp as wp
 from typing_extensions import override
 
 import newton
-from newton.core import Contact, Control, Model, State
+from newton.core import Contact, Control, Model, State, types
 
 from .solver import SolverBase
 
@@ -690,7 +690,9 @@ class MuJoCoSolver(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        self.update_model_inertial_properties()
+
+        if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
+            self.update_model_inertial_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1407,7 +1409,8 @@ class MuJoCoSolver(SolverBase):
             self.body_mapping = wp.array(arr, dtype=int)
 
             # now fill with all the data from the Newton model.
-            self.notify_model_changed(0)
+            flags = types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+            self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if ncon_per_env:
