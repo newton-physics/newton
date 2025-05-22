@@ -50,7 +50,7 @@ class TestImportUsd(unittest.TestCase):
     def test_import_articulation_with_mesh(self):
         builder = newton.ModelBuilder()
 
-        results = parse_usd(
+        _ = parse_usd(
             os.path.join(os.path.dirname(__file__), "assets", "simple_articulation_with_mesh.usda"),
             builder,
             collapse_fixed_joints=True,
