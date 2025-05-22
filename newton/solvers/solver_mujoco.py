@@ -1616,8 +1616,6 @@ class MuJoCoSolver(SolverBase):
     def update_model_inertial_properties(self):
         bodies_per_env = self.model.body_count // self.model.num_envs
 
-        print(wp.get_device())
-
         wp.launch(
             update_body_mass_ipos_kernel,
             dim=self.model.body_count,
