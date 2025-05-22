@@ -47,7 +47,6 @@ path = "newton/_version.py"
 
 [tool.hatch.build.targets.wheel]
 include = ["/newton", "/newton/licenses"]
-exclude = ["/newton/assets/g1_description/"]
 
 [[tool.uv.index]]
 url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
