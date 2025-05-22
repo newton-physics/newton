@@ -252,7 +252,7 @@ def update_collider_mesh(
 
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", voxel_size=0.05, particles_per_cell=3, tolerance=1.e-5):
+    def __init__(self, stage_path="example_quadruped.usd", voxel_size=0.05, particles_per_cell=3, tolerance=1.e-5, headless=False):
         self.device = wp.get_device()
         builder = newton.ModelBuilder()
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -368,21 +368,20 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
-        ##
-
         self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
         options = ImplicitMPMSolver.Options()
         options.voxel_size = voxel_size
         options.max_fraction = max_fraction
         options.tolerance = tolerance
+        # options.gauss_seidel = False
         # options.dynamic_grid = False
         # options.grid_padding = 3
 
         self.mpm_solver = ImplicitMPMSolver(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -521,12 +520,17 @@ if __name__ == "__main__":
     parser.add_argument("--voxel_size", "-dx", type=float, default=0.05)
     parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.e-5)
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
         example = Example(
-            stage_path=args.stage_path, voxel_size=args.voxel_size, particles_per_cell=args.particles_per_cell, tolerance=args.tolerance
+            stage_path=args.stage_path,
+            voxel_size=args.voxel_size,
+            particles_per_cell=args.particles_per_cell,
+            tolerance=args.tolerance,
+            headless=args.headless,
         )
 
         for _ in range(args.num_frames):

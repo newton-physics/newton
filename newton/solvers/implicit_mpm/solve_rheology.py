@@ -66,14 +66,12 @@ def compute_delassus_diagonal(
     else:
         diag_block = mat66(0.0)
 
+    mass_ratio = float(1.0)
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
 
-        mass_ratio = wp.where(
-            split_mass,
-            value_if_true=float(transposed_strain_mat_offsets[u_i + 1] - transposed_strain_mat_offsets[u_i]),
-            value_if_false=1.0,
-        )
+        if split_mass:
+            mass_ratio = float(transposed_strain_mat_offsets[u_i + 1] - transposed_strain_mat_offsets[u_i])
 
         b_val = strain_mat_values[b]
         inv_frac = inv_volume[u_i] * mass_ratio
@@ -114,7 +112,7 @@ def compute_delassus_diagonal(
             local_strain_mat_values[b] = ev * strain_mat_values[b]
 
         if local_stress_strain_matrices:
-           local_stress_strain_matrices[tau_i] = ev * stress_strain_matrices[tau_i] * delassus_rotation[tau_i]
+            local_stress_strain_matrices[tau_i] = ev * stress_strain_matrices[tau_i] * delassus_rotation[tau_i]
     else:
         # Not a valid constraint, disable
         delassus_diagonal[tau_i] = vec6(1.0)
@@ -729,6 +727,7 @@ def solve_rheology(
     color_indices: Optional[wp.array] = None,
     rigidity_mat: Optional[sp.BsrMatrix] = None,
     temporary_store: Optional[fem.TemporaryStore] = None,
+    use_graph=True,
 ):
     delta_stress = fem.borrow_temporary_like(stress, temporary_store)
 
@@ -752,7 +751,6 @@ def solve_rheology(
     local_stress_strain_matrices = stress_strain_matrices
     local_strain_rhs = strain_rhs
     local_stress = stress
-
 
     wp.launch(
         kernel=compute_delassus_diagonal,
@@ -935,7 +933,6 @@ def solve_rheology(
 
     # Run solver loop
 
-    use_graph = True
     residual_scale = 1 + stress.shape[0]
 
     # Utility to compute the squared norm of the residual

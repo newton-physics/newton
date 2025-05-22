@@ -475,7 +475,7 @@ def scale_strain_stress_matrices(
 
 
 @wp.kernel
-def elastic_strain_rotation(
+def elastic_strain_decomposition(
     int_elastic_strain: wp.array(dtype=wp.mat33),
     particle_volume: wp.array(dtype=float),
     strain_rotation: wp.array(dtype=wp.quatf),
@@ -1364,7 +1364,7 @@ class ImplicitMPMSolver(SolverBase):
                 )
 
                 wp.launch(
-                    elastic_strain_rotation,
+                    elastic_strain_decomposition,
                     dim=strain_node_count,
                     inputs=[
                         scratch.elastic_strain_field.dof_values,
@@ -1384,6 +1384,8 @@ class ImplicitMPMSolver(SolverBase):
                         scratch.scaled_stress_strain_mat.array,
                     ],
                 )
+        else:
+            scratch.int_symmetric_strain.array.zero_()
 
         # Void fraction (unilateral incompressibility offset)
         if self.unilateral:
@@ -1439,6 +1441,7 @@ class ImplicitMPMSolver(SolverBase):
                 output=scratch.strain_matrix,
             )
             scratch.strain_matrix.nnz_sync()
+
 
         with wp.ScopedTimer(
             "Strain solve",
