@@ -351,6 +351,11 @@ class Example:
 
         self.model.particle_mu = 0.48
 
+        # lower the ground slightly for the sand and the renderer.
+        # this makes the robot "float" a little bit, preventing impossible kinematic boundary conditions when the feet intersect the ground
+        # proper solution will be to have full two-way coupling between the sand and the robot
+        self.model.ground_plane_params = (*self.model.ground_plane_params[:-1], self.model.ground_plane_params[-1] - 0.025)
+
         ## Grab meshes for collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
@@ -433,6 +438,7 @@ class Example:
 
         with wp.ScopedTimer("render", synchronize=True):
             self.renderer.begin_frame(self.sim_time)
+
             self.renderer.render(self.state_0)
 
             self.renderer.end_frame()

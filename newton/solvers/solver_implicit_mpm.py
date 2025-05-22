@@ -1091,8 +1091,8 @@ class ImplicitMPMSolver(SolverBase):
             else wp.array(collider_projection_threshold, dtype=float)
         )
         collider.query_max_dist = self.voxel_size
-        collider.ground_height = model.ground_plane.numpy()[3] if model.ground else -1.0e8
-        collider.ground_normal = wp.vec3(model.ground_plane.numpy()[:3])
+        collider.ground_height = model.ground_plane_params[3] if model.ground else -1.0e8
+        collider.ground_normal = wp.vec3(model.ground_plane_params[:3])
 
         self._has_compliant_bodies = len(collider.masses) > 0 and np.min(collider.masses.numpy()) < INFINITE_MASS
         self.collider_coms = wp.zeros(len(collider.meshes), dtype=wp.vec3)
