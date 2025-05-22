@@ -21,8 +21,8 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton.solvers import MuJoCoSolver
 from newton.core import types
+from newton.solvers import MuJoCoSolver
 
 # Import the kernels for coordinate conversion
 from newton.utils import SimRendererOpenGL
@@ -31,6 +31,9 @@ from newton.utils import SimRendererOpenGL
 class TestMuJoCoSolver(unittest.TestCase):
     def setUp(self):
         """Set up a model with multiple environments, each with a free body and an articulated tree."""
+        self.seed = 123
+        self.rng = np.random.default_rng(self.seed)
+
         num_envs = 2
         self.debug_stage_path = "newton/tests/test_mujoco_render.usda"
 
@@ -139,7 +142,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         Tests if the body mass is randomized correctly and updates properly after simulation steps.
         """
         # Randomize masses for all bodies in all environments
-        new_masses = np.random.uniform(1.0, 10.0, size=self.model.body_count)
+        new_masses = self.rng.uniform(1.0, 10.0, size=self.model.body_count)
         self.model.body_mass.assign(new_masses)
 
         # Initialize solver
@@ -165,7 +168,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update masses again
-        updated_masses = np.random.uniform(1.0, 10.0, size=self.model.body_count)
+        updated_masses = self.rng.uniform(1.0, 10.0, size=self.model.body_count)
         self.model.body_mass.assign(updated_masses)
 
         # Notify solver of mass changes
@@ -189,7 +192,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         Tests if the body center of mass is randomized correctly and updates properly after simulation steps.
         """
         # Randomize COM for all bodies in all environments
-        new_coms = np.random.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
+        new_coms = self.rng.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
         self.model.body_com.assign(new_coms)
 
         # Initialize solver
@@ -225,7 +228,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update COM positions again
-        updated_coms = np.random.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
+        updated_coms = self.rng.uniform(-1.0, 1.0, size=(self.model.body_count, 3))
         self.model.body_com.assign(updated_coms)
 
         # Notify solver of COM changes
@@ -267,14 +270,14 @@ class TestMuJoCoSolver(unittest.TestCase):
             env_idx = i // bodies_per_env
             if env_idx == 0:
                 # First environment: ensure a + b > c with random values
-                a = 2.0 + np.random.uniform(0.0, 0.5)
-                b = 3.0 + np.random.uniform(0.0, 0.5)
+                a = 2.0 + self.rng.uniform(0.0, 0.5)
+                b = 3.0 + self.rng.uniform(0.0, 0.5)
                 c = min(a + b - 0.1, 4.0)  # Ensure a + b > c
                 new_inertias[i] = np.diag([a, b, c])
             else:
                 # Second environment: ensure a + b > c with random values
-                a = 3.0 + np.random.uniform(0.0, 0.5)
-                b = 4.0 + np.random.uniform(0.0, 0.5)
+                a = 3.0 + self.rng.uniform(0.0, 0.5)
+                b = 4.0 + self.rng.uniform(0.0, 0.5)
                 c = min(a + b - 0.1, 5.0)  # Ensure a + b > c
                 new_inertias[i] = np.diag([a, b, c])
         self.model.body_inertia.assign(new_inertias)
@@ -322,13 +325,13 @@ class TestMuJoCoSolver(unittest.TestCase):
         for i in range(self.model.body_count):
             env_idx = i // bodies_per_env
             if env_idx == 0:
-                a = 2.5 + np.random.uniform(0.0, 0.5)
-                b = 3.5 + np.random.uniform(0.0, 0.5)
+                a = 2.5 + self.rng.uniform(0.0, 0.5)
+                b = 3.5 + self.rng.uniform(0.0, 0.5)
                 c = min(a + b - 0.1, 4.5)
                 updated_inertias[i] = np.diag([a, b, c])
             else:
-                a = 3.5 + np.random.uniform(0.0, 0.5)
-                b = 4.5 + np.random.uniform(0.0, 0.5)
+                a = 3.5 + self.rng.uniform(0.0, 0.5)
+                b = 4.5 + self.rng.uniform(0.0, 0.5)
                 c = min(a + b - 0.1, 5.5)
                 updated_inertias[i] = np.diag([a, b, c])
         self.model.body_inertia.assign(updated_inertias)
