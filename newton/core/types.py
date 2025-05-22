@@ -346,6 +346,7 @@ class Mesh:
         """
         return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
 
+
 # model update flags - WIP grouping and naming still being worked on.
 NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)
 NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 1)

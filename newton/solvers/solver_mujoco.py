@@ -690,7 +690,6 @@ class MuJoCoSolver(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-
         if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
 
