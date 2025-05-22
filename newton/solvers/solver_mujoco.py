@@ -555,6 +555,95 @@ def convert_body_xforms_to_warp_kernel(
     body_q[wbi] = wp.transform(pos, quat)
 
 
+@wp.kernel
+def update_body_mass_ipos_kernel(
+    body_com: wp.array(dtype=wp.vec3f),
+    body_mass: wp.array(dtype=float),
+    bodies_per_env: int,
+    up_axis: int,
+    body_mapping: wp.array(dtype=int),
+    # outputs
+    body_ipos: wp.array2d(dtype=wp.vec3f),
+    body_mass_out: wp.array2d(dtype=float),
+):
+    tid = wp.tid()
+    worldid = wp.tid() // bodies_per_env
+    index_in_env = wp.tid() % bodies_per_env
+    mjc_idx = body_mapping[index_in_env]
+    if mjc_idx == -1:
+        return
+
+    # Update COM position
+    if up_axis == 1:
+        body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
+    else:
+        body_ipos[worldid, mjc_idx] = body_com[tid]
+
+    # Update mass
+    body_mass_out[worldid, mjc_idx] = body_mass[tid]
+
+
+@wp.kernel
+def update_body_inertia_kernel(
+    body_inertia: wp.array(dtype=wp.mat33f),
+    body_quat: wp.array2d(dtype=wp.quatf),
+    bodies_per_env: int,
+    body_mapping: wp.array(dtype=int),
+    # outputs
+    body_inertia_out: wp.array2d(dtype=wp.vec3f),
+    body_iquat_out: wp.array2d(dtype=wp.quatf),
+):
+    tid = wp.tid()
+    worldid = wp.tid() // bodies_per_env
+    index_in_env = wp.tid() % bodies_per_env
+    mjc_idx = body_mapping[index_in_env]
+    if mjc_idx == -1:
+        return
+
+    # Get inertia tensor and body orientation
+    I = body_inertia[tid]
+    # body_q = body_quat[worldid, mjc_idx]
+
+    # Calculate eigenvalues and eigenvectors
+    eigenvectors, eigenvalues = wp.eig3(I)
+
+    # Bubble sort for 3 elements in descending order
+    for i in range(2):
+        for j in range(2 - i):
+            if eigenvalues[j] < eigenvalues[j + 1]:
+                # Swap eigenvalues
+                temp_val = eigenvalues[j]
+                eigenvalues[j] = eigenvalues[j + 1]
+                eigenvalues[j + 1] = temp_val
+                # Swap eigenvectors
+                temp_vec = eigenvectors[j]
+                eigenvectors[j] = eigenvectors[j + 1]
+                eigenvectors[j + 1] = temp_vec
+
+    # this does not work yet, I think we are reporting in the wrong reference frame
+    # Convert eigenvectors to quaternion (xyzw format for mujoco)
+    # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
+    # q = wp.normalize(q)
+
+    # Convert from wxyz to xyzw format and compose with body orientation
+    # q = wp.quat(q[1], q[2], q[3], q[0])
+
+    # Store results
+    body_inertia_out[worldid, mjc_idx] = eigenvalues
+    # body_iquat_out[worldid, mjc_idx] = q
+
+
+@wp.kernel
+def repeat_array_kernel(
+    src: wp.array(dtype=Any),
+    nelems_per_world: int,
+    dst: wp.array(dtype=Any),
+):
+    tid = wp.tid()
+    src_idx = tid % nelems_per_world
+    dst[tid] = src[src_idx]
+
+
 class MuJoCoSolver(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -1501,16 +1590,6 @@ class MuJoCoSolver(SolverBase):
             "mat_rgba",
         ]
 
-        @wp.kernel
-        def repeat_array_kernel(
-            src: wp.array(dtype=Any),
-            nelems_per_world: int,
-            dst: wp.array(dtype=Any),
-        ):
-            tid = wp.tid()
-            src_idx = tid % nelems_per_world
-            dst[tid] = src[src_idx]
-
         def tile(x):
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
@@ -1535,101 +1614,18 @@ class MuJoCoSolver(SolverBase):
                 setattr(mj_model, field, tile(array))
 
     def update_model_inertial_properties(self):
-        self.update_model_body_properties(self.mjw_model, self.model)
-        self.update_model_body_inertia(self.mjw_model, self.model)
-
-    def update_model_body_properties(self, mj_model: MjWarpModel, model: Model):
-        @wp.kernel
-        def update_body_properties_kernel(
-            body_com: wp.array(dtype=wp.vec3f),
-            body_mass: wp.array(dtype=float),
-            bodies_per_env: int,
-            up_axis: int,
-            body_mapping: wp.array(dtype=int),
-            # outputs
-            body_ipos: wp.array2d(dtype=wp.vec3f),
-            body_mass_out: wp.array2d(dtype=float),
-        ):
-            tid = wp.tid()
-            worldid = wp.tid() // bodies_per_env
-            index_in_env = wp.tid() % bodies_per_env
-            mjc_idx = body_mapping[index_in_env]
-            if mjc_idx == -1:
-                return
-
-            # Update COM position
-            if up_axis == 1:
-                body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
-            else:
-                body_ipos[worldid, mjc_idx] = body_com[tid]
-
-            # Update mass
-            body_mass_out[worldid, mjc_idx] = body_mass[tid]
-
-        bodies_per_env = model.body_count // model.num_envs
+        bodies_per_env = self.model.body_count // self.model.num_envs
 
         wp.launch(
-            update_body_properties_kernel,
-            dim=model.body_count,
-            inputs=[model.body_com, model.body_mass, bodies_per_env, model.up_axis, self.body_mapping],
-            outputs=[mj_model.body_ipos, mj_model.body_mass],
+            update_body_mass_ipos_kernel,
+            dim=self.model.body_count,
+            inputs=[self.model.body_com, self.model.body_mass, bodies_per_env, self.model.up_axis, self.body_mapping],
+            outputs=[self.mjw_model.body_ipos, self.mjw_model.body_mass],
         )
-
-    def update_model_body_inertia(self, mj_model: MjWarpModel, model: Model):
-        @wp.kernel
-        def update_body_inertia_kernel(
-            body_inertia: wp.array(dtype=wp.mat33f),
-            body_quat: wp.array2d(dtype=wp.quatf),
-            bodies_per_env: int,
-            body_mapping: wp.array(dtype=int),
-            # outputs
-            body_inertia_out: wp.array2d(dtype=wp.vec3f),
-            body_iquat_out: wp.array2d(dtype=wp.quatf),
-        ):
-            tid = wp.tid()
-            worldid = wp.tid() // bodies_per_env
-            index_in_env = wp.tid() % bodies_per_env
-            mjc_idx = body_mapping[index_in_env]
-            if mjc_idx == -1:
-                return
-
-            # Get inertia tensor and body orientation
-            I = body_inertia[tid]
-            # body_q = body_quat[worldid, mjc_idx]
-
-            # Calculate eigenvalues and eigenvectors
-            eigenvectors, eigenvalues = wp.eig3(I)
-
-            # Bubble sort for 3 elements in descending order
-            for i in range(2):
-                for j in range(2 - i):
-                    if eigenvalues[j] < eigenvalues[j + 1]:
-                        # Swap eigenvalues
-                        temp_val = eigenvalues[j]
-                        eigenvalues[j] = eigenvalues[j + 1]
-                        eigenvalues[j + 1] = temp_val
-                        # Swap eigenvectors
-                        temp_vec = eigenvectors[j]
-                        eigenvectors[j] = eigenvectors[j + 1]
-                        eigenvectors[j + 1] = temp_vec
-
-            # this does not work yet, I think we are reporting in the wrong reference frame
-            # Convert eigenvectors to quaternion (xyzw format for mujoco)
-            # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
-            # q = wp.normalize(q)
-
-            # Convert from wxyz to xyzw format and compose with body orientation
-            # q = wp.quat(q[1], q[2], q[3], q[0])
-
-            # Store results
-            body_inertia_out[worldid, mjc_idx] = eigenvalues
-            # body_iquat_out[worldid, mjc_idx] = q
-
-        bodies_per_env = model.body_count // model.num_envs
 
         wp.launch(
             update_body_inertia_kernel,
-            dim=model.body_count,
-            inputs=[model.body_inertia, mj_model.body_quat, bodies_per_env, self.body_mapping],
-            outputs=[mj_model.body_inertia, mj_model.body_iquat],
+            dim=self.model.body_count,
+            inputs=[self.model.body_inertia, self.mjw_model.body_quat, bodies_per_env, self.body_mapping],
+            outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
         )
