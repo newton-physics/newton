@@ -523,8 +523,8 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=10000, help="Total number of frames.")
-    parser.add_argument("--voxel_size", "-dx", type=float, default=0.05)
-    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3)
+    parser.add_argument("--voxel_size", "-dx", type=float, default=0.035)
+    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=2.5)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 

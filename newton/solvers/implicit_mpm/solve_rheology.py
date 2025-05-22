@@ -910,6 +910,12 @@ def solve_rheology(
     )
 
     def do_iteration():
+        # solve contacts
+        solve_collider_launch.launch()
+        if rigidity_mat is not None:
+            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+
+        # solve stress
         if gs:
             for k in range(color_count):
                 solve_local_launch.set_param_at_index(0, color_offsets[k])
@@ -926,10 +932,6 @@ def solve_rheology(
                 beta=1.0,
             )
 
-        # solve contacts
-        solve_collider_launch.launch()
-        if rigidity_mat is not None:
-            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
 
     # Run solver loop
 
