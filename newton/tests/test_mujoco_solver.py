@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 from newton.solvers import MuJoCoSolver
+from newton.core import types
 
 # Import the kernels for coordinate conversion
 from newton.utils import SimRendererOpenGL
@@ -135,27 +136,52 @@ class TestMuJoCoSolver(unittest.TestCase):
 
     def test_randomize_body_mass(self):
         """
-        Tests if the body mass is randomized correctly.
+        Tests if the body mass is randomized correctly and updates properly after simulation steps.
         """
         # Randomize masses for all bodies in all environments
         new_masses = np.random.uniform(1.0, 10.0, size=self.model.body_count)
         self.model.body_mass.assign(new_masses)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model)
+        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1)
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
+        body_mapping = solver.body_mapping.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
-                mjc_idx = solver.body_mapping.numpy()[body_idx]
+                mjc_idx = body_mapping[body_idx]
                 if mjc_idx != -1:  # Skip unmapped bodies
                     self.assertAlmostEqual(
                         new_masses[newton_idx],
                         solver.mjw_model.body_mass.numpy()[env_idx, mjc_idx],
                         places=6,
                         msg=f"Mass mismatch for body {body_idx} in environment {env_idx}",
+                    )
+
+        # Run a simulation step
+        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update masses again
+        updated_masses = np.random.uniform(1.0, 10.0, size=self.model.body_count)
+        self.model.body_mass.assign(updated_masses)
+
+        # Notify solver of mass changes
+        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+
+        # Check that updated masses were transferred correctly
+        for env_idx in range(self.model.num_envs):
+            for body_idx in range(bodies_per_env):
+                newton_idx = env_idx * bodies_per_env + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:  # Skip unmapped bodies
+                    self.assertAlmostEqual(
+                        updated_masses[newton_idx],
+                        solver.mjw_model.body_mass.numpy()[env_idx, mjc_idx],
+                        places=6,
+                        msg=f"Updated mass mismatch for body {body_idx} in environment {env_idx}",
                     )
 
     def test_randomize_body_com(self):
