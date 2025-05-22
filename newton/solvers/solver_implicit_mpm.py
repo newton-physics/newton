@@ -862,6 +862,11 @@ class _ImplicitMPMScratchpad:
             family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
         )
 
+        self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+        self.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
+
     def allocate_temporaries(
         self,
         temporary_store: fem.TemporaryStore,
@@ -1073,7 +1078,7 @@ class ImplicitMPMSolver(SolverBase):
             if collider_projection_threshold is None
             else wp.array(collider_projection_threshold, dtype=float)
         )
-        collider.query_max_dist = 4.0 * self.voxel_size
+        collider.query_max_dist = self.voxel_size
         collider.ground_height = model.ground_plane.numpy()[3] if model.ground else -1.0e8
         collider.ground_normal = wp.vec3(model.ground_plane.numpy()[:3])
 
@@ -1148,7 +1153,6 @@ class ImplicitMPMSolver(SolverBase):
                 self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
             scratch = self._fixed_scratchpad
 
-        self._reset_state(scratch, state_out)
         fem.set_default_temporary_store(self.temporary_store)
         self._step_impl(model, state_in, state_out, dt, scratch)
 
@@ -1169,7 +1173,7 @@ class ImplicitMPMSolver(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
-            self._warmstart_fields_from_previous_state(domain, state_in, state_out)
+            self._warmstart_fields(scratch, state_in, state_out)
 
         # Bin particles to grid cells
         with wp.ScopedTimer(
@@ -1733,33 +1737,34 @@ class ImplicitMPMSolver(SolverBase):
 
         return rigid
 
-    def _reset_state(self, scratch: _ImplicitMPMScratchpad, state_out: State):
-        velocity_space = scratch.velocity_test.space
-        sym_strain_space = scratch.sym_strain_test.space
-        vel_space_partition = scratch.velocity_test.space_partition
-        strain_space_partition = scratch.sym_strain_test.space_partition
+    def _warmstart_fields(self, scratch: _ImplicitMPMScratchpad, state_in: State, state_out: State):
+        domain = scratch.velocity_test.domain
 
-        if self.dynamic_grid or state_out.impulse_field is None:
-            state_out.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
-        if self.dynamic_grid or state_out.velocity_field is None:
-            state_out.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-        if self.dynamic_grid or state_out.stress_field is None:
-            state_out.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-        if self.dynamic_grid or state_out.collider_ids is None:
-            state_out.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
-
-    def _warmstart_fields_from_previous_state(self, domain: fem.GeometryDomain, state_in: State, state_out: State):
         if state_in.impulse_field is not None:
             if self.dynamic_grid:
                 prev_impulse_field = fem.NonconformingField(domain, state_in.impulse_field)
-                fem.interpolate(prev_impulse_field, dest=state_out.impulse_field)
+                fem.interpolate(prev_impulse_field, dest=scratch.impulse_field)
             else:
-                state_out.impulse_field.dof_values.assign(state_in.impulse_field.dof_values)
+                scratch.impulse_field.dof_values.assign(state_in.impulse_field.dof_values)
 
         # Interpolate previous stress
         if state_in.stress_field is not None:
             if self.dynamic_grid:
                 prev_stress_field = fem.NonconformingField(domain, state_in.stress_field)
-                fem.interpolate(prev_stress_field, dest=state_out.stress_field)
+                fem.interpolate(prev_stress_field, dest=scratch.stress_field)
             else:
-                state_out.stress_field.dof_values.assign(state_in.stress_field.dof_values)
+                scratch.stress_field.dof_values.assign(state_in.stress_field.dof_values)
+
+        if (
+            state_out.velocity_field is None
+            or state_out.velocity_field.space_partition != scratch.velocity_field.space_partition
+        ):
+            state_out.velocity_field = scratch.velocity_field
+            state_out.impulse_field = scratch.impulse_field
+            state_out.stress_field = scratch.stress_field
+            state_out.collider_ids = scratch.collider_ids
+        else:
+            state_out.velocity_field.dof_values.assign(scratch.velocity_field.dof_values)
+            state_out.impulse_field.dof_values.assign(scratch.impulse_field.dof_values)
+            state_out.stress_field.dof_values.assign(scratch.stress_field.dof_values)
+            state_out.collider_ids.assign(scratch.collider_ids)
