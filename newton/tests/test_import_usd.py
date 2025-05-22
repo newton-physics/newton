@@ -47,6 +47,16 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(len(results["path_shape_map"]), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_with_mesh(self):
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "simple_articulation_with_mesh.usda"),
+            builder,
+            collapse_fixed_joints=True,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         parse_usd(
