@@ -163,11 +163,10 @@ def integrate_collider_fraction(
     s: fem.Sample,
     domain: fem.Domain,
     phi: fem.Field,
-    collider: Collider,
+    sdf: fem.Field,
     inv_cell_volume: float,
 ):
-    sdf, sdf_gradient, sdf_vel, _id = collision_sdf(domain(s), collider)
-    return phi(s) * wp.where(sdf <= 0.0, inv_cell_volume, 0.0)
+    return phi(s) * wp.where(sdf(s) <= 0.0, inv_cell_volume, 0.0)
 
 
 @fem.integrand
@@ -310,46 +309,58 @@ def project_outside_collider(
         velocity_gradients_out[i] = vel_grad - wp.transpose(vel_grad)
 
 
-@fem.integrand
-def collider_velocity(
-    s: fem.Sample,
-    domain: fem.Domain,
-    particle_density: float,
+@wp.kernel
+def rasterize_collider(
     collider: Collider,
     voxel_size: float,
-    node_volume: wp.array(dtype=float),
-    collider_volumes: wp.array(dtype=float),
+    node_positions: wp.array(dtype=wp.vec3),
+    collider_sdf: wp.array(dtype=float),
+    collider_velocity: wp.array(dtype=wp.vec3),
     collider_normals: wp.array(dtype=wp.vec3),
     collider_friction: wp.array(dtype=float),
     collider_ids: wp.array(dtype=int),
     collider_impulse: wp.array(dtype=wp.vec3),
-    collider_inv_mass_matrix: wp.array(dtype=float),
 ):
-    x = domain(s)
+    i = wp.tid()
+    x = node_positions[i]
     sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider)
     bc_active = collision_is_active(sdf, voxel_size)
 
+    collider_sdf[i] = sdf
+
     if not bc_active:
-        collider_normals[s.qp_index] = wp.vec3(0.0)
-        collider_friction[s.qp_index] = -1.0
-        collider_inv_mass_matrix[s.qp_index] = 0.0
-        collider_ids[s.qp_index] = _NULL_COLLIDER_ID
-        collider_impulse[s.qp_index] = wp.vec3(0.0)
-        return wp.vec3(0.0)
+        collider_velocity[i] = wp.vec3(0.0)
+        collider_normals[i] = wp.vec3(0.0)
+        collider_friction[i] = -1.0
+        collider_ids[i] = _NULL_COLLIDER_ID
+        collider_impulse[i] = wp.vec3(0.0)
+        return
+
+    collider_ids[i] = collider_id
+    collider_normals[i] = sdf_gradient
+    collider_friction[i] = collider_friction_coefficient(collider_id, collider)
+    collider_velocity[i] = sdf_vel
+
+
+@wp.kernel
+def collider_inverse_mass(
+    particle_density: float,
+    collider: Collider,
+    collider_ids: wp.array(dtype=int),
+    node_volume: wp.array(dtype=float),
+    collider_volumes: wp.array(dtype=float),
+    collider_inv_mass_matrix: wp.array(dtype=float),
+):
+    i = wp.tid()
+    collider_id = collider_ids[i]
 
     if collider_is_dynamic(collider_id, collider):
-        bc_vol = node_volume[s.qp_index]
+        bc_vol = node_volume[i]
         bc_density = collider_density(collider_id, collider, collider_volumes)
         bc_mass = bc_vol * bc_density
-        collider_inv_mass_matrix[s.qp_index] = particle_density / bc_mass
+        collider_inv_mass_matrix[i] = particle_density / bc_mass
     else:
-        collider_inv_mass_matrix[s.qp_index] = 0.0
-
-    collider_ids[s.qp_index] = collider_id
-    collider_normals[s.qp_index] = sdf_gradient
-    collider_friction[s.qp_index] = collider_friction_coefficient(collider_id, collider)
-
-    return sdf_vel
+        collider_inv_mass_matrix[i] = 0.0
 
 
 @fem.integrand
@@ -843,6 +854,7 @@ class _ImplicitMPMScratchpad:
             space_restriction=self.velocity_test.space_restriction,
         )
         self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
 
         self.sym_strain_test = fem.make_test(sym_strain_space, domain=domain, space_partition=strain_space_partition)
         self.full_strain_test = fem.make_test(
@@ -1232,16 +1244,36 @@ class ImplicitMPMSolver(SolverBase):
             )
 
         with wp.ScopedTimer(
-            "Collider",
+            "Rasterize collider",
             active=self._enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
-            # Accumulate collider volume so we can distribute mass
-            # and record cells with collider to build subdomain
+            wp.launch(
+                rasterize_collider,
+                dim=vel_node_count,
+                inputs=[
+                    self.collider,
+                    self.voxel_size,
+                    scratch.collider_velocity_field.space.node_positions(),
+                    scratch.collider_distance_field.dof_values,
+                    scratch.collider_velocity_field.dof_values,
+                    scratch.collider_normal.array,
+                    scratch.collider_friction.array,
+                    state_out.collider_ids,
+                    state_out.impulse_field.dof_values,
+                ],
+            )
 
-            if self._has_compliant_bodies:
-                # Compute the particle/collider interaction volume
+        if self._has_compliant_bodies:
+            with wp.ScopedTimer(
+                "Collider compliance",
+                active=self._enable_timers,
+                use_nvtx=self._timers_use_nvtx,
+                synchronize=True,
+            ):
+                # Accumulate collider volume so we can distribute mass
+                # and record cells with collider to build subdomain
                 scratch.collider_total_volumes.array.zero_()
                 fem.interpolate(
                     collider_volumes,
@@ -1259,37 +1291,27 @@ class ImplicitMPMSolver(SolverBase):
                     output=scratch.vel_node_volume.array,
                 )
 
-            fem.interpolate(
-                collider_velocity,
-                dest=fem.make_restriction(
-                    scratch.collider_velocity_field,
-                    space_restriction=scratch.velocity_test.space_restriction,
-                ),
-                values={
-                    "particle_density": self.density,
-                    "voxel_size": self.voxel_size,
-                    "collider": self.collider,
-                    "node_volume": _get_array(scratch.vel_node_volume),
-                    "collider_volumes": _get_array(scratch.collider_total_volumes),
-                    "collider_inv_mass_matrix": scratch.collider_inv_mass_matrix.array,
-                    "collider_normals": scratch.collider_normal.array,
-                    "collider_friction": scratch.collider_friction.array,
-                    "collider_ids": state_out.collider_ids,
-                    "collider_impulse": state_out.impulse_field.dof_values,
-                },
-            )
+                wp.launch(
+                    collider_inverse_mass,
+                    dim=vel_node_count,
+                    inputs=[
+                        self.density,
+                        self.collider,
+                        state_out.collider_ids,
+                        scratch.vel_node_volume.array,
+                        scratch.collider_total_volumes.array,
+                        scratch.collider_inv_mass_matrix.array,
+                    ],
+                )
 
-        with wp.ScopedTimer(
-            "Rigidity",
-            active=self._enable_timers,
-            use_nvtx=self._timers_use_nvtx,
-            synchronize=True,
-        ):
-            rigidity_matrix = self._build_rigidity_matrix(
-                _get_array(scratch.collider_total_volumes),
-                _get_array(scratch.vel_node_volume),
-                state_out.collider_ids,
-            )
+                rigidity_matrix = self._build_rigidity_matrix(
+                    scratch.collider_total_volumes.array,
+                    scratch.vel_node_volume.array,
+                    state_out.collider_ids,
+                )
+        else:
+            rigidity_matrix = None
+            scratch.collider_inv_mass_matrix.array.zero_()
 
         with wp.ScopedTimer(
             "Compute strain-node volumes",
@@ -1313,9 +1335,11 @@ class ImplicitMPMSolver(SolverBase):
             fem.integrate(
                 integrate_collider_fraction,
                 quadrature=scratch.collider_quadrature,
-                fields={"phi": scratch.divergence_test},
+                fields={
+                    "phi": scratch.divergence_test,
+                    "sdf": scratch.collider_distance_field,
+                },
                 values={
-                    "collider": self.collider,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output=scratch.strain_node_collider_volume.array,
@@ -1662,9 +1686,6 @@ class ImplicitMPMSolver(SolverBase):
         """Assembles the rigidity matrix for the current time step
         (propagates local impulses to the rest of the rigid body)
         """
-
-        if not self._has_compliant_bodies:
-            return None
 
         vel_node_count = self.velocity_field.space.node_count()
         collider_count = self.collider.meshes.shape[0]
