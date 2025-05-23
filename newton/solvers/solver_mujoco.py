@@ -238,63 +238,6 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
-def convert_joint_q_qpos0(
-    joint_q: wp.array(dtype=wp.float32),
-    joints_per_env: int,
-    up_axis: int,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
-    # outputs
-    qpos0: wp.array2d(dtype=wp.float32),
-):
-    jntid = wp.tid()
-    worldid = jntid // joints_per_env
-    jnt_in_env = jntid % joints_per_env
-
-    type = joint_type[jntid]
-    q_i = joint_q_start[jnt_in_env]
-    wq_i = joint_q_start[joints_per_env * worldid + jnt_in_env]
-
-    if type == newton.JOINT_FREE:
-        # convert position components
-        if up_axis == 1:
-            qpos0[worldid, q_i + 0] = joint_q[wq_i + 0]
-            qpos0[worldid, q_i + 1] = -joint_q[wq_i + 2]
-            qpos0[worldid, q_i + 2] = joint_q[wq_i + 1]
-        else:
-            for i in range(3):
-                qpos0[worldid, q_i + i] = joint_q[wq_i + i]
-
-        rot = wp.quat(
-            joint_q[wq_i + 3],
-            joint_q[wq_i + 4],
-            joint_q[wq_i + 5],
-            joint_q[wq_i + 6],
-        )
-        if up_axis == 1:
-            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-            rot = rot_y2z * rot
-        # change quaternion order from xyzw to wxyz
-        qpos0[worldid, q_i + 3] = rot[3]
-        qpos0[worldid, q_i + 4] = rot[0]
-        qpos0[worldid, q_i + 5] = rot[1]
-        qpos0[worldid, q_i + 6] = rot[2]
-
-    elif type == newton.JOINT_BALL:
-        # change quaternion order from xyzw to wxyz
-        qpos0[worldid, q_i + 0] = joint_q[wq_i + 1]
-        qpos0[worldid, q_i + 1] = joint_q[wq_i + 2]
-        qpos0[worldid, q_i + 2] = joint_q[wq_i + 3]
-        qpos0[worldid, q_i + 3] = joint_q[wq_i + 0]
-    else:
-        axis_count = joint_axis_dim[jntid, 0] + joint_axis_dim[jntid, 1]
-        for i in range(axis_count):
-            # convert position components
-            qpos0[worldid, q_i + i] = joint_q[wq_i + i]
-
-
-@wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
     axis_to_actuator: wp.array(dtype=wp.int32),
