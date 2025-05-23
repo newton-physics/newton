@@ -347,6 +347,18 @@ class Mesh:
         return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
 
 
+# model update flags - used for solver.notify_model_update()
+NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)  # joint_q, joint_X_p, joint_X_c
+NOTIFY_FLAG_JOINT_AXIS_PROPERTIES = wp.constant(
+    1 << 1
+)  # joint_target, joint_target_ke, joint_target_kd, joint_axis_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd
+NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 2)  # joint_qd, joint_f, joint_armature
+NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 3)  # body_q, body_qd
+NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(
+    1 << 4
+)  # body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass
+NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 5)  # shape_transform, shape_geo
+
 __all__ = [
     "GEO_BOX",
     "GEO_CAPSULE",
@@ -369,6 +381,11 @@ __all__ = [
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
+    "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
+    "NOTIFY_FLAG_BODY_PROPERTIES",
+    "NOTIFY_FLAG_DOF_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_PROPERTIES",
+    "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "PARTICLE_FLAG_ACTIVE",
     "SDF",
     "SHAPE_FLAG_COLLIDE_GROUND",

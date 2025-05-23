@@ -1,7 +1,7 @@
 Newton Physics Documentation
 ============================
 
-.. image:: /_static/newton-logo.png
+.. image:: /_static/newton-logo.jpg
    :alt: Newton Physics Engine Logo
    :align: center
    :class: newton-logo
