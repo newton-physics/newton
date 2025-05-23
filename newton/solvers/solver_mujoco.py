@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -23,7 +23,7 @@ from typing_extensions import override
 
 import newton
 import newton.utils
-from newton.core import Contact, Control, Model, State
+from newton.core import Contact, Control, Model, State, types
 
 from .solver import SolverBase
 
@@ -508,6 +508,95 @@ def convert_body_xforms_to_warp_kernel(
     body_q[wbi] = wp.transform(pos, quat)
 
 
+@wp.kernel
+def update_body_mass_ipos_kernel(
+    body_com: wp.array(dtype=wp.vec3f),
+    body_mass: wp.array(dtype=float),
+    bodies_per_env: int,
+    up_axis: int,
+    body_mapping: wp.array(dtype=int),
+    # outputs
+    body_ipos: wp.array2d(dtype=wp.vec3f),
+    body_mass_out: wp.array2d(dtype=float),
+):
+    tid = wp.tid()
+    worldid = wp.tid() // bodies_per_env
+    index_in_env = wp.tid() % bodies_per_env
+    mjc_idx = body_mapping[index_in_env]
+    if mjc_idx == -1:
+        return
+
+    # Update COM position
+    if up_axis == 1:
+        body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
+    else:
+        body_ipos[worldid, mjc_idx] = body_com[tid]
+
+    # Update mass
+    body_mass_out[worldid, mjc_idx] = body_mass[tid]
+
+
+@wp.kernel
+def update_body_inertia_kernel(
+    body_inertia: wp.array(dtype=wp.mat33f),
+    body_quat: wp.array2d(dtype=wp.quatf),
+    bodies_per_env: int,
+    body_mapping: wp.array(dtype=int),
+    # outputs
+    body_inertia_out: wp.array2d(dtype=wp.vec3f),
+    body_iquat_out: wp.array2d(dtype=wp.quatf),
+):
+    tid = wp.tid()
+    worldid = wp.tid() // bodies_per_env
+    index_in_env = wp.tid() % bodies_per_env
+    mjc_idx = body_mapping[index_in_env]
+    if mjc_idx == -1:
+        return
+
+    # Get inertia tensor and body orientation
+    I = body_inertia[tid]
+    # body_q = body_quat[worldid, mjc_idx]
+
+    # Calculate eigenvalues and eigenvectors
+    eigenvectors, eigenvalues = wp.eig3(I)
+
+    # Bubble sort for 3 elements in descending order
+    for i in range(2):
+        for j in range(2 - i):
+            if eigenvalues[j] < eigenvalues[j + 1]:
+                # Swap eigenvalues
+                temp_val = eigenvalues[j]
+                eigenvalues[j] = eigenvalues[j + 1]
+                eigenvalues[j + 1] = temp_val
+                # Swap eigenvectors
+                temp_vec = eigenvectors[j]
+                eigenvectors[j] = eigenvectors[j + 1]
+                eigenvectors[j + 1] = temp_vec
+
+    # this does not work yet, I think we are reporting in the wrong reference frame
+    # Convert eigenvectors to quaternion (xyzw format for mujoco)
+    # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
+    # q = wp.normalize(q)
+
+    # Convert from wxyz to xyzw format and compose with body orientation
+    # q = wp.quat(q[1], q[2], q[3], q[0])
+
+    # Store results
+    body_inertia_out[worldid, mjc_idx] = eigenvalues
+    # body_iquat_out[worldid, mjc_idx] = q
+
+
+@wp.kernel
+def repeat_array_kernel(
+    src: wp.array(dtype=Any),
+    nelems_per_world: int,
+    dst: wp.array(dtype=Any),
+):
+    tid = wp.tid()
+    src_idx = tid % nelems_per_world
+    dst[tid] = src[src_idx]
+
+
 class MuJoCoSolver(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -540,7 +629,6 @@ class MuJoCoSolver(SolverBase):
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
         nefc_per_env: int = 100,
-        ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
@@ -560,7 +648,6 @@ class MuJoCoSolver(SolverBase):
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
             nefc_per_env (int): Number of constraints per environment (world).
-            ncon_per_env (int | None): Number of contacts per environment (world). If None, `model.rigid_contact_max` is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -588,12 +675,11 @@ class MuJoCoSolver(SolverBase):
             self.use_mujoco = use_mujoco
             if separate_envs_to_worlds is None:
                 separate_envs_to_worlds = not use_mujoco
-            (self.mjw_model, self.mjw_data, self.mj_model, self.mj_data) = self.convert_to_mjc(
+            self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
-                ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
                 solver=solver,
@@ -632,10 +718,16 @@ class MuJoCoSolver(SolverBase):
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
-            self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+            with wp.ScopedDevice(self.model.device):
+                self.mujoco_warp.step(self.mjw_model, self.mjw_data)
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
+
+    @override
+    def notify_model_changed(self, flags: int):
+        if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
+            self.update_model_inertial_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -652,8 +744,8 @@ class MuJoCoSolver(SolverBase):
             qfrc = mj_data.qfrc_applied
             nworld = mj_data.nworld
         else:
-            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32)
-            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32)
+            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
+            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
         joints_per_env = model.joint_count // nworld
@@ -705,8 +797,8 @@ class MuJoCoSolver(SolverBase):
             nworld = mj_data.nworld
         else:
             # we have a MjData object from Mujoco
-            qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32)
-            qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32)
+            qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32, device=model.device)
+            qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
             nworld = 1
         if state is None:
             joint_q = model.joint_q
@@ -748,12 +840,12 @@ class MuJoCoSolver(SolverBase):
             xquat = mj_data.xquat
         else:
             # we have a MjData object from Mujoco
-            qpos = wp.array([mj_data.qpos], dtype=wp.float32)
-            qvel = wp.array([mj_data.qvel], dtype=wp.float32)
+            qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+            qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
 
-            xpos = wp.array([mj_data.xpos], dtype=wp.vec3)
-            xquat = wp.array([mj_data.xquat], dtype=wp.quat)
+            xpos = wp.array([mj_data.xpos], dtype=wp.vec3, device=model.device)
+            xquat = wp.array([mj_data.xquat], dtype=wp.quat, device=model.device)
         joints_per_env = model.joint_count // nworld
         wp.launch(
             convert_mj_coords_to_warp_kernel,
@@ -808,8 +900,8 @@ class MuJoCoSolver(SolverBase):
                 device=model.device,
             )
 
-    @staticmethod
     def convert_to_mjc(
+        self,
         model: Model,
         state: State | None = None,
         *,
@@ -817,7 +909,6 @@ class MuJoCoSolver(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         nefc_per_env: int = 100,  # number of constraints per world
-        ncon_per_env: int | None = None,  # number of contacts per world, if None we use model.rigid_contact_max
         solver: int | str = "cg",
         integrator: int | str = "euler",
         disableflags: int = 0,
@@ -914,7 +1005,7 @@ class MuJoCoSolver(SolverBase):
         defaults.geom.solimp = geom_solimp
         defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
-        spec.compiler.inertiafromgeom = True
+        spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
         if add_axes:
             # add axes for debug visualization in MuJoCo viewer when loading the generated XML
@@ -1168,6 +1259,7 @@ class MuJoCoSolver(SolverBase):
                 mass=body_mass[child],
                 ipos=pos2mjc(body_com[child, :]),
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
+                explicitinertial=True,
             )
             mj_bodies.append(body)
 
@@ -1295,7 +1387,7 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
-        m = spec.compile()
+        self.mj_model = spec.compile()
 
         if target_filename:
             import os
@@ -1317,37 +1409,180 @@ class MuJoCoSolver(SolverBase):
         # mapping from Newton joint index to MJC joint index
         model.to_mjc_joint_index = wp.array(joint_order, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
-        d = mujoco.MjData(m)
 
-        d.nefc = nefc_per_env
+        self.mj_data = mujoco.MjData(self.mj_model)
 
-        m.opt.tolerance = tolerance
-        m.opt.ls_tolerance = ls_tolerance
-        m.opt.cone = cone
-        m.opt.iterations = iterations
-        m.opt.ls_iterations = ls_iterations
-        m.opt.integrator = integrator
-        m.opt.solver = solver
+        self.mj_data.nefc = nefc_per_env
+
+        self.mj_model.opt.tolerance = tolerance
+        self.mj_model.opt.ls_tolerance = ls_tolerance
+        self.mj_model.opt.cone = cone
+        self.mj_model.opt.iterations = iterations
+        self.mj_model.opt.ls_iterations = ls_iterations
+        self.mj_model.opt.integrator = integrator
+        self.mj_model.opt.solver = solver
         # m.opt.disableflags = disableflags
-        m.opt.impratio = impratio
-        m.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        self.mj_model.opt.impratio = impratio
+        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
-        MuJoCoSolver.update_mjc_data(d, model, state)
+        MuJoCoSolver.update_mjc_data(self.mj_data, model, state)
 
-        mujoco.mj_forward(m, d)
+        # fill some MjWarp model fields that outdated after update_mjc_data.
+        # just setting qpos0 to d.qpos leads to weird behavior here, needs
+        # to be investigated.
 
-        mj_model = mujoco_warp.put_model(m)
-        if separate_envs_to_worlds:
-            nworld = model.num_envs
-        else:
-            nworld = 1
-        # TODO find better heuristics to determine nconmax and njmax
-        if ncon_per_env:
-            nconmax = nworld * ncon_per_env
-        else:
-            nconmax = model.rigid_contact_max * 4
-        nconmax = max(nconmax, d.ncon)
-        njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
-        mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
+        mujoco.mj_forward(self.mj_model, self.mj_data)
 
-        return mj_model, mj_data, m, d
+        with wp.ScopedDevice(model.device):
+            # add axis_to_actuator mapping to the Newton model
+            model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+
+            self.mjw_model = mujoco_warp.put_model(self.mj_model)
+            if separate_envs_to_worlds:
+                nworld = model.num_envs
+            else:
+                nworld = 1
+
+            # expand model fields that can be expanded:
+            self.expand_model_fields(self.mjw_model, nworld)
+
+            # complete the body mapping
+            size = max(body_mapping.keys()) + 1
+            arr = np.full(size, -1, dtype=int)
+            for k, v in body_mapping.items():
+                if k != -1:
+                    arr[k] = v
+
+            self.body_mapping = wp.array(arr, dtype=int)
+
+            # now fill with all the data from the Newton model.
+            flags = types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+            self.notify_model_changed(flags)
+
+            # TODO find better heuristics to determine nconmax and njmax
+            nconmax = max(model.rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
+            self.mjw_data = mujoco_warp.put_data(
+                self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
+            )
+
+    def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
+        if nworld == 1:
+            return
+
+        model_fields_to_expand = [
+            # "qpos0",
+            # "qpos_spring",
+            # "body_pos",
+            # "body_quat",
+            "body_ipos",
+            # "body_iquat",
+            "body_mass",
+            # "body_subtreemass",
+            # "subtree_mass",
+            "body_inertia",
+            # "body_invweight0",
+            # "body_gravcomp",
+            # "jnt_solref",
+            # "jnt_solimp",
+            # "jnt_pos",
+            # "jnt_axis",
+            # "jnt_stiffness",
+            # "jnt_range",
+            # "jnt_actfrcrange",
+            # "jnt_margin",
+            # "dof_armature",
+            # "dof_damping",
+            # "dof_invweight0",
+            # "dof_frictionloss",
+            # "dof_solimp",
+            # "dof_solref",
+            # "geom_matid",
+            # "geom_solmix",
+            # "geom_solref",
+            # "geom_solimp",
+            # "geom_size",
+            # "geom_rbound",
+            # "geom_pos",
+            # "geom_quat",
+            # "geom_friction",
+            # "geom_margin",
+            # "geom_gap",
+            # "geom_rgba",
+            # "site_pos",
+            # "site_quat",
+            # "cam_pos",
+            # "cam_quat",
+            # "cam_poscom0",
+            # "cam_pos0",
+            # "cam_mat0",
+            # "light_pos",
+            # "light_dir",
+            # "light_poscom0",
+            # "light_pos0",
+            # "eq_solref",
+            # "eq_solimp",
+            # "eq_data",
+            # "actuator_dynprm",
+            # "actuator_gainprm",
+            # "actuator_biasprm",
+            # "actuator_ctrlrange",
+            # "actuator_forcerange",
+            # "actuator_actrange",
+            # "actuator_gear",
+            # "pair_solref",
+            # "pair_solreffriction",
+            # "pair_solimp",
+            # "pair_margin",
+            # "pair_gap",
+            # "pair_friction",
+            # "tendon_solref_lim",
+            # "tendon_solimp_lim",
+            # "tendon_range",
+            # "tendon_margin",
+            # "tendon_length0",
+            # "tendon_invweight0",
+            # "mat_rgba",
+        ]
+
+        def tile(x):
+            # Create new array with same shape but first dim multiplied by nworld
+            new_shape = list(x.shape)
+            new_shape[0] = nworld
+            wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[len(new_shape)]
+            dst = wp_array(shape=new_shape, dtype=x.dtype, device=x.device)
+
+            # Flatten arrays for kernel
+            src_flat = x.flatten()
+            dst_flat = dst.flatten()
+
+            # Launch kernel to repeat data - one thread per destination element
+            n_elems_per_world = dst_flat.shape[0] // nworld
+            wp.launch(
+                repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, n_elems_per_world], outputs=[dst_flat]
+            )
+            return dst
+
+        for field in mj_model.__dataclass_fields__:
+            if field in model_fields_to_expand:
+                array = getattr(mj_model, field)
+                setattr(mj_model, field, tile(array))
+
+    def update_model_inertial_properties(self):
+        bodies_per_env = self.model.body_count // self.model.num_envs
+
+        wp.launch(
+            update_body_mass_ipos_kernel,
+            dim=self.model.body_count,
+            inputs=[self.model.body_com, self.model.body_mass, bodies_per_env, self.model.up_axis, self.body_mapping],
+            outputs=[self.mjw_model.body_ipos, self.mjw_model.body_mass],
+            device=self.model.device,
+        )
+
+        wp.launch(
+            update_body_inertia_kernel,
+            dim=self.model.body_count,
+            inputs=[self.model.body_inertia, self.mjw_model.body_quat, bodies_per_env, self.body_mapping],
+            outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
+            device=self.model.device,
+        )

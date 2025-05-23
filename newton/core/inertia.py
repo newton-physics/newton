@@ -460,7 +460,7 @@ def compute_shape_inertia(
         assert src is not None, "src must be provided for mesh or SDF shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
             m, c, I = src.mass, src.com, src.I
-
+            scale = wp.vec3(scale)
             sx, sy, sz = scale
 
             mass_ratio = sx * sy * sz * density
