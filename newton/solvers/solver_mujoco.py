@@ -90,7 +90,7 @@ def convert_mj_coords_to_warp_kernel(
             qpos[worldid, q_i + 3],
         )
         if up_axis == 1:
-            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
             rot = rot_y2z * rot
             # rot = rot * rot_y2z
         joint_q[wq_i + 3] = rot[0]
@@ -184,19 +184,15 @@ def convert_warp_coords_to_mj_kernel(
             joint_q[wq_i + 6],
         )
         if up_axis == 1:
-            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-            # #     wp.printf("rot: %f %f %f %f\n", rot[0], rot[1], rot[2], rot[3])
-            # #     wp.printf("rot_y2z: %f %f %f %f\n", rot_y2z[0], rot_y2z[1], rot_y2z[2], rot_y2z[3])
-            # # # #     # rot_y2zi = wp.quat_inverse(rot_y2z)
-            # # # #     roti = wp.quat_inverse(rot)
-            # # # #     # rot = roti * rot_y2zi
-            rot = rot_y2z * rot
-        #     # rot = rot * rot_y2z
+            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+            rot_z_up = rot_y2z * rot
+        else:
+            rot_z_up = rot
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 3] = rot[3]
-        qpos[worldid, q_i + 4] = rot[0]
-        qpos[worldid, q_i + 5] = rot[1]
-        qpos[worldid, q_i + 6] = rot[2]
+        qpos[worldid, q_i + 3] = rot_z_up[3]
+        qpos[worldid, q_i + 4] = rot_z_up[0]
+        qpos[worldid, q_i + 5] = rot_z_up[1]
+        qpos[worldid, q_i + 6] = rot_z_up[2]
         # for i in range(6):
         #     # convert velocity components
         #     qvel[worldid, qd_i + i] = joint_qd[qd_i + i]
@@ -542,6 +538,7 @@ def update_body_inertia_kernel(
     body_quat: wp.array2d(dtype=wp.quatf),
     bodies_per_env: int,
     body_mapping: wp.array(dtype=int),
+    up_axis: int,
     # outputs
     body_inertia_out: wp.array2d(dtype=wp.vec3f),
     body_iquat_out: wp.array2d(dtype=wp.quatf),
@@ -577,6 +574,10 @@ def update_body_inertia_kernel(
     # Convert eigenvectors to quaternion (xyzw format for mujoco)
     # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
     # q = wp.normalize(q)
+
+    # if up_axis == 1:
+    #     q_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+    #     q = q_y2z * q
 
     # Convert from wxyz to xyzw format and compose with body orientation
     # q = wp.quat(q[1], q[2], q[3], q[0])
@@ -1079,6 +1080,7 @@ class MuJoCoSolver(SolverBase):
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+        rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
 
         supported_joint_types = {
             newton.JOINT_FREE,
@@ -1220,7 +1222,6 @@ class MuJoCoSolver(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
-            inertia = body_inertia[child]
             parent_xform = joint_parent_xform[ji]
             tf_p = body_q[child, :3]
             tf_q = wp.quat(*body_q[child, 3:])
@@ -1252,6 +1253,9 @@ class MuJoCoSolver(SolverBase):
                     body_names[name] += 1
                     name = f"{name}_{body_names[name]}"
 
+            inertia = body_inertia[child]
+            if model.up_axis == 1:
+                inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
                 pos=tf_p,
@@ -1408,7 +1412,6 @@ class MuJoCoSolver(SolverBase):
         print("from_mjc_body_index", model.from_mjc_body_index.numpy())
         # mapping from Newton joint index to MJC joint index
         model.to_mjc_joint_index = wp.array(joint_order, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
-
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
@@ -1582,7 +1585,13 @@ class MuJoCoSolver(SolverBase):
         wp.launch(
             update_body_inertia_kernel,
             dim=self.model.body_count,
-            inputs=[self.model.body_inertia, self.mjw_model.body_quat, bodies_per_env, self.body_mapping],
+            inputs=[
+                self.model.body_inertia,
+                self.mjw_model.body_quat,
+                bodies_per_env,
+                self.body_mapping,
+                self.model.up_axis,
+            ],
             outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
             device=self.model.device,
         )
