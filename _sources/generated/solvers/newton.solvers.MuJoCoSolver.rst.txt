@@ -1,0 +1,37 @@
+﻿newton.solvers.MuJoCoSolver
+===========================
+
+.. currentmodule:: newton.solvers
+
+.. autoclass:: MuJoCoSolver
+
+   
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~MuJoCoSolver.__init__
+      ~MuJoCoSolver.apply_mjc_control
+      ~MuJoCoSolver.convert_to_mjc
+      ~MuJoCoSolver.expand_model_fields
+      ~MuJoCoSolver.integrate_bodies
+      ~MuJoCoSolver.integrate_particles
+      ~MuJoCoSolver.notify_model_changed
+      ~MuJoCoSolver.step
+      ~MuJoCoSolver.update_mjc_data
+      ~MuJoCoSolver.update_model_inertial_properties
+      ~MuJoCoSolver.update_newton_state
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~MuJoCoSolver.device
+   
+   
