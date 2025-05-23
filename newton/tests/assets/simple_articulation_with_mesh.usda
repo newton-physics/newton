@@ -1,33 +1,12 @@
 #usda 1.0
 (
     customLayerData = {
-        dictionary cameraSettings = {
-            dictionary Front = {
-                double3 position = (5, 0, 0)
-                double radius = 5
-            }
-            dictionary Perspective = {
-                double3 position = (7.28913872358609, -1.760246560017226, 2.439578447916335)
-                double3 target = (-1.0625960084380548, -0.6522910993461004, 0.4343448797077323)
-            }
-            dictionary Right = {
-                double3 position = (0, -5, 0)
-                double radius = 5
-            }
-            dictionary Top = {
-                double3 position = (0, 0, 5)
-                double radius = 5
-            }
-            string boundCamera = "/OmniverseKit_Persp"
-        }
         dictionary omni_layer = {
             string authoring_layer = "./mesh_articulation.usda"
             dictionary locked = {
             }
             dictionary muteness = {
             }
-        }
-        dictionary renderSettings = {
         }
     }
     defaultPrim = "Robot"
@@ -37,37 +16,6 @@
     timeCodesPerSecond = 60
     upAxis = "Z"
 )
-
-def Xform "Environment"
-{
-    quatd xformOp:orient = (1, 0, 0, 0)
-    double3 xformOp:scale = (1, 1, 1)
-    double3 xformOp:translate = (0, 0, 0)
-    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-    def DistantLight "defaultLight" (
-        prepend apiSchemas = ["ShapingAPI"]
-    )
-    {
-        float inputs:angle = 1
-        float inputs:intensity = 3000
-        float inputs:shaping:cone:angle = 180
-        float inputs:shaping:cone:softness
-        float inputs:shaping:focus
-        color3f inputs:shaping:focusTint
-        asset inputs:shaping:ies:file
-        quatd xformOp:orient = (0.6532814824381883, 0.2705980500730985, 0.27059805007309845, 0.6532814824381882)
-        double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (0, 0, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-    }
-}
-
-over "Render" (
-    hide_in_stage_window = true
-)
-{
-}
 
 def Xform "Robot" (
     prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
@@ -95,7 +43,7 @@ def Xform "Robot" (
     }
 
     def Xform "left_rigid" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI"]
     )
     {
         bool physics:kinematicEnabled = 0
@@ -164,4 +112,3 @@ def Xform "Robot" (
         }
     }
 }
-
