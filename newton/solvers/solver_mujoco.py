@@ -530,7 +530,6 @@ class MuJoCoSolver(SolverBase):
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
         nefc_per_env: int = 100,
-        ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
@@ -538,7 +537,6 @@ class MuJoCoSolver(SolverBase):
         use_mujoco: bool = False,
         disable_contacts: bool = False,
         register_collision_groups: bool = True,
-        joint_damping: float = 0.05,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         update_data_every: int = 1,
@@ -551,7 +549,6 @@ class MuJoCoSolver(SolverBase):
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
             nefc_per_env (int): Number of constraints per environment (world).
-            ncon_per_env (int | None): Number of contacts per environment (world). If None, `model.rigid_contact_max` is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -559,7 +556,6 @@ class MuJoCoSolver(SolverBase):
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
-            joint_damping (float): Default joint damping value to apply to all joints during conversion to MJCF.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
@@ -583,10 +579,8 @@ class MuJoCoSolver(SolverBase):
             (self.mjw_model, self.mjw_data, self.mj_model, self.mj_data) = self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
-                default_joint_damping=joint_damping,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
-                ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
                 solver=solver,
@@ -811,7 +805,6 @@ class MuJoCoSolver(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         nefc_per_env: int = 100,  # number of constraints per world
-        ncon_per_env: int | None = None,  # number of contacts per world, if None we use model.rigid_contact_max
         solver: int | str = "cg",
         integrator: int | str = "euler",
         disableflags: int = 0,
@@ -826,7 +819,6 @@ class MuJoCoSolver(SolverBase):
         # these numbers come from the cartpole.xml model
         # joint_solref=(0.08, 1.0),
         # joint_solimp=(0.9, 0.95, 0.001, 0.5, 2.0),
-        default_joint_damping: float = 0.0,
         geom_solref: tuple[float, float] = (0.02, 1.0),
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] = (1.0, 0.05, 0.05),
@@ -904,7 +896,6 @@ class MuJoCoSolver(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        defaults.joint.damping = default_joint_damping
         defaults.geom.condim = geom_condim
         defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
@@ -1327,13 +1318,8 @@ class MuJoCoSolver(SolverBase):
                 nworld = model.num_envs
             else:
                 nworld = 1
-            # TODO find better heuristics to determine nconmax and njmax
-            if ncon_per_env:
-                nconmax = nworld * ncon_per_env
-            else:
-                nconmax = model.rigid_contact_max * 4
-            nconmax = max(nconmax, d.ncon)
-            njmax = max(nworld * nefc_per_env * 4, nworld * d.nefc)
+            nconmax = max(model.rigid_contact_max, d.ncon * nworld)  # this avoids error in mujoco.
+            njmax = max(nworld * nefc_per_env, nworld * d.nefc)
             mj_data = mujoco_warp.put_data(m, d, nworld=nworld, nconmax=nconmax, njmax=njmax)
 
         return mj_model, mj_data, m, d
