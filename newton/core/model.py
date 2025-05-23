@@ -181,7 +181,7 @@ class Model:
         self.body_qd = None
         """Velocities of rigid bodies used for state initialization, shape [body_count, 6], float."""
         self.body_com = None
-        """Rigid body center of mass (in local frame), shape [body_count, 7], float."""
+        """Rigid body center of mass (in local frame), shape [body_count, 3], float."""
         self.body_inertia = None
         """Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
         self.body_inv_inertia = None

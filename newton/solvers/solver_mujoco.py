@@ -537,7 +537,6 @@ class MuJoCoSolver(SolverBase):
         use_mujoco: bool = False,
         disable_contacts: bool = False,
         register_collision_groups: bool = True,
-        joint_damping: float = 0.05,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         update_data_every: int = 1,
@@ -557,7 +556,6 @@ class MuJoCoSolver(SolverBase):
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
-            joint_damping (float): Default joint damping value to apply to all joints during conversion to MJCF.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
@@ -581,7 +579,6 @@ class MuJoCoSolver(SolverBase):
             (self.mjw_model, self.mjw_data, self.mj_model, self.mj_data) = self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
-                default_joint_damping=joint_damping,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
                 iterations=iterations,
@@ -822,7 +819,6 @@ class MuJoCoSolver(SolverBase):
         # these numbers come from the cartpole.xml model
         # joint_solref=(0.08, 1.0),
         # joint_solimp=(0.9, 0.95, 0.001, 0.5, 2.0),
-        default_joint_damping: float = 0.0,
         geom_solref: tuple[float, float] = (0.02, 1.0),
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] = (1.0, 0.05, 0.05),
@@ -900,7 +896,6 @@ class MuJoCoSolver(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        defaults.joint.damping = default_joint_damping
         defaults.geom.condim = geom_condim
         defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
