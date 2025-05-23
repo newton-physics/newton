@@ -42,7 +42,7 @@ def parse_usd(
     collapse_fixed_joints: bool = False,
     enable_self_collisions: bool = True,
     root_path: str = "/",
-    joint_ordering: Literal["bfs", "dfs"] = "bfs",
+    joint_ordering: Literal["bfs", "dfs"] = "dfs",
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -65,7 +65,7 @@ def parse_usd(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         root_path (str): The USD path to import, defaults to "/".
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "bfs".
+        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "dfs".
 
     Returns:
         dict: Dictionary with the following entries:
