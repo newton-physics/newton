@@ -405,6 +405,24 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+        # batches
+        self.batch_key = []
+        self.batch_dim = []
+        self.batch_shape_start = []
+        self.batch_shape_count = []
+        self.batch_body_start = []
+        self.batch_body_count = []
+        self.batch_joint_start = []
+        self.batch_joint_count = []
+        self.batch_joint_coord_start = []
+        self.batch_joint_coord_count = []
+        self.batch_joint_dof_start = []
+        self.batch_joint_dof_count = []
+        self.batch_joint_axis_start = []
+        self.batch_joint_axis_count = []
+        self.batch_articulation_start = []
+        self.batch_articulation_count = []
+
     @property
     def up_vector(self) -> Vec3:
         """Computes the 3D up vector from :attr:`up_axis`."""
@@ -460,6 +478,10 @@ class ModelBuilder:
     @property
     def articulation_count(self):
         return len(self.articulation_start)
+
+    @property
+    def batch_count(self):
+        return len(self.batch_key)
 
     # endregion
 
@@ -664,6 +686,48 @@ class ModelBuilder:
 
         if update_num_env_count:
             self.num_envs += 1
+
+    def add_batch(
+        self,
+        builder: ModelBuilder,
+        count: int,
+        xforms: list[Transform] | None = None,
+        separate_collision_groups: bool = True,
+        key: str | None = None,
+    ):
+        batch_id = self.batch_count
+        if key is None:
+            key = f"batch_{batch_id}"
+
+        self.batch_key.append(key)
+        self.batch_dim.append(count)
+        self.batch_shape_start.append(self.shape_count)
+        self.batch_body_start.append(self.body_count)
+        self.batch_joint_start.append(self.joint_count)
+        self.batch_joint_coord_start.append(self.joint_coord_count)
+        self.batch_joint_dof_start.append(self.joint_dof_count)
+        self.batch_joint_axis_start.append(self.joint_axis_count)
+        self.batch_articulation_start.append(self.articulation_count)
+
+        if xforms is not None:
+            assert len(xforms) == count
+
+        for i in range(count):
+            xform = xforms[i] if xforms is not None else None
+            self.add_builder(
+                builder,
+                xform=xform,
+                update_num_env_count=True,  # hmmm
+                separate_collision_group=separate_collision_groups,
+            )
+
+        self.batch_shape_count.append(self.shape_count - self.batch_shape_start[-1])
+        self.batch_body_count.append(self.body_count - self.batch_body_start[-1])
+        self.batch_joint_count.append(self.joint_count - self.batch_joint_start[-1])
+        self.batch_joint_coord_count.append(self.joint_coord_count - self.batch_joint_coord_start[-1])
+        self.batch_joint_dof_count.append(self.joint_dof_count - self.batch_joint_dof_start[-1])
+        self.batch_joint_axis_count.append(self.joint_axis_count - self.batch_joint_axis_start[-1])
+        self.batch_articulation_count.append(self.articulation_count - self.batch_articulation_start[-1])
 
     def add_body(
         self,
@@ -3458,6 +3522,24 @@ class ModelBuilder:
             m.rigid_contact_margin = self.rigid_contact_margin
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
+
+            # batches
+            m.batch_key = copy.copy(self.batch_key)
+            m.batch_dim = copy.copy(self.batch_dim)
+            m.batch_shape_start = copy.copy(self.batch_shape_start)
+            m.batch_shape_count = copy.copy(self.batch_shape_count)
+            m.batch_body_start = copy.copy(self.batch_body_start)
+            m.batch_body_count = copy.copy(self.batch_body_count)
+            m.batch_joint_start = copy.copy(self.batch_joint_start)
+            m.batch_joint_count = copy.copy(self.batch_joint_count)
+            m.batch_joint_coord_start = copy.copy(self.batch_joint_coord_start)
+            m.batch_joint_coord_count = copy.copy(self.batch_joint_coord_count)
+            m.batch_joint_dof_start = copy.copy(self.batch_joint_dof_start)
+            m.batch_joint_dof_count = copy.copy(self.batch_joint_dof_count)
+            m.batch_joint_axis_start = copy.copy(self.batch_joint_axis_start)
+            m.batch_joint_axis_count = copy.copy(self.batch_joint_axis_count)
+            m.batch_articulation_start = copy.copy(self.batch_articulation_start)
+            m.batch_articulation_count = copy.copy(self.batch_articulation_count)
 
             # enable ground plane
             m.ground_plane = wp.array(self._ground_params["plane"], dtype=wp.float32, requires_grad=requires_grad)
