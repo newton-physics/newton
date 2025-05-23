@@ -387,6 +387,7 @@ def transform_inertia(m, I, p, q) -> wp.mat33:
     # Steiner's theorem
     return R @ I @ wp.transpose(R) + m * (wp.dot(p, p) * wp.mat33(np.eye(3)) - wp.outer(p, p))
 
+
 def compute_shape_inertia(
     type: int,
     scale: Vec3,
