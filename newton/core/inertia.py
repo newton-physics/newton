@@ -387,7 +387,6 @@ def transform_inertia(m, I, p, q) -> wp.mat33:
     # Steiner's theorem
     return R @ I @ wp.transpose(R) + m * (wp.dot(p, p) * wp.mat33(np.eye(3)) - wp.outer(p, p))
 
-
 def compute_shape_inertia(
     type: int,
     scale: Vec3,
@@ -460,11 +459,11 @@ def compute_shape_inertia(
         assert src is not None, "src must be provided for mesh or SDF shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
             m, c, I = src.mass, src.com, src.I
-
+            scale = wp.vec3(scale)
             sx, sy, sz = scale
 
             mass_ratio = sx * sy * sz * density
-            m_new = float(m * mass_ratio)
+            m_new = m * mass_ratio
 
             c_new = wp.cw_mul(c, scale)
 
