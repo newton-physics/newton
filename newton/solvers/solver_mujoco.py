@@ -22,6 +22,7 @@ import warp as wp
 from typing_extensions import override
 
 import newton
+import newton.utils
 from newton.core import Contact, Control, Model, State
 
 from .solver import SolverBase
@@ -481,20 +482,29 @@ def eval_articulation_fk(
 def convert_body_xforms_to_warp_kernel(
     xpos: wp.array2d(dtype=wp.vec3),
     xquat: wp.array2d(dtype=wp.quat),
+    from_mjc_body_index: wp.array(dtype=wp.int32),
     bodies_per_env: int,
+    up_axis: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
 ):
     worldid, bodyid = wp.tid()
-    wbi = bodies_per_env * worldid + bodyid
-    pos = xpos[worldid, bodyid + 1]
-    quat = xquat[worldid, bodyid + 1]
+    bodyid += 1  # skip world body index 0 in MuJoCo
+    wbi = bodies_per_env * worldid + from_mjc_body_index[bodyid]
+    pos = xpos[worldid, bodyid]
+    quat = xquat[worldid, bodyid]
     # convert from wxyz to xyzw
     quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
+    # quat = wp.quat(quat[3], quat[0], quat[1], quat[2])
+    # quat = wp.quat_identity()
     # quat = wp.quat_inverse(quat)
-    # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-    # pos = wp.quat_rotate(rot_y2z, pos)
+    # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
     # quat = rot_y2z * quat
+    if up_axis == 1:
+        pos = wp.vec3(pos[0], pos[2], -pos[1])
+        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+        # pos = wp.quat_rotate(rot_y2z, pos)
+        quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
 
@@ -648,13 +658,12 @@ class MuJoCoSolver(SolverBase):
         axes_per_env = model.joint_axis_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
-        # TODO consider assigning a reshaped control.joint_target to ctrl directly
         wp.launch(
             apply_mjc_control_kernel,
             dim=(nworld, axes_per_env),
             inputs=[
                 control.joint_target,
-                model.axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
+                model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                 axes_per_env,
             ],
             outputs=[
@@ -794,8 +803,9 @@ class MuJoCoSolver(SolverBase):
             wp.launch(
                 convert_body_xforms_to_warp_kernel,
                 dim=(nworld, bodies_per_env),
-                inputs=[xpos, xquat, bodies_per_env],
+                inputs=[xpos, xquat, model.from_mjc_body_index, bodies_per_env, int(model.up_axis)],
                 outputs=[state.body_q],
+                device=model.device,
             )
 
     @staticmethod
@@ -907,7 +917,7 @@ class MuJoCoSolver(SolverBase):
         spec.compiler.inertiafromgeom = True
 
         if add_axes:
-            # TODO figure out how to create noncolliding geoms
+            # add axes for debug visualization in MuJoCo viewer when loading the generated XML
             spec.worldbody.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                 name="axis_x",
@@ -1023,15 +1033,16 @@ class MuJoCoSolver(SolverBase):
             shapes_per_env //= model.num_envs
             joints_per_env //= model.num_envs
 
+        # sort joints topologically depth-first since this is the order that will also be used
+        # for placing bodies in the MuJoCo model
         joints_simple = list(zip(joint_parent, joint_child))
-        # joint_order, _ = topological_sort(joints_simple)
-        joint_order = np.arange(joints_per_env, dtype=np.int32)
+        joint_order = newton.utils.topological_sort(joints_simple[:joints_per_env], use_dfs=True)
 
         # maps from body_id to transform to be applied to its children
         # i.e. its inverse child transform
         body_child_tf = {}
 
-        def add_geoms(warp_body_id: int, perm_position=False, incoming_xform=None):
+        def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
             shape_flags = model.shape_flags.numpy()
@@ -1293,8 +1304,18 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        # add axis_to_actuator mapping to the Newton model
-        model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+        # mapping from Newton joint axis index to MJC actuator index
+        model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+        # mapping from Newton body index to MJC body index (skip world index -1)
+        model.to_mjc_body_index = wp.array(list(body_mapping.values())[1:], dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+        # mapping from MJC body index to Newton body index (skip world index -1)
+        reverse_body_mapping = {v: k for k, v in body_mapping.items()}
+        model.from_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
+            [reverse_body_mapping[i] for i in range(len(reverse_body_mapping))], dtype=wp.int32
+        )
+        print("from_mjc_body_index", model.from_mjc_body_index.numpy())
+        # mapping from Newton joint index to MJC joint index
+        model.to_mjc_joint_index = wp.array(joint_order, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
         d = mujoco.MjData(m)
 
