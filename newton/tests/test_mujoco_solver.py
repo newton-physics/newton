@@ -146,7 +146,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.model.body_mass.assign(new_masses)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1)
+        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
@@ -196,7 +196,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.model.body_com.assign(new_coms)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1)
+        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1, disable_contacts=True, nefc_per_env=1)
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
@@ -283,7 +283,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, iterations=1, ls_iterations=1)
+        solver = MuJoCoSolver(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
 
         # Get body mapping once outside the loop
         body_mapping = solver.body_mapping.numpy()
