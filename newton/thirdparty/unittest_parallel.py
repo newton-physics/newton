@@ -137,7 +137,7 @@ def main(argv=None):
     group_parallel.add_argument(
         "--serial-fallback",
         action="store_true",
-        default=True,
+        default=False,
         help="Run in a single-process (no spawning) mode without multiprocessing or concurrent.futures.",
     )  # NVIDIA Modification
     group_coverage = parser.add_argument_group("coverage options")
