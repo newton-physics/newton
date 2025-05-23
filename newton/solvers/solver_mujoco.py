@@ -676,7 +676,6 @@ class MuJoCoSolver(SolverBase):
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
         nefc_per_env: int = 100,
-        ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
@@ -696,7 +695,6 @@ class MuJoCoSolver(SolverBase):
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
             nefc_per_env (int): Number of constraints per environment (world).
-            ncon_per_env (int | None): Number of contacts per environment (world). If None, `model.rigid_contact_max` is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -729,7 +727,6 @@ class MuJoCoSolver(SolverBase):
                 disableflags=disableflags,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
-                ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
                 solver=solver,
@@ -959,7 +956,6 @@ class MuJoCoSolver(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         nefc_per_env: int = 100,  # number of constraints per world
-        ncon_per_env: int | None = None,  # number of contacts per world, if None we use model.rigid_contact_max
         solver: int | str = "cg",
         integrator: int | str = "euler",
         disableflags: int = 0,
@@ -1496,12 +1492,8 @@ class MuJoCoSolver(SolverBase):
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
-            if ncon_per_env:
-                nconmax = nworld * ncon_per_env
-            else:
-                nconmax = model.rigid_contact_max * 4
-            nconmax = max(nconmax, self.mj_data.ncon)
-            njmax = max(nworld * nefc_per_env * 4, nworld * self.mj_data.nefc)
+            nconmax = max(model.rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
