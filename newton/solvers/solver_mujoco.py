@@ -1410,14 +1410,6 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        # mapping from Newton joint axis index to MJC actuator index
-        model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
-        # mapping from MJC body index to Newton body index (skip world index -1)
-        reverse_body_mapping = {v: k for k, v in body_mapping.items()}
-        model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
-            [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))], dtype=wp.int32
-        )
-
         self.mj_data = mujoco.MjData(self.mj_model)
         self.mj_data.nefc = nefc_per_env
 
@@ -1441,8 +1433,14 @@ class MuJoCoSolver(SolverBase):
         mujoco.mj_forward(self.mj_model, self.mj_data)
 
         with wp.ScopedDevice(model.device):
-            # add axis_to_actuator mapping to the Newton model
-            model.axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            # mapping from Newton joint axis index to MJC actuator index
+            model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            # mapping from MJC body index to Newton body index (skip world index -1)
+            reverse_body_mapping = {v: k for k, v in body_mapping.items()}
+            model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
+                [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))],
+                dtype=wp.int32,
+            )
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
             if separate_envs_to_worlds:
