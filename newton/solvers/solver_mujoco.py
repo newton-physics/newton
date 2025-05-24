@@ -829,7 +829,7 @@ class MuJoCoSolver(SolverBase):
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
     @staticmethod
-    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = False):
+    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True):
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have a MjWarp Data object
@@ -896,7 +896,13 @@ class MuJoCoSolver(SolverBase):
             wp.launch(
                 convert_body_xforms_to_warp_kernel,
                 dim=(nworld, bodies_per_env),
-                inputs=[xpos, xquat, model.to_mjc_body_index, bodies_per_env, int(model.up_axis)],
+                inputs=[
+                    xpos,
+                    xquat,
+                    model.to_mjc_body_index,
+                    bodies_per_env,
+                    int(model.up_axis),
+                ],
                 outputs=[state.body_q],
                 device=model.device,
             )
@@ -1069,8 +1075,8 @@ class MuJoCoSolver(SolverBase):
             collision_mask_everything |= 1 << i
         INT32_MAX = np.iinfo(np.int32).max
         if collision_mask_everything > INT32_MAX:
-            print(
-                "Warning: collision mask exceeds INT32_MAX, some collision groups will be ignored when using MuJoCo C."
+            wp.utils.warn(
+                "Collision mask exceeds INT32_MAX while converting Newton model to MuJoCo, some collision groups will be ignored when using MuJoCo C."
             )
             collision_mask_everything = INT32_MAX
 
@@ -1132,7 +1138,7 @@ class MuJoCoSolver(SolverBase):
         joint_order = newton.utils.topological_sort(joints_simple[:joints_per_env], use_dfs=True)
         if any(joint_order != np.arange(joints_per_env)):
             wp.utils.warn(
-                "Joint order is not in depth-first topological order, this may lead to diverging kinematics between MuJoCo and Newton."
+                "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
             )
 
         # maps from body_id to transform to be applied to its children
