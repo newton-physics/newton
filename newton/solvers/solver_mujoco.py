@@ -478,17 +478,17 @@ def eval_articulation_fk(
 def convert_body_xforms_to_warp_kernel(
     xpos: wp.array2d(dtype=wp.vec3),
     xquat: wp.array2d(dtype=wp.quat),
-    from_mjc_body_index: wp.array(dtype=wp.int32),
+    to_mjc_body_index: wp.array(dtype=wp.int32),
     bodies_per_env: int,
     up_axis: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
 ):
     worldid, bodyid = wp.tid()
-    bodyid += 1  # skip world body index 0 in MuJoCo
-    wbi = bodies_per_env * worldid + from_mjc_body_index[bodyid]
-    pos = xpos[worldid, bodyid]
-    quat = xquat[worldid, bodyid]
+    wbi = bodies_per_env * worldid + bodyid
+    mbi = to_mjc_body_index[bodyid]
+    pos = xpos[worldid, mbi]
+    quat = xquat[worldid, mbi]
     # convert from wxyz to xyzw
     quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
     # quat = wp.quat(quat[3], quat[0], quat[1], quat[2])
@@ -829,7 +829,7 @@ class MuJoCoSolver(SolverBase):
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
     @staticmethod
-    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True):
+    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = False):
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have a MjWarp Data object
@@ -896,7 +896,7 @@ class MuJoCoSolver(SolverBase):
             wp.launch(
                 convert_body_xforms_to_warp_kernel,
                 dim=(nworld, bodies_per_env),
-                inputs=[xpos, xquat, model.from_mjc_body_index, bodies_per_env, int(model.up_axis)],
+                inputs=[xpos, xquat, model.to_mjc_body_index, bodies_per_env, int(model.up_axis)],
                 outputs=[state.body_q],
                 device=model.device,
             )
@@ -933,7 +933,7 @@ class MuJoCoSolver(SolverBase):
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
-        skip_visual_only_geoms=True,
+        skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
@@ -1130,6 +1130,10 @@ class MuJoCoSolver(SolverBase):
         # for placing bodies in the MuJoCo model
         joints_simple = list(zip(joint_parent, joint_child))
         joint_order = newton.utils.topological_sort(joints_simple[:joints_per_env], use_dfs=True)
+        if any(joint_order != np.arange(joints_per_env)):
+            wp.utils.warn(
+                "Joint order is not in depth-first topological order, this may lead to diverging kinematics between MuJoCo and Newton."
+            )
 
         # maps from body_id to transform to be applied to its children
         # i.e. its inverse child transform
@@ -1402,19 +1406,13 @@ class MuJoCoSolver(SolverBase):
 
         # mapping from Newton joint axis index to MJC actuator index
         model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
-        # mapping from Newton body index to MJC body index (skip world index -1)
-        model.to_mjc_body_index = wp.array(list(body_mapping.values())[1:], dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
         # mapping from MJC body index to Newton body index (skip world index -1)
         reverse_body_mapping = {v: k for k, v in body_mapping.items()}
-        model.from_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
-            [reverse_body_mapping[i] for i in range(len(reverse_body_mapping))], dtype=wp.int32
+        model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
+            [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))], dtype=wp.int32
         )
-        print("from_mjc_body_index", model.from_mjc_body_index.numpy())
-        # mapping from Newton joint index to MJC joint index
-        model.to_mjc_joint_index = wp.array(joint_order, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
         self.mj_data = mujoco.MjData(self.mj_model)
-
         self.mj_data.nefc = nefc_per_env
 
         self.mj_model.opt.tolerance = tolerance
@@ -1449,16 +1447,8 @@ class MuJoCoSolver(SolverBase):
             # expand model fields that can be expanded:
             self.expand_model_fields(self.mjw_model, nworld)
 
-            # complete the body mapping
-            size = max(body_mapping.keys()) + 1
-            arr = np.full(size, -1, dtype=int)
-            for k, v in body_mapping.items():
-                if k != -1:
-                    arr[k] = v
-
-            self.body_mapping = wp.array(arr, dtype=int)
-
-            # now fill with all the data from the Newton model.
+            # so far we have only defined the first environment,
+            # now complete the data from the Newton model
             flags = types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
             self.notify_model_changed(flags)
 
@@ -1548,7 +1538,7 @@ class MuJoCoSolver(SolverBase):
             # "mat_rgba",
         ]
 
-        def tile(x):
+        def tile(x: wp.array):
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
             new_shape[0] = nworld
@@ -1577,7 +1567,13 @@ class MuJoCoSolver(SolverBase):
         wp.launch(
             update_body_mass_ipos_kernel,
             dim=self.model.body_count,
-            inputs=[self.model.body_com, self.model.body_mass, bodies_per_env, self.model.up_axis, self.body_mapping],
+            inputs=[
+                self.model.body_com,
+                self.model.body_mass,
+                bodies_per_env,
+                self.model.up_axis,
+                self.model.to_mjc_body_index,
+            ],
             outputs=[self.mjw_model.body_ipos, self.mjw_model.body_mass],
             device=self.model.device,
         )
@@ -1589,7 +1585,7 @@ class MuJoCoSolver(SolverBase):
                 self.model.body_inertia,
                 self.mjw_model.body_quat,
                 bodies_per_env,
-                self.body_mapping,
+                self.model.to_mjc_body_index,
                 self.model.up_axis,
             ],
             outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
