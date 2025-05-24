@@ -48,7 +48,7 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
 
     state_0, state_1 = model.state(), model.state()
 
-    newton.core.articulation.eval_fk(model, model.joint_q, model.joint_qd, None, state_0)
+    newton.core.articulation.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
     if test_angular:

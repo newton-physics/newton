@@ -48,6 +48,8 @@ from .core import (
     ModelShapeGeometry,
     ModelShapeMaterials,
     State,
+    eval_fk,
+    eval_ik,
 )
 
 __all__ = [
@@ -84,5 +86,7 @@ __all__ = [
     "ModelShapeMaterials",
     "State",
     "__version__",
+    "eval_fk",
+    "eval_ik",
     "solvers",
 ]
