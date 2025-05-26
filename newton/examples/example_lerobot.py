@@ -50,7 +50,7 @@ class Example:
         articulation_builder.default_body_armature = 0.1
 
         newton.utils.parse_mjcf(
-            newton.examples.get_asset("unitree_h1/h1.xml"),
+            newton.examples.get_asset("h1_description/mjcf/h1_with_hand.xml"),
             articulation_builder,
             floating=True,
             armature_scale=1.0,
@@ -67,8 +67,63 @@ class Example:
                  break
         self.trajectory_q = np.array(first_episode_states, dtype=np.float32)
         
-        # Set initial joint positions from the first frame of the trajectory
-        articulation_builder.joint_q[7:] = self.trajectory_q[0].tolist()
+        # Define joint mapping from trajectory (19 DOFs) to h1_with_hand model
+        # The trajectory contains 19 values corresponding to the main body joints:
+        # [left_hip_yaw, left_hip_roll, left_hip_pitch, left_knee, left_ankle,
+        #  right_hip_yaw, right_hip_roll, right_hip_pitch, right_knee, right_ankle,
+        #  torso, left_shoulder_pitch, left_shoulder_roll, left_shoulder_yaw, left_elbow,
+        #  right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw, right_elbow]
+        
+        # In h1_with_hand.xml, the joint order (after 7 floating base DOFs) is:
+        # 0: left_hip_yaw_joint, 1: left_hip_roll_joint, 2: left_hip_pitch_joint,
+        # 3: left_knee_joint, 4: left_ankle_joint, 5: right_hip_yaw_joint,
+        # 6: right_hip_roll_joint, 7: right_hip_pitch_joint, 8: right_knee_joint,
+        # 9: right_ankle_joint, 10: torso_joint, 11: left_shoulder_pitch_joint,
+        # 12: left_shoulder_roll_joint, 13: left_shoulder_yaw_joint, 14: left_elbow_joint,
+        # 15: left_hand_joint, 16-27: left hand finger joints,
+        # 28: right_shoulder_pitch_joint, 29: right_shoulder_roll_joint,
+        # 30: right_shoulder_yaw_joint, 31: right_elbow_joint,
+        # 32: right_hand_joint, 33-44: right hand finger joints
+        
+        self.joint_mapping = [
+            7,   # left_hip_yaw_joint
+            8,   # left_hip_roll_joint  
+            9,   # left_hip_pitch_joint
+            10,  # left_knee_joint
+            11,  # left_ankle_joint
+            12,  # right_hip_yaw_joint
+            13,  # right_hip_roll_joint
+            14,  # right_hip_pitch_joint
+            15,  # right_knee_joint
+            16,  # right_ankle_joint
+            17,  # torso_joint
+            18,  # left_shoulder_pitch_joint
+            19,  # left_shoulder_roll_joint
+            20,  # left_shoulder_yaw_joint
+            21,  # left_elbow_joint
+            # Skip left_hand_joint (22) and left finger joints (23-34)
+            35,  # right_shoulder_pitch_joint
+            36,  # right_shoulder_roll_joint
+            37,  # right_shoulder_yaw_joint
+            38,  # right_elbow_joint
+            # Skip right_hand_joint and right finger joints
+        ]
+        
+        # Set initial joint positions using proper mapping
+        for i, traj_value in enumerate(self.trajectory_q[0]):
+            if i < len(self.joint_mapping):
+                articulation_builder.joint_q[self.joint_mapping[i]] = traj_value
+        
+        # Set hand joints to neutral positions (0.0)
+        # Left hand joint (index 22) and right hand joint (index 39)
+        articulation_builder.joint_q[22] = 0.0  # left_hand_joint
+        articulation_builder.joint_q[39] = 0.0  # right_hand_joint
+        
+        # Set all finger joints to neutral positions (indices 23-34 for left, 40-51 for right)
+        for i in range(23, 35):  # left hand finger joints
+            articulation_builder.joint_q[i] = 0.0
+        for i in range(40, 52):  # right hand finger joints
+            articulation_builder.joint_q[i] = 0.0
 
         self.env_coord_count = len(articulation_builder.joint_q)
         self.current_frame_index = 0
@@ -102,15 +157,25 @@ class Example:
             current_pose_from_trajectory = self.trajectory_q[-1]
 
         q_all_envs = self.model.joint_q.numpy()
-        num_actuated_joints = 19 # Based on dataset observation.state shape
         
         for e in range(self.num_envs):
             env_q_offset = e * self.env_coord_count
-            # The first 7 elements are for the floating base (pos, quat)
-            # The next 19 are the actuated joints
-            start_idx = env_q_offset + 7
-            end_idx = start_idx + num_actuated_joints
-            q_all_envs[start_idx:end_idx] = current_pose_from_trajectory
+            
+            # Apply trajectory values using proper joint mapping
+            for i, traj_value in enumerate(current_pose_from_trajectory):
+                if i < len(self.joint_mapping):
+                    joint_idx = env_q_offset + self.joint_mapping[i]
+                    q_all_envs[joint_idx] = traj_value
+            
+            # Keep hand joints at neutral positions
+            q_all_envs[env_q_offset + 22] = 0.0  # left_hand_joint
+            q_all_envs[env_q_offset + 39] = 0.0  # right_hand_joint
+            
+            # Keep all finger joints at neutral positions
+            for i in range(23, 35):  # left hand finger joints
+                q_all_envs[env_q_offset + i] = 0.0
+            for i in range(40, 52):  # right hand finger joints
+                q_all_envs[env_q_offset + i] = 0.0
             
         self.model.joint_q.assign(q_all_envs)
         

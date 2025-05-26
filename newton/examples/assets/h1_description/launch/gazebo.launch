@@ -1,0 +1,12 @@
+<launch>
+  <include
+    file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused" value="true" />
+  </include>
+  <node
+    name="spawn_model"
+    pkg="gazebo_ros"
+    type="spawn_model"
+    args="-file $(find h1_description)/urdf/h1.urdf -urdf -z 1.05 -model h1_description"
+    output="screen" />
+</launch>
