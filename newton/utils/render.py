@@ -424,6 +424,92 @@ def CreateSimRenderer(renderer):
     return SimRenderer
 
 
-SimRendererUsd = CreateSimRenderer(renderer=UsdRenderer)
-SimRendererOpenGL = CreateSimRenderer(renderer=OpenGLRenderer)
+class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
+    """
+    USD renderer for Newton Physics simulations.
+
+    This renderer exports simulation data to USD (Universal Scene Description)
+    format, which can be visualized in Omniverse or other USD-compatible viewers.
+
+    Args:
+        model (newton.Model): The Newton physics model to render.
+        path (str): Output path for the USD file.
+        scaling (float, optional): Scaling factor for the rendered objects.
+            Defaults to 1.0.
+        fps (int, optional): Frames per second for the animation. Defaults to 60.
+        up_axis (newton.AxisType, optional): Up axis for the scene. If None,
+            uses model's up axis.
+        show_rigid_contact_points (bool, optional): Whether to show contact
+            points. Defaults to False.
+        contact_points_radius (float, optional): Radius of contact point
+            spheres. Defaults to 1e-3.
+        show_joints (bool, optional): Whether to show joint visualizations.
+            Defaults to False.
+        **render_kwargs: Additional arguments passed to the underlying
+            UsdRenderer.
+
+    Example:
+        >>> import newton
+        >>> model = newton.Model()  # your model setup
+        >>> renderer = newton.utils.SimRendererUsd(model, "output.usd", scaling=2.0)
+        >>> # In your simulation loop:
+        >>> renderer.begin_frame(time)
+        >>> renderer.render(state)
+        >>> renderer.end_frame()
+        >>> renderer.save()  # Save the USD file
+    """
+
+    pass
+
+
+class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
+    """
+    Real-time OpenGL renderer for Newton Physics simulations.
+
+    This renderer provides real-time visualization of physics simulations using
+    OpenGL, with interactive camera controls and various rendering options.
+
+    Args:
+        model (newton.Model): The Newton physics model to render.
+        path (str): Window title for the OpenGL window.
+        scaling (float, optional): Scaling factor for the rendered objects.
+            Defaults to 1.0.
+        fps (int, optional): Target frames per second. Defaults to 60.
+        up_axis (newton.AxisType, optional): Up axis for the scene. If None,
+            uses model's up axis.
+        show_rigid_contact_points (bool, optional): Whether to show contact
+            points. Defaults to False.
+        contact_points_radius (float, optional): Radius of contact point
+            spheres. Defaults to 1e-3.
+        show_joints (bool, optional): Whether to show joint visualizations.
+            Defaults to False.
+        **render_kwargs: Additional arguments passed to the underlying
+            OpenGLRenderer.
+
+    Example:
+        >>> import newton
+        >>> model = newton.Model()  # your model setup
+        >>> renderer = newton.utils.SimRendererOpenGL(model, "Newton Simulator", scaling=2.0)
+        >>> # In your simulation loop:
+        >>> renderer.begin_frame(time)
+        >>> renderer.render(state)
+        >>> renderer.end_frame()
+
+    Note:
+        Keyboard shortcuts available during rendering:
+
+        - W, A, S, D (or arrow keys) + mouse: FPS-style camera movement
+        - X: Toggle wireframe rendering
+        - B: Toggle backface culling
+        - C: Toggle coordinate system axes
+        - G: Toggle ground grid
+        - T: Toggle depth rendering
+        - I: Toggle info text
+        - SPACE: Pause/continue simulation
+        - TAB: Skip rendering (background simulation)
+    """
+
+    pass
+
+
 SimRenderer = SimRendererUsd
