@@ -56,13 +56,6 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 Forward and Inverse Kinematics
 ------------------------------
 
-Newton adopts the convention from MuJoCo to compute the kinematics of joints having multiple of angular dofs as follows:
-
-
-When evaluating the kinematics functions, Newton automatically uses a depth-first sorting of the joints behind the scenes.
-This allows an accurate evaluation of the kinematics even when the joint ordering is not in depth-first topological order.
-Both forward and inverse kinematics functions now use a parallelized approach that evaluates the kinematics of articulations at the same tree level in parallel (adopted from mujoco_warp) such that even environments having a single articulation can leverage parallelism.
-
 The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` functions have been slightly modified to make the mask argument optional:
 
 +--------------------------------------------------------+------------------------------------------------------------------------+
