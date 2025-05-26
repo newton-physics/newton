@@ -16,6 +16,7 @@ Newton Physics
    guide/key-concepts
    development-guide
    guide/tutorials
+   Conventions <conventions>
 
 .. toctree::
    :maxdepth: 0
