@@ -4,7 +4,10 @@
 .. currentmodule:: newton
 
 .. autoclass:: Control
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
