@@ -5,7 +5,6 @@
 .. autoclass:: {{ objname }}
    :members:
    :inherited-members:
-   :show-inheritance:
    :member-order: bysource
    
    {% block methods %}
