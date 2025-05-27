@@ -16,12 +16,12 @@ Classes
    newton.ModelBuilder
    newton.Mesh
    newton.SDF
-   
-.. autosummary::
-   :toctree: generated/core
-   :template: class_noinherit.rst
 
-   newton.Axis
+.. autoclass:: newton.Axis
+   :noindex:
+
+.. autoclass:: newton.AxisType
+   :noindex:
 
 .. _geometry-types:
 
@@ -100,11 +100,12 @@ Constant                       Description
 
 .. _model-update-flags:
 
-Model Update Flags
+Update Flags
 ------------------
 
 These bitmask flags are used with :py:meth:`newton.solvers.SolverBase.notify_model_changed` to inform a solver which parts
-of a :class:`newton.Model` were modified after the solver was created.
+of a :class:`newton.Model` were modified after the solver was created. Individual solver implementations
+are responsible for interpreting these flags and updating any internal data structures from the model as required.
 
 ==========================================  =============================================================
 Constant                                    Description
