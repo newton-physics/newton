@@ -68,8 +68,7 @@ def compute_env_offsets(
         env_offsets = np.zeros((num_envs, 3))
     min_offsets = np.min(env_offsets, axis=0)
     correction = min_offsets + (np.max(env_offsets, axis=0) - min_offsets) / 2.0
-    if isinstance(up_axis, str):
-        up_axis = "XYZ".index(up_axis.upper())
-    correction[up_axis] = 0.0  # ensure the envs are not shifted below the ground plane
+    # ensure the envs are not shifted below the ground plane
+    correction[newton.Axis.from_any(up_axis)] = 0.0
     env_offsets -= correction
     return env_offsets
