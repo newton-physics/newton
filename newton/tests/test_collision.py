@@ -425,7 +425,7 @@ def test_vertex_triangle_collision(test, device):
     vertices, faces = get_data()
 
     # record triangle contacting vertices
-    model, collision_detector = init_model(vertices, faces, device, True)
+    model, collision_detector = init_model(vertices, faces, device)
 
     rs = [1e-2, 2e-2, 5e-2, 1e-1]
 
@@ -519,8 +519,7 @@ def test_vertex_triangle_collision(test, device):
         assert_np_equal(triangle_colliding_vertices_count_2, triangle_colliding_vertices_count_1)
         assert_np_equal(vertex_min_dis_2, vertex_min_dis_1)
 
-        # do not record triangle contacting vertices
-        model, collision_detector = init_model(vertices, faces, device, False)
+        model, collision_detector = init_model(vertices, faces, device)
 
         rs = [1e-2, 2e-2, 5e-2, 1e-1]
 
