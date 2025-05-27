@@ -48,7 +48,7 @@ class Example:
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_identity()),
+            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
         )
         articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
