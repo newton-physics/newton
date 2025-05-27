@@ -9,6 +9,7 @@ USD Renderer
 .. autoclass:: newton.utils.SimRendererUsd
    :members:
    :inherited-members:
+   :no-index:
 
 OpenGL Renderer
 ---------------
@@ -16,3 +17,4 @@ OpenGL Renderer
 .. autoclass:: newton.utils.SimRendererOpenGL
    :members:
    :inherited-members:
+   :no-index:
