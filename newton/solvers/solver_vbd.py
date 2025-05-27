@@ -2376,7 +2376,8 @@ class VBDSolver(SolverBase):
         Args:
             state (newton.State):  The state whose particle positions (:attr:`State.particle_q`) will be used for rebuilding the BVHs.
         """
-        self.trimesh_collision_detector.rebuild(state.particle_q)
+        if self.handle_self_contact:
+            self.trimesh_collision_detector.rebuild(state.particle_q)
 
     @wp.kernel
     def count_num_adjacent_edges(
