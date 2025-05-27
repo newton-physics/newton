@@ -3,18 +3,9 @@ Renderers
 
 This section documents the rendering backends in Newton Physics, which allow you to visualize simulations in real-time or export them for offline viewing.
 
-USD Renderer
-------------
+.. autosummary::
+   :toctree: generated/renderers
+   :template: class_all.rst
 
-.. autoclass:: newton.utils.SimRendererUsd
-   :members:
-   :inherited-members:
-   :no-index:
-
-OpenGL Renderer
----------------
-
-.. autoclass:: newton.utils.SimRendererOpenGL
-   :members:
-   :inherited-members:
-   :no-index:
+   newton.utils.SimRendererUsd
+   newton.utils.SimRendererOpenGL
