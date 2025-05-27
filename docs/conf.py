@@ -53,7 +53,6 @@ extensions = [
     "sphinx.ext.doctest",  # Test code snippets in docs
     "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
-    # NEW: custom filter to skip undocumented/private members
     "autodoc_filter",
 ]
 

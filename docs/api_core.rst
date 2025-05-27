@@ -16,9 +16,12 @@ Classes
    newton.ModelBuilder
    newton.Mesh
    newton.SDF
-   newton.Axis
-   newton.AxisType 
+   
+.. autosummary::
+   :toctree: generated/core
+   :template: class_noinherit.rst
 
+   newton.Axis
 
 .. _geometry-types:
 

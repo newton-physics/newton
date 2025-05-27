@@ -5,7 +5,7 @@
 
 .. autoclass:: Axis
    :members:
-   :inherited-members:
+   :show-inheritance:
    :member-order: bysource
    
    
@@ -23,4 +23,4 @@
       ~Axis.Y
       ~Axis.Z
    
-   
+    
