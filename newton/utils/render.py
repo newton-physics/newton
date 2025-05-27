@@ -449,14 +449,17 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             UsdRenderer.
 
     Example:
-        >>> import newton
-        >>> model = newton.Model()  # your model setup
-        >>> renderer = newton.utils.SimRendererUsd(model, "output.usd", scaling=2.0)
-        >>> # In your simulation loop:
-        >>> renderer.begin_frame(time)
-        >>> renderer.render(state)
-        >>> renderer.end_frame()
-        >>> renderer.save()  # Save the USD file
+        .. code-block:: python
+
+            import newton
+
+            model = newton.Model()  # your model setup
+            renderer = newton.utils.SimRendererUsd(model, "output.usd", scaling=2.0)
+            # In your simulation loop:
+            renderer.begin_frame(time)
+            renderer.render(state)
+            renderer.end_frame()
+            renderer.save()  # Save the USD file
     """
 
     pass
@@ -487,13 +490,16 @@ class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
             OpenGLRenderer.
 
     Example:
-        >>> import newton
-        >>> model = newton.Model()  # your model setup
-        >>> renderer = newton.utils.SimRendererOpenGL(model, "Newton Simulator", scaling=2.0)
-        >>> # In your simulation loop:
-        >>> renderer.begin_frame(time)
-        >>> renderer.render(state)
-        >>> renderer.end_frame()
+        .. code-block:: python
+
+            import newton
+
+            model = newton.Model()  # your model setup
+            renderer = newton.utils.SimRendererOpenGL(model, "Newton Simulator")
+            # In your simulation loop:
+            renderer.begin_frame(time)
+            renderer.render(state)
+            renderer.end_frame()
 
     Note:
         Keyboard shortcuts available during rendering:
