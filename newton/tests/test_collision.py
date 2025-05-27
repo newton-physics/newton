@@ -386,7 +386,7 @@ def validate_edge_collisions(
 def init_model(vs, fs, device, record_triangle_contacting_vertices=True):
     vertices = [wp.vec3(v) for v in vs]
 
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 200.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -401,7 +401,9 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True):
     )
     model = builder.finalize(device=device)
 
-    collision_detector = TriMeshCollisionDetector(model=model, record_triangle_contacting_vertices=True)
+    collision_detector = TriMeshCollisionDetector(
+        model=model, record_triangle_contacting_vertices=record_triangle_contacting_vertices
+    )
 
     return model, collision_detector
 
@@ -641,7 +643,7 @@ def test_edge_edge_collision(test, device):
 def test_particle_collision(test, device):
     with wp.ScopedDevice(device):
         contact_radius = 1.23
-        builder1 = newton.ModelBuilder()
+        builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder1.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
@@ -669,7 +671,7 @@ def test_particle_collision(test, device):
     vertices = [wp.vec3(v) for v in vertices]
     faces = [0, 1, 2, 3, 4, 5]
 
-    builder2 = newton.ModelBuilder()
+    builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder2.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -706,7 +708,7 @@ def test_particle_collision(test, device):
     )
     test.assertTrue((np.linalg.norm(particle_f.numpy(), axis=1) != 0).all())
 
-    builder3 = newton.ModelBuilder()
+    builder3 = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder3.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -754,7 +756,7 @@ def test_mesh_ground_collision_index(test, device):
         ]
     )
     mesh = Mesh(vertices=vertices, indices=[0, 1, 2])
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
     b = builder.add_body(mass=1.0)
