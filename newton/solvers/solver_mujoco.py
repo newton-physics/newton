@@ -1363,11 +1363,7 @@ class MuJoCoSolver(SolverBase):
                         axis_to_actuator[ai] = actuator_count
                         actuator_count += 1
 
-            elif j_type == newton.JOINT_FIXED:
-                raise NotImplementedError(
-                    "Fixed joints are not supported, please use ModelBuilder.collapse_fixed_joints() before converting to mujoco"
-                )
-            else:
+            elif j_type != newton.JOINT_FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
 
             # add geoms
