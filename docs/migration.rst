@@ -53,6 +53,20 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 
 :attr:`newton.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
 
+Forward and Inverse Kinematics
+------------------------------
+
+The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` functions have been slightly modified to make the mask argument optional:
+
++--------------------------------------------------------+------------------------------------------------------------------------+
+| **warp.sim**                                           | **Newton**                                                             |
++--------------------------------------------------------+------------------------------------------------------------------------+
+| ``eval_fk(model, joint_q, joint_qd, mask, state)``     | ``eval_fk(model, joint_q, joint_qd, state, mask=None)``                |
++--------------------------------------------------------+------------------------------------------------------------------------+
+| ``eval_ik(model, state, joint_q, joint_qd)``           | ``eval_ik(model, state, joint_q, joint_qd, mask=None)``                |
++--------------------------------------------------------+------------------------------------------------------------------------+
+
+
 ``Control``
 -----------
 

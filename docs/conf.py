@@ -51,6 +51,7 @@ extensions = [
     "sphinx.ext.extlinks",  # Markup to shorten external links
     "sphinx.ext.githubpages",
     "sphinx.ext.doctest",  # Test code snippets in docs
+    "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
     # NEW: custom filter to skip undocumented/private members
     "autodoc_filter",
@@ -133,7 +134,7 @@ html_theme_options = {
     "show_prev_next": False,
     "use_edit_page_button": False,
     "logo": {
-        "text": f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
+        "text": (f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>"),
     },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
@@ -146,3 +147,26 @@ exclude_patterns = [
 ]
 
 html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
+
+# -- Math configuration -------------------------------------------------------
+
+# MathJax configuration for proper LaTeX rendering
+mathjax3_config = {
+    "tex": {
+        "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]},
+        "inlineMath": [["$", "$"], ["\\(", "\\)"]],
+        "displayMath": [["$$", "$$"], ["\\[", "\\]"]],
+        "processEscapes": True,
+        "processEnvironments": True,
+        "tags": "ams",
+        "macros": {
+            "RR": "{\\mathbb{R}}",
+            "bold": ["{\\mathbf{#1}}", 1],
+            "vec": ["{\\mathbf{#1}}", 1],
+        },
+    },
+    "options": {
+        "processHtmlClass": ("tex2jax_process|mathjax_process|math|output_area"),
+        "ignoreHtmlClass": "annotation",
+    },
+}

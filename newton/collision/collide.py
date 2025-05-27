@@ -1158,6 +1158,16 @@ def handle_contact_pairs(
     thickness_a = geo.thickness[shape_a]
     # is_solid_a = geo.is_solid[shape_a]
 
+    # Determine effective radius for shape A
+    radius_a_eff = float(0.0)
+    if (
+        geo_type_a == newton.GEO_SPHERE
+        or geo_type_a == newton.GEO_CAPSULE
+        or geo_type_a == newton.GEO_CYLINDER
+        or geo_type_a == newton.GEO_CONE
+    ):
+        radius_a_eff = geo_scale_a[0]
+
     rigid_b = shape_body[shape_b]
     X_wb_b = wp.transform_identity()
     if rigid_b >= 0:
@@ -1171,6 +1181,16 @@ def handle_contact_pairs(
     min_scale_b = min(geo_scale_b)
     thickness_b = geo.thickness[shape_b]
     # is_solid_b = geo.is_solid[shape_b]
+
+    # Determine effective radius for shape B
+    radius_b_eff = float(0.0)
+    if (
+        geo_type_b == newton.GEO_SPHERE
+        or geo_type_b == newton.GEO_CAPSULE
+        or geo_type_b == newton.GEO_CYLINDER
+        or geo_type_b == newton.GEO_CONE
+    ):
+        radius_b_eff = geo_scale_b[0]
 
     distance = 1.0e6
     u = float(0.0)
@@ -1531,7 +1551,9 @@ def handle_contact_pairs(
         print("Unsupported geometry pair in collision handling")
         return
 
-    d = distance - thickness
+    # Total separation required by radii and additional thicknesses
+    total_separation_needed = radius_a_eff + radius_b_eff + thickness
+    d = distance - total_separation_needed
     if d < rigid_contact_margin:
         if contact_pairwise_counter:
             pair_contact_id = limited_counter_increment(
@@ -1550,10 +1572,16 @@ def handle_contact_pairs(
         # transform from world into body frame (so the contact point includes the shape transform)
         contact_point0[index] = wp.transform_point(X_bw_a, p_a_world)
         contact_point1[index] = wp.transform_point(X_bw_b, p_b_world)
-        contact_offset0[index] = wp.transform_vector(X_bw_a, -thickness_a * normal)
-        contact_offset1[index] = wp.transform_vector(X_bw_b, thickness_b * normal)
+
+        offset_magnitude_a = radius_a_eff + thickness_a
+        offset_magnitude_b = radius_b_eff + thickness_b
+
+        contact_offset0[index] = wp.transform_vector(X_bw_a, -offset_magnitude_a * normal)
+        contact_offset1[index] = wp.transform_vector(X_bw_b, offset_magnitude_b * normal)
         contact_normal[index] = normal
-        contact_thickness[index] = thickness
+        contact_thickness[index] = (
+            thickness + radius_a_eff + radius_b_eff
+        )  # This 'thickness' is sum of additional margins, might need renaming if confusing
 
 
 def collide(
