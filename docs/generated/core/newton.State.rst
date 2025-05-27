@@ -4,7 +4,10 @@
 .. currentmodule:: newton
 
 .. autoclass:: State
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    

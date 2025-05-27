@@ -4,7 +4,10 @@
 .. currentmodule:: newton.utils.import_usd
 
 .. autoclass:: resolve_usd_from_url
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    

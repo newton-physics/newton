@@ -5,8 +5,9 @@
 .. autoclass:: {{ objname }}
    :members:
    :inherited-members:
-   :member-order: bysource
-   
+   :undoc-members:
+   :show-inheritance:
+
    {% block methods %}
 
    {% if methods %}
@@ -28,4 +29,4 @@
       ~{{ name }}.{{ item }}
    {%- endfor %}
    {% endif %}
-   {% endblock %}
+   {% endblock %} 

@@ -13,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import warp as wp
 
+from .model import Model
 from .spatial import quat_decompose, quat_twist
+from .state import State
 from .types import (
     JOINT_BALL,
     JOINT_COMPOUND,
@@ -493,8 +497,13 @@ def eval_articulation_fk(
     )
 
 
-# updates state body information based on joint coordinates
-def eval_fk(model, joint_q, joint_qd, mask, state):
+def eval_fk(
+    model: Model,
+    joint_q: wp.array(dtype=float),
+    joint_qd: wp.array(dtype=float),
+    state: State,
+    mask: wp.array(dtype=bool) | None = None,
+):
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
 

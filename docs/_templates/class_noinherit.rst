@@ -4,7 +4,7 @@
 
 .. autoclass:: {{ objname }}
    :members:
-   :inherited-members:
+   :show-inheritance:
    :member-order: bysource
    
    {% block methods %}
@@ -28,4 +28,4 @@
       ~{{ name }}.{{ item }}
    {%- endfor %}
    {% endif %}
-   {% endblock %}
+   {% endblock %} 

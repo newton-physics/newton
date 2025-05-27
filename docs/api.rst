@@ -43,7 +43,7 @@ Physics solvers for advancing simulation. Each solver implements a common interf
    * - XPBDSolver
      - Position-based dynamics
    * - VBDSolver
-     - Velocity-based dynamics
+     - Vertex Block Descent solver
    * - MuJoCoSolver
      - MuJoCo backend
    * - FeatherstoneSolver
