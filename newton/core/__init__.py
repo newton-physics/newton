@@ -17,6 +17,7 @@ from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .contact import Contact
 from .control import Control
+from .ik import JacobianMode, JointLimitObjective, PositionObjective, RotationObjective, create_ik
 from .model import Model
 from .spatial import (
     quat_between_axes,
@@ -96,12 +97,17 @@ __all__ = [
     "AxisType",
     "Contact",
     "Control",
+    "JacobianMode",
+    "JointLimitObjective",
     "Mesh",
     "Model",
     "ModelBuilder",
     "ModelShapeGeometry",
     "ModelShapeMaterials",
+    "PositionObjective",
+    "RotationObjective",
     "State",
+    "create_ik",
     "eval_fk",
     "eval_ik",
     "quat_between_axes",
