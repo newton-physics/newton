@@ -1114,7 +1114,7 @@ class ModelBuilder:
             enabled=enabled,
         )
         q_start = self.joint_q_start[joint_id]
-        self.joint_q[q_start:q_start+7] = list(self.body_q[child])
+        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
     def add_joint_distance(
