@@ -4,7 +4,10 @@
 .. currentmodule:: newton
 
 .. autoclass:: Model
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
@@ -13,9 +16,6 @@
    .. autosummary::
    
       ~Model.__init__
-      ~Model.allocate_rigid_contacts
-      ~Model.allocate_soft_contacts
-      ~Model.contact
       ~Model.control
       ~Model.count_contact_points
       ~Model.state

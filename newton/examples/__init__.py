@@ -17,20 +17,24 @@ import os
 
 import numpy as np
 
+import newton
 
-def get_source_directory():
+
+def get_source_directory() -> str:
     return os.path.realpath(os.path.dirname(__file__))
 
 
-def get_asset_directory():
+def get_asset_directory() -> str:
     return os.path.join(get_source_directory(), "assets")
 
 
-def get_asset(filename):
+def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
-def compute_env_offsets(num_envs, env_offset=(5.0, 0.0, 5.0), up_axis="Y"):
+def compute_env_offsets(
+    num_envs: int, env_offset: tuple[float, float, float] = (5.0, 5.0, 0.0), up_axis: newton.AxisType = newton.Axis.Z
+):
     # compute positional offsets per environment
     env_offset = np.array(env_offset)
     nonzeros = np.nonzero(env_offset)[0]
@@ -64,8 +68,7 @@ def compute_env_offsets(num_envs, env_offset=(5.0, 0.0, 5.0), up_axis="Y"):
         env_offsets = np.zeros((num_envs, 3))
     min_offsets = np.min(env_offsets, axis=0)
     correction = min_offsets + (np.max(env_offsets, axis=0) - min_offsets) / 2.0
-    if isinstance(up_axis, str):
-        up_axis = "XYZ".index(up_axis.upper())
-    correction[up_axis] = 0.0  # ensure the envs are not shifted below the ground plane
+    # ensure the envs are not shifted below the ground plane
+    correction[newton.Axis.from_any(up_axis)] = 0.0
     env_offsets -= correction
     return env_offsets

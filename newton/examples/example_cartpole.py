@@ -56,7 +56,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 0.0, 2.0))
+        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
 
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
@@ -80,7 +80,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:

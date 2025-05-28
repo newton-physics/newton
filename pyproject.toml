@@ -31,6 +31,7 @@ dependencies = ["warp-lang>=1.7.0.dev20250326"]
 [project.optional-dependencies]
 dev = [
     "coverage[toml]>=7.8.0",
+    "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "pycollada>=0.9",
     "pyglet>=2.1.6",
@@ -49,7 +50,6 @@ path = "newton/_version.py"
 
 [tool.hatch.build.targets.wheel]
 include = ["/newton", "/newton/licenses"]
-exclude = ["/newton/assets/g1_description/"]
 
 [[tool.uv.index]]
 url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
@@ -70,10 +70,7 @@ warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 [dependency-groups]
 dev = [
     "coverage[toml]>=7.8.0",
-    "furo>=2024.8.6",
     "mujoco-warp>=3.2.7",
-    "myst-parser>=3.0.1",
-    "sphinx>=7.4.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "pycollada>=0.9",
     "pyglet>=2.1.6",

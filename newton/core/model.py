@@ -23,7 +23,7 @@ import warp as wp
 from .contact import Contact
 from .control import Control
 from .state import State
-from .types import ModelShapeGeometry, ModelShapeMaterials
+from .types import Devicelike, ModelShapeGeometry, ModelShapeMaterials
 
 
 class Model:
@@ -38,7 +38,7 @@ class Model:
         desired.
     """
 
-    def __init__(self, device=None):
+    def __init__(self, device: Devicelike | None = None):
         """
         Initializes the Model object.
 
@@ -181,7 +181,7 @@ class Model:
         self.body_qd = None
         """Velocities of rigid bodies used for state initialization, shape [body_count, 6], float."""
         self.body_com = None
-        """Rigid body center of mass (in local frame), shape [body_count, 7], float."""
+        """Rigid body center of mass (in local frame), shape [body_count, 3], float."""
         self.body_inertia = None
         """Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
         self.body_inv_inertia = None
@@ -335,9 +335,9 @@ class Model:
         """Ground plane 3D normal and offset, shape [4], float."""
         self.up_vector = np.array((0.0, 1.0, 0.0))
         """Up vector of the world, shape [3], float."""
-        self.up_axis = 1
+        self.up_axis = 2
         """Up axis, 0 for x, 1 for y, 2 for z."""
-        self.gravity = np.array((0.0, -9.81, 0.0))
+        self.gravity = np.array((0.0, 0.0, -9.81))
         """Gravity vector, shape [3], float."""
 
         self.particle_count = 0
