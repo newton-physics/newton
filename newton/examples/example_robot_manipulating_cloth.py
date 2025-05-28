@@ -14,10 +14,10 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Cloth Self Contact
+# Example Sim Robot manipulating Cloth
 #
-# This simulation demonstrates twisting an FEM cloth model using the VBD
-# integrator, showcasing its ability to handle complex self-contacts while
+# This simulation demonstrates twisting a coupled robot-cloth simulation using the VBD
+# solver for the cloth and FeatherStone for the robot, showcasing its ability to handle complex contacts while
 # ensuring it remains intersection-free.
 #
 ###########################################################################
