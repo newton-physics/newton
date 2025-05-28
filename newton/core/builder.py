@@ -1086,7 +1086,8 @@ class ModelBuilder:
         enabled: bool = True,
     ) -> int:
         """Adds a free joint to the model.
-        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
+        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
+        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -1102,7 +1103,7 @@ class ModelBuilder:
 
         """
 
-        return self.add_joint(
+        joint_id = self.add_joint(
             JOINT_FREE,
             parent,
             child,
@@ -1112,6 +1113,9 @@ class ModelBuilder:
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
+        q_start = self.joint_q_start[joint_id]
+        self.joint_q[q_start:q_start+7] = list(self.body_q[child])
+        return joint_id
 
     def add_joint_distance(
         self,
@@ -3223,6 +3227,8 @@ class ModelBuilder:
             A model object.
         """
 
+        from .articulation import eval_fk
+
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
 
@@ -3466,6 +3472,9 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             m.enable_tri_collisions = False
+
+            # update body_q, body_qd from joint_q, joint_qd
+            eval_fk(m, m.joint_q, m.joint_qd, m)
 
             return m
 

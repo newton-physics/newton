@@ -119,6 +119,12 @@ Instead, you can pass them as arguments to the :class:`newton.solvers.XPBDSolver
 apply to all joints and cannot be set individually per joint anymore. So far we have not found applications that require
 per-joint compliance settings and have decided to remove this feature for memory efficiency.
 
+The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the positional dofs of the free joint with the child body's transform (``body_q``).
+
+:meth:`newton.ModelBuilder.finalize()` now calls :func:`newton.eval_fk` to update the maximal coordinates :attr:`newton.Model.body_q` and :attr:`newton.Model.body_qd` from the
+builder's generalized coordinates :attr:`newton.ModelBuilder.joint_q` and :attr:`newton.ModelBuilder.joint_qd`.
+
+
 Renderers
 ---------
 
