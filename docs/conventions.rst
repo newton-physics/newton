@@ -244,7 +244,7 @@ affecting gravity direction, object placement, and overall scene orientation.
      - **Handedness**
      - **Notes**
    * - **Newton**
-     - ``Y`` (default)
+     - ``Z`` (default)
      - Right-handed
      - Configurable via ``Axis.X/Y/Z``
    * - **MuJoCo**

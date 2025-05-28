@@ -56,7 +56,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 0.0, 2.0))
+        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
 
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
