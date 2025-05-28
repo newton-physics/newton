@@ -73,6 +73,8 @@ world frame, though details vary:
   :math:`(v_x,v_y,v_z,\;\omega_x,\omega_y,\omega_z)` all expressed globally.
   This matches Bullet/ODE/PhysX practice.
 
+.. _Twist conventions:
+
 Newton Conventions
 ~~~~~~~~~~~~~~~~~~
 
