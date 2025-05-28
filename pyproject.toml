@@ -35,7 +35,6 @@ dev = [
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "pycollada>=0.9",
     "pyglet>=2.1.6",
-    "torch>=2.7.0",
     "trimesh>=4.6.8",
 ]
 docs = [
