@@ -118,6 +118,7 @@ def parse_urdf(
             is_visible=visible,
             has_ground_collision=not just_visual,
             has_shape_collision=not just_visual,
+            has_particle_collision=not just_visual,
         )
         shapes = []
         # add geometry
@@ -360,8 +361,6 @@ def parse_urdf(
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
-            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
 
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
