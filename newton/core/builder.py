@@ -222,7 +222,7 @@ class ModelBuilder:
             ):
                 self.target = 0.5 * (self.limit_lower + self.limit_upper)
 
-    def __init__(self, up_axis: AxisType = Axis.Y, gravity: float = -9.81):
+    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
         self.num_envs = 0
 
         # region defaults
@@ -1961,7 +1961,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Y,
+        up_axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
@@ -2008,7 +2008,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Y,
+        up_axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
@@ -2055,7 +2055,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Y,
+        up_axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
