@@ -365,13 +365,6 @@ class CoupledSimulator:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        if self.add_robot:
-            self.state_0.body_q_prev = wp.zeros_like(self.state_0.body_q)
-            self.state_1.body_q_prev = wp.zeros_like(self.state_1.body_q)
-        else:
-            self.state_0.body_q_prev = None
-            self.state_1.body_q_prev = None
-
         self.control = self.model.control()
 
         self.sim_time = 0.0
@@ -598,7 +591,6 @@ class CoupledSimulator:
 
                 # Update the robot pose - this will modify state_0 and copy to state_1
                 self.model.shape_contact_pair_count = 0
-                wp.copy(self.state_0.body_q_prev, self.state_0.body_q)
 
                 self.update_pose(self.state_0, self.state_1)
 
