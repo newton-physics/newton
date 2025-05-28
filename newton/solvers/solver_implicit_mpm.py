@@ -1035,6 +1035,8 @@ class ImplicitMPMSolver(SolverBase):
         self.setup_collider(model)
 
         self.temporary_store = fem.TemporaryStore()
+        fem.set_default_temporary_store(self.temporary_store)
+
         self._enable_timers = True
         self._timers_use_nvtx = False
 
@@ -1442,7 +1444,6 @@ class ImplicitMPMSolver(SolverBase):
             )
             scratch.strain_matrix.nnz_sync()
 
-
         with wp.ScopedTimer(
             "Strain solve",
             active=self._enable_timers,
@@ -1767,7 +1768,12 @@ class ImplicitMPMSolver(SolverBase):
         if state_in.impulse_field is not None:
             if self.dynamic_grid:
                 prev_impulse_field = fem.NonconformingField(domain, state_in.impulse_field)
-                fem.interpolate(prev_impulse_field, dest=scratch.impulse_field)
+                fem.interpolate(
+                    prev_impulse_field,
+                    dest=fem.make_restriction(
+                        scratch.impulse_field, space_restriction=scratch.velocity_test.space_restriction
+                    ),
+                )
             else:
                 scratch.impulse_field.dof_values.assign(state_in.impulse_field.dof_values)
 
@@ -1775,7 +1781,12 @@ class ImplicitMPMSolver(SolverBase):
         if state_in.stress_field is not None:
             if self.dynamic_grid:
                 prev_stress_field = fem.NonconformingField(domain, state_in.stress_field)
-                fem.interpolate(prev_stress_field, dest=scratch.stress_field)
+                fem.interpolate(
+                    prev_stress_field,
+                    dest=fem.make_restriction(
+                        scratch.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
+                    ),
+                )
             else:
                 scratch.stress_field.dof_values.assign(state_in.stress_field.dof_values)
 
