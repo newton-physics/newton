@@ -1848,7 +1848,7 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
 
     # inertia force and hessian
     f = mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
-    h = particle_hessians[particle_index] + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+    h = mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
 
     # fmt: off
     if wp.static("inertia_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
