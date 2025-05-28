@@ -484,10 +484,9 @@ class CoupledSimulator:
         self.endeffector_id = builder.body_count - 3
         self.endeffector_offset = wp.transform([0.0, 0.0, 22], wp.quat_identity())
 
-    def update_pose(
+    def get_target_joint_q(
         self,
         state_in: core.model.State,
-        state_out: core.model.State,
     ):
         ee_delta = wp.empty(1, dtype=wp.spatial_vector, device=self.device)
 
@@ -556,10 +555,7 @@ class CoupledSimulator:
         delta_q[-2] = self.target[-1] * 4 - q[-2]
         delta_q[-1] = self.target[-1] * 4 - q[-1]
 
-        state_in.joint_qd = wp.array(delta_q, device=self.device)
-
-        # Just update the forward kinematics to get body positions from joint coordinates
-        self.robot_solver.step(self.model, state_in, state_out, self.control, None, self.sim_dt)
+        return delta_q
 
     def run(self):
         for frame_idx in tqdm.tqdm(range(self.num_frames), desc="Simulation"):
@@ -583,6 +579,8 @@ class CoupledSimulator:
             self.state_0.clear_forces()
             self.state_1.clear_forces()
 
+            target_joint_qd = self.get_target_joint_q(self.state_0)
+
             if self.add_robot:
                 particle_count = self.model.particle_count
                 # set particle_count = 0 to circumvent
@@ -592,7 +590,9 @@ class CoupledSimulator:
                 # Update the robot pose - this will modify state_0 and copy to state_1
                 self.model.shape_contact_pair_count = 0
 
-                self.update_pose(self.state_0, self.state_1)
+                self.state_0.joint_qd.assign(target_joint_qd)
+                # Just update the forward kinematics to get body positions from joint coordinates
+                self.robot_solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
 
                 self.state_0.particle_f.zero_()
 
