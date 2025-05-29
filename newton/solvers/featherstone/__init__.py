@@ -17,4 +17,4 @@ from .solver_featherstone import FeatherstoneSolver
 
 __all__ = [
     "FeatherstoneSolver",
-] 
+]

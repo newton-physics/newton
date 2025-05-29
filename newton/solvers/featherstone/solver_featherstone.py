@@ -23,7 +23,6 @@ from newton.core.articulation import (
     eval_fk,
 )
 
-from ..solver import SolverBase
 from ..euler.particles import eval_particle_forces
 from ..euler.solver_euler import (
     eval_bending_forces,
@@ -37,6 +36,7 @@ from ..euler.solver_euler import (
     eval_triangle_contact_forces,
     eval_triangle_forces,
 )
+from ..solver import SolverBase
 
 
 # Frank & Park definition 3.20, pg 100

@@ -17,4 +17,4 @@ from .solver_xpbd import XPBDSolver
 
 __all__ = [
     "XPBDSolver",
-] 
+]

@@ -17,4 +17,4 @@ from .solver_mujoco import MuJoCoSolver
 
 __all__ = [
     "MuJoCoSolver",
-] 
+]

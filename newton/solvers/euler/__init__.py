@@ -17,4 +17,4 @@ from .solver_euler import SemiImplicitSolver
 
 __all__ = [
     "SemiImplicitSolver",
-] 
+]

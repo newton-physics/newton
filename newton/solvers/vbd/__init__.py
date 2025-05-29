@@ -17,4 +17,4 @@ from .solver_vbd import VBDSolver
 
 __all__ = [
     "VBDSolver",
-] 
+]
