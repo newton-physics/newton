@@ -575,6 +575,7 @@ def evaluate_body_particle_contact(
     shape_materials: ModelShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -594,7 +595,6 @@ def evaluate_body_particle_contact(
 
     # body position in world space
     bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
-    r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[contact_index]
 
@@ -614,15 +614,27 @@ def evaluate_body_particle_contact(
             body_contact_force = body_contact_force - damping_hessian * dx
 
         # body velocity
-        body_v_s = wp.spatial_vector()
-        if body_index >= 0:
-            body_v_s = body_qd[body_index]
+        if body_q_prev:
+            # if body_q_prev is available, compute velocity using finite difference method
+            # this is more accurate for simulating static friction
+            X_wb_prev = wp.transform_identity()
+            if body_index >= 0:
+                X_wb_prev = body_q_prev[body_index]
+            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
+            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
-        body_w = wp.spatial_top(body_v_s)
-        body_v = wp.spatial_bottom(body_v_s)
+        else:
+            # otherwise use the instantaneous velocity
+            r = bx - wp.transform_point(X_wb, X_com)
+            body_v_s = wp.spatial_vector()
+            if body_index >= 0:
+                body_v_s = body_qd[body_index]
 
-        # compute the body velocity at the particle position
-        bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+            body_w = wp.spatial_top(body_v_s)
+            body_v = wp.spatial_bottom(body_v_s)
+
+            # compute the body velocity at the particle position
+            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
         relative_translation = dx - bv * dt
 
@@ -1390,6 +1402,8 @@ def VBD_solve_trimesh_no_self_contact(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
     # ground-particle contact
     has_ground: bool,
     ground: wp.array(dtype=float),
@@ -1400,13 +1414,13 @@ def VBD_solve_trimesh_no_self_contact(
     tid = wp.tid()
 
     particle_index = particle_ids_in_color[tid]
-    particle_pos = pos[particle_index]
 
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
-        pos_new[particle_index] = particle_pos
+        pos_new[particle_index] = pos[particle_index]
         return
 
-    particle_prev_pos = pos[particle_index]
+    particle_pos = pos[particle_index]
+    particle_prev_pos = prev_pos[particle_index]
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
@@ -1502,6 +1516,9 @@ def VBD_solve_trimesh_no_self_contact(
         f = f + ground_contact_force
         h = h + ground_contact_hessian
 
+    h = h + particle_hessians[particle_index]
+    f = f + particle_forces[particle_index]
+
     if abs(wp.determinant(h)) > 1e-5:
         hInv = wp.inverse(h)
         pos_new[particle_index] = particle_pos + hInv * f
@@ -1577,6 +1594,7 @@ def VBD_accumulate_contact_force_and_hessian(
     shape_materials: ModelShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -1704,6 +1722,7 @@ def VBD_accumulate_contact_force_and_hessian(
                 shape_materials,
                 shape_body,
                 body_q,
+                body_q_prev,
                 body_qd,
                 body_com,
                 contact_shape,
@@ -1736,6 +1755,7 @@ def VBD_accumulate_contact_force_and_hessian_no_self_contact(
     shape_materials: ModelShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -1767,6 +1787,7 @@ def VBD_accumulate_contact_force_and_hessian_no_self_contact(
                 shape_materials,
                 shape_body,
                 body_q,
+                body_q_prev,
                 body_qd,
                 body_com,
                 contact_shape,
@@ -1961,6 +1982,7 @@ class VBDSolver(SolverBase):
         model: Model,
         iterations: int = 10,
         handle_self_contact: bool = False,
+        integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
         body_particle_contact_buffer_pre_alloc: int = 4,
@@ -1971,6 +1993,7 @@ class VBDSolver(SolverBase):
     ):
         super().__init__(model)
         self.iterations = iterations
+        self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
 
         # add new attributes for VBD solve
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
@@ -2013,8 +2036,7 @@ class VBDSolver(SolverBase):
         else:
             self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
 
-        # spaces for particle force and hessian
-        self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
+        # spaces for hessian
         self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
 
         self.friction_epsilon = friction_epsilon
@@ -2143,6 +2165,9 @@ class VBDSolver(SolverBase):
         )
 
         for _iter in range(self.iterations):
+            state_in.particle_f.zero_()
+            self.particle_hessians.zero_()
+
             for color in range(len(self.model.particle_color_groups)):
                 wp.launch(
                     kernel=VBD_accumulate_contact_force_and_hessian_no_self_contact,
@@ -2164,7 +2189,8 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_max,
                         self.model.shape_materials,
                         self.model.shape_body,
-                        self.model.body_q,
+                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
                         self.model.body_qd,
                         self.model.body_com,
                         self.model.soft_contact_shape,
@@ -2172,7 +2198,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[self.particle_forces, self.particle_hessians],
+                    outputs=[state_in.particle_f, self.particle_hessians],
                     device=self.device,
                 )
 
@@ -2200,6 +2226,8 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
+                        state_in.particle_f,
+                        self.particle_hessians,
                         #   ground-particle contact
                         self.model.ground,
                         self.model.ground_plane,
@@ -2255,7 +2283,7 @@ class VBDSolver(SolverBase):
         self.collision_detection_penetration_free(state_in, dt)
 
         for _iter in range(self.iterations):
-            self.particle_forces.zero_()
+            state_in.particle_f.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
@@ -2285,7 +2313,8 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_max,
                         self.model.shape_materials,
                         self.model.shape_body,
-                        self.model.body_q,
+                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
                         self.model.body_qd,
                         self.model.body_com,
                         self.model.soft_contact_shape,
@@ -2293,7 +2322,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[self.particle_forces, self.particle_hessians],
+                    outputs=[state_in.particle_f, self.particle_hessians],
                     device=self.device,
                 )
 
@@ -2318,7 +2347,7 @@ class VBDSolver(SolverBase):
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.adjacency,
-                        self.particle_forces,
+                        state_in.particle_f,
                         self.particle_hessians,
                         self.pos_prev_collision_detection,
                         self.particle_conservative_bounds,
