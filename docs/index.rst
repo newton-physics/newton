@@ -19,6 +19,13 @@ Newton Physics
    Conventions <conventions>
 
 .. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Concepts
+   
+   Articulations <concepts/articulations>
+
+.. toctree::
    :maxdepth: 0
    :hidden:
    :caption: API Reference
