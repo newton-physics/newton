@@ -27,7 +27,6 @@ from os.path import join
 from typing import Optional, Union
 
 import numpy as np
-import tqdm
 import warp as wp
 import warp.sim.render
 from pxr import Usd, UsdGeom
@@ -175,61 +174,7 @@ def compute_body_jacobian(
     return J.astype(np.float32)
 
 
-@wp.kernel
-def transform_shape_vertices_velocities(
-    body_X_wb: wp.array(dtype=wp.transform),  # state.body_q,
-    shape_X_bs: wp.array(dtype=wp.transform),  # model.shape_transform,
-    body_com: wp.array(dtype=wp.vec3),
-    shape_index: int,
-    shape_body: wp.array(dtype=int),
-    vertices_res: wp.array(dtype=wp.vec3),
-    # outputs
-    vertices_out: wp.array(dtype=wp.vec3),
-):
-    vertex_idx = wp.tid()
-
-    body_index = shape_body[shape_index]
-
-    X_wb = wp.transform_identity()
-
-    if body_index >= 0:
-        X_wb = body_X_wb[body_index]
-
-    # shape to body
-    X_bs = shape_X_bs[shape_index]
-
-    X_ws = wp.transform_multiply(X_wb, X_bs)
-    vertex_res_pos = vertices_res[vertex_idx]
-
-    # body position in world space
-    bx = wp.transform_point(X_ws, vertex_res_pos)
-    vertices_out[vertex_idx] = bx
-
-
-def get_shape_vertices(model, state, shape_idx, vertices_org, vertices_out):
-    geo_src = model.shape_geo_src[shape_idx]
-    if geo_src is None:
-        return None
-
-    wp.launch(
-        transform_shape_vertices_velocities,
-        dim=vertices_org.shape[0],
-        inputs=[
-            state.body_q,
-            model.shape_transform,
-            model.body_com,
-            shape_idx,
-            model.shape_body,
-            vertices_org,
-        ],
-        outputs=[
-            vertices_out,
-        ],
-        device=model.device,
-    )
-
-
-class CoupledSimulator:
+class ExampleClothManipulation:
     def __init__(
         self,
         stage_path: str = "example_coupled_simulation.usd",
@@ -238,12 +183,14 @@ class CoupledSimulator:
 
         self.device = wp.get_device()
         self.use_cuda_graph = self.device.is_cuda
+        # self.use_cuda_graph = False
         self.add_cloth = True
         self.add_robot = True
 
         # parameters
         #   simulation
         self.num_substeps = 20
+        self.iterations = 3
         self.FPS = 60
         self.frame_dt = 1 / self.FPS
         self.sim_dt = self.frame_dt / self.num_substeps
@@ -356,6 +303,7 @@ class CoupledSimulator:
             self.episode_duration = np.sum(self.transition_duration)
         else:
             self.episode_duration = 10.0
+
         self.num_frames = int(self.episode_duration / self.frame_dt)
         self.sim_dt = self.frame_dt / max(1, self.num_substeps)
         self.sim_steps = self.num_frames * self.num_substeps
@@ -379,11 +327,11 @@ class CoupledSimulator:
             self.model.edge_rest_angle.zero_()
             self.cloth_solver = VBDSolver(
                 self.model,
-                iterations=5,
+                iterations=self.iterations,
                 handle_self_contact=True,
-                vertex_collision_buffer_pre_alloc=256,
-                edge_collision_buffer_pre_alloc=256,
-                triangle_collision_buffer_pre_alloc=256,
+                vertex_collision_buffer_pre_alloc=32,
+                edge_collision_buffer_pre_alloc=64,
+                triangle_collision_buffer_pre_alloc=32,
                 integrate_with_external_rigid_solver=True,
             )
 
@@ -558,7 +506,7 @@ class CoupledSimulator:
         return delta_q
 
     def run(self):
-        for frame_idx in tqdm.tqdm(range(self.num_frames), desc="Simulation"):
+        for frame_idx in range(self.num_frames):
             self.advance_frame()
 
             if self.add_cloth and not (frame_idx % 10):
@@ -574,12 +522,11 @@ class CoupledSimulator:
         self.cloth_solver.step(self.model, state_in, state_out, self.control, None, self.sim_dt)
 
     def advance_frame(self):
+        target_joint_qd = self.get_target_joint_q(self.state_0)
         for step in range(self.num_substeps):
             # robot sim
             self.state_0.clear_forces()
             self.state_1.clear_forces()
-
-            target_joint_qd = self.get_target_joint_q(self.state_0)
 
             if self.add_robot:
                 particle_count = self.model.particle_count
@@ -620,5 +567,5 @@ class CoupledSimulator:
 
 if __name__ == "__main__":
     with wp.ScopedDevice(device=wp.get_device("cuda")):
-        simulator = CoupledSimulator()
+        simulator = ExampleClothManipulation()
         simulator.run()
