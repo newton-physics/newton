@@ -23,13 +23,13 @@ from newton.core.articulation import (
     eval_fk,
 )
 
-from .solver import SolverBase
-from .solver_euler import (
+from ..solver import SolverBase
+from ..euler.particles import eval_particle_forces
+from ..euler.solver_euler import (
     eval_bending_forces,
     eval_joint_force,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
-    eval_particle_forces,
     eval_particle_ground_contact_forces,
     eval_rigid_contacts,
     eval_spring_forces,
