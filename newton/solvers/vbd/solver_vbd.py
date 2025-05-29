@@ -19,7 +19,10 @@ import numpy as np
 import warp as wp
 from warp.types import float32, matrix
 
-from newton.collision.collide import (
+from newton.core import PARTICLE_FLAG_ACTIVE, Control, Model, State
+from newton.core.model import ShapeMaterials
+from newton.geometry import Contacts
+from newton.geometry.kernels import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
     triangle_closest_point,
@@ -545,8 +548,8 @@ def evaluate_body_particle_contact(
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array(dtype=float),
-    shape_materials: ModelShapeMaterials,
-    shape_body: wp.array(dtype=int),
+    shape_materials: ShapeMaterials,
+    shape_geo: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -1564,7 +1567,7 @@ def VBD_accumulate_contact_force_and_hessian(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1739,7 +1742,7 @@ def VBD_accumulate_contact_force_and_hessian_no_self_contact(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
