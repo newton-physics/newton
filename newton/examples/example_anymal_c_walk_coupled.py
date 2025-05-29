@@ -14,9 +14,9 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C walk
+# Example Anymal C walk Coupled with Sand
 #
-# Shows how to control Anymal C with a pretrained policy.
+# Shows Anymal C with a pretrained policy coupled with implicit mpm sand.
 #
 ###########################################################################
 

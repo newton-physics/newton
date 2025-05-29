@@ -1,3 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Implicit MPM solver."""
+
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -7,8 +24,7 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.sim import Model, State
 
-from .implicit_mpm.solve_rheology import (solve_coulomb_isotropic,
-                                          solve_rheology)
+from .implicit_mpm.solve_rheology import solve_coulomb_isotropic, solve_rheology
 from .solver import Contact, Control, SolverBase
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
@@ -41,7 +57,7 @@ _SMALL_STRAINS = True
 
 @wp.struct
 class Collider:
-    """Collider data"""
+    """Collider data passed to kernels and integrands."""
 
     meshes: wp.array(dtype=wp.uint64)
     """Meshes of the collider"""
@@ -726,7 +742,7 @@ def node_color_8_stencil(
     color_indices[pid] = pid
 
 
-def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
+def _allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
     volume = wp.Volume.allocate_by_voxels(
         voxel_points=particle_q.flatten(),
         voxel_size=voxel_size,
@@ -749,22 +765,37 @@ def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
 
 @dataclass
 class ImplicitMPMOptions:
+    """Implicit MPM solver options."""
+
     # numerics
     max_iterations: int = 250
+    """Maximum number of iterations for the rheology solver."""
     tolerance: float = 1.0e-5
+    """Tolerance for the rheology solver."""
     voxel_size: float = 1.0
+    """Size of the grid voxels."""
     grid_padding: int = 0
+    """Number of empty cells to add around particles."""
+
+    # grid
     dynamic_grid: bool = True
+    """Whether to dynamically update the grid from particles at each time step."""
     gauss_seidel: bool = True
+    """Whether to use Gauss-Seidel or Jacobi for the rheology solver."""
 
     # plasticity
     max_fraction: float = 1.0
+    """Maximum packing fraction for particles."""
     unilateral: bool = True
+    """Whether to use unilateral of full incompressibility."""
     yield_stresses: Tuple[float, float, float] = (0.0, -1.0e8, 1.0e8)
+    """Yield stresses for the plasticity model."""
 
     # elasticity (experimental)
     compliance: float = 0.0
+    """Compliance for the elasticity model. Experimental."""
     poisson_ratio: float = 0.3
+    """Poisson's ratio for the elasticity model."""
 
 
 class _ImplicitMPMScratchpad:
@@ -996,6 +1027,24 @@ def _get_array(temp):
 
 
 class ImplicitMPMSolver(SolverBase):
+    """Implicit MPM solver.
+
+    This solver implements an implicit MPM algorithm for granular materials,
+    roughly following [1] but with a GPU-friendly rheology solver.
+
+    This variant of MPM is mostly interesting for very stiff materials, especially
+    in the fully inelastic limit, but is not as versatile as more traditional explicit approaches.
+
+    [1] https://doi.org/10.1145/2897824.2925877
+
+    Args:
+        model: The model to solve.
+        options: The solver options.
+
+    Returns:
+        The solver.
+    """
+
     Options = ImplicitMPMOptions
 
     def __init__(
@@ -1037,13 +1086,15 @@ class ImplicitMPMSolver(SolverBase):
         self.temporary_store = fem.TemporaryStore()
         fem.set_default_temporary_store(self.temporary_store)
 
-        self._enable_timers = True
+        self._enable_timers = False
         self._timers_use_nvtx = False
 
         self._fixed_scratchpad = None
 
     @staticmethod
     def enrich_state(state: State):
+        """Enrich the state with additional fields for tracking particle strain and deformation."""
+
         state.particle_qd_grad = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33)
         state.particle_elastic_strain = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33)
         state.particle_transform = wp.empty(state.particle_qd.shape[0], dtype=wp.mat33)
@@ -1064,6 +1115,18 @@ class ImplicitMPMSolver(SolverBase):
         collider_masses: List[float] = None,
         collider_friction: List[float] = None,
     ):
+        """Setups the collision geometry for the implicit MPM solver.
+
+
+        Args:
+            model: The model to read ground collision properties from.
+            colliders: A list of warp triangular meshes to use as colliders.
+            collider_thicknesses: The thicknesses of the colliders.
+            collider_projection_threshold: The projection threshold for the colliders, i.e, the maximum acceptable penetration depth before projecting particles out.
+            collider_masses: The masses of the colliders.
+            collider_friction: The friction coefficients of the colliders.
+        """
+
         self._collider_meshes = colliders  # Keep a ref so that meshes are not garbage collected
 
         if colliders is None:
@@ -1110,7 +1173,7 @@ class ImplicitMPMSolver(SolverBase):
             synchronize=True,
         ):
             if self.dynamic_grid:
-                volume = allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
+                volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
                 grid = fem.Nanogrid(volume)
             else:
                 pos_np = positions.numpy()
