@@ -20,10 +20,10 @@ class State:
     """Time-varying state data for a :class:`Model`.
 
     Time-varying state data includes particle positions, velocities, rigid body states, and
-    anything that is output from the integrator as derived data, e.g.: forces.
+    anything that is output from the solver as derived data, e.g.: forces.
 
     The exact attributes depend on the contents of the model. State objects should
-    generally be created using the :func:`Model.state()` function.
+    generally be created using the :func:`newton.Model.state()` function.
     """
 
     def __init__(self) -> None:
@@ -50,7 +50,7 @@ class State:
 
         .. note::
             :attr:`body_f` represents external wrenches in world frame and denotes wrenches measured w.r.t.
-            to the body's center of mass for all integrators except :class:`FeatherstoneIntegrator`, which
+            to the body's center of mass for all solvers except :class:`~newton.solvers.FeatherstoneSolver`, which
             assumes the wrenches are measured w.r.t. world origin.
         """
 
