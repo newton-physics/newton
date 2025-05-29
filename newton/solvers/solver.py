@@ -30,7 +30,8 @@
 
 import warp as wp
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
+from newton.core import PARTICLE_FLAG_ACTIVE, Control, Model, State
+from newton.geometry import Contacts
 
 
 @wp.kernel
@@ -256,7 +257,7 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 

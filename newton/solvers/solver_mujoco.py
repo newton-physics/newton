@@ -23,7 +23,7 @@ from typing_extensions import override
 
 import newton
 import newton.utils
-from newton.core import Contact, Control, Model, State, types
+from newton.core import Control, Model, State, types
 
 from .solver import SolverBase
 

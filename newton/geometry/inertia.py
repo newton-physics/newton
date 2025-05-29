@@ -31,7 +31,6 @@ from .types import (
     GEO_SPHERE,
     SDF,
     Mesh,
-    Vec3,
 )
 
 

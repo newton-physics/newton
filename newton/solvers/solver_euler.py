@@ -21,19 +21,17 @@ models + state forward in time.
 import warp as wp
 
 import newton
-from newton.collision.collide import triangle_closest_point_barycentric
 from newton.core import (
     PARTICLE_FLAG_ACTIVE,
-    Contact,
     Control,
     Model,
-    ModelShapeGeometry,
-    ModelShapeMaterials,
     State,
     quat_decompose,
     quat_twist,
 )
+from newton.core.model import ShapeGeometry, ShapeMaterials
 from newton.core.particles import eval_particle_forces
+from newton.geometry import Contacts
 
 from .solver import SolverBase
 
@@ -723,7 +721,7 @@ def eval_particle_contacts(
     particle_flags: wp.array(dtype=wp.uint32),
     body_com: wp.array(dtype=wp.vec3),
     shape_body: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     particle_ke: float,
     particle_kd: float,
     particle_kf: float,
@@ -835,8 +833,8 @@ def eval_rigid_contacts(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    shape_materials: ModelShapeMaterials,
-    geo: ModelShapeGeometry,
+    shape_materials: ShapeMaterials,
+    geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -1732,24 +1730,6 @@ def eval_triangle_forces(model: Model, state: State, control: Control, particle_
         )
 
 
-def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.enable_tri_collisions:
-        wp.launch(
-            kernel=eval_triangles_contact,
-            dim=model.tri_count * model.particle_count,
-            inputs=[
-                model.particle_count,
-                state.particle_q,
-                state.particle_qd,
-                model.tri_indices,
-                model.tri_materials,
-                model.particle_radius,
-            ],
-            outputs=[particle_f],
-            device=model.device,
-        )
-
-
 def eval_bending_forces(model: Model, state: State, particle_f: wp.array):
     if model.edge_count:
         wp.launch(
@@ -1946,9 +1926,6 @@ def compute_forces(
     # triangle elastic and lift/drag forces
     eval_triangle_forces(model, state, control, particle_f)
 
-    # triangle/triangle contacts
-    eval_triangle_contact_forces(model, state, particle_f)
-
     # triangle bending
     eval_bending_forces(model, state, particle_f)
 
@@ -2029,7 +2006,7 @@ class SemiImplicitSolver(SolverBase):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contact,
+        contacts: Contacts,
         dt: float,
     ):
         with wp.ScopedTimer("simulate", False):

@@ -25,14 +25,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
-from .inertia import (
-    compute_shape_inertia,
-    transform_inertia,
-)
-from .model import Model
-from .spatial import quat_between_axes
-from .types import (
+from newton.geometry import (
     GEO_BOX,
     GEO_CAPSULE,
     GEO_CONE,
@@ -42,6 +35,17 @@ from .types import (
     GEO_PLANE,
     GEO_SDF,
     GEO_SPHERE,
+    SDF,
+    Mesh,
+    compute_shape_inertia,
+    compute_shape_radius,
+    transform_inertia,
+)
+
+from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .model import Model
+from .spatial import quat_between_axes
+from .types import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -53,7 +57,6 @@ from .types import (
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
     PARTICLE_FLAG_ACTIVE,
-    SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
@@ -61,7 +64,6 @@ from .types import (
     AxisType,
     Devicelike,
     Mat33,
-    Mesh,
     Quat,
     Sequence,
     Transform,
@@ -70,7 +72,6 @@ from .types import (
     axis_to_vec3,
     flag_to_int,
     get_joint_dof_count,
-    get_shape_radius,
     nparray,
 )
 
@@ -387,12 +388,6 @@ class ModelBuilder:
             "length": 0.0,
         }
 
-        # Maximum number of soft contacts that can be registered
-        self.soft_contact_max = 64 * 1024
-
-        # maximum number of contact points to generate per mesh shape
-        self.rigid_mesh_contact_max = 0  # 0 = unlimited
-
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
@@ -400,10 +395,6 @@ class ModelBuilder:
         self.rigid_contact_torsional_friction = 0.5
         # rolling friction coefficient (only considered by XPBD so far)
         self.rigid_contact_rolling_friction = 0.001
-
-        # number of rigid contact points to allocate in the model during self.finalize() per environment
-        # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
-        self.num_rigid_contacts_per_env = None
 
     @property
     def up_vector(self) -> Vec3:
@@ -1811,7 +1802,7 @@ class ModelBuilder:
             self.shape_collision_group_map[cfg.collision_group] = []
         self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
-        self.shape_collision_radius.append(get_shape_radius(type, scale, src))
+        self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -3145,11 +3136,11 @@ class ModelBuilder:
     def _create_ground_plane(self):
         if self._ground_params["plane"] is None:
             self._ground_params["plane"] = (*self.up_vector, 0.0)
-        ground_id = self.add_shape_plane(**self._ground_params)
+        self.add_shape_plane(**self._ground_params)
         self._ground_created = True
-        # disable ground collisions as they will be treated separately
-        for i in range(self.shape_count - 1):
-            self.shape_collision_filter_pairs.add((i, ground_id))
+        # # disable ground collisions as they will be treated separately
+        # for i in range(self.shape_count - 1):
+        #     self.shape_collision_filter_pairs.add((i, ground_id))
 
     def set_coloring(self, particle_color_groups):
         """
@@ -3295,7 +3286,12 @@ class ModelBuilder:
             m.shape_geo.scale = wp.array(self.shape_geo_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_geo.is_solid = wp.array(self.shape_geo_is_solid, dtype=wp.bool)
             m.shape_geo.thickness = wp.array(self.shape_geo_thickness, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_collision_radius = wp.array(
+                self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
+            )
+
             m.shape_geo_src = self.shape_geo_src  # used for rendering
+
             # store refs to geometry
             m.geo_meshes = self.geo_meshes
             m.geo_sdfs = self.geo_sdfs
@@ -3312,9 +3308,6 @@ class ModelBuilder:
             m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
             m.shape_collision_group = self.shape_collision_group
             m.shape_collision_group_map = self.shape_collision_group_map
-            m.shape_collision_radius = wp.array(
-                self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
-            )
 
             # ---------------------
             # springs
@@ -3440,22 +3433,24 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
 
-            # contacts
-            if m.particle_count:
-                m.allocate_soft_contacts(self.soft_contact_max, requires_grad=requires_grad)
             self.find_shape_contact_pairs(m)
-            if self.num_rigid_contacts_per_env is None:
-                contact_count, limited_contact_count = m.count_contact_points()
-            else:
-                contact_count = limited_contact_count = self.num_rigid_contacts_per_env * self.num_envs
-            if contact_count:
-                if wp.config.verbose:
-                    print(f"Allocating {contact_count} rigid contacts.")
-                m.allocate_rigid_contacts(
-                    count=contact_count, limited_contact_count=limited_contact_count, requires_grad=requires_grad
-                )
-            m.rigid_mesh_contact_max = self.rigid_mesh_contact_max
-            m.rigid_contact_margin = self.rigid_contact_margin
+
+            # # contacts
+            # if m.particle_count:
+            #     m.allocate_soft_contacts(self.soft_contact_max, requires_grad=requires_grad)
+            # if self.num_rigid_contacts_per_env is None:
+            #     contact_count, limited_contact_count = m.count_contact_points()
+            # else:
+            #     contact_count = limited_contact_count = self.num_rigid_contacts_per_env * self.num_envs
+            # if contact_count:
+            #     if wp.config.verbose:
+            #         print(f"Allocating {contact_count} rigid contacts.")
+            #     m.allocate_rigid_contacts(
+            #         count=contact_count, limited_contact_count=limited_contact_count, requires_grad=requires_grad
+            #     )
+            # m.rigid_mesh_contact_max = self.rigid_mesh_contact_max
+            # m.rigid_contact_margin = self.rigid_contact_margin
+
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
@@ -3464,8 +3459,6 @@ class ModelBuilder:
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
-
-            m.enable_tri_collisions = False
 
             return m
 
@@ -3507,11 +3500,3 @@ class ModelBuilder:
                         filters.add((shape_a, shape_b))
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
-        # find ground contact pairs
-        ground_contact_pairs = []
-        ground_id = self.shape_count - 1
-        for i in range(ground_id):
-            if self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_GROUND):
-                ground_contact_pairs.append((i, ground_id))
-        model.shape_ground_contact_pairs = wp.array(np.array(ground_contact_pairs), dtype=wp.int32, device=model.device)
-        model.shape_ground_contact_pair_count = len(ground_contact_pairs)
