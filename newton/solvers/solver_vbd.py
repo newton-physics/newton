@@ -12,8 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
+
 import numpy as np
 import warp as wp
+from typing_extensions import override
 from warp.types import float32, matrix
 
 from newton.collision.collide import (
@@ -794,8 +798,8 @@ def evaluate_edge_edge_contact(
         else:
             displacement = pos_prev[e2_v2] - e2_v2_pos
 
-        collision_normal_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_normal_sign[v_order]) > 0:
+        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
+        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
             damping_hessian = (collision_damping / dt) * collision_hessian
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
@@ -917,10 +921,10 @@ def evaluate_edge_edge_contact_2_vertices(
         collision_hessian_0 = collision_hessian * bs[0] * bs[0]
         collision_hessian_1 = collision_hessian * bs[1] * bs[1]
 
-        collision_normal_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
+        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
         damping_force, damping_hessian = damp_collision(
             displacement_0,
-            collision_normal * collision_normal_normal_sign[0],
+            collision_normal * collision_normal_sign[0],
             collision_hessian_0,
             collision_damping,
             dt,
@@ -931,7 +935,7 @@ def evaluate_edge_edge_contact_2_vertices(
 
         damping_force, damping_hessian = damp_collision(
             displacement_1,
-            collision_normal * collision_normal_normal_sign[1],
+            collision_normal * collision_normal_sign[1],
             collision_hessian_1,
             collision_damping,
             dt,
@@ -1022,8 +1026,8 @@ def evaluate_vertex_triangle_collision_force_hessian(
         else:
             displacement = pos_prev[v] - p
 
-        collision_normal_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_normal_sign[v_order]) > 0:
+        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
+        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
             damping_hessian = (collision_damping / dt) * collision_hessian
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
@@ -1117,10 +1121,10 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         collision_hessian_2 = collision_hessian * bs[2] * bs[2]
         collision_hessian_3 = collision_hessian * bs[3] * bs[3]
 
-        collision_normal_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
+        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
         damping_force, damping_hessian = damp_collision(
             displacement_0,
-            collision_normal * collision_normal_normal_sign[0],
+            collision_normal * collision_normal_sign[0],
             collision_hessian_0,
             collision_damping,
             dt,
@@ -1131,7 +1135,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
         damping_force, damping_hessian = damp_collision(
             displacement_1,
-            collision_normal * collision_normal_normal_sign[1],
+            collision_normal * collision_normal_sign[1],
             collision_hessian_1,
             collision_damping,
             dt,
@@ -1141,7 +1145,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
         damping_force, damping_hessian = damp_collision(
             displacement_2,
-            collision_normal * collision_normal_normal_sign[2],
+            collision_normal * collision_normal_sign[2],
             collision_hessian_2,
             collision_damping,
             dt,
@@ -1151,7 +1155,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
         damping_force, damping_hessian = damp_collision(
             displacement_3,
-            collision_normal * collision_normal_normal_sign[3],
+            collision_normal * collision_normal_sign[3],
             collision_hessian_3,
             collision_damping,
             dt,
@@ -1927,25 +1931,24 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
 
 
 class VBDSolver(SolverBase):
-    """An implicit integrator using Vertex Block Descent (VBD) for cloth simulation.
+    """An implicit solver using Vertex Block Descent (VBD) for cloth simulation.
 
     References:
-        - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages. https://doi.org/10.1145/3658179
+        - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
+          https://doi.org/10.1145/3658179
 
-    Note that VBDSolver's constructor requires a :class:`Model` object as input, so that it can do some precomputation and preallocate the space.
-    After construction, you must provide the same :class:`Model` object that you used that was used during construction.
-    Currently, you must manually provide particle coloring and assign it to `model.particle_color_groups` to make VBD work.
-
-    VBDSolver.simulate accepts three arguments: class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
-    may be used to advance the simulation state forward in time.
+    Note:
+        VBD currently requires to manually provide particle coloring information through :attr:`newton.Model.particle_color_groups`
+        (see :meth:`newton.ModelBuilder.set_coloring`).
+        It can be generated via :meth:`newton.ModelBuilder.color` before calling :meth:`newton.ModelBuilder.finalize`.
 
     Example
     -------
 
     .. code-block:: python
 
-        model.particle_color_groups = # load or generate particle coloring
-        solver = newton.VBDSolver(model)
+        model.particle_color_groups = ...  # load or generate particle coloring
+        solver = newton.solvers.VBDSolver(model)
 
         # simulation loop
         for i in range(100):
@@ -1956,15 +1959,15 @@ class VBDSolver(SolverBase):
     def __init__(
         self,
         model: Model,
-        iterations=10,
-        handle_self_contact=False,
-        penetration_free_conservative_bound_relaxation=0.42,
-        friction_epsilon=1e-2,
-        body_particle_contact_buffer_pre_alloc=4,
-        vertex_collision_buffer_pre_alloc=32,
-        edge_collision_buffer_pre_alloc=64,
-        triangle_collision_buffer_pre_alloc=32,
-        edge_edge_parallel_epsilon=1e-5,
+        iterations: int = 10,
+        handle_self_contact: bool = False,
+        penetration_free_conservative_bound_relaxation: float = 0.42,
+        friction_epsilon: float = 1e-2,
+        body_particle_contact_buffer_pre_alloc: int = 4,
+        vertex_collision_buffer_pre_alloc: int = 32,
+        edge_collision_buffer_pre_alloc: int = 64,
+        triangle_collision_buffer_pre_alloc: int = 32,
+        edge_edge_parallel_epsilon: float = 1e-5,
     ):
         super().__init__(model)
         self.iterations = iterations
@@ -1982,8 +1985,8 @@ class VBDSolver(SolverBase):
         if handle_self_contact:
             if self.model.soft_contact_margin < self.model.soft_contact_radius:
                 raise ValueError(
-                    "model.soft_contact_margin is smaller than self.model.soft_contact_radius, this will result in missing contacts and cause instability. \n"
-                    "It is advisable to make model.soft_contact_margin 1.5~2 times larger than self.model.soft_contact_radius."
+                    "Model.soft_contact_margin is smaller than Model.soft_contact_radius, this will result in missing contacts and cause instability.\n"
+                    "It is advisable to make Model.soft_contact_margin 1.5~2 times larger than Model.soft_contact_radius."
                 )
 
             self.conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
@@ -2018,7 +2021,7 @@ class VBDSolver(SolverBase):
 
         if len(self.model.particle_color_groups) == 0:
             raise ValueError(
-                "model.particle_color_groups is empty! When using the VBDIntegrator you must call ModelBuilder.color() "
+                "model.particle_color_groups is empty! When using the VBDSolver you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
 
@@ -2109,6 +2112,7 @@ class VBDSolver(SolverBase):
 
         return adjacency
 
+    @override
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         if model is not self.model:
             raise ValueError("model must be the one used to initialize VBDSolver")
@@ -2119,7 +2123,7 @@ class VBDSolver(SolverBase):
             self.simulate_one_step_no_self_contact(model, state_in, state_out, dt, control)
 
     def simulate_one_step_no_self_contact(
-        self, model: Model, state_in: State, state_out: State, dt: float, control: Control = None
+        self, model: Model, state_in: State, state_out: State, dt: float, control: Control | None = None
     ):
         wp.launch(
             kernel=forward_step,
@@ -2346,7 +2350,7 @@ class VBDSolver(SolverBase):
             device=self.device,
         )
 
-    def collision_detection_penetration_free(self, current_state, dt):
+    def collision_detection_penetration_free(self, current_state: State, dt: float):
         self.trimesh_collision_detector.refit(current_state.particle_q)
         self.trimesh_collision_detector.vertex_triangle_collision_detection(self.model.soft_contact_margin)
         self.trimesh_collision_detector.edge_edge_collision_detection(self.model.soft_contact_margin)
