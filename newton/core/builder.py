@@ -358,6 +358,7 @@ class ModelBuilder:
         self.joint_limit_ke = []
         self.joint_limit_kd = []
         self.joint_target = []
+        self.joint_target_velocity = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -611,6 +612,7 @@ class ModelBuilder:
             "joint_qd",
             "joint_f",
             "joint_target",
+            "joint_target_velocity",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -797,6 +799,7 @@ class ModelBuilder:
             self.joint_axis.append(dim.axis)
             self.joint_axis_mode.append(dim.mode)
             self.joint_target.append(dim.target)
+            self.joint_target_velocity.append(0.0)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
@@ -1676,6 +1679,7 @@ class ModelBuilder:
         self.joint_axis_dim.clear()
         self.joint_axis_start.clear()
         self.joint_target.clear()
+        self.joint_target_velocity.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1701,6 +1705,7 @@ class ModelBuilder:
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_target.append(axis["act"])
+                self.joint_target_velocity.append(0.0)
 
         return {
             "body_remap": body_remap,
@@ -3404,6 +3409,7 @@ class ModelBuilder:
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_velocity = wp.array(self.joint_target_velocity, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)

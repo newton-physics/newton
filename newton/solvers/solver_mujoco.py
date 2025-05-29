@@ -237,15 +237,20 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
-    axis_to_actuator: wp.array(dtype=wp.int32),
+    joint_target_velocity: wp.array(dtype=wp.float32),
+    axis_to_actuator: wp.array2d(dtype=wp.int32),
     axes_per_env: int,
     # outputs
     mj_act: wp.array2d(dtype=wp.float32),
 ):
     worldid, axisid = wp.tid()
-    actuator_id = axis_to_actuator[axisid]
+    actuator_id = axis_to_actuator[axisid, 0]
     if actuator_id != -1:
         mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
+    actuator_id = axis_to_actuator[axisid, 1]
+    if actuator_id != -1:
+        mj_act[worldid, actuator_id] = joint_target_velocity[worldid * axes_per_env + axisid]
+
 
 
 @wp.kernel
@@ -756,7 +761,8 @@ class MuJoCoSolver(SolverBase):
             dim=(nworld, axes_per_env),
             inputs=[
                 control.joint_target,
-                model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
+                control.joint_target_velocity,
+                model.mjc_axis_to_actuator,
                 axes_per_env,
             ],
             outputs=[
@@ -1081,7 +1087,7 @@ class MuJoCoSolver(SolverBase):
             collision_mask_everything = INT32_MAX
 
         # mapping from joint axis to actuator index
-        axis_to_actuator = np.zeros((model.joint_axis_count,), dtype=np.int32) - 1
+        axis_to_actuator = np.zeros((model.joint_axis_count, 2), dtype=np.int32) - 1
         actuator_count = 0
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
@@ -1311,15 +1317,11 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
-                    if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
-                        joint_params["stiffness"] = joint_target_ke[ai]
-                        joint_params["damping"] = joint_target_kd[ai]
+
+                    joint_params["stiffness"] = 0.0
+                    joint_params["damping"] = 0.0
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
-                        joint_params["limited"] = False
-                    else:
-                        joint_params["limited"] = True
-                        joint_params["range"] = (lower, upper)
+                    joint_params["limited"] = False
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1332,17 +1334,71 @@ class MuJoCoSolver(SolverBase):
                         **joint_params,
                     )
                     if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+                        if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                            kp = joint_target_ke[ai]
+                            kd = joint_target_kd[ai]
+                            pos_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+                                "biasprm": [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **pos_actuator_args)
+                            axis_to_actuator[ai, 0] = actuator_count 
+                            actuator_count += 1
+
+                        elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                            kp = joint_target_ke[ai]
+                            kd = joint_target_kd[ai]
+                            pos_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "biasprm": [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **pos_actuator_args)
+                            axis_to_actuator[ai, 0] = actuator_count
+                            actuator_count += 1
+                            vel_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "biasprm": [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **vel_actuator_args)
+                            axis_to_actuator[ai, 1] = actuator_count
+                            actuator_count += 1
                         else:
-                            args = actuator_args
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
+                            # Motor actuator for other modes
+                            gear = actuator_gears.get(axname)
+                            if gear is not None:
+                                args = {}
+                                args.update(actuator_args)
+                                args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                            else:
+                                args = actuator_args
+                            spec.add_actuator(target=axname, **args)
+                            axis_to_actuator[ai, 0] = actuator_count
+                            actuator_count += 1
 
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
@@ -1356,9 +1412,9 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
-                    if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
-                        joint_params["stiffness"] = joint_target_ke[ai]
-                        joint_params["damping"] = joint_target_kd[ai]
+
+                    joint_params["stiffness"] = 0.0
+                    joint_params["damping"] = 0.0
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
                         joint_params["limited"] = False
@@ -1377,17 +1433,71 @@ class MuJoCoSolver(SolverBase):
                         **joint_params,
                     )
                     if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                        if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                            kp = joint_target_ke[ai]
+                            kd = joint_target_kd[ai]
+                            pos_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "biasprm": [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **pos_actuator_args)
+                            axis_to_actuator[ai, 0] = actuator_count
+                            actuator_count += 1
+
+                        elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                            kp = joint_target_ke[ai]
+                            kd = joint_target_kd[ai]
+
+                            pos_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "biasprm": [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **pos_actuator_args)
+                            axis_to_actuator[ai, 0] = actuator_count
+                            actuator_count += 1
+                            vel_actuator_args = {
+                                "ctrllimited": False,
+                                "ctrlrange": ( -1e6, 
+                                             1e6),
+                                "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                "trntype": mujoco.mjtTrn.mjTRN_JOINT,
+                                "dyntype": mujoco.mjtDyn.mjDYN_NONE,
+                                "gainprm": [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                "biasprm": [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0],
+                                "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
+                                "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
+                            }
+                            spec.add_actuator(target=axname, **vel_actuator_args)
+                            axis_to_actuator[ai, 1] = actuator_count
+                            actuator_count += 1
                         else:
-                            args = actuator_args
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
+                            # Motor actuator for other modes
+                            gear = actuator_gears.get(axname)
+                            if gear is not None:
+                                args = {}
+                                args.update(actuator_args)
+                                args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                            else:
+                                args = actuator_args
+                            spec.add_actuator(target=axname, **args)
+                            axis_to_actuator[ai, 0] = actuator_count
+                            actuator_count += 1
 
             elif j_type != newton.JOINT_FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
@@ -1431,7 +1541,7 @@ class MuJoCoSolver(SolverBase):
 
         with wp.ScopedDevice(model.device):
             # mapping from Newton joint axis index to MJC actuator index
-            model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            model.mjc_axis_to_actuator = wp.array2d(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
             # mapping from MJC body index to Newton body index (skip world index -1)
             reverse_body_mapping = {v: k for k, v in body_mapping.items()}
             model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]

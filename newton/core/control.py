@@ -42,12 +42,17 @@ class Control:
         self.joint_target: wp.array | None = None
         """
         Array of joint targets with shape ``(joint_axis_count,)`` and type ``float``.
-        Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
+        Joint targets define the target position for each actuation-driven degree of freedom,
         depending on the corresponding joint control mode, see :attr:`newton.Model.joint_axis_mode`.
 
         The joint targets are defined for any joint type, except for free joints.
         """
 
+        self.joint_target_velocity: wp.array | None = None
+        """
+        Array of joint target velocities with shape ``(joint_axis_count,)`` and type ``float``.
+        """
+        
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
 

@@ -201,6 +201,8 @@ class Model:
         """Generalized joint forces used for state initialization, shape [joint_dof_count], float."""
         self.joint_target = None
         """Generalized joint target inputs, shape [joint_axis_count], float."""
+        self.joint_target_velocity = None
+        """Generalized joint target velocity inputs, shape [joint_axis_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_parent = None
@@ -431,6 +433,7 @@ class Model:
         if clone_variables:
             if self.joint_count:
                 c.joint_target = wp.clone(self.joint_target, requires_grad=requires_grad)
+                c.joint_target_velocity = wp.clone(self.joint_target_velocity, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
@@ -440,6 +443,7 @@ class Model:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
         else:
             c.joint_target = self.joint_target
+            c.joint_target_velocity = self.joint_target_velocity
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations

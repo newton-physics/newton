@@ -52,6 +52,7 @@ class AttributeRegistry:
 
         # addressable by joint axis offset
         self.register_attribute("joint_target", "joint_axis")
+        self.register_attribute("joint_target_velocity", "joint_axis")
         self.register_attribute("joint_axis", "joint_axis")
         self.register_attribute("joint_target_ke", "joint_axis")
         self.register_attribute("joint_target_kd", "joint_axis")
@@ -267,7 +268,7 @@ class ArticulationView:
         self.articulation_indices = wp.array(articulation_ids, dtype=int, device=self.device)
 
         # create articulation mask
-        self.articulation_mask = wp.zeros(model.articulation_count, dtype=bool, device=self.device)
+        self.articulation_mask = wp.zeros(model.articulation_count, dtype=bool)
         wp.launch(
             set_mask_kernel, dim=count, inputs=[self.articulation_indices, self.articulation_mask], device=self.device
         )
