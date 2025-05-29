@@ -36,7 +36,7 @@ from newton.utils import (
     vec_min,
 )
 
-from .solver import SolverBase
+from ..solver import SolverBase
 
 
 @wp.kernel

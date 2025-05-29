@@ -13,11 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This module contains time-integration objects for simulating
-models + state forward in time.
-
-"""
-
 import warp as wp
 
 import newton
@@ -33,9 +28,9 @@ from newton.core import (
     quat_decompose,
     quat_twist,
 )
-from newton.core.particles import eval_particle_forces
 
-from .solver import SolverBase
+from ..solver import SolverBase
+from .particles import eval_particle_forces
 
 
 @wp.kernel

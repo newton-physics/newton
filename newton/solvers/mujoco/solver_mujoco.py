@@ -25,7 +25,7 @@ import newton
 import newton.utils
 from newton.core import Contact, Control, Model, State, types
 
-from .solver import SolverBase
+from ..solver import SolverBase
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
