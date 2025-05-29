@@ -16,13 +16,10 @@
 import warp as wp
 
 import newton
-from newton.collision.collide import triangle_closest_point_barycentric
 from newton.core import (
     PARTICLE_FLAG_ACTIVE,
     Control,
     Model,
-    ModelShapeGeometry,
-    ModelShapeMaterials,
     State,
     quat_decompose,
     quat_twist,
@@ -712,7 +709,7 @@ def eval_particle_contacts(
     particle_flags: wp.array(dtype=wp.uint32),
     body_com: wp.array(dtype=wp.vec3),
     shape_body: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     particle_ke: float,
     particle_kd: float,
     particle_kf: float,
@@ -824,8 +821,8 @@ def eval_rigid_contacts(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    shape_materials: ModelShapeMaterials,
-    geo: ModelShapeGeometry,
+    shape_materials: ShapeMaterials,
+    geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -1715,24 +1712,6 @@ def eval_triangle_forces(model: Model, state: State, control: Control, particle_
                 model.tri_poses,
                 control.tri_activations,
                 model.tri_materials,
-            ],
-            outputs=[particle_f],
-            device=model.device,
-        )
-
-
-def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.enable_tri_collisions:
-        wp.launch(
-            kernel=eval_triangles_contact,
-            dim=model.tri_count * model.particle_count,
-            inputs=[
-                model.particle_count,
-                state.particle_q,
-                state.particle_qd,
-                model.tri_indices,
-                model.tri_materials,
-                model.particle_radius,
             ],
             outputs=[particle_f],
             device=model.device,

@@ -46,40 +46,6 @@ SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
 SHAPE_FLAG_COLLIDE_GROUND = wp.constant(wp.uint32(1 << 2))
 SHAPE_FLAG_COLLIDE_PARTICLES = wp.constant(wp.uint32(1 << 3))
 
-# Shape geometry types
-GEO_SPHERE = wp.constant(0)
-GEO_BOX = wp.constant(1)
-GEO_CAPSULE = wp.constant(2)
-GEO_CYLINDER = wp.constant(3)
-GEO_CONE = wp.constant(4)
-GEO_MESH = wp.constant(5)
-GEO_SDF = wp.constant(6)
-GEO_PLANE = wp.constant(7)
-GEO_NONE = wp.constant(8)
-
-
-def get_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
-    """
-    Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
-    """
-    if geo_type == GEO_SPHERE:
-        return scale[0]
-    elif geo_type == GEO_BOX:
-        return np.linalg.norm(scale)
-    elif geo_type == GEO_CAPSULE or geo_type == GEO_CYLINDER or geo_type == GEO_CONE:
-        return scale[0] + scale[1]
-    elif geo_type == GEO_MESH:
-        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-        return np.linalg.norm(vmax)
-    elif geo_type == GEO_PLANE:
-        if scale[0] > 0.0 and scale[1] > 0.0:
-            # finite plane
-            return np.linalg.norm(scale)
-        else:
-            return 1.0e6
-    else:
-        return 10.0
-
 
 # Types of joints linking rigid bodies
 JOINT_PRISMATIC = wp.constant(0)
@@ -208,7 +174,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 
 @wp.struct
-class ModelShapeMaterials:
+class ShapeMaterials:
     """
     Represents the contact material properties of a shape.
         ke: The contact elastic stiffness (only used by the Euler integrators)
@@ -228,7 +194,7 @@ class ModelShapeMaterials:
 
 
 @wp.struct
-class ModelShapeGeometry:
+class ShapeGeometry:
     """
     Represents the geometry of a shape.
         type: The type of geometry (GEO_SPHERE, GEO_BOX, etc.)
@@ -236,6 +202,8 @@ class ModelShapeGeometry:
         thickness: The thickness of the shape (used for collision detection, and inertia computation of hollow shapes)
         source: Pointer to the source geometry (can be a mesh or SDF index, zero otherwise)
         scale: The 3D scale of the shape
+        filter: The filter group of the shape
+        transform: The transform of the shape in world space
     """
 
     type: wp.array(dtype=wp.int32)
@@ -243,120 +211,7 @@ class ModelShapeGeometry:
     thickness: wp.array(dtype=float)
     source: wp.array(dtype=wp.uint64)
     scale: wp.array(dtype=wp.vec3)
-
-
-class SDF:
-    """Describes a signed distance field for simulation
-
-    Attributes:
-
-        volume (Volume): The volume defining the SDF
-        I (Mat33): 3x3 inertia matrix of the SDF
-        mass (float): The total mass of the SDF
-        com (Vec3): The center of mass of the SDF
-    """
-
-    def __init__(self, volume: wp.Volume | None = None, I=None, mass=1.0, com=None):
-        self.volume = volume
-        self.I = I if I is not None else wp.mat33(np.eye(3))
-        self.mass = mass
-        self.com = com if com is not None else wp.vec3()
-
-        # Need to specify these for now
-        self.has_inertia = True
-        self.is_solid = True
-
-    def finalize(self) -> wp.uint64:
-        return self.volume.id
-
-    @override
-    def __hash__(self) -> int:
-        return hash(self.volume.id)
-
-
-class Mesh:
-    """Describes a triangle collision mesh for simulation
-
-    Example mesh creation from a triangle OBJ mesh file:
-    ====================================================
-
-    See :func:`load_mesh` which is provided as a utility function.
-
-    .. code-block:: python
-
-        import numpy as np
-        import warp as wp
-        import newton
-        import openmesh
-
-        m = openmesh.read_trimesh("mesh.obj")
-        mesh_points = np.array(m.points())
-        mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32).flatten()
-        mesh = newton.Mesh(mesh_points, mesh_indices)
-
-    Attributes:
-
-        vertices (List[Vec3]): Mesh 3D vertices points
-        indices (List[int]): Mesh indices as a flattened list of vertex indices describing triangles
-        I (Mat33): 3x3 inertia matrix of the mesh assuming density of 1.0 (around the center of mass)
-        mass (float): The total mass of the body assuming density of 1.0
-        com (Vec3): The center of mass of the body
-    """
-
-    def __init__(self, vertices: Sequence[Vec3], indices: Sequence[int], compute_inertia=True, is_solid=True):
-        """Construct a Mesh object from a triangle mesh
-
-        The mesh center of mass and inertia tensor will automatically be
-        calculated using a density of 1.0. This computation is only valid
-        if the mesh is closed (two-manifold).
-
-        Args:
-            vertices: List of vertices in the mesh
-            indices: List of triangle indices, 3 per-element
-            compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
-            is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
-        """
-        from .inertia import compute_mesh_inertia
-
-        self.vertices = np.array(vertices).reshape(-1, 3)
-        self.indices = np.array(indices, dtype=np.int32).flatten()
-        self.is_solid = is_solid
-        self.has_inertia = compute_inertia
-        self.mesh = None
-
-        if compute_inertia:
-            self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
-        else:
-            self.I = wp.mat33(np.eye(3))
-            self.mass = 1.0
-            self.com = wp.vec3()
-
-    # construct simulation ready buffers from points
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
-        """
-        Constructs a simulation-ready :class:`Mesh` object from the mesh data and returns its ID.
-
-        Args:
-            device: The device on which to allocate the mesh buffers
-            requires_grad: If True, the mesh points and velocity arrays will be allocated with gradient tracking enabled
-
-        Returns:
-            The ID of the simulation-ready :class:`Mesh`
-        """
-        with wp.ScopedDevice(device):
-            pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
-            vel = wp.zeros_like(pos)
-            indices = wp.array(self.indices, dtype=wp.int32)
-
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
-            return self.mesh.id
-
-    @override
-    def __hash__(self) -> int:
-        """
-        Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
-        """
-        return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
+    filter: wp.array(dtype=int)
 
 
 # model update flags - used for solver.notify_model_update()
@@ -372,15 +227,6 @@ NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(
 NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 5)  # shape_transform, shape_geo
 
 __all__ = [
-    "GEO_BOX",
-    "GEO_CAPSULE",
-    "GEO_CONE",
-    "GEO_CYLINDER",
-    "GEO_MESH",
-    "GEO_NONE",
-    "GEO_PLANE",
-    "GEO_SDF",
-    "GEO_SPHERE",
     "JOINT_BALL",
     "JOINT_COMPOUND",
     "JOINT_D6",
@@ -400,18 +246,15 @@ __all__ = [
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "PARTICLE_FLAG_ACTIVE",
-    "SDF",
     "SHAPE_FLAG_COLLIDE_GROUND",
     "SHAPE_FLAG_COLLIDE_SHAPES",
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
     "Mat33",
-    "Mesh",
-    "ModelShapeGeometry",
-    "ModelShapeMaterials",
     "Quat",
     "Sequence",
+    "ShapeMaterials",
     "Transform",
     "Vec3",
     "Vec4",

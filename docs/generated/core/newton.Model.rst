@@ -147,7 +147,6 @@
       ~Model.rigid_contact_margin
       ~Model.rigid_contact_torsional_friction
       ~Model.rigid_contact_rolling_friction
-      ~Model.enable_tri_collisions
       ~Model.rigid_contact_count
       ~Model.rigid_contact_point0
       ~Model.rigid_contact_point1

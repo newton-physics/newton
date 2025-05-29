@@ -16,12 +16,13 @@
 import warp as wp
 
 import newton
-from newton.core import Contact, Control, Model, State
+from newton.core import Control, Model, State
 from newton.core.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
     eval_fk,
 )
+from newton.geometry import Contacts
 
 from ..euler.kernels import (
     eval_bending_forces,
@@ -32,7 +33,6 @@ from ..euler.kernels import (
     eval_rigid_contacts,
     eval_spring_forces,
     eval_tetrahedral_forces,
-    eval_triangle_contact_forces,
     eval_triangle_forces,
 )
 from ..euler.particles import eval_particle_forces
@@ -1729,7 +1729,7 @@ class FeatherstoneSolver(SolverBase):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contact,
+        contacts: Contacts,
         dt: float,
     ):
         requires_grad = state_in.requires_grad
@@ -1760,9 +1760,6 @@ class FeatherstoneSolver(SolverBase):
 
             # triangle elastic and lift/drag forces
             eval_triangle_forces(model, state_in, control, particle_f)
-
-            # triangle/triangle contacts
-            eval_triangle_contact_forces(model, state_in, particle_f)
 
             # triangle bending
             eval_bending_forces(model, state_in, particle_f)

@@ -21,13 +21,13 @@ from newton.core import (
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
     PARTICLE_FLAG_ACTIVE,
-    Contact,
     Control,
     Model,
-    ModelShapeMaterials,
     State,
     velocity_at_point,
 )
+from newton.core.model import ShapeGeometry, ShapeMaterials
+from newton.geometry import Contacts
 from newton.utils import (
     vec_abs,
     vec_leaky_max,
@@ -100,8 +100,9 @@ def apply_particle_shape_restitution(
     body_com: wp.array(dtype=wp.vec3),
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
+    shape_geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     particle_ka: float,
     restitution: float,
     contact_count: wp.array(dtype=int),
@@ -228,7 +229,7 @@ def solve_particle_shape_contacts(
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
     shape_body: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     particle_mu: float,
     particle_ka: float,
     contact_count: wp.array(dtype=int),
@@ -2190,7 +2191,7 @@ def solve_body_contact_positions(
     contact_thickness: wp.array(dtype=float),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     relaxation: float,
     dt: float,
     contact_torsional_friction: float,
@@ -2425,7 +2426,7 @@ def apply_rigid_restitution(
     contact_normal: wp.array(dtype=wp.vec3),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     contact_point0: wp.array(dtype=wp.vec3),
     contact_point1: wp.array(dtype=wp.vec3),
     contact_offset0: wp.array(dtype=wp.vec3),
@@ -2733,7 +2734,7 @@ class XPBDSolver(SolverBase):
 
         return new_body_q, new_body_qd
 
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -2748,9 +2749,9 @@ class XPBDSolver(SolverBase):
 
         rigid_contact_inv_weight = None
 
-        if model.rigid_contact_max > 0:
+        if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(model.rigid_contact_thickness)
+                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -3042,16 +3043,14 @@ class XPBDSolver(SolverBase):
                         body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
                     # Solve rigid contact constraints
-                    if model.rigid_contact_max and (
-                        (model.ground and model.shape_ground_contact_pair_count) or model.shape_contact_pair_count
-                    ):
+                    if contacts:
                         if self.rigid_contact_con_weighting:
                             rigid_contact_inv_weight.zero_()
                         body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_body_contact_positions,
-                            dim=model.rigid_contact_max,
+                            dim=contacts.rigid_contact_max,
                             inputs=[
                                 body_q,
                                 body_qd,
@@ -3059,15 +3058,15 @@ class XPBDSolver(SolverBase):
                                 model.body_inv_mass,
                                 model.body_inv_inertia,
                                 model.shape_body,
-                                model.rigid_contact_count,
-                                model.rigid_contact_point0,
-                                model.rigid_contact_point1,
-                                model.rigid_contact_offset0,
-                                model.rigid_contact_offset1,
-                                model.rigid_contact_normal,
-                                model.rigid_contact_thickness,
-                                model.rigid_contact_shape0,
-                                model.rigid_contact_shape1,
+                                contacts.rigid_contact_count,
+                                contacts.rigid_contact_point0,
+                                contacts.rigid_contact_point1,
+                                contacts.rigid_contact_offset0,
+                                contacts.rigid_contact_offset1,
+                                contacts.rigid_contact_normal,
+                                contacts.rigid_contact_thickness,
+                                contacts.rigid_contact_shape0,
+                                contacts.rigid_contact_shape1,
                                 model.shape_materials,
                                 self.rigid_contact_relaxation,
                                 dt,
