@@ -80,8 +80,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
         self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:

@@ -87,8 +87,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
