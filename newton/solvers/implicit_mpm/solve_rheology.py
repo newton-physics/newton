@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Common definitions for types and constants."""
+
 import gc
 import math
 from typing import Any, Optional
@@ -241,7 +242,7 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
     alpha_cur = alpha_min
 
     if alpha_max - alpha_min > _DELASSUS_DIAG_CUTOFF:
-        for k in range(24):
+        for _k in range(24):
             f_cur, df_dalpha = eval_sliding_residual(alpha_cur, Dmu_rn, b_T)
 
             alpha_next = wp.clamp(alpha_cur - f_cur / df_dalpha, alpha_min, alpha_max)
@@ -948,7 +949,6 @@ def solve_rheology(
                 beta=1.0,
             )
 
-
     # Run solver loop
 
     residual_scale = 1 + stress.shape[0]
@@ -1001,7 +1001,7 @@ def solve_rheology(
         solve_granularity = 25 if gs else 50
 
         for batch in range(max_iterations // solve_granularity):
-            for k in range(solve_granularity):
+            for _k in range(solve_granularity):
                 do_iteration()
 
             residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)

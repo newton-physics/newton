@@ -21,7 +21,6 @@
 ###########################################################################
 
 import math
-from typing import List
 
 import numpy as np
 import torch
@@ -483,7 +482,8 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, pa
     radius = np.max(cell_size) * 0.5
     volume = np.prod(cell_volume) * packing_fraction
 
-    points += 2.0 * radius * (np.random.rand(*points.shape) - 0.5)
+    rng = np.random.default_rng()
+    points += 2.0 * radius * (rng.random(points.shape) - 0.5)
     vel = np.zeros_like(points)
 
     builder.particle_q = points
@@ -496,10 +496,10 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, pa
 
 
 def _merge_meshes(
-    points: List[np.array],
-    indices: List[np.array],
-    scales: List[np.array],
-    shape_ids: List[int],
+    points: list[np.array],
+    indices: list[np.array],
+    scales: list[np.array],
+    shape_ids: list[int],
 ):
     pt_count = np.array([len(pts) for pts in points])
     offsets = np.cumsum(pt_count) - pt_count

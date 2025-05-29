@@ -16,7 +16,7 @@
 """Implicit MPM solver."""
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -788,7 +788,7 @@ class ImplicitMPMOptions:
     """Maximum packing fraction for particles."""
     unilateral: bool = True
     """Whether to use unilateral of full incompressibility."""
-    yield_stresses: Tuple[float, float, float] = (0.0, -1.0e8, 1.0e8)
+    yield_stresses: tuple[float, float, float] = (0.0, -1.0e8, 1.0e8)
     """Yield stresses for the plasticity model."""
 
     # elasticity (experimental)
@@ -1109,11 +1109,11 @@ class ImplicitMPMSolver(SolverBase):
         self,
         model: Model,
         # TODO: read colliders from model
-        colliders: List[wp.Mesh] = None,
-        collider_thicknesses: List[float] = None,
-        collider_projection_threshold: List[float] = None,
-        collider_masses: List[float] = None,
-        collider_friction: List[float] = None,
+        colliders: Optional[list[wp.Mesh]] = None,
+        collider_thicknesses: Optional[list[float]] = None,
+        collider_projection_threshold: Optional[list[float]] = None,
+        collider_masses: Optional[list[float]] = None,
+        collider_friction: Optional[list[float]] = None,
     ):
         """Setups the collision geometry for the implicit MPM solver.
 
@@ -1143,7 +1143,7 @@ class ImplicitMPMSolver(SolverBase):
         collider.friction = (
             wp.full(len(collider.meshes), _DEFAULT_FRICTION, dtype=float)
             if collider_friction is None
-            else wp.array([bc for bc in collider_friction], dtype=float)
+            else wp.array(collider_friction, dtype=float)
         )
         collider.masses = (
             wp.full(len(collider.meshes), INFINITE_MASS, dtype=float)

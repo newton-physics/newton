@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Common definitions for types and constants."""
+
 import argparse
 
 import numpy as np
@@ -123,7 +124,8 @@ class Example:
         radius = np.max(cell_size) * 0.5
         volume = np.prod(cell_volume) * packing_fraction
 
-        points += 2.0 * radius * (np.random.rand(*points.shape) - 0.5)
+        rng = np.random.default_rng()
+        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
         vel = np.zeros_like(points)
 
         builder.particle_q = points
