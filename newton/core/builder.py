@@ -3227,8 +3227,6 @@ class ModelBuilder:
             A model object.
         """
 
-        from .articulation import eval_fk
-
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
 
@@ -3472,9 +3470,6 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             m.enable_tri_collisions = False
-
-            # update body_q, body_qd from joint_q, joint_qd
-            eval_fk(m, m.joint_q, m.joint_qd, m)
 
             return m
 
