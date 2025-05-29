@@ -2666,15 +2666,20 @@ class ModelBuilder:
         vertex_id = 0
         for y in range(dim_y + 1):
             for x in range(dim_x + 1):
+                particle_mass = mass
+                particle_flag = PARTICLE_FLAG_ACTIVE
+
                 if (
                     (x == 0 and fix_left)
                     or (x == dim_x and fix_right)
                     or (y == 0 and fix_bottom)
                     or (y == dim_y and fix_top)
                 ):
-                    particle_default_flag = PARTICLE_FLAG_ACTIVE
-                    self.particle_mass[start_vertex + vertex_id] = 0
-                    self.particle_flags = wp.uint32(int(particle_default_flag) & ~int(PARTICLE_FLAG_ACTIVE))
+                    particle_flag = wp.uint32(int(particle_flag) & ~int(PARTICLE_FLAG_ACTIVE))
+                    particle_mass = 0.0
+
+                self.particle_flags[start_vertex + vertex_id] = particle_flag
+                self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
     def add_cloth_mesh(
