@@ -1959,17 +1959,25 @@ class VBDSolver(SolverBase):
           https://doi.org/10.1145/3658179
 
     Note:
-        VBD currently requires to manually provide particle coloring information through :attr:`newton.Model.particle_color_groups`
-        (see :meth:`newton.ModelBuilder.set_coloring`).
-        It can be generated via :meth:`newton.ModelBuilder.color` before calling :meth:`newton.ModelBuilder.finalize`.
+    `VBDSolver` requires particle coloring information through :attr:`newton.Model.particle_color_groups`.
+        You may call :meth:`newton.ModelBuilder.color` to color particles or use :meth:`newton.ModelBuilder.set_coloring`
+        to provide you own particle coloring.
+
 
     Example
     -------
 
     .. code-block:: python
 
-        model.particle_color_groups = ...  # load or generate particle coloring
-        solver = newton.solvers.VBDSolver(model)
+
+        # color particles
+        builder.color()
+        # or you can use your custom coloring
+        builder.set_coloring(user_provided_particle_coloring)
+
+        model = modelbuilder.finalize()
+
+        solver = newton.VBDSolver(model)
 
         # simulation loop
         for i in range(100):
@@ -1985,12 +1993,35 @@ class VBDSolver(SolverBase):
         integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
-        body_particle_contact_buffer_pre_alloc: int = 4,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
-        triangle_collision_buffer_pre_alloc: int = 32,
         edge_edge_parallel_epsilon: float = 1e-5,
     ):
+        """
+        Args:
+            model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
+                to the `step` function.
+            iterations: Number of VBD iterations per step.
+            handle_self_contact: whether to self-contact.
+            integrate_with_external_rigid_solver: an indicator of coupled rigid body - cloth simulation.  When set to
+                `True`, the solver assumes the rigid body solve is handled  externally.
+            penetration_free_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
+            friction_epsilon: Threshold to smooth small relative velocities in friction computation.
+            vertex_collision_buffer_pre_alloc: Preallocation size for each vertex's vertex-triangle collision buffer.
+            edge_collision_buffer_pre_alloc: Preallocation size for edge's edge-edge collision buffer.
+            edge_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
+
+        Note:
+            - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
+              and soft body solvers. If set to Ture, the rigid states should be integrated externally, with `state_in`
+              passed to `step` function representing the previous rigid state and `state_out` representing the current one. Frictional forces are
+              computed accordingly.
+            - vertex_collision_buffer_pre_alloc` and `edge_collision_buffer_pre_alloc` are fixed and will not be
+              dynamically resized during runtime.
+              Setting them too small may result in undetected collisions.
+              Setting them excessively large may increase memory usage and degrade performance.
+
+        """
         super().__init__(model)
         self.iterations = iterations
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
@@ -2020,7 +2051,6 @@ class VBDSolver(SolverBase):
                 self.model,
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
-                triangle_collision_buffer_pre_alloc=triangle_collision_buffer_pre_alloc,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
             )
 
