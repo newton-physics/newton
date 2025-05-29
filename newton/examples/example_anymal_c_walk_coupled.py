@@ -252,9 +252,9 @@ def update_collider_mesh(
 
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", voxel_size=0.05, particles_per_cell=3, tolerance=1.e-5, headless=False):
+    def __init__(self, urdf_path: str, voxel_size=0.05, particles_per_cell=3, tolerance=1.0e-5, headless=False):
         self.device = wp.get_device()
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
@@ -268,7 +268,8 @@ class Example:
         )
 
         newton.utils.parse_urdf(
-            newton.examples.get_asset("../../assets/anymal_c_simple_description/urdf/anymal.urdf"),
+            # newton.examples.get_asset("../../assets/anymal_c_simple_description/urdf/anymal.urdf"),
+            urdf_path,
             builder,
             xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=True,
@@ -354,7 +355,10 @@ class Example:
         # lower the ground slightly for the sand and the renderer.
         # this makes the robot "float" a little bit, preventing impossible kinematic boundary conditions when the feet intersect the ground
         # proper solution will be to have full two-way coupling between the sand and the robot
-        self.model.ground_plane_params = (*self.model.ground_plane_params[:-1], self.model.ground_plane_params[-1] - 0.025)
+        self.model.ground_plane_params = (
+            *self.model.ground_plane_params[:-1],
+            self.model.ground_plane_params[-1] - 0.025,
+        )
 
         ## Grab meshes for collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
@@ -379,6 +383,8 @@ class Example:
         options.voxel_size = voxel_size
         options.max_fraction = max_fraction
         options.tolerance = tolerance
+        options.unilateral = False
+        options.max_iterations = 50
         # options.gauss_seidel = False
         # options.dynamic_grid = False
         # options.grid_padding = 3
@@ -386,7 +392,7 @@ class Example:
         self.mpm_solver = ImplicitMPMSolver(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, urdf_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -394,7 +400,7 @@ class Example:
         self.mpm_solver.enrich_state(self.state_0)
         self.mpm_solver.enrich_state(self.state_1)
 
-        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, None, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
         self.control = self.model.control()
@@ -515,24 +521,23 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "urdf_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_quadruped.usd",
-        help="Path to the output USD file.",
+        help="Path to the Anymal C URDF file from newton-assets.",
     )
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument("--num_frames", type=int, default=10000, help="Total number of frames.")
-    parser.add_argument("--voxel_size", "-dx", type=float, default=0.035)
-    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=2.5)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.e-5)
+    parser.add_argument("--voxel_size", "-dx", type=float, default=0.03)
+    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3.0)
+    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
         example = Example(
-            stage_path=args.stage_path,
+            urdf_path=args.urdf_path,
             voxel_size=args.voxel_size,
             particles_per_cell=args.particles_per_cell,
             tolerance=args.tolerance,

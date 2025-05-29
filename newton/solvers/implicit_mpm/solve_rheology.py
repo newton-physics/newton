@@ -645,7 +645,7 @@ class ArraySquaredNorm:
     def _create_block_sum_kernel(self, square_input):
         tile_size = self.tile_size
 
-        @fem.cache.dynamic_kernel(suffix=(tile_size, square_input))
+        @fem.cache.dynamic_kernel(suffix=f"{tile_size}{square_input}")
         def block_sum_kernel(
             data: wp.array(dtype=float, ndim=1),
             partial_sums: wp.array(dtype=float),
