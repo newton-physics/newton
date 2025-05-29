@@ -215,13 +215,13 @@ class ExampleClothManipulation:
         self.bending_ke = 20
         self.bending_kd = 1e-4
 
-        gravity = -1000.0  # cm/s^2
+        self.gravity = -1000.0  # cm/s^2
 
-        self.builder = ModelBuilder(up_axis=self.up_axis, gravity=gravity)
+        self.builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
         self.soft_contact_max = 1000000
 
         if self.add_robot:
-            articulation_builder = ModelBuilder(up_axis=self.up_axis, gravity=gravity)
+            articulation_builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
             self.create_articulation(articulation_builder)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
@@ -535,7 +535,7 @@ class ExampleClothManipulation:
                 self.state_0.particle_f.zero_()
 
                 self.model.particle_count = particle_count
-                self.model.gravity = wp.vec3(0, -1000, 0)
+                self.model.gravity = wp.vec3(0, self.gravity, 0)
 
             # # cloth sim
             collide(self.model, self.state_0)
