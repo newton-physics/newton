@@ -42,10 +42,7 @@ from newton.solvers import FeatherstoneSolver, VBDSolver
 from newton.solvers.solver_featherstone import transform_twist
 
 
-def allclose(a: wp.vec3, b: wp.vec3):
-    # TODO support wp.func default args in Python context
-    rtol = 1e-5
-    atol = 1e-8
+def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
     return (
         wp.abs(a[0] - b[0]) <= (atol + rtol * wp.abs(b[0]))
         and wp.abs(a[1] - b[1]) <= (atol + rtol * wp.abs(b[1]))
@@ -191,8 +188,8 @@ class ExampleClothManipulation:
         #   simulation
         self.num_substeps = 20
         self.iterations = 3
-        self.FPS = 60
-        self.frame_dt = 1 / self.FPS
+        self.fps = 60
+        self.frame_dt = 1 / self.fps
         self.sim_dt = self.frame_dt / self.num_substeps
         self.up_axis = "Y"
 
@@ -220,7 +217,7 @@ class ExampleClothManipulation:
 
         gravity = -1000.0  # cm/s^2
 
-        self.modelbuilder = ModelBuilder(up_axis=self.up_axis, gravity=gravity)
+        self.builder = ModelBuilder(up_axis=self.up_axis, gravity=gravity)
         self.soft_contact_max = 1000000
 
         if self.add_robot:
@@ -228,7 +225,7 @@ class ExampleClothManipulation:
             self.create_articulation(articulation_builder)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.modelbuilder.add_builder(
+            self.builder.add_builder(
                 articulation_builder,
                 xform,
                 separate_collision_group=False,
@@ -238,7 +235,7 @@ class ExampleClothManipulation:
             self.dof_qd_per_env = articulation_builder.joint_dof_count
 
         # add a table
-        self.modelbuilder.add_shape_box(
+        self.builder.add_shape_box(
             -1,
             wp.transform(
                 wp.vec3(
@@ -261,7 +258,7 @@ class ExampleClothManipulation:
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
-            self.modelbuilder.add_cloth_mesh(
+            self.builder.add_cloth_mesh(
                 vertices=vertices,
                 indices=mesh_indices,
                 rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), np.pi / 2),
@@ -277,8 +274,8 @@ class ExampleClothManipulation:
                 particle_radius=self.cloth_particle_radius,
             )
 
-            self.modelbuilder.color()
-        self.model = self.modelbuilder.finalize(requires_grad=False, device=self.device)
+            self.builder.color()
+        self.model = self.builder.finalize(requires_grad=False, device=self.device)
         self.device = self.model.device
         if not self.model.device.is_cuda:
             self.use_graph_capture = False
@@ -293,11 +290,6 @@ class ExampleClothManipulation:
 
         self.model.joint_attach_ke = 32000.0
         self.model.joint_attach_kd = 50.0
-
-        self.integrator = wp.sim.FeatherstoneIntegrator(
-            self.model,
-            update_mass_matrix_every=self.num_substeps,
-        )
 
         if self.add_robot:
             self.episode_duration = np.sum(self.transition_duration)
@@ -331,7 +323,6 @@ class ExampleClothManipulation:
                 handle_self_contact=True,
                 vertex_collision_buffer_pre_alloc=32,
                 edge_collision_buffer_pre_alloc=64,
-                triangle_collision_buffer_pre_alloc=32,
                 integrate_with_external_rigid_solver=True,
             )
 
@@ -566,6 +557,5 @@ class ExampleClothManipulation:
 
 
 if __name__ == "__main__":
-    with wp.ScopedDevice(device=wp.get_device("cuda")):
-        simulator = ExampleClothManipulation()
-        simulator.run()
+    simulator = ExampleClothManipulation()
+    simulator.run()

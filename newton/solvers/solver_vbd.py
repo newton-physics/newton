@@ -1959,7 +1959,7 @@ class VBDSolver(SolverBase):
           https://doi.org/10.1145/3658179
 
     Note:
-    `VBDSolver` requires particle coloring information through :attr:`newton.Model.particle_color_groups`.
+        `VBDSolver` requires particle coloring information through :attr:`newton.Model.particle_color_groups`.
         You may call :meth:`newton.ModelBuilder.color` to color particles or use :meth:`newton.ModelBuilder.set_coloring`
         to provide you own particle coloring.
 
