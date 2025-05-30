@@ -37,6 +37,8 @@ else:
             return func
 
 
+from warp.context import Devicelike
+
 # Particle flags
 PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
 
