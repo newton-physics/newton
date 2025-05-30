@@ -5,7 +5,7 @@ This section documents the rendering backends in Newton Physics, which allow you
 
 .. autosummary::
    :toctree: generated/renderers
-   :template: class.rst
+   :template: class_all.rst
 
    newton.utils.SimRendererUsd
-   newton.utils.SimRendererOpenGL 
+   newton.utils.SimRendererOpenGL

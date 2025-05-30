@@ -4,7 +4,10 @@
 .. currentmodule:: newton.solvers
 
 .. autoclass:: SemiImplicitSolver
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
@@ -15,7 +18,7 @@
       ~SemiImplicitSolver.__init__
       ~SemiImplicitSolver.integrate_bodies
       ~SemiImplicitSolver.integrate_particles
-      ~SemiImplicitSolver.step
+      ~SemiImplicitSolver.notify_model_changed
    
    
 

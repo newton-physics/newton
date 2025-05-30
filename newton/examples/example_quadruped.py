@@ -48,7 +48,7 @@ class Example:
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_identity()),
+            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
         )
         articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
@@ -87,7 +87,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())

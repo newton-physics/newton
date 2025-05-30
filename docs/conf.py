@@ -37,6 +37,11 @@ release = project_version
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
+# Add docs/_ext to Python import path so custom extensions can be imported
+_ext_path = Path(__file__).parent / "_ext"
+if str(_ext_path) not in sys.path:
+    sys.path.append(str(_ext_path))
+
 extensions = [
     "myst_parser",  # Parse markdown files
     "sphinx.ext.autodoc",
@@ -46,7 +51,9 @@ extensions = [
     "sphinx.ext.extlinks",  # Markup to shorten external links
     "sphinx.ext.githubpages",
     "sphinx.ext.doctest",  # Test code snippets in docs
+    "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
+    "autodoc_filter",
 ]
 
 templates_path = ["_templates"]
@@ -87,6 +94,9 @@ autodoc_typehints = "description"
 # default argument values of functions will be not evaluated on generating document
 autodoc_preserve_defaults = True
 
+autodoc_typehints_description_target = "documented"
+
+
 autodoc_default_options = {
     "members": True,
     "member-order": "bysource",
@@ -123,7 +133,7 @@ html_theme_options = {
     "show_prev_next": False,
     "use_edit_page_button": False,
     "logo": {
-        "text": f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
+        "text": (f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>"),
     },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
@@ -136,3 +146,26 @@ exclude_patterns = [
 ]
 
 html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
+
+# -- Math configuration -------------------------------------------------------
+
+# MathJax configuration for proper LaTeX rendering
+mathjax3_config = {
+    "tex": {
+        "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]},
+        "inlineMath": [["$", "$"], ["\\(", "\\)"]],
+        "displayMath": [["$$", "$$"], ["\\[", "\\]"]],
+        "processEscapes": True,
+        "processEnvironments": True,
+        "tags": "ams",
+        "macros": {
+            "RR": "{\\mathbb{R}}",
+            "bold": ["{\\mathbf{#1}}", 1],
+            "vec": ["{\\mathbf{#1}}", 1],
+        },
+    },
+    "options": {
+        "processHtmlClass": ("tex2jax_process|mathjax_process|math|output_area"),
+        "ignoreHtmlClass": "annotation",
+    },
+}

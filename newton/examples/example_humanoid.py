@@ -47,20 +47,19 @@ class Example:
         newton.utils.parse_mjcf(
             mjcf_filename,
             articulation_builder,
-            collapse_fixed_joints=True,
             ignore_names=["floor", "ground"],
-            up_axis="Y",
+            up_axis="Z",
         )
 
         # joint initial positions
-        articulation_builder.joint_q[:7] = [0.0, 1.5, 0.0, *start_rot]
+        articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
         builder = newton.ModelBuilder()
         for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, 0.0, (i // sqn) * spacing)
+            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
             articulation_builder.joint_q[7:] = self.rng.uniform(
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
             ).tolist()

@@ -118,6 +118,7 @@ def parse_urdf(
             is_visible=visible,
             has_ground_collision=not just_visual,
             has_shape_collision=not just_visual,
+            has_particle_collision=not just_visual,
         )
         shapes = []
         # add geometry
@@ -341,14 +342,22 @@ def parse_urdf(
         if el_axis is not None:
             ax = el_axis.get("xyz", "1 0 0")
             joint_data["axis"] = np.array([float(x) for x in ax.split()])
+        else:
+            joint_data["axis"] = np.array([1.0, 0.0, 0.0])
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
             joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
             joint_data["friction"] = float(el_dynamics.get("friction", 0))
+        else:
+            joint_data["damping"] = default_joint_damping
+            joint_data["friction"] = 0.0
         el_limit = joint.find("limit")
         if el_limit is not None:
             joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
             joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+        else:
+            joint_data["limit_lower"] = default_joint_limit_lower
+            joint_data["limit_upper"] = default_joint_limit_upper
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
@@ -447,8 +456,8 @@ def parse_urdf(
             # we skipped the insertion of the child body
             continue
 
-        lower = joint["limit_lower"]
-        upper = joint["limit_upper"]
+        lower = joint.get("limit_lower", None)
+        upper = joint.get("limit_upper", None)
         joint_damping = joint["damping"]
 
         parent_xform = joint["origin"]

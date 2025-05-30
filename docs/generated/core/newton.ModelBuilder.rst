@@ -4,7 +4,10 @@
 .. currentmodule:: newton
 
 .. autoclass:: ModelBuilder
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
@@ -13,7 +16,6 @@
    .. autosummary::
    
       ~ModelBuilder.__init__
-      ~ModelBuilder.add_articulation
       ~ModelBuilder.add_body
       ~ModelBuilder.add_builder
       ~ModelBuilder.add_cloth_grid
@@ -32,7 +34,6 @@
       ~ModelBuilder.add_joint_universal
       ~ModelBuilder.add_muscle
       ~ModelBuilder.add_particle
-      ~ModelBuilder.add_particle_grid
       ~ModelBuilder.add_shape
       ~ModelBuilder.add_shape_box
       ~ModelBuilder.add_shape_capsule
@@ -51,7 +52,6 @@
       ~ModelBuilder.collapse_fixed_joints
       ~ModelBuilder.color
       ~ModelBuilder.finalize
-      ~ModelBuilder.find_shape_contact_pairs
       ~ModelBuilder.plot_articulation
       ~ModelBuilder.set_coloring
       ~ModelBuilder.set_ground_plane
@@ -64,17 +64,6 @@
 
    .. autosummary::
    
-      ~ModelBuilder.articulation_count
-      ~ModelBuilder.body_count
-      ~ModelBuilder.edge_count
-      ~ModelBuilder.joint_axis_count
-      ~ModelBuilder.joint_count
-      ~ModelBuilder.muscle_count
-      ~ModelBuilder.particle_count
-      ~ModelBuilder.shape_count
-      ~ModelBuilder.spring_count
-      ~ModelBuilder.tet_count
-      ~ModelBuilder.tri_count
       ~ModelBuilder.up_vector
    
    

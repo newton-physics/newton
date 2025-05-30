@@ -61,7 +61,7 @@ def test_fk_ik(test, device):
     q_fk = model.joint_q.numpy()
     qd_fk = model.joint_qd.numpy()
 
-    newton.core.eval_fk(model, model.joint_q, model.joint_qd, None, state)
+    newton.core.eval_fk(model, model.joint_q, model.joint_qd, state)
 
     q_ik = wp.zeros_like(model.joint_q, device=device)
     qd_ik = wp.zeros_like(model.joint_qd, device=device)
