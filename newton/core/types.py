@@ -25,6 +25,8 @@ import numpy as np
 import warp as wp
 from typing_extensions import override
 
+from warp.context import Devicelike
+
 # Particle flags
 PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
 
