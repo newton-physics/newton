@@ -118,6 +118,7 @@ def parse_urdf(
             is_visible=visible,
             has_ground_collision=not just_visual,
             has_shape_collision=not just_visual,
+            has_particle_collision=not just_visual,
         )
         shapes = []
         # add geometry
