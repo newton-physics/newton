@@ -260,13 +260,10 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.start_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)
-
         builder.joint_q[:3] = [
             0.0,
             0.7,
             0.0,
-            *self.start_rot,
         ]
 
         builder.joint_q[7:] = [
