@@ -30,3 +30,5 @@ rspec.xml
 
 # Documentation
 docs/_build/
+
+.idea/

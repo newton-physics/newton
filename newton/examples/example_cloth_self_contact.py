@@ -278,7 +278,7 @@ class Example:
             self.render()
             print(f"[{i:4d}/{self.num_frames}]")
 
-            if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph:
+            if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph and self.solver.handle_self_contact:
                 self.solver.rebuild_bvh(self.state0)
                 with wp.ScopedCapture() as capture:
                     self.integrate_frame_substeps()
