@@ -1599,33 +1599,39 @@ class MuJoCoSolver(SolverBase):
 
     def update_joint_axis_properties(self):
         """Update joint axis properties like effort limits, velocity limits, and friction in the MuJoCo model."""
-        if not hasattr(self, 'mjw_model') or self.mjw_model is None:
+        if not hasattr(self, "mjw_model") or self.mjw_model is None:
             return
-            
+
         # Update actuator force ranges (effort limits) if actuators exist
-        if hasattr(self.model, 'mjc_axis_to_actuator') and self.model.mjc_axis_to_actuator is not None:
+        if hasattr(self.model, "mjc_axis_to_actuator") and self.model.mjc_axis_to_actuator is not None:
             for axis_idx in range(self.model.joint_axis_count):
                 actuator_idx = self.model.mjc_axis_to_actuator.numpy()[axis_idx]
                 if actuator_idx >= 0:  # Valid actuator
                     effort_limit = self.model.joint_effort_limit.numpy()[axis_idx]
                     # Update actuator force range in MuJoCo with bounds checking
-                    if (hasattr(self.mjw_model, 'actuator_forcerange') and 
-                        len(self.mjw_model.actuator_forcerange.shape) == 2 and
-                        actuator_idx < self.mjw_model.actuator_forcerange.shape[0] and
-                        self.mjw_model.actuator_forcerange.shape[1] >= 2):
+                    if (
+                        hasattr(self.mjw_model, "actuator_forcerange")
+                        and len(self.mjw_model.actuator_forcerange.shape) == 2
+                        and actuator_idx < self.mjw_model.actuator_forcerange.shape[0]
+                        and self.mjw_model.actuator_forcerange.shape[1] >= 2
+                    ):
                         self.mjw_model.actuator_forcerange.numpy()[actuator_idx, 0] = -effort_limit
                         self.mjw_model.actuator_forcerange.numpy()[actuator_idx, 1] = effort_limit
-        
+
         # Update joint friction (damping)
-        if hasattr(self.mjw_model, 'dof_damping'):
+        if hasattr(self.mjw_model, "dof_damping"):
             # Map from joint axes to DOF indices
             dof_idx = 0
             for joint_idx in range(self.model.joint_count):
                 qd_start = self.model.joint_qd_start.numpy()[joint_idx]
-                qd_end = self.model.joint_qd_start.numpy()[joint_idx + 1] if joint_idx + 1 < len(self.model.joint_qd_start.numpy()) else len(self.model.joint_qd)
+                qd_end = (
+                    self.model.joint_qd_start.numpy()[joint_idx + 1]
+                    if joint_idx + 1 < len(self.model.joint_qd_start.numpy())
+                    else len(self.model.joint_qd)
+                )
                 axis_start = self.model.joint_axis_start.numpy()[joint_idx]
                 num_lin_axes, num_ang_axes = self.model.joint_axis_dim.numpy()[joint_idx]
-                
+
                 # Update friction for this joint's axes
                 for i in range(num_lin_axes + num_ang_axes):
                     axis_idx = axis_start + i
@@ -1634,22 +1640,26 @@ class MuJoCoSolver(SolverBase):
                         env_dof_idx = dof_idx + i
                         if env_dof_idx < len(self.mjw_model.dof_damping.numpy()):
                             self.mjw_model.dof_damping.numpy()[env_dof_idx] = friction
-                
-                dof_idx += (qd_end - qd_start)
+
+                dof_idx += qd_end - qd_start
 
     def update_joint_dof_properties(self):
         """Update joint DOF properties like armature in the MuJoCo model."""
-        if not hasattr(self, 'mjw_model') or self.mjw_model is None:
+        if not hasattr(self, "mjw_model") or self.mjw_model is None:
             return
-            
+
         # Update armature (inertia) values
-        if hasattr(self.mjw_model, 'dof_armature'):
+        if hasattr(self.mjw_model, "dof_armature"):
             # Map joint armature to MuJoCo DOF armature
             dof_idx = 0
             for joint_idx in range(self.model.joint_count):
                 qd_start = self.model.joint_qd_start.numpy()[joint_idx]
-                qd_end = self.model.joint_qd_start.numpy()[joint_idx + 1] if joint_idx + 1 < len(self.model.joint_qd_start.numpy()) else len(self.model.joint_qd)
-                
+                qd_end = (
+                    self.model.joint_qd_start.numpy()[joint_idx + 1]
+                    if joint_idx + 1 < len(self.model.joint_qd_start.numpy())
+                    else len(self.model.joint_qd)
+                )
+
                 # Update armature for this joint's DOFs
                 for i in range(qd_end - qd_start):
                     armature_idx = qd_start + i
@@ -1658,5 +1668,5 @@ class MuJoCoSolver(SolverBase):
                         env_dof_idx = dof_idx + i
                         if env_dof_idx < len(self.mjw_model.dof_armature.numpy()):
                             self.mjw_model.dof_armature.numpy()[env_dof_idx] = armature
-                
-                dof_idx += (qd_end - qd_start)
+
+                dof_idx += qd_end - qd_start
