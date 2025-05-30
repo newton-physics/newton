@@ -78,6 +78,7 @@ def CreateSimRenderer(renderer):
             show_rigid_contact_points: bool = False,
             contact_points_radius: float = 1e-3,
             show_joints: bool = False,
+            show_particles: bool = True,
             **render_kwargs,
         ):
             if up_axis is None:
@@ -89,6 +90,7 @@ def CreateSimRenderer(renderer):
             self.show_rigid_contact_points = show_rigid_contact_points
             self.show_joints = show_joints
             self.contact_points_radius = contact_points_radius
+            self.show_particles = show_particles
             self.populate(model)
 
         def populate(self, model: newton.Model):
@@ -328,9 +330,10 @@ def CreateSimRenderer(renderer):
                 particle_q = state.particle_q.numpy()
 
                 # render particles
-                self.render_points(
-                    "particles", particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
-                )
+                if self.show_particles:
+                    self.render_points(
+                        "particles", particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
+                    )
 
                 # render tris
                 if self.model.tri_count:

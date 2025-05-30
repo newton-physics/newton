@@ -55,6 +55,7 @@ from .types import (
     PARTICLE_FLAG_ACTIVE,
     SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
+    SHAPE_FLAG_COLLIDE_PARTICLES,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
     Axis,
@@ -153,6 +154,8 @@ class ModelBuilder:
         """Whether the shape can collide with the ground. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
+        has_particle_collision: bool = True
+        """Whether the shape can collide with particles. Defaults to True."""
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
@@ -163,6 +166,7 @@ class ModelBuilder:
             shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_PARTICLES) if self.has_particle_collision else 0
             return shape_flags
 
         @flags.setter
@@ -172,6 +176,7 @@ class ModelBuilder:
             self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
             self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
             self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
+            self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
 
         def copy(self) -> ShapeConfig:
             return copy.copy(self)
