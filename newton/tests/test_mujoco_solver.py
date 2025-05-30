@@ -342,6 +342,105 @@ class TestMuJoCoSolver(unittest.TestCase):
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
 
+    def test_randomize_joint_attributes(self):
+        """
+        Tests if joint attributes are randomized correctly and updates properly after simulation steps.
+        """
+        # Only test if we have joints
+        if self.model.joint_axis_count == 0:
+            self.skipTest("No joints in model, skipping joint attributes test")
+
+        # Randomize joint attributes for all joint axes
+        new_effort_limits = self.rng.uniform(10.0, 100.0, size=self.model.joint_axis_count)
+        new_velocity_limits = self.rng.uniform(1.0, 20.0, size=self.model.joint_axis_count)
+        new_friction_values = self.rng.uniform(0.0, 1.0, size=self.model.joint_axis_count)
+        new_armature_values = self.rng.uniform(0.001, 0.1, size=self.model.joint_dof_count)
+
+        self.model.joint_effort_limit.assign(new_effort_limits)
+        self.model.joint_velocity_limit.assign(new_velocity_limits)
+        self.model.joint_friction.assign(new_friction_values)
+        self.model.joint_armature.assign(new_armature_values)
+
+        # Initialize solver
+        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Check that joint attributes were stored correctly in the model
+        for axis_idx in range(self.model.joint_axis_count):
+            self.assertAlmostEqual(
+                new_effort_limits[axis_idx],
+                self.model.joint_effort_limit.numpy()[axis_idx],
+                places=5,
+                msg=f"Effort limit mismatch for joint axis {axis_idx}",
+            )
+            self.assertAlmostEqual(
+                new_velocity_limits[axis_idx],
+                self.model.joint_velocity_limit.numpy()[axis_idx],
+                places=5,
+                msg=f"Velocity limit mismatch for joint axis {axis_idx}",
+            )
+            self.assertAlmostEqual(
+                new_friction_values[axis_idx],
+                self.model.joint_friction.numpy()[axis_idx],
+                places=5,
+                msg=f"Friction mismatch for joint axis {axis_idx}",
+            )
+
+        for dof_idx in range(self.model.joint_dof_count):
+            self.assertAlmostEqual(
+                new_armature_values[dof_idx],
+                self.model.joint_armature.numpy()[dof_idx],
+                places=5,
+                msg=f"Armature mismatch for joint DOF {dof_idx}",
+            )
+
+        # Run a simulation step
+        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update joint attributes again
+        updated_effort_limits = self.rng.uniform(20.0, 150.0, size=self.model.joint_axis_count)
+        updated_velocity_limits = self.rng.uniform(2.0, 30.0, size=self.model.joint_axis_count)
+        updated_friction_values = self.rng.uniform(0.1, 1.5, size=self.model.joint_axis_count)
+        updated_armature_values = self.rng.uniform(0.002, 0.15, size=self.model.joint_dof_count)
+
+        self.model.joint_effort_limit.assign(updated_effort_limits)
+        self.model.joint_velocity_limit.assign(updated_velocity_limits)
+        self.model.joint_friction.assign(updated_friction_values)
+        self.model.joint_armature.assign(updated_armature_values)
+
+        # Notify solver of joint attribute changes
+        solver.notify_model_changed(types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
+        solver.notify_model_changed(types.NOTIFY_FLAG_DOF_PROPERTIES)
+
+        # Check that updated joint attributes were stored correctly
+        for axis_idx in range(self.model.joint_axis_count):
+            self.assertAlmostEqual(
+                updated_effort_limits[axis_idx],
+                self.model.joint_effort_limit.numpy()[axis_idx],
+                places=5,
+                msg=f"Updated effort limit mismatch for joint axis {axis_idx}",
+            )
+            self.assertAlmostEqual(
+                updated_velocity_limits[axis_idx],
+                self.model.joint_velocity_limit.numpy()[axis_idx],
+                places=5,
+                msg=f"Updated velocity limit mismatch for joint axis {axis_idx}",
+            )
+            self.assertAlmostEqual(
+                updated_friction_values[axis_idx],
+                self.model.joint_friction.numpy()[axis_idx],
+                places=5,
+                msg=f"Updated friction mismatch for joint axis {axis_idx}",
+            )
+
+        for dof_idx in range(self.model.joint_dof_count):
+            self.assertAlmostEqual(
+                updated_armature_values[dof_idx],
+                self.model.joint_armature.numpy()[dof_idx],
+                places=5,
+                msg=f"Updated armature mismatch for joint DOF {dof_idx}",
+            )
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
