@@ -27,6 +27,9 @@ from os.path import join
 from typing import Optional, Union
 
 import numpy as np
+
+# DEL
+import tqdm
 import warp as wp
 import warp.sim.render
 from pxr import Usd, UsdGeom
@@ -186,7 +189,7 @@ class ExampleClothManipulation:
 
         # parameters
         #   simulation
-        self.num_substeps = 20
+        self.num_substeps = 15
         self.iterations = 3
         self.fps = 60
         self.frame_dt = 1 / self.fps
@@ -213,7 +216,7 @@ class ExampleClothManipulation:
         self.tri_kd = 1.5e-6
 
         self.bending_ke = 20
-        self.bending_kd = 1e-4
+        self.bending_kd = 2e-4
 
         self.gravity = -1000.0  # cm/s^2
 
@@ -304,6 +307,7 @@ class ExampleClothManipulation:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
 
         self.control = self.model.control()
 
@@ -324,6 +328,7 @@ class ExampleClothManipulation:
                 vertex_collision_buffer_pre_alloc=32,
                 edge_collision_buffer_pre_alloc=64,
                 integrate_with_external_rigid_solver=True,
+                collision_detection_interval=-1,
             )
 
         if self.stage_path is not None:
@@ -339,16 +344,12 @@ class ExampleClothManipulation:
             self.capture_cuda_graph()
 
     def capture_cuda_graph(self):
-        self.cuda_graph_even_step = None
-        self.cuda_graph_odd_step = None
+        self.cuda_graph = None
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
-                self.cloth_sim_substep(self.state_0, self.state_1)
-            self.cuda_graph_even_step = capture.graph
+                self.integrate_frame()
 
-            with wp.ScopedCapture() as capture:
-                self.cloth_sim_substep(self.state_1, self.state_0)
-            self.cuda_graph_odd_step = capture.graph
+            self.cuda_graph = capture.graph
 
     def create_articulation(self, builder):
         franka_panda_path = newton.examples.get_asset(join("franka_description", "robots", "frankaEmikaPanda.urdf"))
@@ -423,7 +424,7 @@ class ExampleClothManipulation:
         self.endeffector_id = builder.body_count - 3
         self.endeffector_offset = wp.transform([0.0, 0.0, 22], wp.quat_identity())
 
-    def get_target_joint_q(
+    def generate_control_joint_qd(
         self,
         state_in: core.model.State,
     ):
@@ -494,10 +495,10 @@ class ExampleClothManipulation:
         delta_q[-2] = self.target[-1] * 4 - q[-2]
         delta_q[-1] = self.target[-1] * 4 - q[-1]
 
-        return delta_q
+        self.target_joint_qd.assign(delta_q)
 
     def run(self):
-        for frame_idx in range(self.num_frames):
+        for frame_idx in tqdm.tqdm(range(self.num_frames)):
             self.advance_frame()
 
             if self.add_cloth and not (frame_idx % 10):
@@ -513,8 +514,15 @@ class ExampleClothManipulation:
         self.cloth_solver.step(self.model, state_in, state_out, self.control, None, self.sim_dt)
 
     def advance_frame(self):
-        target_joint_qd = self.get_target_joint_q(self.state_0)
-        for step in range(self.num_substeps):
+        self.generate_control_joint_qd(self.state_0)
+        if self.use_cuda_graph:
+            wp.capture_launch(self.cuda_graph)
+            self.sim_time += self.sim_dt * self.num_substeps
+        else:
+            self.integrate_frame()
+
+    def integrate_frame(self):
+        for _step in range(self.num_substeps):
             # robot sim
             self.state_0.clear_forces()
             self.state_1.clear_forces()
@@ -528,7 +536,7 @@ class ExampleClothManipulation:
                 # Update the robot pose - this will modify state_0 and copy to state_1
                 self.model.shape_contact_pair_count = 0
 
-                self.state_0.joint_qd.assign(target_joint_qd)
+                self.state_0.joint_qd.assign(self.target_joint_qd)
                 # Just update the forward kinematics to get body positions from joint coordinates
                 self.robot_solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
 
@@ -541,15 +549,7 @@ class ExampleClothManipulation:
             collide(self.model, self.state_0)
 
             if self.add_cloth:
-                if self.use_cuda_graph:
-                    if step % 2:
-                        # odd step, state_1 in state_0 out
-                        wp.capture_launch(self.cuda_graph_odd_step)
-                    else:
-                        # even step, state_0 in state_1 out
-                        wp.capture_launch(self.cuda_graph_even_step)
-                else:
-                    self.cloth_sim_substep(self.state_0, self.state_1)
+                self.cloth_sim_substep(self.state_0, self.state_1)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
