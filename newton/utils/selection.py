@@ -73,7 +73,6 @@ def set_articulation_attribute_3d_kernel(
         attrib[i, j, k] = values[i, j, k]
 
 
-
 @wp.kernel
 def set_articulation_attribute_4d_kernel(
     view_mask: wp.array(dtype=bool),  # mask in ArticulationView
@@ -192,7 +191,7 @@ class ContactView:
         self.filter_pattern = filter_pattern
 
         self.entity_a, entity_a_keys = self._get_entities(entity_pattern)
-        
+
         if filter_pattern is not None:
             self.entity_b, entity_b_keys = self._get_entities(filter_pattern)
         else:
@@ -231,7 +230,7 @@ class ContactView:
     def get_contact_dist(self):
         """Get the deepest contact distance between entity pairs."""
         return self.contact_view_manager.contact_reporter.get_dist(self.query_idx)
-        
+
     def get_contact_idx(self):
         """Get the contact indices between entity pairs."""
         return self.contact_view_manager.contact_reporter.get_idx(self.query_idx)
@@ -239,7 +238,7 @@ class ContactView:
     @property
     def query_keys(self):
         """A tuple containing the shape or body keys for the queries.
-        
+
         Returns:
             tuple: A tuple containing two lists - (entity_a_keys, entity_b_keys).
                   Each list contains the shape or body keys for the respective entities.
