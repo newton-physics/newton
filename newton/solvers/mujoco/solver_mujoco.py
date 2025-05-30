@@ -1364,6 +1364,7 @@ class MuJoCoSolver(SolverBase):
         }
 
         mj_bodies = [spec.worldbody]
+        mj_geoms = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
@@ -1504,7 +1505,7 @@ class MuJoCoSolver(SolverBase):
                             model.rigid_contact_rolling_friction * mu,
                         ]
 
-                body.add_geom(**geom_params)
+                mj_geoms.append((shape, body.add_geom(**geom_params)))
                 shape_mapping[shape] = len(shape_mapping)
 
                 # Track shape-to-geom mapping
@@ -1726,7 +1727,23 @@ class MuJoCoSolver(SolverBase):
             add_geoms(child, incoming_xform=child_tf)
 
         self.mj_model = spec.compile()
+        mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
 
+        self.shape_map = {}  # Maps newton shape ids to mujoco shapes
+        for body, body_shapes in model.body_shapes.items():
+            if body < 0:
+                for body_shape in body_shapes:
+                    self.shape_map[body_shape] = (-1, mj_geoms.get(body_shape, None))
+                continue
+
+            bodies_per_env = self.model.body_count // self.model.num_envs
+            worldid = body // bodies_per_env
+            base_shapes = model.body_shapes[body % bodies_per_env]
+            assert len(base_shapes) == len(body_shapes)
+            for base_shape, body_shape in zip(base_shapes, body_shapes):
+                self.shape_map[body_shape] = (worldid, mj_geoms.get(base_shape, None))
+
+        print("Shape map:\n{}".format("\n".join(f"{shape}: \t {geom} \t{model.shape_key[shape]}" for shape, geom in self.shape_map.items())))
         if target_filename:
             with open(target_filename, "w") as f:
                 f.write(spec.to_xml())
