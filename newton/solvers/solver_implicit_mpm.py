@@ -1146,7 +1146,7 @@ class ImplicitMPMSolver(SolverBase):
             else wp.array(collider_friction, dtype=float)
         )
         collider.masses = (
-            wp.full(len(collider.meshes), INFINITE_MASS, dtype=float)
+            wp.full(len(collider.meshes), INFINITE_MASS*2.0, dtype=float)
             if collider_masses is None
             else wp.array(collider_masses, dtype=float)
         )
