@@ -22,6 +22,7 @@ from warp.types import is_array
 
 import newton.core.articulation
 from newton import Control, Model, State
+from newton.utils.contact_reporter import ContactReporter
 
 
 class AttributeRegistry:
@@ -168,6 +169,7 @@ def set_articulation_root_velocities_kernel(
             joint_qd[qd_start + i] = root_vel[i]
 
 
+
 @wp.kernel
 def get_articulation_root_velocities_kernel(
     articulation_indices: wp.array(dtype=int),
@@ -188,6 +190,133 @@ def get_articulation_root_velocities_kernel(
         root_body = joint_child[joint_start]
 
     root_vels[tid] = body_qd[root_body]
+
+
+# TODO: Absorb ContactViewManager into model builder
+class ContactViewManager:
+    """Set up ContactReporter for a set of queries.
+    Each query selects for contacts between
+    - a set of entities and all other entities (if one pattern is given), or
+    - two sets of entities (if two patterns are given),
+    where an entity is a set of shapes, e.g. a body or a single shape."""
+
+    def __init__(self, model: Model):
+        self.model = model
+
+        self.entity_a = []
+        self.entity_b = []
+
+        # config & data layout
+        self.n_queries = 0
+        """Number of queries"""
+        self.query_body_a = None
+        """A-bodies for queries, shape [n_queries], int"""
+        self.query_body_b = None
+        """B-bodies for queries, int"""
+        self.query_body_b_start = None
+        """Start index of B-bodies for each query, shape [n_queries], int"""
+        self.query_body_b_count = None
+        """Number of B-bodies for each body pair, shape [n_queries], int"""
+
+    def add_query(self, entity_a: list[tuple[int, ...]], entity_b: list[tuple[int, ...]] | None = None):
+        """Add a contact query.
+        Args:
+            entity_a: list of sets of shape ids
+            entity_b: list of sets of shape ids, or None to match all shapes
+        Returns:
+            query_idx: The index of this query
+        """
+        query_idx = len(self.entity_a)
+        self.entity_a.append(entity_a)
+        if entity_b is None:
+            raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
+        self.entity_b.append(entity_b)
+        return query_idx
+
+    def finalize(self, solver):
+        self.contact_reporter = ContactReporter(self.model)
+        for entity_a, entity_b in zip(self.entity_a, self.entity_b):
+            self.contact_reporter.add_entity_group_pair(entity_a, entity_b)
+        self.contact_reporter.finalize(solver)
+
+
+class ContactView:
+    """Contact view.
+
+    Args:
+        contact_view_manager (ContactViewManager): The contact view manager.
+        entity_pattern (str): Only contacts involving entities matching this pattern are included.
+        filter_pattern (str | None): If provided, restrict contacts to those additionally involving
+            entities matching this pattern.
+
+    Before using, call finalize() on the contact view manager.
+    Before reading contacts, call update() on the contact view manager.
+    """
+
+    def __init__(
+        self, contact_view_manager: ContactViewManager, entity_pattern: str, filter_pattern: str | None = None
+    ):
+        self.contact_view_manager = contact_view_manager
+        self.entity_pattern = entity_pattern
+        self.filter_pattern = filter_pattern
+
+        self.entity_a, entity_a_keys = self._get_entities(entity_pattern)
+        
+        if filter_pattern is not None:
+            self.entity_b, entity_b_keys = self._get_entities(filter_pattern)
+        else:
+            self.entity_b = None
+            entity_b_keys = None
+
+        print("Entity A paths:", [self.contact_view_manager.model.shape_key[i] for e in self.entity_a for i in e])
+        print(
+            "Entity B paths:",
+            [self.contact_view_manager.model.shape_key[i] for e in self.entity_b for i in e] if self.entity_b else None,
+        )
+
+        # Store query keys
+        self._query_keys = (entity_a_keys, entity_b_keys)
+
+        self.query_idx = self.contact_view_manager.add_query(self.entity_a, self.entity_b)
+
+    def _get_entities(self, pattern: str):
+        # consider bodies and shapes
+        entities = []
+        entity_keys = []
+
+        model = self.contact_view_manager.model
+        for body_id, body_key in enumerate(model.body_key):
+            if fnmatch(body_key, pattern):
+                entities.append(tuple(model.body_shapes[body_id]))
+                entity_keys.append(body_key)
+
+        for shape_id, shape_key in enumerate(model.shape_key):
+            if fnmatch(shape_key, pattern):
+                entities.append((shape_id,))
+                entity_keys.append(shape_key)
+
+        return entities, entity_keys
+
+    def get_contact_dist(self):
+        """Get the deepest contact distance between entity pairs."""
+        return self.contact_view_manager.contact_reporter.get_dist(self.query_idx)
+        
+    def get_contact_idx(self):
+        """Get the contact indices between entity pairs."""
+        return self.contact_view_manager.contact_reporter.get_idx(self.query_idx)
+
+    @property
+    def query_keys(self):
+        """A tuple containing the shape or body keys for the queries.
+        
+        Returns:
+            tuple: A tuple containing two lists - (entity_a_keys, entity_b_keys).
+                  Each list contains the shape or body keys for the respective entities.
+        """
+        return self._query_keys
+
+    # TODO: expose raw contact arrays
+    # TODO: record entity names
 
 
 class ArticulationView:
@@ -411,13 +540,13 @@ class ArticulationView:
 
     def get_root_velocities(self, source: Model | State):
         """
-        Get the root velocities of the articulations.
+                Get the root velocities of the articulations.
+        uu
+                Args:
+                    source (Model | State): Where to get the root velocities (Model or State).
 
-        Args:
-            source (Model | State): Where to get the root velocities (Model or State).
-
-        Returns:
-            array: The root velocities (dtype=wp.spatial_vector).
+                Returns:
+                    array: The root velocities (dtype=wp.spatial_vector).
         """
         if self._root_velocities is None:
             self._root_velocities = wp.empty(self.count, dtype=wp.spatial_vector, device=self.device)

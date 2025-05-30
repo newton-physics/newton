@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import math
+import numpy as np
+import itertools
 
 import torch
 import warp as wp
@@ -22,7 +24,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.utils.isaaclab import replicate_environment
-from newton.utils.selection import ArticulationView
+from newton.utils.selection import ArticulationView, ContactView, ContactViewManager
 
 
 class Example:
@@ -90,6 +92,35 @@ class Example:
         print(f"body_q shape:       {self.ants.get_attribute('body_q', self.model).shape}")
         print(f"body_qd shape:      {self.ants.get_attribute('body_qd', self.model).shape}")
 
+        self.contact_mgr = ContactViewManager(self.model)
+
+
+        self.contacts_feet_ground = ContactView(
+            self.contact_mgr,
+            "/World/envs/*/Robot/*_foot",  # all robots' feet
+            "/World/ground/GroundPlane/CollisionPlane",
+        )
+
+        self.contacts_torso_ground = ContactView(
+            self.contact_mgr,
+            "/World/envs/*/Robot/torso",  # all robots' torsos
+            "/World/ground/GroundPlane/CollisionPlane",
+        )
+
+        self.contact_mgr.finalize(self.solver)
+
+        # Precompute foot body indices for efficient color updates
+        self.foot_body_indices = []
+        for body_key in self.contacts_feet_ground.query_keys[0]:
+            body_idx = self.model.body_key.index(body_key)
+            self.foot_body_indices.append(body_idx)
+
+        # Precompute torso body indices for efficient color updates
+        self.torso_body_indices = []
+        for body_key in self.contacts_torso_ground.query_keys[0]:
+            body_idx = self.model.body_key.index(body_key)
+            self.torso_body_indices.append(body_idx)
+
         # set all dofs to the middle of their range by default
         dof_limit_lower = wp.to_torch(self.ants.get_attribute("joint_limit_lower", self.model))
         dof_limit_upper = wp.to_torch(self.ants.get_attribute("joint_limit_upper", self.model))
@@ -98,7 +129,7 @@ class Example:
         if self.ants.include_free_joint:
             # combined root and dof transforms
             self.default_transforms = wp.to_torch(self.ants.get_attribute("joint_q", self.model)).clone()
-            self.default_transforms[:, 2] = 0.8  # z-coordinate of articulation root
+            self.default_transforms[:, 2] = 0.2  # z-coordinate of articulation root
             self.default_transforms[:, 7:] = default_dof_transforms
             # combined root and dof velocities
             self.default_velocities = wp.to_torch(self.ants.get_attribute("joint_qd", self.model)).clone()
@@ -107,7 +138,7 @@ class Example:
         else:
             # root transforms
             self.default_root_transforms = wp.to_torch(self.ants.get_root_transforms(self.model)).clone()
-            self.default_root_transforms[:, 2] = 0.8
+            self.default_root_transforms[:, 2] = 0.2
             # dof transforms
             self.default_dof_transforms = default_dof_transforms
             # root velocities
@@ -131,6 +162,8 @@ class Example:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
+
+        self.t = 0
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -158,6 +191,42 @@ class Example:
             joint_forces = torch.cat([torch.zeros((self.num_envs, 6)), joint_forces], axis=1)
         self.ants.set_attribute("joint_f", self.control, joint_forces)
 
+        contact = self.model.contact()
+        contact.dist = self.solver.mjw_data.contact.dist
+        contact.geom = self.solver.mjw_data.contact.geom
+        contact.frame = self.solver.mjw_data.contact.frame
+        contact.worldid = self.solver.mjw_data.contact.worldid
+
+        n_contacts = self.solver.mjw_data.ncon
+        self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts)
+
+        feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
+        feet_shapes = [self.model.shape_key[i] for e in feet_entities for i in e]
+
+        def colormap(dist):
+            if dist > 1:
+                return (0.5, 0.5, 0.5)
+            d = 0.2 + min(-float(dist)*15, 1) * .8
+            v = 0.5+d/2
+            return (v, v*(1-d), v*(1-d))
+
+        # Update shape colors based on contact distances
+        body_colors = {}
+        for foot_nr, dist in enumerate(feet_matrix):
+            body_idx = self.foot_body_indices[foot_nr]
+            body_colors[body_idx] = colormap(dist)
+        
+        # Handle torso contacts
+        torso_entities, torso_matrix = self.contacts_torso_ground.get_contact_dist()
+        for torso_nr, dist in enumerate(torso_matrix):
+            body_idx = self.torso_body_indices[torso_nr]
+            if dist < 1:  # in contact
+                body_colors[body_idx] = (1.0, 0.0, 1.0)  # magenta
+            else:  # not in contact
+                body_colors[body_idx] = (1.0, 0.5, 0.0)  # orange
+        
+        self._set_shape_colors(body_colors)
+
         with wp.ScopedTimer("step", active=False):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
@@ -184,6 +253,24 @@ class Example:
 
         if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
             self.ants.eval_fk(self.state_0, indices=indices)
+
+    def _set_shape_colors(self, body_colors):
+        """Set colors for all shapes of specified bodies in the renderer."""
+        if self.renderer is None:
+            return
+            
+        inst = list(self.renderer._instances.values())
+        inst_keys = list(self.renderer._instances.keys())
+        
+        for body_idx, color in body_colors.items():
+            # Get all shapes for this body
+            for shape_idx in self.model.body_shapes[body_idx]:
+                inst_copy = list(inst[shape_idx])
+                inst_copy[5] = color
+                inst_copy[6] = np.array(color)
+                self.renderer._instances[inst_keys[shape_idx]] = tuple(inst_copy)
+        
+        self.renderer.update_instance_colors()
 
     def render(self):
         if self.renderer is None:
