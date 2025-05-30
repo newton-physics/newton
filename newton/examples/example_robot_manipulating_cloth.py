@@ -27,9 +27,6 @@ from os.path import join
 from typing import Optional, Union
 
 import numpy as np
-
-# DEL
-import tqdm
 import warp as wp
 import warp.sim.render
 from pxr import Usd, UsdGeom
@@ -216,7 +213,7 @@ class ExampleClothManipulation:
         self.tri_kd = 1.5e-6
 
         self.bending_ke = 20
-        self.bending_kd = 2e-4
+        self.bending_kd = 1e-4
 
         self.gravity = -1000.0  # cm/s^2
 
@@ -315,6 +312,7 @@ class ExampleClothManipulation:
 
         # initialize robot solver
         self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_every=self.num_substeps)
+        self.set_up_control()
 
         if self.add_cloth:
             # initialize cloth solver
@@ -342,6 +340,40 @@ class ExampleClothManipulation:
         # graph capture
         if self.add_cloth:
             self.capture_cuda_graph()
+
+    def set_up_control(self):
+        self.control = self.model.control()
+
+        # we are controlling the velocity
+        out_dim = 6
+        in_dim = self.model.joint_dof_count
+
+        def onehot(i, out_dim, device):
+            x = wp.array([1.0 if j == i else 0.0 for j in range(out_dim)], dtype=float, device=self.model.device)
+            return x
+
+        self.Jacobian_one_hots = [onehot(i, out_dim, self.model.device) for i in range(out_dim)]
+
+        # for robot control
+        self.delta_q = wp.empty(self.model.joint_count, dtype=float, device=self.device)
+        self.joint_q_des = wp.array(self.model.joint_q.numpy(), dtype=float, device=self.device)
+
+        @wp.kernel
+        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
+            # TODO verify transform twist
+            mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
+            for i in range(6):
+                body_out[i] = mv[i]
+
+        self.compute_body_out_kernel = compute_body_out
+        self.temp_state_for_jacobian = self.model.state(requires_grad=True)
+
+        self.body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
+
+        self.J_flat = wp.empty(out_dim * in_dim, dtype=float, device=self.model.device)
+        self.J_shape = wp.array((out_dim, in_dim), dtype=int, device=self.model.device)
+        self.ee_delta = wp.empty(1, dtype=wp.spatial_vector, device=self.device)
+        self.initial_pose = self.model.joint_q.numpy()
 
     def capture_cuda_graph(self):
         self.cuda_graph = None
@@ -424,11 +456,53 @@ class ExampleClothManipulation:
         self.endeffector_id = builder.body_count - 3
         self.endeffector_offset = wp.transform([0.0, 0.0, 22], wp.quat_identity())
 
+    def compute_body_jacobian(
+        self,
+        model: wp.sim.Model,
+        joint_q: wp.array,
+        joint_qd: wp.array,
+        include_rotation: bool = False,
+    ):
+        """
+        Compute the Jacobian of the end effector's velocity related to joint_q
+
+        """
+        # with wp.ScopedTimer("compute_body_jacobian"):
+
+        joint_q.requires_grad = True
+        joint_qd.requires_grad = True
+
+        in_dim = model.joint_dof_count
+        out_dim = 6 if include_rotation else 3
+
+        tape = wp.Tape()
+        with tape:
+            eval_fk(model, joint_q, joint_qd, self.temp_state_for_jacobian)
+            wp.launch(
+                self.compute_body_out_kernel,
+                1,
+                inputs=[self.temp_state_for_jacobian.body_qd],
+                outputs=[self.body_out],
+                device=model.device,
+            )
+
+        for i in range(out_dim):
+            tape.backward(grads={self.body_out: self.Jacobian_one_hots[i]})
+            wp.copy(self.J_flat[i * in_dim : (i + 1) * in_dim], joint_qd.grad)
+            tape.zero()
+
     def generate_control_joint_qd(
         self,
         state_in: core.model.State,
     ):
-        ee_delta = wp.empty(1, dtype=wp.spatial_vector, device=self.device)
+        t_mod = (
+            self.sim_time
+            if self.sim_time < self.robot_key_poses_time[-1]
+            else self.sim_time % self.robot_key_poses_time[-1]
+        )
+        include_rotation = True
+        current_interval = np.searchsorted(self.robot_key_poses_time, t_mod)
+        self.target = self.targets[current_interval]
 
         wp.launch(
             compute_ee_delta,
@@ -440,34 +514,18 @@ class ExampleClothManipulation:
                 self.bodies_per_env,
                 wp.transform(*self.target[:7]),
             ],
-            outputs=[ee_delta],
+            outputs=[self.ee_delta],
             device=self.device,
         )
 
-        t_mod = (
-            self.sim_time
-            if self.sim_time < self.robot_key_poses_time[-1]
-            else self.sim_time % self.robot_key_poses_time[-1]
-        )
-        include_rotation = True
-        current_interval = np.searchsorted(self.robot_key_poses_time, t_mod)
-
-        self.target = self.targets[current_interval]
-
-        if include_rotation:
-            delta_target = ee_delta.numpy()[0]
-            # return
-        else:
-            delta_target = ee_delta.numpy()[0, :3]
-
-        J = compute_body_jacobian(
+        self.compute_body_jacobian(
             self.model,
             state_in.joint_q,
             state_in.joint_qd,
-            body_id=self.endeffector_id,
-            offset=self.endeffector_offset,
             include_rotation=include_rotation,
         )
+        J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
+        delta_target = self.ee_delta.numpy()[0]
         J_inv = np.linalg.pinv(J)
 
         # 2. Compute null-space projector
@@ -481,7 +539,7 @@ class ExampleClothManipulation:
         #    (For example, one that keeps joint 2 or 3 above a certain angle.)
         #    Adjust indices and angles to your robot's kinematics.
         q_des = q.copy()
-        q_des[1:] = self.model.joint_q.numpy()[1:]  # e.g., set elbow joint around 1 rad to keep it up
+        q_des[1:] = self.initial_pose[1:]  # e.g., set elbow joint around 1 rad to keep it up
 
         # 4. Define a null-space velocity term pulling joints toward q_des
         #    K_null is a small gain so it doesn't override main task
@@ -498,7 +556,7 @@ class ExampleClothManipulation:
         self.target_joint_qd.assign(delta_q)
 
     def run(self):
-        for frame_idx in tqdm.tqdm(range(self.num_frames)):
+        for frame_idx in range(self.num_frames):
             self.advance_frame()
 
             if self.add_cloth and not (frame_idx % 10):
