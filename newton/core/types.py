@@ -33,6 +33,7 @@ PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
 SHAPE_FLAG_VISIBLE = wp.constant(wp.uint32(1 << 0))
 SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
 SHAPE_FLAG_COLLIDE_GROUND = wp.constant(wp.uint32(1 << 2))
+SHAPE_FLAG_COLLIDE_PARTICLES = wp.constant(wp.uint32(1 << 3))
 
 # Shape geometry types
 GEO_SPHERE = wp.constant(0)
