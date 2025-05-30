@@ -167,8 +167,12 @@ def integrate_bodies(
 
 
 class SolverBase:
-    """
-    Generic base class for solvers. Provides methods to integrate rigid bodies and particles.
+    """Generic base class for solvers.
+
+    The implementation provides helper kernels to integrate rigid bodies and
+    particles. Concrete solver back-ends should derive from this class and
+    override :py:meth:`step` as well as :py:meth:`notify_model_changed` where
+    necessary.
     """
 
     def __init__(self, model: Model):
@@ -200,7 +204,8 @@ class SolverBase:
             state_in (State): The input state.
             state_out (State): The output state.
             dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor. Defaults to 0.0.
+            angular_damping (float, optional): The angular damping factor.
+                Defaults to 0.0.
         """
         if model.body_count:
             wp.launch(
@@ -265,17 +270,39 @@ class SolverBase:
             model (Model): The model to simulate.
             state_in (State): The input state.
             state_out (State): The output state.
-            control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
+            control (Control): The control input.
+                Defaults to `None` which means the control values from the
+                :class:`Model` are used.
             contacts (Contact): The contact information.
             dt (float): The time step (typically in seconds).
         """
         raise NotImplementedError()
 
     def notify_model_changed(self, flags: int):
-        """
-        Notify the solver that the model has changed.
+        """Notify the solver that parts of the :class:`~newton.Model` were modified.
+
+        The *flags* argument is a bit-mask composed of the
+        ``NOTIFY_FLAG_*`` constants defined in :mod:`newton.core.types`.
+        Each flag represents a category of model data that may have been
+        updated after the solver was created.  Passing the appropriate
+        combination of flags enables a solver implementation to refresh its
+        internal buffers without having to recreate the whole solver object.
+        Valid flags are:
+
+        ==========================================  =============================================================
+        Constant                                    Description
+        ==========================================  =============================================================
+        ``NOTIFY_FLAG_JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
+        ``NOTIFY_FLAG_JOINT_AXIS_PROPERTIES``       Joint axis limits, targets, or modes have changed.
+        ``NOTIFY_FLAG_DOF_PROPERTIES``              Joint DOF state or force buffers have changed.
+        ``NOTIFY_FLAG_BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
+        ``NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
+        ``NOTIFY_FLAG_SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
+        ==========================================  =============================================================
 
         Args:
-            flags (int): The flags that have changed.
+            flags (int): Bit-mask of model-update flags indicating which model
+                properties changed.
+
         """
         pass

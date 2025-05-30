@@ -37,6 +37,11 @@ release = project_version
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
+# Add docs/_ext to Python import path so custom extensions can be imported
+_ext_path = Path(__file__).parent / "_ext"
+if str(_ext_path) not in sys.path:
+    sys.path.append(str(_ext_path))
+
 extensions = [
     "myst_parser",  # Parse markdown files
     "sphinx.ext.autodoc",
@@ -48,6 +53,7 @@ extensions = [
     "sphinx.ext.doctest",  # Test code snippets in docs
     "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
+    "autodoc_filter",
 ]
 
 templates_path = ["_templates"]
@@ -87,6 +93,9 @@ wp.init()
 autodoc_typehints = "description"
 # default argument values of functions will be not evaluated on generating document
 autodoc_preserve_defaults = True
+
+autodoc_typehints_description_target = "documented"
+
 
 autodoc_default_options = {
     "members": True,

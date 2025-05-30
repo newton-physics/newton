@@ -73,6 +73,8 @@ world frame, though details vary:
   :math:`(v_x,v_y,v_z,\;\omega_x,\omega_y,\omega_z)` all expressed globally.
   This matches Bullet/ODE/PhysX practice.
 
+.. _Twist conventions:
+
 Newton Conventions
 ~~~~~~~~~~~~~~~~~~
 
@@ -244,7 +246,7 @@ affecting gravity direction, object placement, and overall scene orientation.
      - **Handedness**
      - **Notes**
    * - **Newton**
-     - ``Y`` (default)
+     - ``Z`` (default)
      - Right-handed
      - Configurable via ``Axis.X/Y/Z``
    * - **MuJoCo**

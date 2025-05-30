@@ -4,7 +4,10 @@
 .. currentmodule:: newton
 
 .. autoclass:: SDF
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
@@ -13,7 +16,6 @@
    .. autosummary::
    
       ~SDF.__init__
-      ~SDF.finalize
    
    
 

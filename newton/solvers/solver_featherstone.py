@@ -1504,16 +1504,19 @@ class FeatherstoneSolver(SolverBase):
 
     See: Featherstone, Roy. Rigid Body Dynamics Algorithms. Springer US, 2014.
 
-    Instead of maximal coordinates :attr:`State.body_q` (rigid body positions) and :attr:`State.body_qd`
-    (rigid body velocities) as is the case :class:`SemiImplicitIntegrator`, :class:`FeatherstoneIntegrator`
-    uses :attr:`State.joint_q` and :attr:`State.joint_qd` to represent the positions and velocities of
-    joints without allowing any redundant degrees of freedom.
+    Instead of maximal coordinates :attr:`~newton.State.body_q` (rigid body positions) and :attr:`~newton.State.body_qd`
+    (rigid body velocities) as is the case in :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.XPBDSolver`,
+    :class:`~newton.solvers.FeatherstoneSolver` uses :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` to represent
+    the positions and velocities of joints without allowing any redundant degrees of freedom.
 
-    After constructing :class:`Model` and :class:`State` objects this time-integrator
+    After constructing :class:`~newton.Model` and :class:`~newton.State` objects this time-integrator
     may be used to advance the simulation state forward in time.
 
     Note:
-        Unlike :class:`SemiImplicitIntegrator` and :class:`XPBDIntegrator`, :class:`FeatherstoneIntegrator` does not simulate rigid bodies with nonzero mass as floating bodies if they are not connected through any joints. Floating-base systems require an explicit free joint with which the body is connected to the world, see :meth:`ModelBuilder.add_joint_free`.
+        Unlike :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.XPBDSolver`, :class:`~newton.solvers.FeatherstoneSolver`
+        does not simulate rigid bodies with nonzero mass as floating bodies if they are not connected through any joints.
+        Floating-base systems require an explicit free joint with which the body is connected to the world,
+        see :meth:`newton.ModelBuilder.add_joint_free`.
 
     Semi-implicit time integration is a variational integrator that
     preserves energy, however it not unconditionally stable, and requires a time-step

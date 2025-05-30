@@ -1088,6 +1088,7 @@ class MuJoCoSolver(SolverBase):
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
         rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
 
+        # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
             newton.JOINT_FREE,
             newton.JOINT_BALL,
@@ -1388,11 +1389,7 @@ class MuJoCoSolver(SolverBase):
                         axis_to_actuator[ai] = actuator_count
                         actuator_count += 1
 
-            elif j_type == newton.JOINT_FIXED:
-                raise NotImplementedError(
-                    "Fixed joints are not supported, please use ModelBuilder.collapse_fixed_joints() before converting to mujoco"
-                )
-            else:
+            elif j_type != newton.JOINT_FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
 
             # add geoms

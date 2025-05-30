@@ -86,6 +86,8 @@ Using joints with zero stiffness (:class:`newton.ModelBuilder.JointDofConfig.tar
 ``ModelBuilder``
 ----------------
 
+The default up axis of the builder is now Z instead of Y.
+
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | **warp.sim**                                           | **Newton**                                                             |
 +--------------------------------------------------------+------------------------------------------------------------------------+

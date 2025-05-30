@@ -24,7 +24,7 @@ from newton.geometry import CollisionPipeline
 
 from .control import Control
 from .state import State
-from .types import ShapeGeometry, ShapeMaterials
+from .types import ShapeGeometry, ShapeMaterials, Devicelike
 
 
 class Model:
@@ -39,7 +39,7 @@ class Model:
         however it is possible to do so if desired.
     """
 
-    def __init__(self, device=None):
+    def __init__(self, device: Devicelike | None = None):
         """
         Initializes the Model object.
 
@@ -64,11 +64,11 @@ class Model:
         self.particle_max_radius = 0.0
         """Maximum particle radius (useful for HashGrid construction)."""
         self.particle_ke = 1.0e3
-        """Particle normal contact stiffness (used by :class:`SemiImplicitIntegrator`). Default is 1.0e3."""
+        """Particle normal contact stiffness (used by :class:`~newton.solvers.SemiImplicitSolver`). Default is 1.0e3."""
         self.particle_kd = 1.0e2
-        """Particle normal contact damping (used by :class:`SemiImplicitIntegrator`). Default is 1.0e2."""
+        """Particle normal contact damping (used by :class:`~newton.solvers.SemiImplicitSolver`). Default is 1.0e2."""
         self.particle_kf = 1.0e2
-        """Particle friction force stiffness (used by :class:`SemiImplicitIntegrator`). Default is 1.0e2."""
+        """Particle friction force stiffness (used by :class:`~newton.solvers.SemiImplicitSolver`). Default is 1.0e2."""
         self.particle_mu = 0.5
         """Particle friction coefficient. Default is 0.5."""
         self.particle_cohesion = 0.0
@@ -211,7 +211,7 @@ class Model:
         self.joint_axis = None
         """Joint axis in child frame, shape [joint_axis_count, 3], float."""
         self.joint_armature = None
-        """Armature for each joint axis (only used by :class:`FeatherstoneIntegrator`), shape [joint_dof_count], float."""
+        """Armature for each joint axis (used by :class:`~newton.solvers.MuJoCoSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
         self.joint_target_ke = None
         """Joint stiffness, shape [joint_axis_count], float."""
         self.joint_target_kd = None
@@ -229,9 +229,9 @@ class Model:
         self.joint_limit_upper = None
         """Joint upper position limits, shape [joint_axis_count], float."""
         self.joint_limit_ke = None
-        """Joint position limit stiffness (used by the Euler integrators), shape [joint_axis_count], float."""
+        """Joint position limit stiffness (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_axis_count], float."""
         self.joint_limit_kd = None
-        """Joint position limit damping (used by the Euler integrators), shape [joint_axis_count], float."""
+        """Joint position limit damping (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_axis_count], float."""
         self.joint_twist_lower = None
         """Joint lower twist limit, shape [joint_count], float."""
         self.joint_twist_upper = None
@@ -247,12 +247,16 @@ class Model:
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
 
+        self.soft_contact_radius = 0.2
+        """Contact radius used by :class:`~newton.solvers.VBDSolver` for self-collisions. Default is 0.2."""
+        self.soft_contact_margin = 0.2
+        """Contact margin for generation of soft contacts. Default is 0.2."""
         self.soft_contact_ke = 1.0e3
-        """Stiffness of soft contacts (used by the Euler integrators). Default is 1.0e3."""
+        """Stiffness of soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 1.0e3."""
         self.soft_contact_kd = 10.0
-        """Damping of soft contacts (used by the Euler integrators). Default is 10.0."""
+        """Damping of soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 10.0."""
         self.soft_contact_kf = 1.0e3
-        """Stiffness of friction force in soft contacts (used by the Euler integrators). Default is 1.0e3."""
+        """Stiffness of friction force in soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 1.0e3."""
         self.soft_contact_mu = 0.5
         """Friction coefficient of soft contacts. Default is 0.5."""
         self.soft_contact_restitution = 0.0
@@ -270,9 +274,9 @@ class Model:
         """Ground plane 3D normal and offset, shape [4], float."""
         self.up_vector = np.array((0.0, 1.0, 0.0))
         """Up vector of the world, shape [3], float."""
-        self.up_axis = 1
+        self.up_axis = 2
         """Up axis, 0 for x, 1 for y, 2 for z."""
-        self.gravity = np.array((0.0, -9.81, 0.0))
+        self.gravity = np.array((0.0, 0.0, -9.81))
         """Gravity vector, shape [3], float."""
 
         self.particle_count = 0
@@ -304,7 +308,7 @@ class Model:
 
         # indices of particles sharing the same color
         self.particle_color_groups = []
-        """The coloring of all the particles, used for VBD's Gauss-Seidel iteration. Each array contains indices of particles sharing the same color."""
+        """The coloring of all the particles, used by :class:`~newton.solvers.VBDSolver` for Gauss-Seidel iteration. Each array contains indices of particles sharing the same color."""
         # the color of each particles
         self.particle_colors = None
         """Contains the color assignment for every particle."""
