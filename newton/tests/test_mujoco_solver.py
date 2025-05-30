@@ -150,7 +150,7 @@ class TestMuJoCoSolver(unittest.TestCase):
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = solver.body_mapping.numpy()
+        body_mapping = self.model.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -200,7 +200,7 @@ class TestMuJoCoSolver(unittest.TestCase):
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = solver.body_mapping.numpy()
+        body_mapping = self.model.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -286,7 +286,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         solver = MuJoCoSolver(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
 
         # Get body mapping once outside the loop
-        body_mapping = solver.body_mapping.numpy()
+        body_mapping = self.model.to_mjc_body_index.numpy()
 
         def check_inertias(inertias_to_check, msg_prefix=""):
             for env_idx in range(self.model.num_envs):

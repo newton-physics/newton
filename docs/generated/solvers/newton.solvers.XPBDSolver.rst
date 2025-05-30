@@ -4,7 +4,10 @@
 .. currentmodule:: newton.solvers
 
 .. autoclass:: XPBDSolver
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    
 
    
@@ -13,11 +16,9 @@
    .. autosummary::
    
       ~XPBDSolver.__init__
-      ~XPBDSolver.apply_body_deltas
-      ~XPBDSolver.apply_particle_deltas
       ~XPBDSolver.integrate_bodies
       ~XPBDSolver.integrate_particles
-      ~XPBDSolver.step
+      ~XPBDSolver.notify_model_changed
    
    
 

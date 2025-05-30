@@ -33,6 +33,7 @@ dev = [
     "coverage[toml]>=7.8.0",
     "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
 ]
@@ -70,6 +71,7 @@ dev = [
     "coverage[toml]>=7.8.0",
     "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
 ]
