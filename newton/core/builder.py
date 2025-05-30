@@ -1817,7 +1817,7 @@ class ModelBuilder:
 
     def add_shape_plane(
         self,
-        plane: Vec4 | None = (0.0, 1.0, 0.0, 0.0),
+        plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
         xform: Transform | None = None,
         width: float = 10.0,
         length: float = 10.0,
@@ -1872,6 +1872,28 @@ class ModelBuilder:
             scale=scale,
             is_static=True,
             key=key,
+        )
+
+    def add_ground_plane(
+        self,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a ground plane collision shape to the model.
+
+        Args:
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        return self.add_shape_plane(
+            plane=(*self.up_vector, 0.0),
+            width=0.0,
+            length=0.0,
+            cfg=cfg,
+            key=key or "ground_plane",
         )
 
     def add_shape_sphere(
@@ -3112,35 +3134,6 @@ class ModelBuilder:
             self.body_inv_inertia[i] = wp.inverse(new_inertia)
         else:
             self.body_inv_inertia[i] = new_inertia
-
-    def set_ground_plane(
-        self,
-        normal: Vec3 | None = None,
-        offset: float = 0.0,
-        cfg: ShapeConfig | None = None,
-    ):
-        """
-        Creates a ground plane for the world. If the normal is not specified,
-        the up_vector of the ModelBuilder is used.
-        """
-        if normal is None:
-            normal = self.up_vector
-        self._ground_params = {
-            "plane": (*normal, offset),
-            "width": 0.0,
-            "length": 0.0,
-            "cfg": cfg,
-            "key": "ground_plane",
-        }
-
-    def _create_ground_plane(self):
-        if self._ground_params["plane"] is None:
-            self._ground_params["plane"] = (*self.up_vector, 0.0)
-        self.add_shape_plane(**self._ground_params)
-        self._ground_created = True
-        # # disable ground collisions as they will be treated separately
-        # for i in range(self.shape_count - 1):
-        #     self.shape_collision_filter_pairs.add((i, ground_id))
 
     def set_coloring(self, particle_color_groups):
         """
