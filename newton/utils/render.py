@@ -147,13 +147,13 @@ def CreateSimRenderer(renderer):
                 scale = np.ones(3)
                 color = (1.0, 1.0, 1.0)
                 # loop over shapes excluding the ground plane
-                for s in range(model.shape_count - 1):
+                for s in range(model.shape_count):
                     geo_type = shape_geo_type[s]
                     geo_scale = [float(v) for v in shape_geo_scale[s]]
                     geo_thickness = float(shape_geo_thickness[s])
                     geo_is_solid = bool(shape_geo_is_solid[s])
                     geo_src = shape_geo_src[s]
-                    name = f"shape_{s}"
+                    name = model.shape_key[s]
 
                     # shape transform in body frame
                     body = int(shape_body[s])
@@ -173,16 +173,18 @@ def CreateSimRenderer(renderer):
                         shape = self.geo_shape[geo_hash]
                     else:
                         if geo_type == newton.GEO_PLANE:
-                            if s == model.shape_count - 1 and not model.ground:
-                                continue  # hide ground plane
-
                             # plane mesh
                             width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
                             length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
 
-                            shape = self.render_plane(
-                                name, p, q, width, length, color, parent_body=body, is_template=True
-                            )
+                            if name == "ground_plane":
+                                normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 1.0, 0.0))
+                                offset = wp.dot(normal, X_bs.p)
+                                shape = self.render_ground(plane=[*normal, offset])
+                            else:
+                                shape = self.render_plane(
+                                    name, p, q, width, length, color, parent_body=body, is_template=True
+                                )
 
                         elif geo_type == newton.GEO_SPHERE:
                             shape = self.render_sphere(
@@ -306,9 +308,6 @@ def CreateSimRenderer(renderer):
                             name = f"joint_{i}_{a}"
                             self.add_shape_instance(name, shape, body, p, q, scale, color1=color, color2=color)
                             self.instance_count += 1
-
-            if model.ground:
-                self.render_ground(plane=model.ground_plane_params)
 
             if hasattr(self, "complete_setup"):
                 self.complete_setup()
