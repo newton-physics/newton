@@ -1743,11 +1743,6 @@ class MuJoCoSolver(SolverBase):
             for base_shape, body_shape in zip(base_shapes, body_shapes):
                 self.shape_map[body_shape] = (worldid, mj_geoms.get(base_shape, None))
 
-        print(
-            "Shape map:\n{}".format(
-                "\n".join(f"{shape}: \t {geom} \t{model.shape_key[shape]}" for shape, geom in self.shape_map.items())
-            )
-        )
         if target_filename:
             with open(target_filename, "w") as f:
                 f.write(spec.to_xml())

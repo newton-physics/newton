@@ -198,12 +198,6 @@ class ContactView:
             self.entity_b = None
             entity_b_keys = None
 
-        print("Entity A paths:", [self.contact_view_manager.model.shape_key[i] for e in self.entity_a for i in e])
-        print(
-            "Entity B paths:",
-            [self.contact_view_manager.model.shape_key[i] for e in self.entity_b for i in e] if self.entity_b else None,
-        )
-
         # Store query keys
         self._query_keys = (entity_a_keys, entity_b_keys)
 
