@@ -14,9 +14,8 @@
 # limitations under the License.
 
 import math
-import numpy as np
-import itertools
 
+import numpy as np
 import torch
 import warp as wp
 
@@ -93,7 +92,6 @@ class Example:
         print(f"body_qd shape:      {self.ants.get_attribute('body_qd', self.model).shape}")
 
         self.contact_mgr = ContactViewManager(self.model)
-
 
         self.contacts_feet_ground = ContactView(
             self.contact_mgr,
@@ -201,21 +199,21 @@ class Example:
         self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
-        feet_shapes = [self.model.shape_key[i] for e in feet_entities for i in e]
+        [self.model.shape_key[i] for e in feet_entities for i in e]
 
         def colormap(dist):
             if dist > 1:
                 return (0.5, 0.5, 0.5)
-            d = 0.2 + min(-float(dist)*15, 1) * .8
-            v = 0.5+d/2
-            return (v, v*(1-d), v*(1-d))
+            d = 0.2 + min(-float(dist[0]) * 15, 1) * 0.8
+            v = 0.5 + d / 2
+            return (v, v * (1 - d), v * (1 - d))
 
         # Update shape colors based on contact distances
         body_colors = {}
         for foot_nr, dist in enumerate(feet_matrix):
             body_idx = self.foot_body_indices[foot_nr]
             body_colors[body_idx] = colormap(dist)
-        
+
         # Handle torso contacts
         torso_entities, torso_matrix = self.contacts_torso_ground.get_contact_dist()
         for torso_nr, dist in enumerate(torso_matrix):
@@ -224,7 +222,7 @@ class Example:
                 body_colors[body_idx] = (1.0, 0.0, 1.0)  # magenta
             else:  # not in contact
                 body_colors[body_idx] = (1.0, 0.5, 0.0)  # orange
-        
+
         self._set_shape_colors(body_colors)
 
         with wp.ScopedTimer("step", active=False):
@@ -258,10 +256,10 @@ class Example:
         """Set colors for all shapes of specified bodies in the renderer."""
         if self.renderer is None:
             return
-            
+
         inst = list(self.renderer._instances.values())
         inst_keys = list(self.renderer._instances.keys())
-        
+
         for body_idx, color in body_colors.items():
             # Get all shapes for this body
             for shape_idx in self.model.body_shapes[body_idx]:
@@ -269,7 +267,7 @@ class Example:
                 inst_copy[5] = color
                 inst_copy[6] = np.array(color)
                 self.renderer._instances[inst_keys[shape_idx]] = tuple(inst_copy)
-        
+
         self.renderer.update_instance_colors()
 
     def render(self):

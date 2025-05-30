@@ -18,9 +18,8 @@ import itertools
 import numpy as np
 import warp as wp
 
-
 from newton import Contact, Model
-from newton.solvers import SolverBase, MuJoCoSolver
+from newton.solvers import MuJoCoSolver, SolverBase
 
 NUM_THREADS = 8192
 
@@ -173,7 +172,6 @@ def aggregate_entity_pair_maxdepth(
     best_dist = wp.float32(wp.inf)
     best_contact = wp.int32(-1)
 
-
     for i in range(n_shape_pairs):
         sp_ord = ep_sp_ord[start + i]
         n_bin_contacts = bin_count[sp_ord]
@@ -181,8 +179,8 @@ def aggregate_entity_pair_maxdepth(
 
         for j in range(n_bin_contacts):
             # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
-            contact_idx = bin_contacts[contacts_start, j] # FIXME: linearize
-            dist = bin_dist[contacts_start, j] # FIXME: linearize
+            contact_idx = bin_contacts[contacts_start, j]  # FIXME: linearize
+            dist = bin_dist[contacts_start, j]  # FIXME: linearize
 
             if dist < best_dist:
                 best_dist = dist
@@ -347,9 +345,9 @@ class ContactReporter:
         self.entity_p_shape_p_map = entity_p_shape_p_map
 
         # sort shape pairs, bin start and bin size according to shape pair ordinal
-        shape_pairs_sorted, shape_pairs_position, bin_size, bin_start_sorted = zip(*sorted(
-            zip(shape_pairs, itertools.count(), bin_size, bin_start)
-        ))
+        shape_pairs_sorted, shape_pairs_position, bin_size, bin_start_sorted = zip(
+            *sorted(zip(shape_pairs, itertools.count(), bin_size, bin_start))
+        )
 
         shape_pairs_id_to_ord = np.argsort(shape_pairs_position)
 
@@ -357,7 +355,7 @@ class ContactReporter:
         ep_sp_num = []
         ep_sp_flip = []
 
-        for ep, sps in entity_p_shape_p_map.items():
+        for _ep, sps in entity_p_shape_p_map.items():
             for sp_idx, flip in sps:
                 ep_sp_ord.append(shape_pairs_id_to_ord[sp_idx])
                 ep_sp_flip.append(flip)
@@ -391,7 +389,7 @@ class ContactReporter:
                     if mj_geom is None:
                         continue
                     if worldid == -1:
-                        worldid = slice(None) # noqa
+                        worldid = slice(None)  # noqa
                     geom_mapping[worldid, mj_geom] = shape
 
                 self.contact_geom_tmp = wp.empty_like(solver.mjw_data.contact.geom)
@@ -400,29 +398,30 @@ class ContactReporter:
             self.entity_pair_contact = wp.empty(self.n_entity_pairs, dtype=wp.int32)
             self.entity_pair_dist = wp.empty(self.n_entity_pairs, dtype=wp.float32)
             self.entity_pair_normal = wp.empty(self.n_entity_pairs, dtype=wp.vec3f)
-            
+
             # Pre-initialize contact matrices for each query
             self.query_dist_matrices = []
             self.query_idx_matrices = []
             self.query_entities = []
-            
+
             for query_idx in range(len(self.entity_group_pairs)):
                 query_pairs = self.query_to_entity_pair[query_idx]
                 entity_pairs = [
                     self.entity_pairs[query_pair][::-1] if flip else self.entity_pairs[query_pair]
-                    for query_pair, flip in query_pairs]
+                    for query_pair, flip in query_pairs
+                ]
                 row_entities, col_entities = zip(*entity_pairs)
                 row_indices = {row: i for i, row in enumerate(sorted(set(row_entities)))}
                 col_indices = {col: i for i, col in enumerate(sorted(set(col_entities)))}
-                
+
                 # Store entities mapping for this query
                 entities = (row_indices, col_indices)
                 self.query_entities.append(entities)
-                
+
                 # Initialize empty matrices that will be populated during select_aggregate
                 contact_dist_matrix = np.zeros((len(row_indices), len(col_indices)))
                 contact_idx_matrix = np.zeros((len(row_indices), len(col_indices)), dtype=np.int32)
-                
+
                 self.query_dist_matrices.append(contact_dist_matrix)
                 self.query_idx_matrices.append(contact_idx_matrix)
 
@@ -436,7 +435,7 @@ class ContactReporter:
         num_contacts: wp.array(dtype=wp.int32),
     ):
         self.reset()
-        
+
         wp.launch(
             remap_contact_geom_mjw,
             dim=NUM_THREADS,
@@ -450,7 +449,7 @@ class ContactReporter:
                 self.contact_geom_tmp,
             ],
         )
-        
+
         wp.launch(
             select_bin_contacts,
             dim=NUM_THREADS,
@@ -468,7 +467,7 @@ class ContactReporter:
                 self.bin_contacts_dist,
             ],
         )
-        
+
         wp.launch(
             aggregate_entity_pair_maxdepth,
             dim=self.n_entity_pairs,
@@ -494,19 +493,24 @@ class ContactReporter:
     def fill_contact_matrix(self, query_idx: int, data, matrix):
         query_pairs = self.query_to_entity_pair[query_idx]
         entity_pairs = [
-                self.entity_pairs[query_pair][::-1] if flip else self.entity_pairs[query_pair]
-                for query_pair, flip in query_pairs]
+            self.entity_pairs[query_pair][::-1] if flip else self.entity_pairs[query_pair]
+            for query_pair, flip in query_pairs
+        ]
         row_entities, col_entities = zip(*entity_pairs)
         row_indices = {row: i for i, row in enumerate(sorted(set(row_entities)))}
         col_indices = {col: i for i, col in enumerate(sorted(set(col_entities)))}
-        for i, ((pair_idx, _), (row, col)) in enumerate(zip(query_pairs, entity_pairs)):
+        for (pair_idx, _), (row, col) in zip(query_pairs, entity_pairs):
             matrix[row_indices[row], col_indices[col]] = data.numpy()[pair_idx]
         return self.query_entities[query_idx], matrix
-        
+
     def get_dist(self, query_idx: int):
-        entities, contact_matrix = self.fill_contact_matrix(query_idx, self.entity_pair_dist, self.query_dist_matrices[query_idx])
+        entities, contact_matrix = self.fill_contact_matrix(
+            query_idx, self.entity_pair_dist, self.query_dist_matrices[query_idx]
+        )
         return entities, contact_matrix
-        
+
     def get_idx(self, query_idx: int):
-        entities, contact_matrix = self.fill_contact_matrix(query_idx, self.entity_pair_contact, self.query_idx_matrices[query_idx])
+        entities, contact_matrix = self.fill_contact_matrix(
+            query_idx, self.entity_pair_contact, self.query_idx_matrices[query_idx]
+        )
         return entities, contact_matrix
