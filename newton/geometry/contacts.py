@@ -16,6 +16,8 @@
 
 import warp as wp
 
+from ..core.types import Devicelike
+
 
 class Contacts:
     """Provides contact information to be consumed by a solver.
@@ -25,30 +27,29 @@ class Contacts:
         This class definition is only a temporary solution and will change significantly in the future.
     """
 
-    def __init__(self, rigid_contact_max: int, soft_contact_max: int, requires_grad: bool = False):
-        # ---------------------------------------------------
-        # rigid contacts
-        self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
-        self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
-        self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
-        self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
-        self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_thickness = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
-        self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+    def __init__(self, rigid_contact_max: int, soft_contact_max: int, requires_grad: bool = False, device: Devicelike = None):
+        with wp.ScopedDevice(device):
+            # rigid contacts
+            self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
+            self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.rigid_contact_thickness = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
+            self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
 
-        # ---------------------------------------------------
-        # soft contacts
-        self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
-        self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
-        self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
-        self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
+            # soft contacts
+            self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
         self.requires_grad = requires_grad
 
@@ -66,3 +67,7 @@ class Contacts:
         self.soft_contact_particle.fill_(-1)
         self.soft_contact_shape.fill_(-1)
         self.soft_contact_tids.fill_(-1)
+
+    @property
+    def device(self):
+        return self.rigid_contact_count.device
