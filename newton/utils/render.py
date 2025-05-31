@@ -142,6 +142,7 @@ def CreateSimRenderer(renderer):
                     geo_is_solid = bool(shape_geo_is_solid[s])
                     geo_src = shape_geo_src[s]
                     name = model.shape_key[s]
+                    add_shape_instance = True
 
                     # shape transform in body frame
                     body = int(shape_body[s])
@@ -169,6 +170,7 @@ def CreateSimRenderer(renderer):
                                 normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 1.0, 0.0))
                                 offset = wp.dot(normal, X_bs.p)
                                 shape = self.render_ground(plane=[*normal, offset])
+                                add_shape_instance = False
                             else:
                                 shape = self.render_plane(
                                     name, p, q, width, length, color, parent_body=body, is_template=True
@@ -222,7 +224,7 @@ def CreateSimRenderer(renderer):
 
                         self.geo_shape[geo_hash] = shape
 
-                    if shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
+                    if add_shape_instance and shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
                         self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
