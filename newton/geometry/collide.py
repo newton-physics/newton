@@ -21,49 +21,13 @@ from __future__ import annotations
 
 import warp as wp
 
+from .contacts import Contacts
 from .kernels import broadphase_collision_pairs, create_soft_contacts, handle_contact_pairs
-
-
-class Contacts:
-    """Provides contact information to be consumed by a solver.
-    Stores the contact distance, position, frame, and geometry for each contact point.
-    """
-
-    def __init__(self, rigid_contact_max, soft_contact_max, requires_grad=False):
-        # ---------------------------------------------------
-        # rigid contacts
-        self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
-        self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
-        self.rigid_contact_shape0 = wp.zeros(rigid_contact_max, dtype=wp.int32)
-        self.rigid_contact_shape1 = wp.zeros(rigid_contact_max, dtype=wp.int32)
-        self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.rigid_contact_thickness = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
-        self.rigid_contact_tids = wp.zeros(rigid_contact_max, dtype=wp.int32)
-
-        # ---------------------------------------------------
-        # soft contacts
-        self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
-        self.soft_contact_particle = wp.zeros(soft_contact_max, dtype=int)
-        self.soft_contact_shape = wp.zeros(soft_contact_max, dtype=int)
-        self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-        self.soft_contact_tids = wp.zeros(soft_contact_max, dtype=int)
-
-        self.requires_grad = requires_grad
-
-        self.rigid_contact_max = rigid_contact_max
-        self.soft_contact_max = soft_contact_max
 
 
 class CollisionPipeline:
     def __init__(
         self,
-        device,
         shape_count: int,
         shape_pairs_filtered: wp.array(dtype=int, ndim=2),
         rigid_max_contacts_per_pair: int,
@@ -94,6 +58,7 @@ class CollisionPipeline:
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
 
+        self.iterate_mesh_vertices = iterate_mesh_vertices
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
 
@@ -111,6 +76,7 @@ class CollisionPipeline:
         body_q: wp.array(dtype=wp.transform),
         particle_q: wp.array(dtype=wp.vec3),
         particle_radius: wp.array(dtype=float),
+        particle_flags: wp.array(dtype=wp.uint32),
     ) -> Contacts:
         # allocate new contact memory for contacts if we need gradients
         if self.contacts is None or self.requires_grad:
@@ -123,15 +89,17 @@ class CollisionPipeline:
         particle_count = len(particle_q) if particle_q else 0
 
         with wp.ScopedTimer("collide", False):
-            # generate soft contacts for particles and shapes except ground plane (last shape)
-            if particle_q and shape_count > 1:
+            # generate soft contacts for particles and shapes
+            if particle_q and shape_count > 0:
                 # clear old count
-                self.soft_contact_count.zero_()
+                contacts.soft_contact_count.zero_()
                 wp.launch(
                     kernel=create_soft_contacts,
-                    dim=particle_count * (shape_count - 1),
+                    dim=particle_count * shape_count,
                     inputs=[
                         particle_q,
+                        particle_radius,
+                        particle_flags,
                         body_q,
                         shape_transform,
                         shape_body,
@@ -140,7 +108,7 @@ class CollisionPipeline:
                         shape_source,
                         self.soft_contact_margin,
                         self.soft_contact_max,
-                        shape_count - 1,
+                        shape_count,
                     ],
                     outputs=[
                         contacts.soft_contact_count,
@@ -153,14 +121,13 @@ class CollisionPipeline:
                     ],
                 )
 
+            # generate rigid contacts for shapes
             if self.shape_pairs_filtered is not None:
                 # clear old count
                 contacts.rigid_contact_count.zero_()
-
                 self.rigid_pair_shape0.fill_(-1)
                 self.rigid_pair_shape1.fill_(-1)
 
-            if self.shape_pairs_filtered is not None:
                 wp.launch(
                     kernel=broadphase_collision_pairs,
                     dim=len(self.shape_pairs_filtered),
@@ -189,13 +156,8 @@ class CollisionPipeline:
                     record_tape=False,
                 )
 
-            if self.shape_pairs_filtered is not None:
-                contacts.rigid_contact_count.zero_()
-                contacts.rigid_contact_tids.fill_(-1)
-
+                contacts.clear()
                 self.rigid_pair_point_count.zero_()
-                self.rigid_pair_shape0.fill_(-1)
-                self.rigid_pair_shape1.fill_(-1)
 
                 wp.launch(
                     kernel=handle_contact_pairs,

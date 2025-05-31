@@ -253,6 +253,7 @@ __all__ = [
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
+    "Devicelike",
     "Mat33",
     "Quat",
     "Sequence",
