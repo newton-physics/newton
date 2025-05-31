@@ -41,6 +41,8 @@ TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(1)
 EDGE_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(2)
 TRI_TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(3)
 
+COLLISION_DETECTION_BLOCK_SIZE = 16
+
 
 @wp.func
 def build_orthonormal_basis(n: wp.vec3):
@@ -2518,6 +2520,7 @@ class TriMeshCollisionDetector:
                 ],
                 dim=self.model.particle_count,
                 device=self.model.device,
+                block_dim=COLLISION_DETECTION_BLOCK_SIZE,
             )
         else:
             self.triangle_colliding_vertices_min_dist.fill_(query_radius)
@@ -2540,6 +2543,7 @@ class TriMeshCollisionDetector:
                 ],
                 dim=self.model.particle_count,
                 device=self.model.device,
+                block_dim=COLLISION_DETECTION_BLOCK_SIZE,
             )
 
     def edge_edge_collision_detection(self, query_radius):
@@ -2563,6 +2567,7 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.edge_count,
             device=self.model.device,
+            block_dim=COLLISION_DETECTION_BLOCK_SIZE,
         )
 
     def triangle_triangle_intersection_detection(self):
