@@ -51,8 +51,8 @@ class CollisionPipeline:
         # used during broadphase collision handling
         self.rigid_pair_shape0 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
         self.rigid_pair_shape1 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
-        self.rigid_pair_point_limit = None  # wp.empty(self.shape_pairs_max, dtype=wp.int32)
-        self.rigid_pair_point_count = None  # wp.empty(self.shape_pairs_max, dtype=wp.int32)
+        self.rigid_pair_point_limit = None  # wp.empty(self.shape_count ** 2, dtype=wp.int32)
+        self.rigid_pair_point_count = None  # wp.empty(self.shape_count ** 2, dtype=wp.int32)
         self.rigid_pair_point_id = wp.empty(self.rigid_contact_max, dtype=wp.int32)
 
         self.soft_contact_margin = soft_contact_margin
