@@ -3,8 +3,6 @@ import warp as wp
 import newton
 from newton.core.types import PARTICLE_FLAG_ACTIVE, SHAPE_FLAG_COLLIDE_PARTICLES
 
-from .types import SDF, Mesh
-
 
 @wp.func
 def build_orthonormal_basis(n: wp.vec3):
@@ -612,6 +610,7 @@ def replay_limited_counter_increment(
 def create_soft_contacts(
     particle_q: wp.array(dtype=wp.vec3),
     particle_radius: wp.array(dtype=float),
+    particle_flags: wp.array(dtype=wp.uint32),
     body_q: wp.array(dtype=wp.transform),
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
@@ -734,6 +733,9 @@ def create_soft_contacts(
             soft_contact_body_vel[index] = body_vel
             soft_contact_particle[index] = particle_index
             soft_contact_normal[index] = world_normal
+
+
+# region Rigid body collision detection
 
 
 @wp.kernel(enable_backward=False)
@@ -1552,8 +1554,9 @@ def handle_contact_pairs(
         )  # This 'thickness' is sum of additional margins, might need renaming if confusing
 
 
+# endregion
 # --------------------------------------
-# Triangle collision detection
+# region Triangle collision detection
 
 # types of triangle's closest point to a point
 TRI_CONTACT_FEATURE_VERTEX_A = wp.constant(0)
@@ -2404,24 +2407,4 @@ class TriMeshCollisionDetector:
         )
 
 
-def compute_shape_radius(geo_type: int, scale, src: Mesh | SDF | None) -> float:
-    """
-    Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
-    """
-    if geo_type == newton.GEO_SPHERE:
-        return scale[0]
-    elif geo_type == newton.GEO_BOX:
-        return np.linalg.norm(scale)
-    elif geo_type == newton.GEO_CAPSULE or geo_type == newton.GEO_CYLINDER or geo_type == newton.GEO_CONE:
-        return scale[0] + scale[1]
-    elif geo_type == newton.GEO_MESH:
-        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-        return np.linalg.norm(vmax)
-    elif geo_type == newton.GEO_PLANE:
-        if scale[0] > 0.0 and scale[1] > 0.0:
-            # finite plane
-            return np.linalg.norm(scale)
-        else:
-            return 1.0e6
-    else:
-        return 10.0
+# endregion

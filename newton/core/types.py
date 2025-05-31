@@ -24,7 +24,6 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 from typing_extensions import override
-
 from warp.context import Devicelike
 
 # Particle flags
@@ -240,6 +239,7 @@ __all__ = [
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
+    "Devicelike",
     "Mat33",
     "Quat",
     "Sequence",

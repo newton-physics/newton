@@ -3185,7 +3185,7 @@ class ModelBuilder:
 
         # add ground plane if not already created
         if not self._ground_created:
-            self._create_ground_plane()
+            self.add_ground_plane()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -3198,8 +3198,6 @@ class ModelBuilder:
 
             m = Model(device)
             m.requires_grad = requires_grad
-
-            m.ground_plane_params = self._ground_params["plane"]
 
             m.num_envs = self.num_envs
 
@@ -3421,7 +3419,6 @@ class ModelBuilder:
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
-            m.ground_plane = wp.array(self._ground_params["plane"], dtype=wp.float32, requires_grad=requires_grad)
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
@@ -3434,20 +3431,16 @@ class ModelBuilder:
         import itertools
 
         filters = copy.copy(self.shape_collision_filter_pairs)
-        # for a, b in self.shape_collision_filter_pairs:
-        #     filters.add((b, a))
         contact_pairs = []
         # iterate over collision groups (islands)
         for group, shapes in self.shape_collision_group_map.items():
             for s1, s2 in itertools.combinations(shapes, 2):
-                # Original flag checks, using s1 and s2
                 if not (self.shape_flags[s1] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 if not (self.shape_flags[s2] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
-                # This effectively replaces the `if shape_a < shape_b` condition logic
                 shape_a, shape_b = min(s1, s2), max(s1, s2)
 
                 if (shape_a, shape_b) not in filters:
