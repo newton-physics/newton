@@ -51,7 +51,7 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 ``Model``
 ---------
 
-:attr:`newton.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.ShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
 
 Forward and Inverse Kinematics
 ------------------------------
