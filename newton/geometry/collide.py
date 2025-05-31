@@ -51,8 +51,8 @@ class CollisionPipeline:
         # used during broadphase collision handling
         self.rigid_pair_shape0 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
         self.rigid_pair_shape1 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
-        self.rigid_pair_point_limit = wp.empty(self.shape_pairs_max, dtype=wp.int32)
-        self.rigid_pair_point_count = wp.empty(self.shape_pairs_max, dtype=wp.int32)
+        self.rigid_pair_point_limit = None  # wp.empty(self.shape_pairs_max, dtype=wp.int32)
+        self.rigid_pair_point_count = None  # wp.empty(self.shape_pairs_max, dtype=wp.int32)
         self.rigid_pair_point_id = wp.empty(self.rigid_contact_max, dtype=wp.int32)
 
         self.soft_contact_margin = soft_contact_margin
@@ -80,7 +80,12 @@ class CollisionPipeline:
     ) -> Contacts:
         # allocate new contact memory for contacts if we need gradients
         if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(self.rigid_contact_max, self.soft_contact_max, requires_grad=self.requires_grad, device=shape_type.device,)
+            self.contacts = Contacts(
+                self.rigid_contact_max,
+                self.soft_contact_max,
+                requires_grad=self.requires_grad,
+                device=shape_type.device,
+            )
 
         # output contacts buffer
         contacts = self.contacts
@@ -159,7 +164,8 @@ class CollisionPipeline:
                 )
 
                 contacts.clear()
-                self.rigid_pair_point_count.zero_()
+                if self.rigid_pair_point_count is not None:
+                    self.rigid_pair_point_count.zero_()
 
                 wp.launch(
                     kernel=handle_contact_pairs,

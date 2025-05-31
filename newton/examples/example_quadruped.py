@@ -51,6 +51,7 @@ class Example:
             articulation_builder,
             xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
+            enable_self_collisions=False,
         )
         articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
         articulation_builder.joint_target[-12:] = articulation_builder.joint_q[-12:]
@@ -70,10 +71,11 @@ class Example:
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 
+        builder.add_ground_plane()
+
         np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
-        self.model.ground = True
 
         self.solver = newton.solvers.XPBDSolver(self.model)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)

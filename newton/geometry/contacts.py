@@ -27,7 +27,13 @@ class Contacts:
         This class definition is only a temporary solution and will change significantly in the future.
     """
 
-    def __init__(self, rigid_contact_max: int, soft_contact_max: int, requires_grad: bool = False, device: Devicelike = None):
+    def __init__(
+        self,
+        rigid_contact_max: int,
+        soft_contact_max: int,
+        requires_grad: bool = False,
+        device: Devicelike = None,
+    ):
         with wp.ScopedDevice(device):
             # rigid contacts
             self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
