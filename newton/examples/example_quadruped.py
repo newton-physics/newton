@@ -87,6 +87,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
         newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -121,6 +122,7 @@ class Example:
         with wp.ScopedTimer("render"):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
+            self.renderer.render_contacts(self.state_0, self.contacts, contact_point_radius=1e-2)
             self.renderer.end_frame()
 
 
@@ -135,8 +137,8 @@ if __name__ == "__main__":
         default="example_quadruped.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--num_frames", type=int, default=30000, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
