@@ -221,6 +221,12 @@ class Model:
         """Joint stiffness, shape [joint_axis_count], float."""
         self.joint_target_kd = None
         """Joint damping, shape [joint_axis_count], float."""
+        self.joint_effort_limit = None
+        """Joint effort (force/torque) limits, shape [joint_axis_count], float."""
+        self.joint_velocity_limit = None
+        """Joint velocity limits, shape [joint_axis_count], float."""
+        self.joint_friction = None
+        """Joint friction coefficient, shape [joint_axis_count], float."""
         self.joint_axis_start = None
         """Start index of the first axis per joint, shape [joint_count], int."""
         self.joint_axis_dim = None

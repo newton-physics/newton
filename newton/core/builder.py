@@ -198,6 +198,9 @@ class ModelBuilder:
             target_kd: float = 0.0,
             mode: int = JOINT_MODE_TARGET_POSITION,
             armature: float = 1e-2,
+            effort_limit: float = 1e6,
+            velocity_limit: float = 1e6,
+            friction: float = 0.0,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
@@ -221,6 +224,12 @@ class ModelBuilder:
             """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
             self.armature = armature
             """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+            self.effort_limit = effort_limit
+            """Maximum effort (force or torque) the joint axis can exert. Defaults to 1e6."""
+            self.velocity_limit = velocity_limit
+            """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
+            self.friction = friction
+            """Friction coefficient for the joint axis. Defaults to 0.0."""
 
             if self.mode == JOINT_MODE_TARGET_POSITION and (
                 self.target > self.limit_upper or self.target < self.limit_lower
@@ -363,6 +372,9 @@ class ModelBuilder:
         self.joint_limit_ke = []
         self.joint_limit_kd = []
         self.joint_target = []
+        self.joint_effort_limit = []
+        self.joint_velocity_limit = []
+        self.joint_friction = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -622,6 +634,9 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_effort_limit",
+            "joint_velocity_limit",
+            "joint_friction",
             "shape_key",
             "shape_flags",
             "shape_geo_type",
@@ -807,6 +822,9 @@ class ModelBuilder:
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
+            self.joint_effort_limit.append(dim.effort_limit)
+            self.joint_velocity_limit.append(dim.velocity_limit)
+            self.joint_friction.append(dim.friction)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -837,10 +855,16 @@ class ModelBuilder:
                 # distance joint has already 1 armature setting defined from the linear dof
                 for _ in range(dof_count - 1):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
             else:
                 # free and ball joints need armature defined for all velocity dofs
                 for _ in range(dof_count):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -871,6 +895,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -892,6 +919,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -917,6 +947,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_REVOLUTE,
@@ -946,6 +979,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -967,6 +1003,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -992,6 +1031,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_PRISMATIC,
@@ -3378,6 +3420,9 @@ class ModelBuilder:
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
