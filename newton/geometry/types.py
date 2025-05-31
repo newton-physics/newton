@@ -130,26 +130,3 @@ class Mesh:
         Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
         """
         return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
-
-
-def get_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
-    """
-    Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
-    """
-    if geo_type == GEO_SPHERE:
-        return scale[0]
-    elif geo_type == GEO_BOX:
-        return np.linalg.norm(scale)
-    elif geo_type == GEO_CAPSULE or geo_type == GEO_CYLINDER or geo_type == GEO_CONE:
-        return scale[0] + scale[1]
-    elif geo_type == GEO_MESH:
-        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-        return np.linalg.norm(vmax)
-    elif geo_type == GEO_PLANE:
-        if scale[0] > 0.0 and scale[1] > 0.0:
-            # finite plane
-            return np.linalg.norm(scale)
-        else:
-            return 1.0e6
-    else:
-        return 10.0

@@ -102,8 +102,6 @@ class Model:
         """List of finalized `wp.Mesh` objects."""
         self.geo_sdfs = []
         """List of finalized `SDF` objects."""
-        self.ground_plane_params = {}
-        """Parameters used to define the ground plane, typically set by `ModelBuilder`."""
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
@@ -115,6 +113,8 @@ class Model:
         """Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
+        self.shape_contact_pair_count = 0
+        """Number of shape contact pairs."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -276,11 +276,7 @@ class Model:
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
         # toggles ground contact for all shapes
-        self.ground = True
-        """Whether the ground plane and ground contacts are enabled."""
-        self.ground_plane = None
-        """Ground plane 3D normal and offset, shape [4], float."""
-        self.up_vector = np.array((0.0, 1.0, 0.0))
+        self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis, 0 for x, 1 for y, 2 for z."""
@@ -442,7 +438,7 @@ class Model:
         max_contacts_per_pair: int = 10,
         soft_contact_margin: float = 0.0,
         rigid_contact_margin: float = 0.0,
-    ) -> Contact:
+    ) -> Contacts:
         """Generate contact points for the particles and rigid bodies in the
         model for use in contact-dynamics kernels.
 
@@ -467,7 +463,6 @@ class Model:
 
         if not hasattr(self, "_collision_pipeline"):
             self._collision_pipeline = CollisionPipeline(
-                self.device,
                 self.shape_count,
                 self.shape_contact_pairs,
                 max_contacts_per_pair,
@@ -498,4 +493,5 @@ class Model:
             state.body_q,
             state.particle_q,
             self.particle_radius,
+            self.particle_flags,
         )

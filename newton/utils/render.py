@@ -75,8 +75,6 @@ def CreateSimRenderer(renderer):
             scaling: float = 1.0,
             fps: int = 60,
             up_axis: newton.AxisType | None = None,
-            show_rigid_contact_points: bool = False,
-            contact_points_radius: float = 1e-3,
             show_joints: bool = False,
             show_particles: bool = True,
             **render_kwargs,
@@ -87,11 +85,12 @@ def CreateSimRenderer(renderer):
             super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
             self.scaling = scaling
             self.cam_axis = up_axis.value
-            self.show_rigid_contact_points = show_rigid_contact_points
             self.show_joints = show_joints
-            self.contact_points_radius = contact_points_radius
             self.show_particles = show_particles
             self.populate(model)
+
+            self._contact_points0 = None
+            self._contact_points1 = None
 
         def populate(self, model: newton.Model):
             self.skip_rendering = False
@@ -99,17 +98,6 @@ def CreateSimRenderer(renderer):
             self.model = model
             self.num_envs = model.num_envs
             self.body_names = []
-
-            if self.show_rigid_contact_points and model.rigid_contact_max:
-                self.contact_points0 = wp.array(
-                    np.zeros((model.rigid_contact_max, 3)), dtype=wp.vec3, device=model.device
-                )
-                self.contact_points1 = wp.array(
-                    np.zeros((model.rigid_contact_max, 3)), dtype=wp.vec3, device=model.device
-                )
-
-                self.contact_points0_colors = [(1.0, 0.5, 0.0)] * model.rigid_contact_max
-                self.contact_points1_colors = [(0.0, 0.5, 1.0)] * model.rigid_contact_max
 
             self.body_env = []  # mapping from body index to its environment index
             env_id = 0
@@ -390,38 +378,59 @@ def CreateSimRenderer(renderer):
             if self.model.body_count:
                 self.update_body_transforms(state.body_q)
 
-                if self.show_rigid_contact_points and self.model.rigid_contact_max:
-                    wp.launch(
-                        kernel=compute_contact_points,
-                        dim=self.model.rigid_contact_max,
-                        inputs=[
-                            state.body_q,
-                            self.model.shape_body,
-                            self.model.rigid_contact_count,
-                            self.model.rigid_contact_shape0,
-                            self.model.rigid_contact_shape1,
-                            self.model.rigid_contact_point0,
-                            self.model.rigid_contact_point1,
-                        ],
-                        outputs=[
-                            self.contact_points0,
-                            self.contact_points1,
-                        ],
-                        device=self.model.device,
-                    )
+        def render_contacts(
+            self,
+            state: newton.State,
+            contacts: newton.Contacts,
+            contact_point_radius: float = 1e-3,
+        ):
+            """
+            Render contact points between rigid bodies.
 
-                    self.render_points(
-                        "contact_points0",
-                        self.contact_points0.numpy(),
-                        radius=self.contact_points_radius * self.scaling,
-                        colors=self.contact_points0_colors,
-                    )
-                    self.render_points(
-                        "contact_points1",
-                        self.contact_points1.numpy(),
-                        radius=self.contact_points_radius * self.scaling,
-                        colors=self.contact_points1_colors,
-                    )
+            Args:
+                state (newton.State): The simulation state.
+                contacts (newton.Contacts): The contacts to render.
+                contact_point_radius (float, optional): The radius of the contact points.
+            """
+            if self._contact_points0 is None or len(self._contact_points0) < contacts.rigid_contact_max:
+                self._contact_points0 = wp.array(
+                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                )
+                self._contact_points1 = wp.array(
+                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                )
+
+            wp.launch(
+                kernel=compute_contact_points,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    state.body_q,
+                    self.model.shape_body,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                ],
+                outputs=[
+                    self._contact_points0,
+                    self._contact_points1,
+                ],
+                device=self.model.device,
+            )
+
+            self.render_points(
+                "contact_points0",
+                self._contact_points0,
+                radius=contact_point_radius * self.scaling,
+                colors=(1.0, 0.5, 0.0),
+            )
+            self.render_points(
+                "contact_points1",
+                self._contact_points1,
+                radius=contact_point_radius * self.scaling,
+                colors=(0.0, 0.5, 1.0),
+            )
 
     return SimRenderer
 

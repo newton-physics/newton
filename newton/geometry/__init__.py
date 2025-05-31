@@ -2,7 +2,6 @@ import warp as wp
 
 from .collide import CollisionPipeline, Contacts
 from .inertia import compute_shape_inertia, transform_inertia
-from .kernels import compute_shape_radius
 from .types import (
     GEO_BOX,
     GEO_CAPSULE,
@@ -16,6 +15,7 @@ from .types import (
     SDF,
     Mesh,
 )
+from .utils import compute_shape_radius
 
 
 @wp.func
@@ -74,7 +74,7 @@ __all__ = [
     # Geometry classes
     "Mesh",
     "compute_shape_inertia",
-    "compute_shape_radius",
+    "get_shape_radius",
     "create_box",
     "create_capsule",
     "create_cone",
@@ -83,4 +83,5 @@ __all__ = [
     "create_plane",
     "create_sphere",
     "transform_inertia",
+    "compute_shape_radius",
 ]
