@@ -396,14 +396,6 @@ class ModelBuilder:
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
-        # indicates whether a ground plane has been created
-        self._ground_created = False
-        # constructor parameters for ground plane shape
-        self._ground_params = {
-            "plane": None,
-            "width": 0.0,
-            "length": 0.0,
-        }
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -685,7 +677,6 @@ class ModelBuilder:
 
         self.up_axis = builder.up_axis
         self.gravity = builder.gravity
-        self._ground_params = builder._ground_params
 
         if update_num_env_count:
             self.num_envs += 1
@@ -3264,10 +3255,6 @@ class ModelBuilder:
 
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
-
-        # add ground plane if not already created
-        if not self._ground_created:
-            self.add_ground_plane()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
