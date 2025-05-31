@@ -187,7 +187,7 @@ class ExampleClothManipulation:
         # parameters
         #   simulation
         self.num_substeps = 15
-        self.iterations = 3
+        self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
         self.sim_dt = self.frame_dt / self.num_substeps
@@ -212,7 +212,7 @@ class ExampleClothManipulation:
         self.tri_ka = 1e4
         self.tri_kd = 1.5e-6
 
-        self.bending_ke = 20
+        self.bending_ke = 10
         self.bending_kd = 1e-4
 
         self.gravity = -1000.0  # cm/s^2
@@ -414,20 +414,21 @@ class ExampleClothManipulation:
                 [2, 0.26, 0.16, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [2, 0.12, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [3, -0.06, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.06, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [1, -0.06, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 # bottom right
                 [2, 0.15, 0.21, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 [3, 0.15, 0.10, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 [3, 0.15, 0.10, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [2, 0.15, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [3, -0.02, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.02, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [1, -0.02, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 # top left
-                [3, -0.28, 0.105, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [3, -0.28, 0.10, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
+                [2, -0.28, 0.18, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2, -0.28, 0.10, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2, -0.28, 0.10, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [2, -0.18, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [3, 0.05, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, 0.05, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [1, 0.05, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 # # bottom left
                 [3, -0.18, 0.105, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
                 [3, -0.18, 0.10, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
@@ -443,10 +444,11 @@ class ExampleClothManipulation:
                 [1.5, -0.0, 0.25, 0.4, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [1.5, -0.0, 0.25, 0.5, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
                 [1, -0.0, 0.25, 0.5, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [3, 0.0, 0.30, 0.55, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [1, 0.0, 0.30, 0.55, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
+        self.targets = self.robot_key_poses[:, 1:]
         self.targets = self.robot_key_poses[:, 1:]
         self.targets[:, :3] = self.targets[:, :3] * 100.0
         self.transition_duration = self.robot_key_poses[:, 0]
