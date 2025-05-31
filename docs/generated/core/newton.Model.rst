@@ -56,7 +56,6 @@
       ~Model.shape_geo_src
       ~Model.geo_meshes
       ~Model.geo_sdfs
-      ~Model.ground_plane_params
       ~Model.shape_collision_group
       ~Model.shape_collision_group_map
       ~Model.shape_collision_filter_pairs
@@ -162,8 +161,6 @@
       ~Model.rigid_contact_broad_shape1
       ~Model.rigid_contact_point_id
       ~Model.rigid_contact_point_limit
-      ~Model.ground
-      ~Model.ground_plane
       ~Model.up_vector
       ~Model.up_axis
       ~Model.gravity
