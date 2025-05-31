@@ -47,6 +47,8 @@ For example, ``ke`` is now defined using ``builder.default_shape_cfg.ke``, where
 The MJCF and URDF importers both have an ``up_axis`` argument that defaults to +Z.
 All importers will rotate the asset now to match the builder's ``up_axis`` (instead of overwriting the ``up_axis`` in the builder, as was the case previously for the USD importer).
 
+The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the ``density`` argument to ``wp.sim.parse_mjcf``). The Newton MJCF importer now considers the ``geom_density`` for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.
+
 
 ``Model``
 ---------
