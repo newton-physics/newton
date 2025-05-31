@@ -49,11 +49,11 @@ class CollisionPipeline:
         self.rigid_contact_max = self.shape_pairs_max * rigid_max_contacts_per_pair
 
         # used during broadphase collision handling
-        self.rigid_pair_shape0 = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
-        self.rigid_pair_shape1 = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
-        self.rigid_pair_point_limit = wp.zeros(self.shape_pairs_max, dtype=wp.int32)
-        self.rigid_pair_point_count = wp.zeros(self.shape_pairs_max, dtype=wp.int32)
-        self.rigid_pair_point_id = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
+        self.rigid_pair_shape0 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
+        self.rigid_pair_shape1 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
+        self.rigid_pair_point_limit = wp.empty(self.shape_pairs_max, dtype=wp.int32)
+        self.rigid_pair_point_count = wp.empty(self.shape_pairs_max, dtype=wp.int32)
+        self.rigid_pair_point_id = wp.empty(self.rigid_contact_max, dtype=wp.int32)
 
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
@@ -80,7 +80,7 @@ class CollisionPipeline:
     ) -> Contacts:
         # allocate new contact memory for contacts if we need gradients
         if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(self.rigid_contact_max, self.soft_contact_max, requires_grad=self.requires_grad)
+            self.contacts = Contacts(self.rigid_contact_max, self.soft_contact_max, requires_grad=self.requires_grad, device=shape_type.device,)
 
         # output contacts buffer
         contacts = self.contacts
@@ -119,6 +119,7 @@ class CollisionPipeline:
                         contacts.soft_contact_normal,
                         contacts.soft_contact_tids,
                     ],
+                    device=contacts.device,
                 )
 
             # generate rigid contacts for shapes
@@ -154,6 +155,7 @@ class CollisionPipeline:
                         self.rigid_pair_point_limit,
                     ],
                     record_tape=False,
+                    device=contacts.device,
                 )
 
                 contacts.clear()
@@ -191,6 +193,7 @@ class CollisionPipeline:
                         self.rigid_pair_point_count,
                         contacts.rigid_contact_tids,
                     ],
+                    device=contacts.device,
                 )
 
             return contacts
