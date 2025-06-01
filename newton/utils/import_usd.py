@@ -41,6 +41,7 @@ def parse_usd(
     cloned_env: str | None = None,
     collapse_fixed_joints: bool = False,
     enable_self_collisions: bool = True,
+    apply_up_axis_from_stage: bool = False,
     root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] = "dfs",
 ) -> dict[str, Any]:
@@ -64,6 +65,7 @@ def parse_usd(
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+        apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "dfs".
 
@@ -541,8 +543,6 @@ def parse_usd(
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
-        # builder.up_vector = -np.array(scene_desc.gravityDirection, dtype=np.float32)
-        # builder.up_axis = int(np.argmax(np.abs(builder.up_vector)))
         axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
@@ -558,7 +558,15 @@ def parse_usd(
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
         axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
-    axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
+    if apply_up_axis_from_stage:
+        builder.up_axis = axis
+        axis_xform = wp.transform_identity()
+        if verbose:
+            print(f"Using stage up axis {axis} as builder up axis")
+    else:
+        axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
+        if verbose:
+            print(f"Rotating stage to align its up axis {axis} with builder up axis {builder.up_axis}")
     if xform is None:
         incoming_world_xform = axis_xform
     else:

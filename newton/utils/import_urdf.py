@@ -118,6 +118,7 @@ def parse_urdf(
             is_visible=visible,
             has_ground_collision=not just_visual,
             has_shape_collision=not just_visual,
+            has_particle_collision=not just_visual,
         )
         shapes = []
         # add geometry
@@ -186,7 +187,7 @@ def parse_urdf(
                     # resolve file path from package name, i.e. find
                     # the package folder from the URDF folder
                     if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.index(package_name)], fn)
+                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
                     else:
                         wp.utils.warn(
                             f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"'

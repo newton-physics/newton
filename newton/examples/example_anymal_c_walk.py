@@ -20,7 +20,6 @@
 #
 ###########################################################################
 
-import math
 
 import numpy as np
 import torch
@@ -228,7 +227,7 @@ class AnymalController:
 class Example:
     def __init__(self, stage_path="example_quadruped.usd"):
         self.device = wp.get_device()
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
@@ -241,10 +240,11 @@ class Example:
             mu=0.75,
         )
 
+        asset_path = newton.utils.download_asset("anymal_c_simple_description")
+
         newton.utils.parse_urdf(
-            newton.examples.get_asset("../../assets/anymal_c_simple_description/urdf/anymal.urdf"),
+            str(asset_path / "urdf" / "anymal.urdf"),
             builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
@@ -259,13 +259,10 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.start_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)
-
-        builder.joint_q[:7] = [
+        builder.joint_q[:3] = [
             0.0,
             0.7,
             0.0,
-            *self.start_rot,
         ]
 
         builder.joint_q[7:] = [
@@ -317,7 +314,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, None, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.controller = AnymalController(self.model, self.device)
 

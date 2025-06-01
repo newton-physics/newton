@@ -17,7 +17,7 @@
 # Example Sim Cloth Self Contact
 #
 # This simulation demonstrates twisting an FEM cloth model using the VBD
-# integrator, showcasing its ability to handle complex self-contacts while
+# solver, showcasing its ability to handle complex self-contacts while
 # ensuring it remains intersection-free.
 #
 ###########################################################################
@@ -128,7 +128,7 @@ class Example:
         self.num_substeps = 10
         self.iterations = 4
         self.dt = self.frame_dt / self.num_substeps
-        # the BVH used by VBDIntegrator will be rebuilt every self.bvh_rebuild_frames
+        # the BVH used by VBDSolver will be rebuilt every self.bvh_rebuild_frames
         # When the simulated object deforms significantly, simply refitting the BVH can lead to deterioration of the BVH's
         # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
         self.bvh_rebuild_frames = 10
@@ -278,7 +278,7 @@ class Example:
             self.render()
             print(f"[{i:4d}/{self.num_frames}]")
 
-            if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph:
+            if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph and self.solver.handle_self_contact:
                 self.solver.rebuild_bvh(self.state0)
                 with wp.ScopedCapture() as capture:
                     self.integrate_frame_substeps()
