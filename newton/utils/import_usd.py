@@ -697,7 +697,7 @@ def parse_usd(
             first_joint_parent = joint_edges[sorted_joints[0]][0]
             if first_joint_parent != -1:
                 # the mechanism is floating since there is no joint connecting it to the world
-                # we explicitly add a free joint to make sure Featherstone can simulate it
+                # we explicitly add a free joint to make sure Featherstone and MuJoCo can simulate it
                 builder.add_joint_free(child=art_bodies[first_joint_parent])
                 builder.joint_q[-7:] = articulation_xform
             for joint_id, i in enumerate(sorted_joints):
