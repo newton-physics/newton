@@ -2825,6 +2825,7 @@ class XPBDSolver(SolverBase):
 
                         # particle ground contact
                         if model.ground:
+                            # TODO remove
                             wp.launch(
                                 kernel=solve_particle_ground_contacts,
                                 dim=model.particle_count,
@@ -2866,13 +2867,13 @@ class XPBDSolver(SolverBase):
                                     model.shape_materials,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
-                                    model.soft_contact_count,
-                                    model.soft_contact_particle,
-                                    model.soft_contact_shape,
-                                    model.soft_contact_body_pos,
-                                    model.soft_contact_body_vel,
-                                    model.soft_contact_normal,
-                                    model.soft_contact_max,
+                                    contacts.soft_contact_count,
+                                    contacts.soft_contact_particle,
+                                    contacts.soft_contact_shape,
+                                    contacts.soft_contact_body_pos,
+                                    contacts.soft_contact_body_vel,
+                                    contacts.soft_contact_normal,
+                                    contacts.soft_contact_max,
                                     dt,
                                     self.soft_contact_relaxation,
                                 ],
