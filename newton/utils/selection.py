@@ -253,16 +253,26 @@ class ContactView:
     """
 
     def __init__(
-        self, contact_view_manager: ContactViewManager, entity_pattern: str, filter_pattern: str | None = None
+        self, contact_view_manager: ContactViewManager, entity_pattern: str, filter_pattern: str | None = None,
+        match_fun = None,
     ):
         self.contact_view_manager = contact_view_manager
         self.entity_pattern = entity_pattern
         self.filter_pattern = filter_pattern
 
-        self.entity_a, entity_a_keys = self._get_entities(entity_pattern)
+        if match_fun is None:
+            match_fun = fnmatch
+        elif match_fun == "re":
+            match_fun = lambda name, pat: re.match(pat, name)
+
+        self.entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun)
+        if not entity_a_keys:
+            raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
 
         if filter_pattern is not None:
-            self.entity_b, entity_b_keys = self._get_entities(filter_pattern)
+            self.entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun)
+            if not entity_b_keys:
+                raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
         else:
             self.entity_b = None
             entity_b_keys = None
@@ -272,7 +282,7 @@ class ContactView:
 
         self.query_idx = self.contact_view_manager.add_query(self.entity_a, self.entity_b)
 
-    def _get_entities(self, pattern: str):
+    def _get_entities(self, pattern: str, match_fn):
         # consider bodies and shapes
         entities = []
         entity_keys = []
@@ -280,7 +290,10 @@ class ContactView:
         model = self.contact_view_manager.model
         for body_id, body_key in enumerate(model.body_key):
             if fnmatch(body_key, pattern):
-                entities.append(tuple(model.body_shapes[body_id]))
+                body_shapes = tuple(model.body_shapes[body_id])
+                if not body_shapes:
+                    continue
+                entities.append(body_shapes)
                 entity_keys.append(body_key)
 
         for shape_id, shape_key in enumerate(model.shape_key):
