@@ -253,8 +253,11 @@ class ContactView:
     """
 
     def __init__(
-        self, contact_view_manager: ContactViewManager, entity_pattern: str, filter_pattern: str | None = None,
-        match_fun = None,
+        self,
+        contact_view_manager: ContactViewManager,
+        entity_pattern: str,
+        filter_pattern: str | None = None,
+        match_fun=None,
     ):
         self.contact_view_manager = contact_view_manager
         self.entity_pattern = entity_pattern
@@ -263,7 +266,9 @@ class ContactView:
         if match_fun is None:
             match_fun = fnmatch
         elif match_fun == "re":
-            match_fun = lambda name, pat: re.match(pat, name)
+
+            def match_fun(name, pat):
+                return re.match(pat, name)
 
         self.entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun)
         if not entity_a_keys:
