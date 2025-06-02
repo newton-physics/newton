@@ -149,9 +149,12 @@ class TestModel(unittest.TestCase):
 
         # a non-fixed joint followed by fixed joints
         builder.add_articulation()
-        b4 = builder.add_body()
+        free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        b4 = builder.add_body(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
         builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        assert_np_equal(builder.body_q[b4], np.array(free_xform))
+        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         assert builder.articulation_count == 3
