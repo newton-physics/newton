@@ -1164,7 +1164,8 @@ class ModelBuilder:
         enabled: bool = True,
     ) -> int:
         """Adds a free joint to the model.
-        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
+        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
+        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -1180,7 +1181,7 @@ class ModelBuilder:
 
         """
 
-        return self.add_joint(
+        joint_id = self.add_joint(
             JOINT_FREE,
             parent,
             child,
@@ -1190,6 +1191,9 @@ class ModelBuilder:
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
+        q_start = self.joint_q_start[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
+        return joint_id
 
     def add_joint_distance(
         self,

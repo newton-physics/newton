@@ -501,7 +501,7 @@ def eval_fk(
     model: Model,
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    state: State,
+    state: State | object,
     mask: wp.array(dtype=bool) | None = None,
 ):
     """
