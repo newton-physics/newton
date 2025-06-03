@@ -504,31 +504,31 @@ def bending_constraint(
 
     n1 = wp.cross(x3 - x1, x4 - x1)  # normal to face 1
     n2 = wp.cross(x4 - x2, x3 - x2)  # normal to face 2
+    e = x4 - x3
 
     n1_length = wp.length(n1)
     n2_length = wp.length(n2)
+    e_length = wp.length(e)
 
-    if n1_length < eps or n2_length < eps:
+    # Check for degenerate cases
+    if n1_length < eps or n2_length < eps or e_length < eps:
         return
 
     n1 /= n1_length
     n2 /= n2_length
+    e_hat = e / e_length
 
     cos_theta = wp.dot(n1, n2)
+    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    theta = wp.atan2(sin_theta, cos_theta)
 
-    e = x4 - x3
-    e_hat = wp.normalize(e)
-    e_length = wp.length(e)
+    c = theta - rest_angle
 
-    derivative_flip = wp.sign(wp.dot(wp.cross(n1, n2), e))
-    derivative_flip *= -1.0
-    angle = wp.acos(cos_theta)
+    grad_x1 = n1 * e_length
+    grad_x2 = n2 * e_length
+    grad_x3 = n1 * wp.dot(x1 - x4, e_hat) + n2 * wp.dot(x2 - x4, e_hat)
+    grad_x4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
 
-    grad_x1 = n1 * e_length * derivative_flip
-    grad_x2 = n2 * e_length * derivative_flip
-    grad_x3 = (n1 * wp.dot(x1 - x4, e_hat) + n2 * wp.dot(x2 - x4, e_hat)) * derivative_flip
-    grad_x4 = (n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)) * derivative_flip
-    c = angle - rest_angle
     denominator = (
         w1 * wp.length_sq(grad_x1)
         + w2 * wp.length_sq(grad_x2)
