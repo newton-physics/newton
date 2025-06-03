@@ -422,6 +422,8 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+        self.dof_to_axis_map = []
+
     @property
     def up_vector(self) -> Vec3:
         """Computes the 3D up vector from :attr:`up_axis`."""
@@ -674,6 +676,14 @@ class ModelBuilder:
         for attr in more_builder_attrs:
             getattr(self, attr).extend(getattr(builder, attr))
 
+        # Handle dof_to_axis_map specially - need to offset axis indices
+        axis_offset = self.joint_axis_total_count
+        for dof_axis_idx in builder.dof_to_axis_map:
+            if dof_axis_idx >= 0:
+                self.dof_to_axis_map.append(dof_axis_idx + axis_offset)
+            else:
+                self.dof_to_axis_map.append(dof_axis_idx)
+
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
         self.joint_axis_total_count += builder.joint_axis_total_count
@@ -876,6 +886,27 @@ class ModelBuilder:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
                     self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+
+        # Fill dof_to_axis_map
+        axis_start = self.joint_axis_start[-1]  # Get the axis start for this joint
+        num_axes = len(linear_axes) + len(angular_axes)
+
+        if joint_type in [JOINT_PRISMATIC, JOINT_REVOLUTE, JOINT_D6, JOINT_COMPOUND, JOINT_UNIVERSAL]:
+            for i in range(dof_count):
+                if i < num_axes:
+                    self.dof_to_axis_map.append(axis_start + i)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        elif joint_type == JOINT_DISTANCE:
+            # Only first DOF maps to the axis
+            for i in range(dof_count):
+                if i == 0 and num_axes > 0:
+                    self.dof_to_axis_map.append(axis_start)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        else:  # JOINT_FREE, JOINT_BALL, JOINT_FIXED
+            for _ in range(dof_count):
+                self.dof_to_axis_map.append(-1)
 
         return self.joint_count - 1
 
@@ -3429,6 +3460,8 @@ class ModelBuilder:
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
+
+            m.dof_to_axis_map = wp.array(self.dof_to_axis_map, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)

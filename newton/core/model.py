@@ -227,6 +227,8 @@ class Model:
         """Joint velocity limits, shape [joint_axis_count], float."""
         self.joint_friction = None
         """Joint friction coefficient, shape [joint_axis_count], float."""
+        self.dof_to_axis_map = None
+        """Mapping from DOF index to axis index (-1 for DOFs with no corresponding axis), shape [joint_dof_count], int."""
         self.joint_axis_start = None
         """Start index of the first axis per joint, shape [joint_count], int."""
         self.joint_axis_dim = None

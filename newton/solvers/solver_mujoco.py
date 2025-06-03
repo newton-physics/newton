@@ -599,7 +599,7 @@ def repeat_array_kernel(
 
 
 @wp.kernel
-def update_actuator_properties_kernel(
+def update_axis_properties_kernel(
     joint_effort_limit: wp.array(dtype=float),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
@@ -614,59 +614,31 @@ def update_actuator_properties_kernel(
     actuator_idx = axis_to_actuator[axis_in_env]
     if actuator_idx >= 0:  # Valid actuator
         effort_limit = joint_effort_limit[tid]
-        if effort_limit < 1e6:  # Only set if not default large value
-            actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
+        actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
 
 @wp.kernel
-def update_dof_armature_kernel(
+def update_dof_properties_kernel(
     joint_armature: wp.array(dtype=float),
+    joint_friction: wp.array(dtype=float),
+    dof_to_axis_map: wp.array(dtype=wp.int32),
     dofs_per_env: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
+    dof_frictionloss: wp.array2d(dtype=float),
 ):
-    """Update DOF armature values."""
+    """Update DOF armature and friction loss values."""
     tid = wp.tid()
     worldid = tid // dofs_per_env
     dof_in_env = tid % dofs_per_env
 
+    # Update armature
     dof_armature[worldid, dof_in_env] = joint_armature[tid]
 
-
-@wp.kernel
-def update_dof_friction_kernel(
-    joint_friction: wp.array(dtype=float),
-    dofs_per_env: int,
-    # outputs
-    dof_frictionloss: wp.array2d(dtype=float),
-):
-    """Update DOF friction loss values."""
-    worldid = wp.tid() // dofs_per_env
-    dof_in_env = wp.tid() % dofs_per_env
-
-    # For simplicity, apply the first friction value to all DOFs
-    # In a real implementation, you'd map from joint axes to DOFs properly
-    if joint_friction.shape[0] > 0:
-        friction_val = joint_friction[0]  # Use first axis friction for all DOFs
-        if friction_val > 0.0:
-            dof_frictionloss[worldid, dof_in_env] = friction_val
-
-
-# @wp.kernel
-# def update_joint_velocity_limits_kernel(
-#    joint_velocity_limit: wp.array(dtype=float),
-#    axes_per_env: int,
-#    # outputs
-#    jnt_range: wp.array2d(dtype=wp.vec2f),
-# ):
-#    """Update joint velocity ranges based on velocity limits."""
-#    tid = wp.tid()
-#    worldid = wp.tid() // axes_per_env
-#    axis_in_env = wp.tid() % axes_per_env
-#
-#    velocity_limit = joint_velocity_limit[tid]
-#    if velocity_limit < 1e6:  # Only set if not default large value
-#        jnt_range[worldid, axis_in_env] = wp.vec2f(-velocity_limit, velocity_limit)
+    # Update friction loss
+    axis_idx = dof_to_axis_map[tid]
+    if axis_idx >= 0:
+        dof_frictionloss[worldid, dof_in_env] = joint_friction[axis_idx]
 
 
 class MuJoCoSolver(SolverBase):
@@ -1388,10 +1360,8 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
-                    # Add friction if specified
-                    friction_value = joint_friction[ai]
-                    if friction_value > 0.0:
-                        joint_params["frictionloss"] = friction_value
+                    # Set friction
+                    joint_params["frictionloss"] = joint_friction[ai]
                     if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                         joint_params["stiffness"] = joint_target_ke[ai]
                         joint_params["damping"] = joint_target_kd[ai]
@@ -1424,8 +1394,7 @@ class MuJoCoSolver(SolverBase):
 
                         # Add effort limits from Newton model
                         effort_limit = joint_effort_limit[ai]
-                        if effort_limit < 1e6:  # Only set if not default large value
-                            args["forcerange"] = [-effort_limit, effort_limit]
+                        args["forcerange"] = [-effort_limit, effort_limit]
 
                         spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai] = actuator_count
@@ -1443,10 +1412,8 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
-                    # Add friction if specified
-                    friction_value = joint_friction[ai]
-                    if friction_value > 0.0:
-                        joint_params["frictionloss"] = friction_value
+                    # Set friction
+                    joint_params["frictionloss"] = joint_friction[ai]
                     if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                         joint_params["stiffness"] = joint_target_ke[ai]
                         joint_params["damping"] = joint_target_kd[ai]
@@ -1479,8 +1446,7 @@ class MuJoCoSolver(SolverBase):
 
                         # Add effort limits from Newton model
                         effort_limit = joint_effort_limit[ai]
-                        if effort_limit < 1e6:  # Only set if not default large value
-                            args["forcerange"] = [-effort_limit, effort_limit]
+                        args["forcerange"] = [-effort_limit, effort_limit]
 
                         spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai] = actuator_count
@@ -1586,10 +1552,10 @@ class MuJoCoSolver(SolverBase):
             # "jnt_range",
             # "jnt_actfrcrange",
             # "jnt_margin",
-            # "dof_armature",
+            "dof_armature",
             # "dof_damping",
             # "dof_invweight0",
-            # "dof_frictionloss",
+            "dof_frictionloss",
             # "dof_solimp",
             # "dof_solref",
             # "geom_matid",
@@ -1622,7 +1588,7 @@ class MuJoCoSolver(SolverBase):
             # "actuator_gainprm",
             # "actuator_biasprm",
             # "actuator_ctrlrange",
-            # "actuator_forcerange",
+            "actuator_forcerange",
             # "actuator_actrange",
             # "actuator_gear",
             # "pair_solref",
@@ -1710,7 +1676,7 @@ class MuJoCoSolver(SolverBase):
             and len(self.mjw_model.actuator_forcerange.shape) == 2
         ):
             wp.launch(
-                update_actuator_properties_kernel,
+                update_axis_properties_kernel,
                 dim=self.model.joint_axis_count,
                 inputs=[
                     self.model.joint_effort_limit,
@@ -1721,42 +1687,22 @@ class MuJoCoSolver(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF armature
-        if hasattr(self.mjw_model, "dof_armature") and len(self.mjw_model.dof_armature.shape) == 2:
+        # Update DOF properties (armature and friction) in a single kernel launch
+        if (
+            hasattr(self.mjw_model, "dof_armature")
+            and len(self.mjw_model.dof_armature.shape) == 2
+            and hasattr(self.mjw_model, "dof_frictionloss")
+            and len(self.mjw_model.dof_frictionloss.shape) == 2
+        ):
             wp.launch(
-                update_dof_armature_kernel,
+                update_dof_properties_kernel,
                 dim=self.model.joint_dof_count,
                 inputs=[
                     self.model.joint_armature,
-                    dofs_per_env,
-                ],
-                outputs=[self.mjw_model.dof_armature],
-                device=self.model.device,
-            )
-
-        # Update DOF friction loss
-        if hasattr(self.mjw_model, "dof_frictionloss") and len(self.mjw_model.dof_frictionloss.shape) == 2:
-            wp.launch(
-                update_dof_friction_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
                     self.model.joint_friction,
+                    self.model.dof_to_axis_map,
                     dofs_per_env,
                 ],
-                outputs=[self.mjw_model.dof_frictionloss],
+                outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
                 device=self.model.device,
             )
-
-        # MoJoCo has no velocity limits
-        # Update joint velocity limits
-        # if hasattr(self.mjw_model, "jnt_range") and len(self.mjw_model.jnt_range.shape) == 2:
-        #    wp.launch(
-        #        update_joint_velocity_limits_kernel,
-        #        dim=self.model.joint_axis_count,
-        #        inputs=[
-        #            self.model.joint_velocity_limit,
-        #            axes_per_env,
-        #        ],
-        #        outputs=[self.mjw_model.jnt_range],
-        #        device=self.model.device,
-        #    )
