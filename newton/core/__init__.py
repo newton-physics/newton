@@ -15,7 +15,6 @@
 
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
-from .contact import Contact
 from .control import Control
 from .model import Model
 from .spatial import (
@@ -32,15 +31,6 @@ from .spatial import (
 )
 from .state import State
 from .types import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -54,27 +44,14 @@ from .types import (
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
     PARTICLE_FLAG_ACTIVE,
-    SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
     Axis,
     AxisType,
-    Mesh,
-    ModelShapeGeometry,
-    ModelShapeMaterials,
 )
 
 __all__ = [
-    "GEO_BOX",
-    "GEO_CAPSULE",
-    "GEO_CONE",
-    "GEO_CYLINDER",
-    "GEO_MESH",
-    "GEO_NONE",
-    "GEO_PLANE",
-    "GEO_SDF",
-    "GEO_SPHERE",
     "JOINT_BALL",
     "JOINT_COMPOUND",
     "JOINT_D6",
@@ -94,13 +71,12 @@ __all__ = [
     "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
-    "Contact",
+    "Contacts",
     "Control",
     "Mesh",
     "Model",
     "ModelBuilder",
-    "ModelShapeGeometry",
-    "ModelShapeMaterials",
+    "ShapeMaterials",
     "State",
     "eval_fk",
     "eval_ik",

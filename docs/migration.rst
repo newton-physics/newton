@@ -53,7 +53,7 @@ The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJ
 ``Model``
 ---------
 
-:attr:`newton.ModelShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
+:attr:`newton.ShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
 
 Forward and Inverse Kinematics
 ------------------------------

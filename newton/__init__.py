@@ -15,16 +15,9 @@
 
 from . import solvers
 from ._version import __version__
+
+# Core functionality
 from .core import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -37,19 +30,37 @@ from .core import (
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
-    SDF,
     Axis,
     AxisType,
-    Contact,
     Control,
-    Mesh,
     Model,
     ModelBuilder,
-    ModelShapeGeometry,
-    ModelShapeMaterials,
     State,
     eval_fk,
     eval_ik,
+)
+
+# Geometry functionality
+from .geometry import (
+    GEO_BOX,
+    GEO_CAPSULE,
+    GEO_CONE,
+    GEO_CYLINDER,
+    GEO_MESH,
+    GEO_NONE,
+    GEO_PLANE,
+    GEO_SDF,
+    GEO_SPHERE,
+    SDF,
+    Contacts,
+    Mesh,
+    create_box,
+    create_capsule,
+    create_cone,
+    create_cylinder,
+    create_none,
+    create_plane,
+    create_sphere,
 )
 
 __all__ = [
@@ -61,7 +72,9 @@ __all__ = [
     "GEO_NONE",
     "GEO_PLANE",
     "GEO_SDF",
+    # Geometry constants
     "GEO_SPHERE",
+    # Joint constants
     "JOINT_BALL",
     "JOINT_COMPOUND",
     "JOINT_D6",
@@ -75,18 +88,30 @@ __all__ = [
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
     "SDF",
+    # Core types and classes
     "Axis",
     "AxisType",
-    "Contact",
+    "Contacts",
     "Control",
+    # Geometry types and classes
     "Mesh",
     "Model",
     "ModelBuilder",
-    "ModelShapeGeometry",
-    "ModelShapeMaterials",
+    "ShapeMaterials",
     "State",
+    # Version
     "__version__",
+    "create_box",
+    "create_capsule",
+    "create_cone",
+    "create_cylinder",
+    "create_none",
+    "create_plane",
+    # Geometry creation functions (the main new API)
+    "create_sphere",
+    # Core functions
     "eval_fk",
     "eval_ik",
+    # Submodules (for those who want to use them directly)
     "solvers",
 ]
