@@ -126,17 +126,20 @@ def load_mesh(filename: str, method: str | None = None):
             m = meshio.read(filename)
             mesh_points = np.array(m.points)
             mesh_indices = np.array(m.cells[0].data, dtype=np.int32)
+            mesh_uvs = []  # todo
         elif method == "openmesh":
             import openmesh
 
             m = openmesh.read_trimesh(filename)
             mesh_points = np.array(m.points())
             mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32)
+            mesh_uvs = []  # todo
         elif method == "pcu":
             import point_cloud_utils as pcu
 
             mesh_points, mesh_indices = pcu.load_mesh_vf(filename)
             mesh_indices = mesh_indices.flatten()
+            mesh_uvs = []  # todo
         else:
             import trimesh
 
@@ -145,20 +148,25 @@ def load_mesh(filename: str, method: str | None = None):
                 # multiple meshes are contained in a scene; combine to one mesh
                 mesh_points = []
                 mesh_indices = []
+                mesh_uvs = []
                 index_offset = 0
                 for geom in m.geometry.values():
                     vertices = np.array(geom.vertices, dtype=np.float32)
                     faces = np.array(geom.faces.flatten(), dtype=np.int32)
+                    uvs = np.array(geom.uv, dtype=np.float32)
                     mesh_points.append(vertices)
                     mesh_indices.append(faces + index_offset)
+                    mesh_uvs.append(uvs)
                     index_offset += len(vertices)
                 mesh_points = np.concatenate(mesh_points, axis=0)
                 mesh_indices = np.concatenate(mesh_indices)
+                mesh_uvs = np.concatenate(mesh_uvs, axis=0)
             else:
                 # a single mesh
                 mesh_points = np.array(m.vertices, dtype=np.float32)
                 mesh_indices = np.array(m.faces.flatten(), dtype=np.int32)
-        return mesh_points, mesh_indices
+                mesh_uvs = np.array(m.visual.uv, dtype=np.float32)
+        return mesh_points, mesh_indices, mesh_uvs
 
     if method is None:
         methods = ["trimesh", "meshio", "pcu", "openmesh"]
