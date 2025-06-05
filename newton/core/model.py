@@ -155,6 +155,8 @@ class Model:
         """Bending edge rest length, shape [edge_count], float."""
         self.edge_bending_properties = None
         """Bending edge stiffness and damping parameters, shape [edge_count, 2], float."""
+        self.edge_bending_cot = None
+        """Bending edge cotangents, shape [edge_count, 4], float."""
         self.edge_constraint_lambdas = None
         """Lagrange multipliers for edge constraints (internal use)."""
 

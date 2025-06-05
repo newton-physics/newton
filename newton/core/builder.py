@@ -2399,7 +2399,7 @@ class ModelBuilder:
         tri_kd = init_if_none(tri_kd, self.default_tri_kd)
         tri_drag = init_if_none(tri_drag, self.default_tri_drag)
         tri_lift = init_if_none(tri_lift, self.default_tri_lift)
-        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else [wp.vec3(self.default_tri_ke)] * len(areas)
+        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else [wp.vec3(-1.0)] * len(areas)
 
         self.tri_materials.extend(
             zip(
@@ -2528,6 +2528,7 @@ class ModelBuilder:
         rest: list[float] | None = None,
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
+        edge_aniso_ke: list[Vec3] | None = None,
     ) -> None:
         """Adds bending edge elements between groups of four particles in the system.
 
@@ -2550,6 +2551,10 @@ class ModelBuilder:
         """
         x3 = np.array(self.particle_q)[k]
         x4 = np.array(self.particle_q)[l]
+
+        def dot(a, b):
+            return (a * b).sum(axis=-1)
+
         if rest is None:
             # compute rest angle
             x1 = np.array(self.particle_q)[i]
@@ -2566,9 +2571,6 @@ class ModelBuilder:
             n2 = normalized(np.cross(x4 - x2, x3 - x2))
             e = normalized(x4 - x3)
 
-            def dot(a, b):
-                return (a * b).sum(axis=-1)
-
             d = np.clip(dot(n2, n1), -1.0, 1.0)
 
             angle = np.arccos(d)
@@ -2580,7 +2582,8 @@ class ModelBuilder:
 
         self.edge_indices.extend(inds.tolist())
         self.edge_rest_angle.extend(rest.tolist())
-        self.edge_rest_length.extend(np.linalg.norm(x4 - x3, axis=1).tolist())
+        x43 = x4 - x3
+        self.edge_rest_length.extend(np.linalg.norm(x43, axis=1).tolist())
 
         def init_if_none(arr, defaultValue):
             if arr is None:
@@ -2589,8 +2592,34 @@ class ModelBuilder:
 
         edge_ke = init_if_none(edge_ke, self.default_edge_ke)
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
+        # compute final edge_ke based on edge_aniso_ke, ref Feng:2022:LBB
+        if edge_aniso_ke is not None:
+            angle = np.atan2(x43[:, 1], x43[:, 0])
+            sin = np.sin(angle)
+            cos = np.cos(angle)
+            sin2 = np.pow(sin, 2)
+            cos2 = np.pow(cos, 2)
+            sin12 = np.pow(sin, 12)
+            cos12 = np.pow(cos, 12)
+            aniso_ke = np.array(edge_aniso_ke).reshape(-1, 3)
+            edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
         self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
+
+        # compute bending cotangents
+        def cot(a, b, c):
+            # compute cotangent of a
+            ba = b - a
+            ca = c - a
+            dota = dot(ba, ca)
+            crsa = np.linalg.norm(np.cross(ba, ca), axis=-1, keepdims=True) + 1.0e-6
+            return dota / crsa
+
+        cot1 = cot(x3, x4, x1)
+        cot2 = cot(x3, x4, x2)
+        cot3 = cot(x4, x3, x1)
+        cot4 = cot(x4, x3, x2)
+        self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4))
 
     def add_cloth_grid(
         self,
@@ -2768,8 +2797,6 @@ class ModelBuilder:
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
         verts_2d = verts_2d if verts_2d is not None else []
-        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else wp.vec3(self.default_tri_ke)
-        edge_aniso_ke = edge_aniso_ke if edge_aniso_ke is not None else wp.vec3(self.default_edge_ke)
 
         num_tris = int(len(indices) / 3)
 
@@ -2793,6 +2820,7 @@ class ModelBuilder:
         # triangles
         inds = start_vertex + np.array(indices)
         inds = inds.reshape(-1, 3)
+        tri_aniso_kes = [tri_aniso_ke] * num_tris if tri_aniso_ke is not None else None
         areas = self.add_triangles(
             inds[:, 0],
             inds[:, 1],
@@ -2802,7 +2830,7 @@ class ModelBuilder:
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
-            [tri_aniso_ke] * num_tris,
+            tri_aniso_kes,
         )
 
         for t in range(num_tris):
@@ -2820,6 +2848,7 @@ class ModelBuilder:
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
             int,
         ).reshape(-1, 4)
+        edge_aniso_kes = [edge_aniso_ke] * len(edge_indices) if edge_aniso_ke is not None else None
         self.add_edges(
             edge_indices[:, 0],
             edge_indices[:, 1],
@@ -2827,6 +2856,7 @@ class ModelBuilder:
             edge_indices[:, 3],
             edge_ke=[edge_ke] * len(edge_indices),
             edge_kd=[edge_kd] * len(edge_indices),
+            edge_aniso_ke=edge_aniso_kes,
         )
 
         if add_springs:
@@ -3363,6 +3393,7 @@ class ModelBuilder:
             m.edge_bending_properties = wp.array(
                 self.edge_bending_properties, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.edge_bending_cot = wp.array(self.edge_bending_cot, dtype=wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # tetrahedra
