@@ -2456,11 +2456,10 @@ class ModelBuilder:
         edge_ke: float | None = None,
         edge_kd: float | None = None,
     ) -> None:
-        """Adds a bending edge element between four particles in the system.
+        """Adds a bending edge element between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2468,10 +2467,12 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angle across the edge in radians, if not specified it will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
@@ -2482,19 +2483,18 @@ class ModelBuilder:
         x3 = self.particle_q[k]
         x4 = self.particle_q[l]
         if rest is None:
-            x1 = self.particle_q[i]
-            x2 = self.particle_q[j]
+            rest = 0.0
+            if i != -1 and j != -1:
+                x1 = self.particle_q[i]
+                x2 = self.particle_q[j]
 
-            n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
-            n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
-            e = wp.normalize(x4 - x3)
+                n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
+                n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
+                e = wp.normalize(x4 - x3)
 
-            d = np.clip(np.dot(n2, n1), -1.0, 1.0)
-
-            angle = math.acos(d)
-            sign = np.sign(np.dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+                cos_theta = np.clip(np.dot(n1, n2), -1.0, 1.0)
+                sin_theta = np.dot(np.cross(n1, n2), e)
+                rest = math.atan2(sin_theta, cos_theta)
 
         self.edge_indices.append((i, j, k, l))
         self.edge_rest_angle.append(rest)
@@ -2511,11 +2511,10 @@ class ModelBuilder:
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
     ) -> None:
-        """Adds bending edge elements between groups of four particles in the system.
+        """Adds bending edge elements between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2523,40 +2522,42 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angles across the edges in radians, if not specified they will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
         x3 = np.array(self.particle_q)[k]
         x4 = np.array(self.particle_q)[l]
         if rest is None:
+            rest = np.zeros_like(i, dtype=float)
+            valid_mask = (i != -1) & (j != -1)
+
             # compute rest angle
-            x1 = np.array(self.particle_q)[i]
-            x2 = np.array(self.particle_q)[j]
-            x3 = np.array(self.particle_q)[k]
-            x4 = np.array(self.particle_q)[l]
+            x1_valid = np.array(self.particle_q)[i[valid_mask]]
+            x2_valid = np.array(self.particle_q)[j[valid_mask]]
+            x3_valid = np.array(self.particle_q)[k[valid_mask]]
+            x4_valid = np.array(self.particle_q)[l[valid_mask]]
 
             def normalized(a):
                 l = np.linalg.norm(a, axis=-1, keepdims=True)
                 l[l == 0] = 1.0
                 return a / l
 
-            n1 = normalized(np.cross(x3 - x1, x4 - x1))
-            n2 = normalized(np.cross(x4 - x2, x3 - x2))
-            e = normalized(x4 - x3)
+            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
+            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
+            e = normalized(x4_valid - x3_valid)
 
             def dot(a, b):
                 return (a * b).sum(axis=-1)
 
-            d = np.clip(dot(n2, n1), -1.0, 1.0)
-
-            angle = np.arccos(d)
-            sign = np.sign(dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
+            sin_theta = dot(np.cross(n1, n2), e)
+            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
 
         inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
 
