@@ -199,7 +199,6 @@ class Example:
         self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
-        [self.model.shape_key[i] for e in feet_entities for i in e]
 
         def colormap(dist):
             if dist > 1:
@@ -210,13 +209,13 @@ class Example:
 
         # Update shape colors based on contact distances
         body_colors = {}
-        for foot_nr, dist in enumerate(feet_matrix):
+        for foot_nr, dist in enumerate(feet_matrix.numpy()):
             body_idx = self.foot_body_indices[foot_nr]
             body_colors[body_idx] = colormap(dist)
 
         # Handle torso contacts
         torso_entities, torso_matrix = self.contacts_torso_ground.get_contact_dist()
-        for torso_nr, dist in enumerate(torso_matrix):
+        for torso_nr, dist in enumerate(torso_matrix.numpy()):
             body_idx = self.torso_body_indices[torso_nr]
             if dist < 1:  # in contact
                 body_colors[body_idx] = (1.0, 0.0, 1.0)  # magenta

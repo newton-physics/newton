@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import itertools
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -192,6 +193,33 @@ def aggregate_entity_pair_maxdepth(
     #     entity_pair_normal[entity_pair_idx] = wp.transpose(contact_frame[best_contact])[0]
 
 
+@wp.kernel
+def fill_contact_matrix(
+    # inputs
+    q_ep: wp.array(dtype=wp.int32),
+    q_ep_mat_idx: wp.array(dtype=wp.vec2i),
+    data: wp.array(dtype=Any),
+    # outputs
+    matrix: wp.array2d(dtype=Any),
+):
+    """Fill a contact matrix with data for a query.
+    Args:
+        q_ep: Entity pair indices for the query.
+        q_ep_mat_idx: Matrix indices for the query, shape [n_entity_pairs].
+        data: Data to fill the matrix with, shape [n_entity_pairs].
+        matrix: Matrix to fill from data.
+    """
+    qep_idx = wp.tid()
+    if qep_idx >= q_ep.shape[0]:
+        return
+    ep_idx = q_ep[qep_idx]
+
+    mat_idx = q_ep_mat_idx[qep_idx]
+    row, col = mat_idx.x, mat_idx.y
+    # TODO: if row > col: flip normal
+    matrix[row, col] = data[ep_idx]
+
+
 class ContactReporter:
     """Filter and aggregate contacts by the pair of entities between which they occur.
     An entity is a set of shapes.
@@ -275,7 +303,7 @@ class ContactReporter:
         self.entity_group_pairs: list[tuple[list[tuple[int, ...]], list[tuple[int, ...]]]] = []
 
     def add_entity_group_pair(self, entity_group_a: list[tuple[int, ...]], entity_group_b: list[tuple[int, ...]]):
-        """Add a pair of entity groups to the contact reporter."""
+        """Add a pair of entity groups (aka query) to the contact reporter."""
         self.entity_group_pairs.append((entity_group_a, entity_group_b))
 
     def finalize(self, solver: SolverBase):
@@ -400,9 +428,13 @@ class ContactReporter:
             self.entity_pair_normal = wp.empty(self.n_entity_pairs, dtype=wp.vec3f)
 
             # Pre-initialize contact matrices for each query
-            self.query_dist_matrices = []
-            self.query_idx_matrices = []
             self.query_entities = []
+
+            self.query_entity_pairs = []
+            self.query_entity_pair_mat_idx = []
+
+            self.query_dist_matrix = []
+            self.query_idx_matrix = []
 
             for query_idx in range(len(self.entity_group_pairs)):
                 query_pairs = self.query_to_entity_pair[query_idx]
@@ -418,12 +450,15 @@ class ContactReporter:
                 entities = (row_indices, col_indices)
                 self.query_entities.append(entities)
 
-                # Initialize empty matrices that will be populated during select_aggregate
-                contact_dist_matrix = np.zeros((len(row_indices), len(col_indices)))
-                contact_idx_matrix = np.zeros((len(row_indices), len(col_indices)), dtype=np.int32)
+                query_ep_idx, _query_flip = zip(*query_pairs)
 
-                self.query_dist_matrices.append(contact_dist_matrix)
-                self.query_idx_matrices.append(contact_idx_matrix)
+                self.query_entity_pairs.append(wp.array(query_ep_idx, dtype=wp.int32))
+                q_ep_mat_idx = [(row_indices[row], col_indices[col]) for row, col in entity_pairs]
+
+                self.query_entity_pair_mat_idx.append(wp.array(q_ep_mat_idx, dtype=wp.vec2i))
+                m, n = len(row_indices), len(col_indices)
+                self.query_dist_matrix.append(wp.empty((m, n), dtype=wp.float32))
+                self.query_idx_matrix.append(wp.empty((m, n), dtype=wp.int32))
 
     def reset(self):
         """Clear intermediate data"""
@@ -490,27 +525,26 @@ class ContactReporter:
             ],
         )
 
+
     def fill_contact_matrix(self, query_idx: int, data, matrix):
-        query_pairs = self.query_to_entity_pair[query_idx]
-        entity_pairs = [
-            self.entity_pairs[query_pair][::-1] if flip else self.entity_pairs[query_pair]
-            for query_pair, flip in query_pairs
-        ]
-        row_entities, col_entities = zip(*entity_pairs)
-        row_indices = {row: i for i, row in enumerate(sorted(set(row_entities)))}
-        col_indices = {col: i for i, col in enumerate(sorted(set(col_entities)))}
-        for (pair_idx, _), (row, col) in zip(query_pairs, entity_pairs):
-            matrix[row_indices[row], col_indices[col]] = data.numpy()[pair_idx]
-        return self.query_entities[query_idx], matrix
+        wp.launch(
+            fill_contact_matrix,
+            dim=self.query_entity_pairs[query_idx].shape[0],
+            inputs=[
+                self.query_entity_pairs[query_idx],
+                self.query_entity_pair_mat_idx[query_idx],
+                data,
+            ],
+            outputs=[matrix],
+        )
+
 
     def get_dist(self, query_idx: int):
-        entities, contact_matrix = self.fill_contact_matrix(
-            query_idx, self.entity_pair_dist, self.query_dist_matrices[query_idx]
-        )
-        return entities, contact_matrix
+        matrix = self.query_dist_matrix[query_idx]
+        self.fill_contact_matrix(query_idx, self.entity_pair_dist, matrix)
+        return self.query_entities[query_idx], matrix
 
     def get_idx(self, query_idx: int):
-        entities, contact_matrix = self.fill_contact_matrix(
-            query_idx, self.entity_pair_contact, self.query_idx_matrices[query_idx]
-        )
-        return entities, contact_matrix
+        matrix = self.query_idx_matrix[query_idx]
+        self.fill_contact_matrix(query_idx, self.entity_pair_contact, matrix)
+        return self.query_entities[query_idx], matrix
