@@ -342,6 +342,196 @@ class TestMuJoCoSolver(unittest.TestCase):
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
 
+    def test_joint_attributes_registration_and_updates(self):
+        """
+        Verify that joint effort limit, velocity limit, armature, and friction:
+        1. Are properly set in Newton Model
+        2. Are properly registered in MuJoCo
+        3. Can be changed during simulation via notify_model_changed()
+
+        Uses different values for each joint and environment to catch indexing bugs.
+
+        TODO: We currently don't check velocity_limits because MuJoCo doesn't seem to have
+              a matching parameter. The values are set in Newton but not verified in MuJoCo.
+        """
+        # Skip if no joints
+        if self.model.joint_axis_count == 0:
+            self.skipTest("No joints in model, skipping joint attributes test")
+
+        # Step 1: Set initial values with different patterns for each attribute
+        # Pattern: base_value + axis_idx * increment + env_offset
+        axes_per_env = self.model.joint_axis_count // self.model.num_envs
+        dofs_per_env = self.model.joint_dof_count // self.model.num_envs
+
+        initial_effort_limits = np.zeros(self.model.joint_axis_count)
+        initial_velocity_limits = np.zeros(self.model.joint_axis_count)
+        initial_friction = np.zeros(self.model.joint_axis_count)
+        initial_armature = np.zeros(self.model.joint_dof_count)
+
+        # Set different values for each axis and environment
+        for env_idx in range(self.model.num_envs):
+            env_axis_offset = env_idx * axes_per_env
+            env_dof_offset = env_idx * dofs_per_env
+
+            for axis_idx in range(axes_per_env):
+                global_axis_idx = env_axis_offset + axis_idx
+                # Effort limit: 50 + axis_idx * 10 + env_idx * 100
+                initial_effort_limits[global_axis_idx] = 50.0 + axis_idx * 10.0 + env_idx * 100.0
+                # Velocity limit: 10 + axis_idx * 2 + env_idx * 20
+                initial_velocity_limits[global_axis_idx] = 10.0 + axis_idx * 2.0 + env_idx * 20.0
+                # Friction: 0.5 + axis_idx * 0.1 + env_idx * 0.5
+                initial_friction[global_axis_idx] = 0.5 + axis_idx * 0.1 + env_idx * 0.5
+
+            for dof_idx in range(dofs_per_env):
+                global_dof_idx = env_dof_offset + dof_idx
+                # Armature: 0.01 + dof_idx * 0.005 + env_idx * 0.05
+                initial_armature[global_dof_idx] = 0.01 + dof_idx * 0.005 + env_idx * 0.05
+
+        self.model.joint_effort_limit.assign(initial_effort_limits)
+        self.model.joint_velocity_limit.assign(initial_velocity_limits)
+        self.model.joint_friction.assign(initial_friction)
+        self.model.joint_armature.assign(initial_armature)
+
+        # Step 2: Create solver (this should apply values to MuJoCo)
+        solver = MuJoCoSolver(self.model, iterations=1, disable_contacts=True)
+
+        # Step 3: Verify initial values were applied to MuJoCo
+
+        # Check effort limits: Newton value should appear as MuJoCo actuator force range
+        for env_idx in range(self.model.num_envs):
+            for axis_idx in range(axes_per_env):
+                global_axis_idx = env_idx * axes_per_env + axis_idx
+                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+
+                if actuator_idx >= 0:  # This axis has an actuator
+                    force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
+                    expected_limit = initial_effort_limits[global_axis_idx]
+                    self.assertAlmostEqual(
+                        force_range[0],
+                        -expected_limit,
+                        places=3,
+                        msg=f"MuJoCo actuator {actuator_idx} in env {env_idx} min force should match negative Newton effort limit",
+                    )
+                    self.assertAlmostEqual(
+                        force_range[1],
+                        expected_limit,
+                        places=3,
+                        msg=f"MuJoCo actuator {actuator_idx} in env {env_idx} max force should match Newton effort limit",
+                    )
+
+        # Check armature: Newton value should appear directly in MuJoCo DOF armature
+        for env_idx in range(self.model.num_envs):
+            for dof_idx in range(min(dofs_per_env, solver.mjw_model.dof_armature.shape[1])):
+                global_dof_idx = env_idx * dofs_per_env + dof_idx
+                expected_armature = initial_armature[global_dof_idx]
+                actual_armature = solver.mjw_model.dof_armature.numpy()[env_idx, dof_idx]
+                self.assertAlmostEqual(
+                    actual_armature,
+                    expected_armature,
+                    places=4,
+                    msg=f"MuJoCo DOF {dof_idx} in env {env_idx} armature should match Newton value",
+                )
+
+        # Check friction: Newton value should appear in MuJoCo DOF friction loss
+        for env_idx in range(self.model.num_envs):
+            for dof_idx in range(min(dofs_per_env, solver.mjw_model.dof_frictionloss.shape[1])):
+                global_dof_idx = env_idx * dofs_per_env + dof_idx
+                axis_idx = self.model.dof_to_axis_map.numpy()[global_dof_idx]
+                if axis_idx >= 0:  # Only check DOFs that have axis mappings
+                    expected_friction = initial_friction[axis_idx]
+                    actual_friction = solver.mjw_model.dof_frictionloss.numpy()[env_idx, dof_idx]
+                    self.assertAlmostEqual(
+                        actual_friction,
+                        expected_friction,
+                        places=4,
+                        msg=f"MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
+                    )
+
+        # Step 4: Change all values with different patterns
+        updated_effort_limits = np.zeros(self.model.joint_axis_count)
+        updated_velocity_limits = np.zeros(self.model.joint_axis_count)
+        updated_friction = np.zeros(self.model.joint_axis_count)
+        updated_armature = np.zeros(self.model.joint_dof_count)
+
+        # Set different updated values for each axis and environment
+        for env_idx in range(self.model.num_envs):
+            env_axis_offset = env_idx * axes_per_env
+            env_dof_offset = env_idx * dofs_per_env
+
+            for axis_idx in range(axes_per_env):
+                global_axis_idx = env_axis_offset + axis_idx
+                # Updated effort limit: 100 + axis_idx * 15 + env_idx * 150
+                updated_effort_limits[global_axis_idx] = 100.0 + axis_idx * 15.0 + env_idx * 150.0
+                # Updated velocity limit: 20 + axis_idx * 3 + env_idx * 30
+                updated_velocity_limits[global_axis_idx] = 20.0 + axis_idx * 3.0 + env_idx * 30.0
+                # Updated friction: 1.0 + axis_idx * 0.2 + env_idx * 1.0
+                updated_friction[global_axis_idx] = 1.0 + axis_idx * 0.2 + env_idx * 1.0
+
+            for dof_idx in range(dofs_per_env):
+                global_dof_idx = env_dof_offset + dof_idx
+                # Updated armature: 0.05 + dof_idx * 0.01 + env_idx * 0.1
+                updated_armature[global_dof_idx] = 0.05 + dof_idx * 0.01 + env_idx * 0.1
+
+        self.model.joint_effort_limit.assign(updated_effort_limits)
+        self.model.joint_velocity_limit.assign(updated_velocity_limits)
+        self.model.joint_friction.assign(updated_friction)
+        self.model.joint_armature.assign(updated_armature)
+
+        # Step 5: Notify MuJoCo of changes
+        solver.notify_model_changed(types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | types.NOTIFY_FLAG_DOF_PROPERTIES)
+
+        # Step 6: Verify all changes were applied
+
+        # Check updated effort limits
+        for env_idx in range(self.model.num_envs):
+            for axis_idx in range(axes_per_env):
+                global_axis_idx = env_idx * axes_per_env + axis_idx
+                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+
+                if actuator_idx >= 0:
+                    force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
+                    expected_limit = updated_effort_limits[global_axis_idx]
+                    self.assertAlmostEqual(
+                        force_range[0],
+                        -expected_limit,
+                        places=3,
+                        msg=f"Updated MuJoCo actuator {actuator_idx} in env {env_idx} min force should match negative Newton effort limit",
+                    )
+                    self.assertAlmostEqual(
+                        force_range[1],
+                        expected_limit,
+                        places=3,
+                        msg=f"Updated MuJoCo actuator {actuator_idx} in env {env_idx} max force should match Newton effort limit",
+                    )
+
+        # Check updated armature
+        for env_idx in range(self.model.num_envs):
+            for dof_idx in range(min(dofs_per_env, solver.mjw_model.dof_armature.shape[1])):
+                global_dof_idx = env_idx * dofs_per_env + dof_idx
+                expected_armature = updated_armature[global_dof_idx]
+                actual_armature = solver.mjw_model.dof_armature.numpy()[env_idx, dof_idx]
+                self.assertAlmostEqual(
+                    actual_armature,
+                    expected_armature,
+                    places=4,
+                    msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} armature should match Newton value",
+                )
+
+        # Check updated friction
+        for env_idx in range(self.model.num_envs):
+            for dof_idx in range(min(dofs_per_env, solver.mjw_model.dof_frictionloss.shape[1])):
+                global_dof_idx = env_idx * dofs_per_env + dof_idx
+                axis_idx = self.model.dof_to_axis_map.numpy()[global_dof_idx]
+                if axis_idx >= 0:  # Only check DOFs that have axis mappings
+                    expected_friction = updated_friction[axis_idx]
+                    actual_friction = solver.mjw_model.dof_frictionloss.numpy()[env_idx, dof_idx]
+                    self.assertAlmostEqual(
+                        actual_friction,
+                        expected_friction,
+                        places=4,
+                        msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
+                    )
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
