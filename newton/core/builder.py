@@ -66,6 +66,7 @@ from .types import (
     Quat,
     Sequence,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     axis_to_vec3,
@@ -310,12 +311,14 @@ class ModelBuilder:
         self.tri_activations = []
         self.tri_materials = []
         self.tri_areas = []
+        self.tri_aniso_ke = []
 
         # edges (bending)
         self.edge_indices = []
         self.edge_rest_angle = []
         self.edge_rest_length = []
         self.edge_bending_properties = []
+        self.edge_bending_cot = []
 
         # tetrahedra
         self.tet_indices = []
@@ -643,6 +646,7 @@ class ModelBuilder:
             "edge_rest_angle",
             "edge_rest_length",
             "edge_bending_properties",
+            "edge_bending_cot",
             "spring_rest_length",
             "spring_stiffness",
             "spring_damping",
@@ -651,6 +655,7 @@ class ModelBuilder:
             "tri_activations",
             "tri_materials",
             "tri_areas",
+            "tri_aniso_ke",
             "tet_poses",
             "tet_activations",
             "tet_materials",
@@ -2317,6 +2322,7 @@ class ModelBuilder:
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
+        tri_aniso_ke: list[Vec3] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
 
@@ -2327,6 +2333,7 @@ class ModelBuilder:
             i: The indices of the first particle
             j: The indices of the second particle
             k: The indices of the third particle
+            tri_aniso_ke: anisotropic stretch stiffness (weft, warp, shear) for pattern-based cloth simulation.
 
         Return:
             The areas of the triangles
@@ -2349,9 +2356,18 @@ class ModelBuilder:
             l[l == 0] = 1.0
             return a / l
 
-        n = normalized(np.cross(qp, rp))
-        e1 = normalized(qp)
-        e2 = normalized(np.cross(n, e1))
+        # use pose2d when tri_aniso_ke is valid
+        use_pose2d = False
+        if tri_aniso_ke is not None:
+            use_pose2d = len(tri_aniso_ke) == len(qp)
+
+        if use_pose2d:
+            e1 = np.full((len(qp), 3), [1.0, 0.0, 0.0])
+            e2 = np.full((len(qp), 3), [0.0, 1.0, 0.0])
+        else:
+            n = normalized(np.cross(qp, rp))
+            e1 = normalized(qp)
+            e2 = normalized(np.cross(n, e1))
 
         R = np.concatenate((e1[..., None], e2[..., None]), axis=-1)
         M = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
@@ -2383,6 +2399,7 @@ class ModelBuilder:
         tri_kd = init_if_none(tri_kd, self.default_tri_kd)
         tri_drag = init_if_none(tri_drag, self.default_tri_drag)
         tri_lift = init_if_none(tri_lift, self.default_tri_lift)
+        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else [wp.vec3(self.default_tri_ke)] * len(areas)
 
         self.tri_materials.extend(
             zip(
@@ -2393,6 +2410,7 @@ class ModelBuilder:
                 np.array(tri_lift)[valid_inds],
             )
         )
+        self.tri_aniso_ke.extend(np.array(tri_aniso_ke)[valid_inds])
         areas = areas.tolist()
         self.tri_areas.extend(areas)
         return areas
@@ -2713,6 +2731,9 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        verts_2d: list[Vec2] | None = None,
+        tri_aniso_ke: Vec3 | None = None,
+        edge_aniso_ke: Vec3 | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -2729,6 +2750,9 @@ class ModelBuilder:
             edge_callback: A user callback when an edge is created
             face_callback: A user callback when a face is created
             particle_radius: The particle_radius which controls particle based collisions.
+            verts_2d: A list of vertex positions in 2D space for pattern-based cloth simulation.
+            tri_aniso_ke: anisotropic stretch stiffness (weft, warp, shear) for pattern-based cloth simulation.
+            edge_aniso_ke: anisotropic bend stiffness (weft, warp, shear) for pattern-based cloth simulation.
         Note:
 
             The mesh should be two manifold.
@@ -2743,6 +2767,9 @@ class ModelBuilder:
         spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
+        verts_2d = verts_2d if verts_2d is not None else []
+        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else wp.vec3(self.default_tri_ke)
+        edge_aniso_ke = edge_aniso_ke if edge_aniso_ke is not None else wp.vec3(self.default_edge_ke)
 
         num_tris = int(len(indices) / 3)
 
@@ -2750,10 +2777,18 @@ class ModelBuilder:
         start_tri = len(self.tri_indices)
 
         # particles
-        for v in vertices:
-            p = wp.quat_rotate(rot, v * scale) + pos
+        num_vert = int(len(vertices))
+        num_vert2d = int(len(verts_2d))
+        use_pose2d = num_vert == num_vert2d
+        if use_pose2d:
+            # use verts_2d to init particles before adding tri and edge, reset with vertices later
+            for v in verts_2d:
+                self.add_particle(wp.vec3(v[0], v[1], 0) * scale, vel, 0.0, radius=particle_radius)
+        else:
+            for v in vertices:
+                p = wp.quat_rotate(rot, v * scale) + pos
 
-            self.add_particle(p, vel, 0.0, radius=particle_radius)
+                self.add_particle(p, vel, 0.0, radius=particle_radius)
 
         # triangles
         inds = start_vertex + np.array(indices)
@@ -2767,6 +2802,7 @@ class ModelBuilder:
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
+            [tri_aniso_ke] * num_tris,
         )
 
         for t in range(num_tris):
@@ -2808,6 +2844,12 @@ class ModelBuilder:
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0)
+
+        if use_pose2d:
+            # reset particle with vertices
+            for i in range(num_vert):
+                p = wp.quat_rotate(rot, vertices[i] * scale) + pos
+                self.particle_q[i + start_vertex] = p
 
     def add_particle_grid(
         self,
@@ -3310,6 +3352,7 @@ class ModelBuilder:
             m.tri_activations = wp.array(self.tri_activations, dtype=wp.float32, requires_grad=requires_grad)
             m.tri_materials = wp.array(self.tri_materials, dtype=wp.float32, requires_grad=requires_grad)
             m.tri_areas = wp.array(self.tri_areas, dtype=wp.float32, requires_grad=requires_grad)
+            m.tri_aniso_ke = wp.array(self.tri_aniso_ke, dtype=wp.vec3, requires_grad=requires_grad)
 
             # ---------------------
             # edges
