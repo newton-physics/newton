@@ -457,8 +457,8 @@ class ContactReporter:
 
                 self.query_entity_pair_mat_idx.append(wp.array(q_ep_mat_idx, dtype=wp.vec2i))
                 m, n = len(row_indices), len(col_indices)
-                self.query_dist_matrix.append(wp.empty((m, n), dtype=wp.float32))
-                self.query_idx_matrix.append(wp.empty((m, n), dtype=wp.int32))
+                self.query_dist_matrix.append(wp.full((m, n), wp.inf, ntype=wp.float32))
+                self.query_idx_matrix.append(wp.full((m, n), -1, dtype=wp.int32))
 
     def reset(self):
         """Clear intermediate data"""
