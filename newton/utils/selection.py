@@ -314,6 +314,10 @@ class ContactView:
         """Get the deepest contact distance between entity pairs."""
         return self.contact_view_manager.contact_reporter.get_dist(self.query_idx)
 
+    def get_contact_force(self):
+        """Get the net contact force between entity pairs."""
+        return self.contact_view_manager.contact_reporter.get_force(self.query_idx)
+
     def get_contact_idx(self):
         """Get the contact indices between entity pairs."""
         return self.contact_view_manager.contact_reporter.get_idx(self.query_idx)
