@@ -328,6 +328,40 @@ class Model:
         self.rigid_contact_point_limit = None
         """Contact point limit, shape [rigid_contact_max], int."""
 
+        # batches: this is just metadata that can stay on CPU
+        self.batch_key = []
+        """Batch keys, shape [batch_count], str."""
+        self.batch_dim = []
+        """Batch size, shape [batch_count], int."""
+        self.batch_shape_start = []
+        """Start index of the first shape in the batch, shape [batch_count], int."""
+        self.batch_shape_count = []
+        """Number of shapes in the batch, shape [batch_count], int."""
+        self.batch_body_start = []
+        """Start index of the first body in the batch, shape [batch_count], int."""
+        self.batch_body_count = []
+        """Number of bodies in the batch, shape [batch_count], int."""
+        self.batch_joint_start = []
+        """Start index of the first joint in the batch, shape [batch_count], int."""
+        self.batch_joint_count = []
+        """Number of joints in the batch, shape [batch_count], int."""
+        self.batch_joint_coord_start = []
+        """Start index of the first joint position coordinate in the batch, shape [batch_count], int."""
+        self.batch_joint_coord_count = []
+        """Number of joint position coordinates in the batch, shape [batch_count], int."""
+        self.batch_joint_dof_start = []
+        """Start index of the first joint velocity coordinate in the batch, shape [batch_count], int."""
+        self.batch_joint_dof_count = []
+        """Number of joint velocity coordinates in the batch, shape [batch_count], int."""
+        self.batch_joint_axis_start = []
+        """Start index of the first joint_axis in the batch, shape [batch_count], int."""
+        self.batch_joint_axis_count = []
+        """Number of joint axes in the batch, shape [batch_count], int."""
+        self.batch_articulation_start = []
+        """Start index of the first articulation in the batch, shape [batch_count], int."""
+        self.batch_articulation_count = []
+        """Number of articulations in the batch, shape [batch_count], int."""
+
         # toggles ground contact for all shapes
         self.ground = True
         """Whether the ground plane and ground contacts are enabled."""
@@ -366,6 +400,8 @@ class Model:
         """Total number of velocity degrees of freedom of all joints in the system."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints in the system."""
+        self.batch_count = 0
+        """Total number of batches in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []
