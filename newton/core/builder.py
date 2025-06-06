@@ -31,6 +31,7 @@ from .inertia import (
     transform_inertia,
 )
 from .model import Model
+from .sew import create_trimesh_sew_springs
 from .spatial import quat_between_axes
 from .types import (
     GEO_BOX,
@@ -3256,6 +3257,28 @@ class ModelBuilder:
             balance_colors=balance_colors,
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
+
+    def sew(
+        self,
+        sew_distance=1.0e-3,
+        sew_interior=False,
+    ):
+        """
+        Create sew springs.
+
+        Args:
+            sew_distance: Vertices within sew_distance will be connected by springs.
+            sew_interior: If True, can sew between interior vertices, otherwise only sew boundary-interior or boundary-boundary vertices
+
+        """
+        sew_springs = create_trimesh_sew_springs(
+            self.particle_q,
+            self.edge_indices,
+            sew_distance,
+            sew_interior,
+        )
+        for spring in sew_springs:
+            self.add_spring(spring[0], spring[1], self.default_spring_ke, self.default_spring_kd, control=0.0)
 
     def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
         """Convert this builder object to a concrete model for simulation.
