@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>h1_description</name>
+  <version>1.0.0</version>
+  <description>The Unitree H1 Description Package</description>
+
+  <maintainer email="TODO@email.com" />
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roslaunch</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>rviz</depend>
+  <depend>joint_state_publisher_gui</depend>
+  <depend>gazebo</depend>
+
+</package>
