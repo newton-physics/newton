@@ -18,6 +18,9 @@ from typing import Any
 
 import numpy as np
 import warp as wp
+from mujoco_warp import Data as MjWarpData, Model as MjWarpModel
+
+from mujoco_warp._src.types import ConeType
 
 from newton import Contact, Model
 from newton.solvers import MuJoCoSolver, SolverBase
@@ -83,29 +86,46 @@ def bin_contact_shape_pair(
 
 # TODO: move into MuJoCoSolver
 @wp.kernel
-def remap_contact_geom_mjw(
+def remap_contact_mjw(
     # inputs
     contact_geom_mapping: wp.array2d(dtype=wp.int32),
-    contact_geom_mjw: wp.array(dtype=wp.vec2i),
-    contact_worldid_mjw: wp.array(dtype=wp.int32),
-    num_contacts: wp.array(dtype=wp.int32),
+    pyramidal_cone: bool,
+    mj_ncon: wp.array(dtype=wp.int32),
+    mj_contact_dim: wp.array(dtype=int),
+    mj_contact_geom: wp.array(dtype=wp.vec2i),
+    mj_contact_efc_address: wp.array2d(dtype=int),
+    mj_contact_worldid: wp.array(dtype=wp.int32),
+    mj_efc_force: wp.array(dtype=float),
     # outputs
     contact_geom: wp.array(dtype=wp.vec2i),
+    contact_force: wp.array(dtype=float),
 ):
-    n_contacts = num_contacts[0]
+    n_contacts = mj_ncon[0]
     n_blocks = (n_contacts + NUM_THREADS - 1) // NUM_THREADS
     for b in range(n_blocks):
         contact_idx = wp.tid() + NUM_THREADS * b
         if contact_idx >= n_contacts:
             return
 
-        worldid = contact_worldid_mjw[contact_idx]
-        geoms_mjw = contact_geom_mjw[contact_idx]
+        worldid = mj_contact_worldid[contact_idx]
+        geoms_mjw = mj_contact_geom[contact_idx]
+
+        normalforce = wp.float(-1.0)
+
+        efc_address0 = mj_contact_efc_address[contact_idx, 0]
+        if efc_address0 >= 0:
+            normalforce = mj_efc_force[efc_address0]
+
+            if pyramidal_cone:
+                dim = mj_contact_dim[contact_idx]
+                for i in range(1, 2 * (dim - 1)):
+                    normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
 
         geoms = wp.vec2i()
         for i in range(2):
             geoms[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
         contact_geom[contact_idx] = geoms
+        contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
 
 
 @wp.kernel
@@ -158,9 +178,8 @@ def aggregate_entity_pair_maxdepth(
     # outputs
     entity_pair_contact: wp.array(dtype=wp.int32),
     entity_pair_dist: wp.array(dtype=wp.float32),
-    entity_pair_normal: wp.array(dtype=wp.vec3f),
+    entity_pair_normal: wp.array(dtype=wp.vec3),
 ):
-    # TODO: Add indirection to allow queries to share a shape pair between entity pairs
     # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
     entity_pair_idx = wp.tid()
     if entity_pair_idx >= n_entity_pairs:
@@ -189,8 +208,48 @@ def aggregate_entity_pair_maxdepth(
 
     entity_pair_contact[entity_pair_idx] = best_contact
     entity_pair_dist[entity_pair_idx] = best_dist
-    # if best_contact != -1:
-    #     entity_pair_normal[entity_pair_idx] = wp.transpose(contact_frame[best_contact])[0]
+
+
+@wp.kernel
+def aggregate_entity_pair_net_force(
+    # inputs
+    contact_frame: wp.array(dtype=wp.mat33f),
+    n_entity_pairs: wp.int32,
+    ep_sp_ord: wp.array(dtype=wp.int32),
+    ep_sp_start: wp.array(dtype=wp.int32),
+    ep_sp_num: wp.array(dtype=wp.int32),
+    ep_sp_flip: wp.array(dtype=wp.int32),
+    bin_start: wp.array(dtype=wp.int32),
+    bin_contacts: wp.array2d(dtype=wp.int32),
+    contact_force: wp.array(dtype=wp.float32),
+    bin_count: wp.array(dtype=wp.int32),
+    # outputs
+    entity_pair_net_force: wp.array(dtype=wp.vec3),
+):
+
+    entity_pair_idx = wp.tid()
+    if entity_pair_idx >= n_entity_pairs:
+        return
+
+    start = ep_sp_start[entity_pair_idx]
+    n_shape_pairs = ep_sp_num[entity_pair_idx]
+
+    # track deepest contact
+    net_force = wp.vec3(0.0)
+
+    for i in range(n_shape_pairs):
+        sp_ord = ep_sp_ord[start + i]
+        n_bin_contacts = bin_count[sp_ord]
+        contacts_start = bin_start[sp_ord]
+
+        flip = ep_sp_flip[start + i]
+        for j in range(n_bin_contacts):
+            # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
+            contact_idx = bin_contacts[contacts_start, j]
+            force = contact_force[contact_idx]
+            net_force += wp.where(flip, -1.0, 1.0) * contact_frame[contact_idx][0] * force
+
+    entity_pair_net_force[entity_pair_idx] = net_force
 
 
 @wp.kernel
@@ -239,7 +298,11 @@ class ContactReporter:
         self.entity_pair_dist = None
         """Distance of deepest contact for each entity pair, shape [n_entity_pairs], float"""
         self.entity_pair_normal = None
-        """Normal of deepest contact for each entity pair, shape [n_entity_pairs], vec3f"""
+        """Normal of deepest contact for each entity pair, shape [n_entity_pairs], vec3"""
+
+        # results for net contact force query
+        self.entity_pair_force = None
+        """Net contact force between each entity pair, shape [n_entity_pairs], int"""
 
         # intermediate, static data
         self.n_entity_pairs = 0
@@ -286,6 +349,8 @@ class ContactReporter:
         """Contact distance component of bins, shape [n_shape_pairs, n_pair_contact_max], float"""
 
         # MuJoCo-specific contact mapping
+        self.contact_force = None
+        """Temporary array for remapped contact forces, shape [n_contacts], float32"""
         self.contact_geom_tmp = None
         """Temporary array for remapped contact geometry, shape [n_contacts], vec2i"""
         self.contact_geom_mapping = None
@@ -420,12 +485,14 @@ class ContactReporter:
                         worldid = slice(None)  # noqa
                     geom_mapping[worldid, mj_geom] = shape
 
+                self.contact_force = wp.empty(solver.mjw_data.nconmax, dtype=wp.float32)
                 self.contact_geom_tmp = wp.empty_like(solver.mjw_data.contact.geom)
                 self.contact_geom_mapping = wp.array(geom_mapping, dtype=wp.int32)
 
             self.entity_pair_contact = wp.empty(self.n_entity_pairs, dtype=wp.int32)
             self.entity_pair_dist = wp.empty(self.n_entity_pairs, dtype=wp.float32)
-            self.entity_pair_normal = wp.empty(self.n_entity_pairs, dtype=wp.vec3f)
+            self.entity_pair_normal = wp.empty(self.n_entity_pairs, dtype=wp.vec3)
+            self.entity_pair_force = wp.empty(self.n_entity_pairs, dtype=wp.vec3)
 
             # Pre-initialize contact matrices for each query
             self.query_entities = []
@@ -434,6 +501,7 @@ class ContactReporter:
             self.query_entity_pair_mat_idx = []
 
             self.query_dist_matrix = []
+            self.query_force_matrix = []
             self.query_idx_matrix = []
 
             for query_idx in range(len(self.entity_group_pairs)):
@@ -457,7 +525,8 @@ class ContactReporter:
 
                 self.query_entity_pair_mat_idx.append(wp.array(q_ep_mat_idx, dtype=wp.vec2i))
                 m, n = len(row_indices), len(col_indices)
-                self.query_dist_matrix.append(wp.full((m, n), wp.inf, ntype=wp.float32))
+                self.query_dist_matrix.append(wp.full((m, n), wp.inf, dtype=wp.float32))
+                self.query_force_matrix.append(wp.full((m, n), 0, dtype=wp.vec3))
                 self.query_idx_matrix.append(wp.full((m, n), -1, dtype=wp.int32))
 
     def reset(self):
@@ -468,20 +537,27 @@ class ContactReporter:
         self,
         contacts: Contact,
         num_contacts: wp.array(dtype=wp.int32),
+        mjm: MjWarpModel,
+        mjd: MjWarpData,
     ):
         self.reset()
 
         wp.launch(
-            remap_contact_geom_mjw,
+            remap_contact_mjw,
             dim=NUM_THREADS,
             inputs=[
                 self.contact_geom_mapping,
-                contacts.geom,
+                mjm.opt.cone == int(ConeType.PYRAMIDAL.value),
+                mjd.ncon,
+                mjd.contact.dim,
+                mjd.contact.geom,
+                mjd.contact.efc_address,
                 contacts.worldid,
-                num_contacts,
+                mjd.efc.force,
             ],
             outputs=[
                 self.contact_geom_tmp,
+                self.contact_force,
             ],
         )
 
@@ -525,6 +601,26 @@ class ContactReporter:
             ],
         )
 
+        wp.launch(
+            aggregate_entity_pair_net_force,
+            dim=self.n_entity_pairs,
+            inputs=[
+                contacts.frame,
+                self.n_entity_pairs,
+                self.ep_sp_ord,
+                self.ep_sp_start,
+                self.ep_sp_num,
+                self.ep_sp_flip,
+                self.bin_start,
+                self.bin_contacts,
+                self.contact_force,
+                self.bin_count,
+            ],
+            outputs=[
+                self.entity_pair_force,
+            ],
+        )
+
 
     def fill_contact_matrix(self, query_idx: int, data, matrix):
         wp.launch(
@@ -538,10 +634,14 @@ class ContactReporter:
             outputs=[matrix],
         )
 
-
     def get_dist(self, query_idx: int):
         matrix = self.query_dist_matrix[query_idx]
         self.fill_contact_matrix(query_idx, self.entity_pair_dist, matrix)
+        return self.query_entities[query_idx], matrix
+
+    def get_force(self, query_idx: int):
+        matrix = self.query_force_matrix[query_idx]
+        self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix)
         return self.query_entities[query_idx], matrix
 
     def get_idx(self, query_idx: int):
