@@ -187,9 +187,7 @@ class Example:
         contact.worldid = self.solver.mjw_data.contact.worldid
 
         n_contacts = self.solver.mjw_data.ncon
-        self.contact_mgr.contact_reporter.select_aggregate(
-            contact, n_contacts, self.solver.mjw_model, self.solver.mjw_data
-        )
+        self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
 

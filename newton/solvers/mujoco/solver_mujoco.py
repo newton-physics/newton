@@ -243,6 +243,50 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
+def convert_mjw_contact_to_warp_kernel(
+    # inputs
+    contact_geom_mapping: wp.array2d(dtype=wp.int32),
+    pyramidal_cone: bool,
+    mj_ncon: wp.array(dtype=wp.int32),
+    mj_contact_dim: wp.array(dtype=int),
+    mj_contact_geom: wp.array(dtype=wp.vec2i),
+    mj_contact_efc_address: wp.array2d(dtype=int),
+    mj_contact_worldid: wp.array(dtype=wp.int32),
+    mj_efc_force: wp.array(dtype=float),
+    num_threads: int,
+    # outputs
+    contact_geom: wp.array(dtype=wp.vec2i),
+    contact_force: wp.array(dtype=float),
+):
+    n_contacts = mj_ncon[0]
+    n_blocks = (n_contacts + num_threads - 1) // num_threads
+    for b in range(n_blocks):
+        contact_idx = wp.tid() + num_threads * b
+        if contact_idx >= n_contacts:
+            return
+
+        worldid = mj_contact_worldid[contact_idx]
+        geoms_mjw = mj_contact_geom[contact_idx]
+
+        normalforce = wp.float(-1.0)
+
+        efc_address0 = mj_contact_efc_address[contact_idx, 0]
+        if efc_address0 >= 0:
+            normalforce = mj_efc_force[efc_address0]
+
+            if pyramidal_cone:
+                dim = mj_contact_dim[contact_idx]
+                for i in range(1, 2 * (dim - 1)):
+                    normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
+
+        geoms = wp.vec2i()
+        for i in range(2):
+            geoms[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
+        contact_geom[contact_idx] = geoms
+        contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
+
+
+@wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
     joint_f: wp.array(dtype=wp.float32),
@@ -878,6 +922,7 @@ class MuJoCoSolver(SolverBase):
             )
         self.update_data_interval = update_data_interval
         self._step = 0
+        self.contact_geom_mapping = self.create_newton_contact_geom_mapping(model)
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
@@ -1032,7 +1077,9 @@ class MuJoCoSolver(SolverBase):
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
     @staticmethod
-    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True):
+    def update_newton_state(
+        model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True, update_contacts: bool = False
+    ):
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have a MjWarp Data object
@@ -1067,6 +1114,7 @@ class MuJoCoSolver(SolverBase):
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
         )
+
         if eval_fk:
             # custom forward kinematics for handling multi-dof joints
             wp.launch(
@@ -1144,6 +1192,54 @@ class MuJoCoSolver(SolverBase):
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
         return shape_color
+
+    def create_newton_contact_geom_mapping(self, model: Model):
+        indices = [idx for w, idx in self.shape_map.values() if idx is not None]
+        if not indices:
+            return None
+        max_mj_shape_id = max(indices)
+        geom_mapping = np.full((model.num_envs, max_mj_shape_id + 1), -1, dtype=np.int32)
+
+        for shape, (worldid, mj_geom) in self.shape_map.items():
+            if mj_geom is None:
+                continue
+            if worldid == -1:
+                worldid = slice(None)  # noqa
+            geom_mapping[worldid, mj_geom] = shape
+
+        return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
+
+    def update_newton_contacts(self, model: Model, mj_data: MjWarpData, contact: Contact):
+        if not hasattr(contact, "dist"):
+            contact.dist = wp.empty(mj_data.nconmax, dtype=wp.float32, device=model.device)
+        contact.frame = mj_data.contact.frame
+        if not hasattr(contact, "geom"):
+            contact.geom = wp.empty(mj_data.nconmax, dtype=wp.vec2i, device=model.device)
+        contact.worldid = mj_data.contact.worldid
+        if not hasattr(contact, "force"):
+            contact.force = wp.empty(mj_data.nconmax, dtype=wp.float32, device=model.device)
+
+        num_threads = min(mj_data.nconmax, 8192)
+        wp.launch(
+            convert_mjw_contact_to_warp_kernel,
+            dim=num_threads,
+            inputs=[
+                self.contact_geom_mapping,
+                self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                mj_data.ncon,
+                mj_data.contact.dim,
+                mj_data.contact.geom,
+                mj_data.contact.efc_address,
+                contact.worldid,
+                mj_data.efc.force,
+                num_threads,
+            ],
+            outputs=[
+                contact.geom,
+                contact.force,
+            ],
+            device=model.device,
+        )
 
     def convert_to_mjc(
         self,
