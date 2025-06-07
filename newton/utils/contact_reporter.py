@@ -18,8 +18,8 @@ from typing import Any
 
 import numpy as np
 import warp as wp
-from mujoco_warp import Data as MjWarpData, Model as MjWarpModel
-
+from mujoco_warp import Data as MjWarpData
+from mujoco_warp import Model as MjWarpModel
 from mujoco_warp._src.types import ConeType
 
 from newton import Contact, Model
@@ -240,7 +240,6 @@ def aggregate_entity_pair_net_force(
     # outputs
     entity_pair_net_force: wp.array(dtype=wp.vec3),
 ):
-
     entity_pair_idx = wp.tid()
     if entity_pair_idx >= n_entity_pairs:
         return
@@ -633,7 +632,6 @@ class ContactReporter:
                 self.entity_pair_force,
             ],
         )
-
 
     def fill_contact_matrix(self, query_idx: int, data, matrix):
         wp.launch(
