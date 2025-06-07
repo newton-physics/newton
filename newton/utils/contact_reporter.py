@@ -55,6 +55,25 @@ def _sort_into(directory: dict[tuple], iterable, normalize_fn=None, filter_fn=No
         yield pair_idx, *norm_info
 
 
+@wp.func
+def bisect_shape_pairs(
+    # inputs
+    shape_pairs_sorted: wp.array(dtype=wp.vec2i),
+    n_shape_pairs: wp.int32,
+    value: wp.vec2i,
+):
+    lo = wp.int32(0)
+    hi = n_shape_pairs
+    while lo < hi:
+        mid = (lo + hi) // 2
+        pair_mid = shape_pairs_sorted[mid]
+        if pair_mid[0] < value[0] or (pair_mid[0] == value[0] and pair_mid[1] < value[1]):
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 # Binning function determines the existence and index of appropriate bin
 @wp.func
 def bin_contact_shape_pair(
@@ -64,8 +83,6 @@ def bin_contact_shape_pair(
     contact_idx: wp.int32,
 ) -> tuple[bool, wp.int32]:
     """Find the bin index, if it exists, based on the contact's shape_pair."""
-    # FIXME: use binary search or hash lookup for shape pairs
-
     geom = contact_geom[contact_idx]
 
     if geom[0] == -1 or geom[1] == -1:
@@ -74,13 +91,10 @@ def bin_contact_shape_pair(
     ga = wp.min(geom[0], geom[1])
     gb = wp.max(geom[0], geom[1])
 
-    for pair_ord in range(num_shape_pairs):
-        sp = shape_pairs_sorted[pair_ord]
-        if sp[0] > ga:
-            return False, 0
-
-        if ga == sp[0] and gb == sp[1]:
-            return True, pair_ord
+    normalized_pair = wp.vec2i(ga, gb)
+    pair_ord = bisect_shape_pairs(shape_pairs_sorted, num_shape_pairs, normalized_pair)
+    if pair_ord < num_shape_pairs and shape_pairs_sorted[pair_ord] == normalized_pair:
+        return True, pair_ord
     return False, 0
 
 
@@ -244,7 +258,6 @@ def aggregate_entity_pair_net_force(
 
         flip = ep_sp_flip[start + i]
         for j in range(n_bin_contacts):
-            # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
             contact_idx = bin_contacts[contacts_start, j]
             force = contact_force[contact_idx]
             net_force += wp.where(flip, -1.0, 1.0) * contact_frame[contact_idx][0] * force
