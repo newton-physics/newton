@@ -2011,7 +2011,7 @@ class VBDSolver(SolverBase):
         friction_epsilon: float = 1e-2,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
-        collision_detection_interval=0,
+        collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
     ):
         """

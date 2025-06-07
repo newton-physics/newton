@@ -41,8 +41,6 @@ TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(1)
 EDGE_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(2)
 TRI_TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(3)
 
-COLLISION_DETECTION_BLOCK_SIZE = 16
-
 
 @wp.func
 def build_orthonormal_basis(n: wp.vec3):
@@ -2189,7 +2187,6 @@ def triangle_triangle_collision_detection_kernel(
 
 @wp.struct
 class TriMeshCollisionInfo:
-    vertex_indices: wp.array(dtype=wp.int32)
     # size: 2 x sum(vertex_colliding_triangles_buffer_sizes)
     # every two elements records the vertex index and a triangle index it collides to
     vertex_colliding_triangles: wp.array(dtype=wp.int32)
@@ -2275,6 +2272,7 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
+        collision_detection_block_size=16,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
@@ -2290,6 +2288,8 @@ class TriMeshCollisionDetector:
         self.triangle_triangle_collision_buffer_max_alloc = triangle_triangle_collision_buffer_max_alloc
 
         self.edge_edge_parallel_epsilon = edge_edge_parallel_epsilon
+
+        self.collision_detection_block_size = collision_detection_block_size
 
         self.lower_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
@@ -2520,7 +2520,7 @@ class TriMeshCollisionDetector:
                 ],
                 dim=self.model.particle_count,
                 device=self.model.device,
-                block_dim=COLLISION_DETECTION_BLOCK_SIZE,
+                block_dim=self.collision_detection_block_size,
             )
         else:
             self.triangle_colliding_vertices_min_dist.fill_(query_radius)
@@ -2543,7 +2543,7 @@ class TriMeshCollisionDetector:
                 ],
                 dim=self.model.particle_count,
                 device=self.model.device,
-                block_dim=COLLISION_DETECTION_BLOCK_SIZE,
+                block_dim=self.collision_detection_block_size,
             )
 
     def edge_edge_collision_detection(self, query_radius):
@@ -2567,7 +2567,7 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.edge_count,
             device=self.model.device,
-            block_dim=COLLISION_DETECTION_BLOCK_SIZE,
+            block_dim=self.collision_detection_block_size,
         )
 
     def triangle_triangle_intersection_detection(self):
