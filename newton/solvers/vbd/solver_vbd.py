@@ -350,34 +350,6 @@ def evaluate_stvk_force_hessian(
 
 
 @wp.func
-def mat_vec_cross_from_3_basis(e1: wp.vec3, e2: wp.vec3, e3: wp.vec3, a: wp.vec3):
-    e1_cross_a = wp.cross(e1, a)
-    e2_cross_a = wp.cross(e2, a)
-    e3_cross_a = wp.cross(e3, a)
-
-    return wp.mat33(
-        e1_cross_a[0],
-        e2_cross_a[0],
-        e3_cross_a[0],
-        e1_cross_a[1],
-        e2_cross_a[1],
-        e3_cross_a[1],
-        e1_cross_a[2],
-        e2_cross_a[2],
-        e3_cross_a[2],
-    )
-
-
-@wp.func
-def mat_vec_cross(mat: wp.mat33, a: wp.vec3):
-    e1 = wp.vec3(mat[0, 0], mat[1, 0], mat[2, 0])
-    e2 = wp.vec3(mat[0, 1], mat[1, 1], mat[2, 1])
-    e3 = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
-
-    return mat_vec_cross_from_3_basis(e1, e2, e3, a)
-
-
-@wp.func
 def compute_normalized_vector_derivative(
     unnormalized_vec_length: float, normalized_vec_hat: wp.vec3, unnormalized_vec_deriv: wp.mat33
 ) -> wp.mat33:

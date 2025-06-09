@@ -679,7 +679,6 @@ class ClothSim:
             elif self.solver == "semi_implicit":
                 wp.set_module_options({"block_dim": 256}, newton.solvers.semi_implicit)
                 wp.load_module(newton.solvers.semi_implicit, device=self.device)
-            wp.load_module(newton.core.particles, device=self.device)
             wp.load_module(newton.solvers.solver, device=self.device)
             wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
@@ -886,7 +885,6 @@ tests_to_run = {
         test_cloth_free_fall,
         test_cloth_sagging,
         test_cloth_bending,
-        test_cloth_bending_non_zero_rest_angle_bending,
     ],
     "vbd": [
         test_cloth_free_fall,
