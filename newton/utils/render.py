@@ -358,7 +358,7 @@ def CreateSimRenderer(renderer):
         def _get_new_color(self):
             return tab10_color_map(self.instance_count)
 
-        def render(self, state: newton.State):
+        def render(self, state: newton.State, sim_time):
             """
             Updates the renderer with the given simulation state.
 
@@ -517,10 +517,10 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         contact_points_radius: float = 1e-3,
         show_joints: bool = False,
         path_body_map: dict = None,
+        path_body_relative_transform: dict = None,
         builder_results: dict = None,
         **render_kwargs
     ):
-        print(f"stage = {stage}")
         super().__init__(
             model=model,
             stage_or_title=stage,
@@ -533,13 +533,13 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             **render_kwargs
         )
         self.path_body_map = path_body_map
-        print(f"type(self.stage) = {type(self.stage)}")
         self.path_body_map = path_body_map
+        self.path_body_relative_transform = path_body_relative_transform
         self.builder_results = builder_results
         self._prepare_output_stage()
         self._precompute_parents_xform_inverses()
 
-    def render_time_sampled_transform(self, state: newton.State, sim_time, path_body_relative_transform):
+    def render_time_sampled_transform(self, state: newton.State, sim_time):
         """
         Render transforms of USD prims.
         """
@@ -552,7 +552,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
                 # TODO: do this once in __init__
                 # TODO: sanity check this with Eric Heiden
                 # Take relative xform into account
-                rel_xform = path_body_relative_transform.get(prim_path)
+                rel_xform = self.path_body_relative_transform.get(prim_path)
                 if rel_xform:
                     full_xform = wp.mul(full_xform, rel_xform)
 
@@ -564,9 +564,8 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         self,
         state: newton.State,
         sim_time,
-        path_body_relative_transform,
     ):
-        self.render_time_sampled_transform(state, sim_time, path_body_relative_transform)
+        self.render_time_sampled_transform(state, sim_time)
 
     def _apply_parents_inverse_xform(self, full_xform, prim_path):
         """
