@@ -268,10 +268,10 @@ def parse_mjcf(
             geom_density = parse_float(geom_attrib, "density", density)
 
             shape_cfg = builder.default_shape_cfg.copy()
-            shape_cfg.is_visible=visible
-            shape_cfg.has_ground_collision=not just_visual
-            shape_cfg.has_shape_collision=not just_visual
-            shape_cfg.density=geom_density
+            shape_cfg.is_visible = visible
+            shape_cfg.has_ground_collision = not just_visual
+            shape_cfg.has_shape_collision = not just_visual
+            shape_cfg.density = geom_density
 
             shape_kwargs = {
                 "key": geom_name,
@@ -473,6 +473,7 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
+                    armature=joint_armature[-1],
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -481,7 +482,6 @@ def parse_mjcf(
 
         link = builder.add_body(
             xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
-            armature=joint_armature[0] if len(joint_armature) > 0 else default_joint_armature,
             key=body_name,
         )
 
