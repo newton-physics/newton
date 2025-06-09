@@ -23,8 +23,7 @@ from newton.core.articulation import (
     eval_fk,
 )
 
-from ..euler.particles import eval_particle_forces
-from ..euler.solver_euler import (
+from ..euler.kernels import (
     eval_bending_forces,
     eval_joint_force,
     eval_muscle_forces,
@@ -36,6 +35,7 @@ from ..euler.solver_euler import (
     eval_triangle_contact_forces,
     eval_triangle_forces,
 )
+from ..euler.particles import eval_particle_forces
 from ..solver import SolverBase
 
 
