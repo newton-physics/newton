@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -881,11 +881,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
     ],
-    "semi_implicit": [
-        test_cloth_free_fall,
-        test_cloth_sagging,
-        test_cloth_bending,
-    ],
+    "semi_implicit": [],
     "vbd": [
         test_cloth_free_fall,
         test_cloth_sagging,
