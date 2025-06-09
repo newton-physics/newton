@@ -42,6 +42,9 @@ def eval_stretch_kernel(
     faces: wp.array(dtype=wp.int32, ndim=2),
     aniso_ke: wp.array(dtype=wp.vec3),
 ):
+    """
+    Ref. Large Steps in Cloth Simulation, Baraff & Witkin in 1998.
+    """
     fid = wp.tid()
 
     inv_dm = inv_dms[fid]
@@ -53,22 +56,24 @@ def eval_stretch_kernel(
     len_Fu = wp.length(Fu)
     len_Fv = wp.length(Fv)
 
-    normalized_Fu = wp.normalize(Fu) if (len_Fu > 1e-6) else wp.vec3(0.0)
-    normalized_Fv = wp.normalize(Fv) if (len_Fv > 1e-6) else wp.vec3(0.0)
+    Fu = wp.normalize(Fu) if (len_Fu > 1e-6) else wp.vec3(0.0)
+    Fv = wp.normalize(Fv) if (len_Fv > 1e-6) else wp.vec3(0.0)
 
     dFu_dx = wp.vec3(-inv_dm[0, 0] - inv_dm[1, 0], inv_dm[0, 0], inv_dm[1, 0])
     dFv_dx = wp.vec3(-inv_dm[0, 1] - inv_dm[1, 1], inv_dm[0, 1], inv_dm[1, 1])
 
     ku = aniso_ke[fid][0]
     kv = aniso_ke[fid][1]
-    # ks = aniso_ke[fid][2]
+    ks = aniso_ke[fid][2]
 
     for i in range(3):
         force = -face_area * (
-            ku * (len_Fu - 1.0) * dFu_dx[i] * normalized_Fu + kv * (len_Fv - 1.0) * dFv_dx[i] * normalized_Fv
+            ku * (len_Fu - 1.0) * dFu_dx[i] * Fu
+            + kv * (len_Fv - 1.0) * dFv_dx[i] * Fv
+            + ks * wp.dot(Fu, Fv) * (Fu * dFv_dx[i] + Fv * dFu_dx[i])
         )
 
-        diag = face_area * (ku * dFu_dx[i] * dFu_dx[i] + kv * dFv_dx[i] * dFv_dx[i])
+        diag = face_area * ((ku + ks) * dFu_dx[i] * dFu_dx[i] + (kv + ks) * dFv_dx[i] * dFv_dx[i])
 
         wp.atomic_add(forces, face[i], force)
         wp.atomic_add(diags, face[i], diag)
