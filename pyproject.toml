@@ -36,6 +36,7 @@ dev = [
     "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
+    "GitPython>=3.1.44",
 ]
 docs = [
     "myst-parser>=3.0.1",
