@@ -37,6 +37,8 @@ dev = [
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
     "GitPython>=3.1.44",
+    "matplotlib>=3.9.4",
+    "mujoco>=3.3.3.dev769049331",
 ]
 docs = [
     "myst-parser>=3.0.1",
@@ -68,6 +70,12 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+mujoco = { index = "mujoco" }
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org"
+explicit = true
 
 [dependency-groups]
 dev = [
@@ -77,6 +85,8 @@ dev = [
     "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
+    "matplotlib>=3.9.4",
+    "gitpython>=3.1.44",
 ]
 
 [tool.ruff]
