@@ -138,3 +138,14 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 omit = ["*/newton/examples/*", "*/newton/tests/*", "*/newton/thirdparty/*"]
+
+[tool.basedpyright]
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportAny = false
+reportExplicitAny = false
+reportUnannotatedClassAttribute = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportOptionalOperand = false
+reportUnusedCallResult = false

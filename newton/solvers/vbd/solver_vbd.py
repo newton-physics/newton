@@ -27,7 +27,7 @@ from newton.collision.collide import (
 )
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, ModelShapeMaterials, State
 
-from .solver import SolverBase
+from ..solver import SolverBase
 
 wp.set_module_options({"enable_backward": False})
 
