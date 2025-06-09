@@ -16,6 +16,7 @@
 import numpy as np
 import warp as wp
 
+from .download_assets import clear_git_cache, download_asset
 from .import_mjcf import parse_mjcf
 from .import_urdf import parse_urdf
 from .import_usd import parse_usd
@@ -223,6 +224,8 @@ __all__ = [
     "SimRendererOpenGL",
     "SimRendererUsd",
     "boltzmann",
+    "clear_git_cache",
+    "download_asset",
     "leaky_max",
     "leaky_min",
     "parse_mjcf",

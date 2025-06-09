@@ -55,6 +55,7 @@ from .types import (
     PARTICLE_FLAG_ACTIVE,
     SDF,
     SHAPE_FLAG_COLLIDE_GROUND,
+    SHAPE_FLAG_COLLIDE_PARTICLES,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
     Axis,
@@ -153,6 +154,8 @@ class ModelBuilder:
         """Whether the shape can collide with the ground. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
+        has_particle_collision: bool = True
+        """Whether the shape can collide with particles. Defaults to True."""
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
@@ -163,6 +166,7 @@ class ModelBuilder:
             shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
+            shape_flags |= int(SHAPE_FLAG_COLLIDE_PARTICLES) if self.has_particle_collision else 0
             return shape_flags
 
         @flags.setter
@@ -172,6 +176,7 @@ class ModelBuilder:
             self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
             self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
             self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
+            self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
 
         def copy(self) -> ShapeConfig:
             return copy.copy(self)
@@ -1086,7 +1091,8 @@ class ModelBuilder:
         enabled: bool = True,
     ) -> int:
         """Adds a free joint to the model.
-        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
+        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
+        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -1102,7 +1108,7 @@ class ModelBuilder:
 
         """
 
-        return self.add_joint(
+        joint_id = self.add_joint(
             JOINT_FREE,
             parent,
             child,
@@ -1112,6 +1118,9 @@ class ModelBuilder:
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
+        q_start = self.joint_q_start[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
+        return joint_id
 
     def add_joint_distance(
         self,
@@ -2612,107 +2621,75 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
-        edge_ke = edge_ke if edge_ke is not None else self.default_edge_ke
-        edge_kd = edge_kd if edge_kd is not None else self.default_edge_kd
-        spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
-        spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
-        particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
 
         def grid_index(x, y, dim_x):
             return y * dim_x + x
 
-        start_vertex = len(self.particle_q)
-        start_tri = len(self.tri_indices)
-
+        indices, vertices = [], []
         for y in range(0, dim_y + 1):
             for x in range(0, dim_x + 1):
-                g = wp.vec3(x * cell_x, y * cell_y, 0.0)
-                p = wp.quat_rotate(rot, g) + pos
-                m = mass
+                local_pos = wp.vec3(x * cell_x, y * cell_y, 0.0)
+                world_pos = wp.quat_rotate(rot, local_pos) + pos
+                vertices.append(world_pos)
+                if x > 0 and y > 0:
+                    v0 = grid_index(x - 1, y - 1, dim_x + 1)
+                    v1 = grid_index(x, y - 1, dim_x + 1)
+                    v2 = grid_index(x, y, dim_x + 1)
+                    v3 = grid_index(x - 1, y, dim_x + 1)
+                    if reverse_winding:
+                        indices.extend([v0, v1, v2])
+                        indices.extend([v0, v2, v3])
+                    else:
+                        indices.extend([v0, v1, v3])
+                        indices.extend([v1, v2, v3])
 
+        start_vertex = len(self.particle_q)
+
+        total_mass = mass * (dim_x + 1) * (dim_x + 1)
+        total_area = cell_x * cell_y * dim_x * dim_y
+        density = total_mass / total_area
+
+        self.add_cloth_mesh(
+            pos=pos,
+            rot=rot,
+            scale=1.0,
+            vel=vel,
+            vertices=vertices,
+            indices=indices,
+            density=density,
+            edge_callback=None,
+            face_callback=None,
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=tri_kd,
+            tri_drag=tri_drag,
+            tri_lift=tri_lift,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
+            add_springs=add_springs,
+            spring_ke=spring_ke,
+            spring_kd=spring_kd,
+            particle_radius=particle_radius,
+        )
+
+        vertex_id = 0
+        for y in range(dim_y + 1):
+            for x in range(dim_x + 1):
+                particle_mass = mass
                 particle_flag = PARTICLE_FLAG_ACTIVE
 
-                if x == 0 and fix_left:
-                    m = 0.0
+                if (
+                    (x == 0 and fix_left)
+                    or (x == dim_x and fix_right)
+                    or (y == 0 and fix_bottom)
+                    or (y == dim_y and fix_top)
+                ):
                     particle_flag = wp.uint32(int(particle_flag) & ~int(PARTICLE_FLAG_ACTIVE))
-                elif x == dim_x and fix_right:
-                    m = 0.0
-                    particle_flag = wp.uint32(int(particle_flag) & ~int(PARTICLE_FLAG_ACTIVE))
-                elif y == 0 and fix_bottom:
-                    m = 0.0
-                    particle_flag = wp.uint32(int(particle_flag) & ~int(PARTICLE_FLAG_ACTIVE))
-                elif y == dim_y and fix_top:
-                    m = 0.0
-                    particle_flag = wp.uint32(int(particle_flag) & ~int(PARTICLE_FLAG_ACTIVE))
+                    particle_mass = 0.0
 
-                self.add_particle(p, vel, m, flags=particle_flag, radius=particle_radius)
-
-                if x > 0 and y > 0:
-                    if reverse_winding:
-                        tri1 = (
-                            start_vertex + grid_index(x - 1, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x, y, dim_x + 1),
-                        )
-
-                        tri2 = (
-                            start_vertex + grid_index(x - 1, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x, y, dim_x + 1),
-                            start_vertex + grid_index(x - 1, y, dim_x + 1),
-                        )
-
-                        self.add_triangle(*tri1, tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-                        self.add_triangle(*tri2, tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-
-                    else:
-                        tri1 = (
-                            start_vertex + grid_index(x - 1, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x - 1, y, dim_x + 1),
-                        )
-
-                        tri2 = (
-                            start_vertex + grid_index(x, y - 1, dim_x + 1),
-                            start_vertex + grid_index(x, y, dim_x + 1),
-                            start_vertex + grid_index(x - 1, y, dim_x + 1),
-                        )
-
-                        self.add_triangle(*tri1, tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-                        self.add_triangle(*tri2, tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-
-        end_tri = len(self.tri_indices)
-
-        # bending constraints, could create these explicitly for a grid but this
-        # is a good test of the adjacency structure
-        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
-
-        spring_indices = set()
-
-        for _k, e in adj.edges.items():
-            self.add_edge(
-                e.o0, e.o1, e.v0, e.v1, edge_ke=edge_ke, edge_kd=edge_kd
-            )  # opposite 0, opposite 1, vertex 0, vertex 1
-
-            # skip constraints open edges
-            spring_indices.add((min(e.v0, e.v1), max(e.v0, e.v1)))
-            if e.f0 != -1:
-                spring_indices.add((min(e.o0, e.v0), max(e.o0, e.v0)))
-                spring_indices.add((min(e.o0, e.v1), max(e.o0, e.v1)))
-            if e.f1 != -1:
-                spring_indices.add((min(e.o1, e.v0), max(e.o1, e.v0)))
-                spring_indices.add((min(e.o1, e.v1), max(e.o1, e.v1)))
-
-            if e.f0 != -1 and e.f1 != -1:
-                spring_indices.add((min(e.o0, e.o1), max(e.o0, e.o1)))
-
-        if add_springs:
-            for i, j in spring_indices:
-                self.add_spring(i, j, spring_ke, spring_kd, control=0.0)
+                self.particle_flags[start_vertex + vertex_id] = particle_flag
+                self.particle_mass[start_vertex + vertex_id] = particle_mass
+                vertex_id = vertex_id + 1
 
     def add_cloth_mesh(
         self,
