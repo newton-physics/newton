@@ -45,12 +45,15 @@ class Example:
             cell_y=0.01,
             vel=wp.vec3(0.0, 0.0, 0.0),
             mass=0.3 / (100 * 100),
-            tri_ke=1.0e4,
-            tri_ka=1.0e4,
+            tri_ke=1.0e2,
+            tri_ka=1.0e2,
             tri_kd=2.0e-6,
             edge_ke=1,
+            tri_aniso_ke=wp.vec3(2.0e2, 1.5e2, 2.0e1),
+            edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
         )
         builder.color()
+        builder.sew()
         self.model = builder.finalize()
         self.model.ground = False
         self.model.soft_contact_ke = 1.0e5

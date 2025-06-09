@@ -40,6 +40,7 @@ def eval_stretch_kernel(
     face_areas: wp.array(dtype=float),
     inv_dms: wp.array(dtype=wp.mat22),
     faces: wp.array(dtype=wp.int32, ndim=2),
+    aniso_ke: wp.array(dtype=wp.vec3),
 ):
     fid = wp.tid()
 
@@ -58,9 +59,9 @@ def eval_stretch_kernel(
     dFu_dx = wp.vec3(-inv_dm[0, 0] - inv_dm[1, 0], inv_dm[0, 0], inv_dm[1, 0])
     dFv_dx = wp.vec3(-inv_dm[0, 1] - inv_dm[1, 1], inv_dm[0, 1], inv_dm[1, 1])
 
-    ku = 1e2
-    kv = 1e2
-    # ks = 1e1
+    ku = aniso_ke[fid][0]
+    kv = aniso_ke[fid][1]
+    # ks = aniso_ke[fid][2]
 
     for i in range(3):
         force = -face_area * (
@@ -217,6 +218,7 @@ class Style3DSolver(SolverBase):
                     self.model.tri_areas,
                     self.model.tri_poses,
                     self.model.tri_indices,
+                    self.model.tri_aniso_ke,
                 ],
                 dim=len(self.model.tri_areas),
             )

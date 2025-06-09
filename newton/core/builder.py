@@ -2400,7 +2400,7 @@ class ModelBuilder:
         tri_kd = init_if_none(tri_kd, self.default_tri_kd)
         tri_drag = init_if_none(tri_drag, self.default_tri_drag)
         tri_lift = init_if_none(tri_lift, self.default_tri_lift)
-        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else [wp.vec3(-1.0)] * len(areas)
+        tri_aniso_ke = tri_aniso_ke if tri_aniso_ke is not None else [wp.vec3(self.default_tri_ke)] * len(areas)
 
         self.tri_materials.extend(
             zip(
@@ -2613,7 +2613,7 @@ class ModelBuilder:
             ba = b - a
             ca = c - a
             dota = dot(ba, ca)
-            crsa = np.linalg.norm(np.cross(ba, ca), axis=-1, keepdims=True) + 1.0e-6
+            crsa = np.linalg.norm(np.cross(ba, ca), axis=-1) + 1.0e-6
             return dota / crsa
 
         cot1 = cot(x3, x4, x1)
@@ -2648,6 +2648,8 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        tri_aniso_ke: Vec3 | None = None,
+        edge_aniso_ke: Vec3 | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -2673,12 +2675,19 @@ class ModelBuilder:
         def grid_index(x, y, dim_x):
             return y * dim_x + x
 
-        indices, vertices = [], []
+        if tri_aniso_ke is not None or edge_aniso_ke is not None:
+            use_pose2d = True
+        else:
+            use_pose2d = False
+
+        indices, vertices, verts_2d = [], [], []
         for y in range(0, dim_y + 1):
             for x in range(0, dim_x + 1):
                 local_pos = wp.vec3(x * cell_x, y * cell_y, 0.0)
                 world_pos = wp.quat_rotate(rot, local_pos) + pos
                 vertices.append(world_pos)
+                if use_pose2d:
+                    verts_2d.append(wp.vec2(local_pos[0], local_pos[1]))
                 if x > 0 and y > 0:
                     v0 = grid_index(x - 1, y - 1, dim_x + 1)
                     v1 = grid_index(x, y - 1, dim_x + 1)
@@ -2718,6 +2727,9 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            verts_2d=verts_2d,
+            tri_aniso_ke=tri_aniso_ke,
+            edge_aniso_ke=edge_aniso_ke,
         )
 
         vertex_id = 0
@@ -2821,7 +2833,7 @@ class ModelBuilder:
         # triangles
         inds = start_vertex + np.array(indices)
         inds = inds.reshape(-1, 3)
-        tri_aniso_kes = [tri_aniso_ke] * num_tris if tri_aniso_ke is not None else None
+        tri_aniso_kes = [tri_aniso_ke] * num_tris if tri_aniso_ke is not None and use_pose2d else None
         areas = self.add_triangles(
             inds[:, 0],
             inds[:, 1],
@@ -2849,7 +2861,7 @@ class ModelBuilder:
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
             int,
         ).reshape(-1, 4)
-        edge_aniso_kes = [edge_aniso_ke] * len(edge_indices) if edge_aniso_ke is not None else None
+        edge_aniso_kes = [edge_aniso_ke] * len(edge_indices) if edge_aniso_ke is not None and use_pose2d else None
         self.add_edges(
             edge_indices[:, 0],
             edge_indices[:, 1],
