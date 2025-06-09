@@ -39,7 +39,7 @@ from newton.collision.collide import collide
 from newton.core.articulation import eval_fk
 from newton.core.builder import ModelBuilder
 from newton.solvers import FeatherstoneSolver, VBDSolver
-from newton.solvers.solver_featherstone import transform_twist
+from newton.solvers.featherstone.solver_featherstone import transform_twist
 
 
 def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
