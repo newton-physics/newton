@@ -17,12 +17,52 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from pxr import Usd, Gf, Sdf, UsdGeom
+
 import numpy as np
 import warp as wp
 from warp.render import OpenGLRenderer, UsdRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
 
 import newton
+
+
+def xform_to_tqs(prim: Usd.Prim, time=Usd.TimeCode.Default()):
+    """Update the transformation stack of a primitive to translate/orient/scale format.
+
+    The original transformation stack is assumed to be a rigid transformation.
+    """
+    _tqs_op_order = [UsdGeom.XformOp.TypeTranslate, UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeScale]
+    _tqs_op_precision = [UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat]
+
+    xform = UsdGeom.Xform(prim)
+    xform_ops = xform.GetOrderedXformOps()
+
+    # if the order, type, and precision of the transformation is already in our canonical form, then there's no need to change anything.
+    if (
+        _tqs_op_order == [op.GetOpType() for op in xform_ops]  # noqa
+        and _tqs_op_precision == [op.GetPrecision() for op in xform_ops]
+    ):
+        return
+
+    # this assumes no skewing
+    # NB: the rotation coming from Factor is the result of solving an eigenvalue problem. We found wrong answer with non-identity scaling.
+    m_lcl = xform.GetLocalTransformation(time)
+    (_, _, scale, _, translation, _) = m_lcl.Factor()
+
+    t = Gf.Vec3f(translation)
+    q = Gf.Quatf(m_lcl.ExtractRotationQuat())
+    s = Gf.Vec3f(scale)
+
+    # need to reset the transform
+    for op in xform_ops:
+        attr = op.GetAttr()
+        prim.RemoveProperty(attr.GetName())
+
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(t)
+    xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(q)
+    xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(s)
 
 
 @wp.kernel
@@ -71,7 +111,7 @@ def CreateSimRenderer(renderer):
         def __init__(
             self,
             model: newton.Model,
-            path: str,
+            stage_or_title: str | Usd.Stage,
             scaling: float = 1.0,
             fps: int = 60,
             up_axis: newton.AxisType | None = None,
@@ -84,7 +124,8 @@ def CreateSimRenderer(renderer):
             if up_axis is None:
                 up_axis = model.up_axis
             up_axis = newton.Axis.from_any(up_axis)
-            super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
+
+            super().__init__(stage_or_title, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
             self.scaling = scaling
             self.cam_axis = up_axis.value
             self.show_rigid_contact_points = show_rigid_contact_points
@@ -116,7 +157,8 @@ def CreateSimRenderer(renderer):
             self.bodies_per_env = model.body_count // self.num_envs
             # create rigid body nodes
             for b in range(model.body_count):
-                body_name = f"body_{b}_{self.model.body_key[b].replace(' ', '_')}"
+                body_usd_name = self.model.body_key[b]
+                body_name = f"body_{b}_{body_usd_name.replace(' ', '_')}"
                 self.body_names.append(body_name)
                 self.register_body(body_name)
                 if b > 0 and b % self.bodies_per_env == 0:
@@ -234,7 +276,7 @@ def CreateSimRenderer(renderer):
 
                     if shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
-                        self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
+                        self.add_shape_instance(name, shape, body_usd_name, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
 
                 if self.show_joints and model.joint_count:
@@ -464,9 +506,194 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             renderer.end_frame()
             renderer.save()  # Save the USD file
     """
+    def __init__(
+        self,
+        model: newton.Model,
+        stage: str | Usd.Stage = None,
+        scaling: float = 1.0,
+        fps: int = 60,
+        up_axis: newton.AxisType | None = None,
+        show_rigid_contact_points: bool = False,
+        contact_points_radius: float = 1e-3,
+        show_joints: bool = False,
+        path_body_map: dict = None,
+        builder_results: dict = None,
+        **render_kwargs
+    ):
+        print(f"stage = {stage}")
+        super().__init__(
+            model=model,
+            stage_or_title=stage,
+            scaling=scaling,
+            fps=fps,
+            up_axis=up_axis,
+            show_rigid_contact_points=show_rigid_contact_points,
+            contact_points_radius=contact_points_radius,
+            show_joints=show_joints,
+            **render_kwargs
+        )
+        self.path_body_map = path_body_map
+        print(f"type(self.stage) = {type(self.stage)}")
+        self.path_body_map = path_body_map
+        self.builder_results = builder_results
+        self._prepare_output_stage()
+        self._precompute_parents_xform_inverses()
 
-    pass
+    def render_time_sampled_transform(self, state: newton.State, sim_time, path_body_relative_transform):
+        """
+        Render transforms of USD prims.
+        """
+        time = sim_time * self.fps
+        body_q = state.body_q.numpy()
+        self.stage.SetEndTimeCode(round(time))
+        with Sdf.ChangeBlock():
+            for prim_path, body_id in self.path_body_map.items():
+                full_xform = body_q[body_id]
+                # TODO: do this once in __init__
+                # TODO: sanity check this with Eric Heiden
+                # Take relative xform into account
+                rel_xform = path_body_relative_transform.get(prim_path)
+                if rel_xform:
+                    full_xform = wp.mul(full_xform, rel_xform)
 
+                full_xform = self._apply_parents_inverse_xform(full_xform, prim_path)
+                self._update_usd_prim_xform(prim_path, full_xform, sim_time)
+
+
+    def render(
+        self,
+        state: newton.State,
+        sim_time,
+        path_body_relative_transform,
+    ):
+        self.render_time_sampled_transform(state, sim_time, path_body_relative_transform)
+
+    def _apply_parents_inverse_xform(self, full_xform, prim_path):
+        """
+        Transformation in Warp sim consists of translation and pure rotation: trnslt and quat.
+        Transformations of bodies are stored in body_q in simulation state.
+        For sim_usd, trnslt is computed directly from PhysicsUtils by the function GetRigidBodyTransformation
+        in parseUtils.cpp:
+            const GfMatrix4d mat = UsdGeomXformable(bodyPrim).ComputeLocalToWorldTransform(UsdTimeCode::Default());
+            const GfTransform tr(mat);
+            const GfVec3d pos = tr.GetTranslation();
+            const GfQuatd rot = tr.GetRotation().GetQuat();
+        In import_nvusd, we set trnslt = pos and quat = fromgfquat(rot), where fromgfquat has the following logic:
+        wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real)).
+
+        For trnslt, we have:
+            warp_trnslt = xform.ComputeLocalToWorldTransform().GetTranslation().
+        But in USD space:
+            xform.ComputeLocalToworldTransform() = xform.GetLocalTransform() * xform.ComputeParentToWorldTransform()
+            Prim_LTW_USD = Prim_Local_USD * Parent_LTW_USD,
+        or in Warp space, we work with transpose and arrive at:
+            Prim_LTW = Parent_LTW * Prim_Local
+            warp_trnslt = p_Rot * prim_trnslt + p_trnslt,
+            i.e.
+            prim_trnslt = p_inv_Rot * (warp_trnslt - p_trnslt).
+
+        For rotation, we have:
+            rot = tr.GetRotation().GetQuat();
+            warp_quat = wp.normalize(wp.quat(rot)).
+        However, rot is already normalized, so we don't actually need to renormalize it.
+        So in Warp space,
+            warp_Rot = p_Rot * diag(1/s_x, 1/s_y, 1/s_z) * prim_Rot, so
+            prim_Rot = wp.inv(p_Rot * diag(1/s_x, 1/s_y, 1/s_z)) * warp_Rot
+
+        Both p_inv_Rot and wp.inv(p_Rot * diag(1/s_x, 1/s_y, 1/s_z)) do not change during sim, so they are computed in __init__.
+        """
+        c_prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
+        p_path = str(c_prim.GetParent().GetPath())
+
+        if p_path in self.builder_results["path_body_map"]:
+            return
+
+        p_trnslt = self.p_trnslts[p_path]
+        p_inv_Rot = self.p_inv_Rs[p_path]
+        p_inv_Rot_n = self.p_inv_Rns[p_path]
+
+        warp_trnslt = wp.transform_get_translation(full_xform)
+        warp_quat = wp.transform_get_rotation(full_xform)
+
+        prim_trnslt = p_inv_Rot * (warp_trnslt - p_trnslt)
+        prim_quat = p_inv_Rot_n * warp_quat
+
+        return wp.transform(prim_trnslt, prim_quat)
+
+    def _update_usd_prim_xform(self, prim_path, warp_xform, sim_time):
+        prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
+        time = sim_time * self.fps
+
+        pos = tuple(map(float, warp_xform[0:3]))
+        rot = tuple(map(float, warp_xform[3:7]))
+
+        xform = UsdGeom.Xform(prim)
+        xform_ops = xform.GetOrderedXformOps()
+
+        if pos is not None:
+            xform_ops[0].Set(Gf.Vec3f(pos[0], pos[1], pos[2]), time)
+        if rot is not None:
+            xform_ops[1].Set(Gf.Quatf(rot[3], rot[0], rot[1], rot[2]), time)
+
+    # TODO: if _compute_parents_inverses turns to be too slow, then we should conisder using a UsdGeomXformCache as described here:
+    # https://openusd.org/release/api/class_usd_geom_imageable.html#a4313664fa692f724da56cc254bce70fc
+    def _compute_parents_inverses(self, prim_path, time):
+        from pxr import Gf, Sdf, UsdGeom
+        prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
+        xform = UsdGeom.Xform(prim)
+
+        p_world = Gf.Matrix4f(xform.ComputeParentToWorldTransform(time))
+        Rpw = wp.mat33(p_world.ExtractRotationMatrix().GetTranspose()) # Rot_p_world
+        (_, _, s, _, trnslt_p_world, _) = p_world.Factor()
+
+        transpose_Rpwn = wp.mat33(Rpw[0,0]/s[0], Rpw[1,0]/s[0], Rpw[2,0]/s[0], Rpw[0,1]/s[1], Rpw[1,1]/s[1], Rpw[2,1]/s[1], Rpw[0,2]/s[2], Rpw[1,2]/s[2], Rpw[2,2]/s[2])
+        inv_Rpwn = wp.quat_from_matrix(transpose_Rpwn) # b/c Rpwn is a pure rotation
+        inv_Rpw = wp.inverse(Rpw)
+
+        return trnslt_p_world, inv_Rpw, inv_Rpwn
+
+    def _precompute_parents_xform_inverses(self):
+        from pxr import Sdf, Usd
+        """
+        Convention: prefix c is for **current** prim.
+        Prefix p is for **parent** prim.
+        """
+        self.p_trnslts = dict()
+        self.p_inv_Rs = dict()
+        self.p_inv_Rns = dict()
+
+        with wp.ScopedTimer("prep_parents_xform"):
+            time = Usd.TimeCode.Default()
+            for prim_path in self.path_body_map.keys():
+                c_prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
+                p_path = str(c_prim.GetParent().GetPath())
+
+                if p_path not in self.p_trnslts:
+                    self.p_trnslts[p_path], self.p_inv_Rs[p_path], self.p_inv_Rns[p_path] = self._compute_parents_inverses(prim_path, time)
+
+
+    def _prepare_output_stage(self):
+        """Set USD parameters on the output stage to match the simulation settings.
+
+        Must be called after _apply_solver_attributes!"""
+
+        self.stage.SetStartTimeCode(0.0)
+        self.stage.SetEndTimeCode(0.0)
+        # NB: this is now coming from warp:fps, but timeCodesPerSecond is a good source too
+        self.stage.SetTimeCodesPerSecond(self.fps)
+
+        for prim_path in self.path_body_map.keys():
+            prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
+            xform_to_tqs(prim)
+
+    def _create_output_stage(input_path) -> Usd.Stage:
+        stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
+        flattened = stage.Flatten()
+        stage = Usd.Stage.Open(flattened.identifier)
+        return stage
+
+    def save(self, output_path):
+        self.stage.Export(output_path)
 
 class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
     """
