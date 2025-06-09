@@ -2087,7 +2087,8 @@ class VBDSolver(SolverBase):
         else:
             self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
 
-        # spaces for hessian
+        # spaces for particle force and hessian
+        self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
 
         self.friction_epsilon = friction_epsilon
@@ -2216,7 +2217,7 @@ class VBDSolver(SolverBase):
         )
 
         for _iter in range(self.iterations):
-            state_in.particle_f.zero_()
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
@@ -2249,7 +2250,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                 )
 
@@ -2277,7 +2278,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
                         #   ground-particle contact
                         self.model.ground,
@@ -2337,7 +2338,7 @@ class VBDSolver(SolverBase):
             ):
                 self.collision_detection_penetration_free(state_in, dt)
 
-            state_in.particle_f.zero_()
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
@@ -2376,7 +2377,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                     max_blocks=self.model.device.sm_count,
                 )
@@ -2402,7 +2403,7 @@ class VBDSolver(SolverBase):
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.adjacency,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
                         self.pos_prev_collision_detection,
                         self.particle_conservative_bounds,
