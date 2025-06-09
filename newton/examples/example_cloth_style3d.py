@@ -75,6 +75,12 @@ class Example:
             self.model,
             self.iterations,
         )
+        self.solver.precompute(
+            builder.tri_indices,
+            builder.tri_poses,
+            builder.tri_aniso_ke,
+            builder.tri_areas,
+        )
         self.state0 = self.model.state()
         self.state1 = self.model.state()
         self.control = self.model.control()
@@ -137,3 +143,6 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
         example.run()
+
+        if example.renderer:
+            example.renderer.save()

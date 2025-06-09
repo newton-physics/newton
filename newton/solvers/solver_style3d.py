@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import warp as wp
 
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
@@ -22,6 +23,59 @@ from .solver import SolverBase
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
 ########################################################################################################################
+
+
+class PDMatrixBuilder:
+    def __init__(self, num_verts: int, max_neighbor: int = 32):
+        self.num_verts = num_verts
+        self.max_neighbors = max_neighbor
+        self.counts = np.zeros(num_verts, dtype=np.int32)
+        self.diags = np.zeros(num_verts, dtype=np.float32)
+        self.values = np.zeros(shape=(num_verts, max_neighbor), dtype=np.float32)
+        self.neighbors = np.zeros(shape=(num_verts, max_neighbor), dtype=np.int32)
+
+    def add_connection(self, v0: int, v1: int) -> int:
+        if v0 >= self.num_verts:
+            raise ValueError(f"Vertex index{v0} out of range {self.num_verts}")
+        if v1 >= self.num_verts:
+            raise ValueError(f"Vertex index{v1} out of range {self.num_verts}")
+
+        for slot in range(self.counts[v0]):
+            if self.neighbors[v0, slot] == v1:
+                return slot
+
+        if self.counts[v0] >= self.max_neighbors:
+            raise ValueError(f"Exceeds max neighbors limit {self.max_neighbors}")
+
+        slot = self.counts[v0]
+        self.neighbors[v0, slot] = v1
+        self.counts[v0] += 1
+        return slot
+
+    def add_stretch_constraints(
+        self,
+        tri_indices: list[list[int]],
+        tri_poses: list[list[list[float]]],
+        tri_aniso_ke: list[list[int]],
+        tri_areas: list[float],
+    ):
+        for fid in range(len(tri_indices)):
+            area = tri_areas[fid]
+            inv_dm = tri_poses[fid]
+            ku, kv, ks = tri_aniso_ke[fid]
+            face = wp.vec3i(tri_indices[fid])
+            dFu_dx = wp.vec3(-inv_dm[0][0] - inv_dm[1][0], inv_dm[0][0], inv_dm[1][0])
+            dFv_dx = wp.vec3(-inv_dm[0][1] - inv_dm[1][1], inv_dm[0][1], inv_dm[1][1])
+            for i in range(3):
+                for j in range(i, 3):
+                    weight = area * ((ku + ks) * dFu_dx[i] * dFu_dx[j] + (kv + ks) * dFv_dx[i] * dFv_dx[j])
+                    if i != j:
+                        slot_ij = self.add_connection(face[i], face[j])
+                        slot_ji = self.add_connection(face[j], face[i])
+                        self.values[face[i], slot_ij] += weight
+                        self.values[face[j], slot_ji] += weight
+                    else:
+                        self.diags[face[i]] += weight
 
 
 @wp.func
@@ -36,7 +90,6 @@ def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm:
 def eval_stretch_kernel(
     pos: wp.array(dtype=wp.vec3),
     forces: wp.array(dtype=wp.vec3),
-    diags: wp.array(dtype=float),
     face_areas: wp.array(dtype=float),
     inv_dms: wp.array(dtype=wp.mat22),
     faces: wp.array(dtype=wp.int32, ndim=2),
@@ -72,11 +125,7 @@ def eval_stretch_kernel(
             + kv * (len_Fv - 1.0) * dFv_dx[i] * Fv
             + ks * wp.dot(Fu, Fv) * (Fu * dFv_dx[i] + Fv * dFu_dx[i])
         )
-
-        diag = face_area * ((ku + ks) * dFu_dx[i] * dFu_dx[i] + (kv + ks) * dFv_dx[i] * dFv_dx[i])
-
         wp.atomic_add(forces, face[i], force)
-        wp.atomic_add(diags, face[i], diag)
 
 
 @wp.kernel
@@ -161,6 +210,7 @@ class Style3DSolver(SolverBase):
     ):
         super().__init__(model)
         self.nonlinear_iterations = iterations
+        self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
 
         # add new attributes for VBD solve
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
@@ -213,13 +263,11 @@ class Style3DSolver(SolverBase):
         self.temp_verts1.assign(state_in.particle_q)
         for _iter in range(self.nonlinear_iterations):
             self.forces = wp.zeros(shape=self.model.particle_count, dtype=wp.vec3)
-            self.pd_diags = wp.zeros(shape=self.model.particle_count, dtype=float)
             wp.launch(
                 eval_stretch_kernel,
                 inputs=[
                     state_in.particle_q,
                     self.forces,
-                    self.pd_diags,
                     self.model.tri_areas,
                     self.model.tri_poses,
                     self.model.tri_indices,
@@ -261,3 +309,13 @@ class Style3DSolver(SolverBase):
             dim=self.model.particle_count,
             device=self.device,
         )
+
+    def precompute(
+        self,
+        tri_indices: list[list[int]],
+        tri_poses: list[list[list[float]]],
+        tri_aniso_ke: list[list[int]],
+        tri_areas: list[float],
+    ):
+        self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+        self.pd_diags = wp.array(self.pd_matrix_builder.diags, dtype=float)
