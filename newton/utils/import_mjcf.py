@@ -13,21 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from __future__ import annotations
 
 import math
@@ -283,12 +268,11 @@ def parse_mjcf(
 
             geom_density = parse_float(geom_attrib, "density", density)
 
-            shape_cfg = ModelBuilder.ShapeConfig(
-                is_visible=visible,
-                has_ground_collision=not just_visual,
-                has_shape_collision=not just_visual,
-                density=geom_density,
-            )
+            shape_cfg = builder.default_shape_cfg.copy()
+            shape_cfg.is_visible = visible
+            shape_cfg.has_ground_collision = not just_visual
+            shape_cfg.has_shape_collision = not just_visual
+            shape_cfg.density = geom_density
 
             shape_kwargs = {
                 "key": geom_name,
@@ -490,6 +474,7 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
+                    armature=joint_armature[-1],
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -498,7 +483,6 @@ def parse_mjcf(
 
         link = builder.add_body(
             xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
-            armature=joint_armature[0] if len(joint_armature) > 0 else default_joint_armature,
             key=body_name,
         )
 

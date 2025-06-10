@@ -24,19 +24,19 @@ from newton.core.articulation import (
 )
 from newton.geometry import Contacts
 
-from .solver import SolverBase
-from .solver_euler import (
+from ..euler.kernels import (
     eval_bending_forces,
     eval_joint_force,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
-    eval_particle_forces,
     eval_particle_ground_contact_forces,
     eval_rigid_contacts,
     eval_spring_forces,
     eval_tetrahedral_forces,
     eval_triangle_forces,
 )
+from ..euler.particles import eval_particle_forces
+from ..solver import SolverBase
 
 
 # Frank & Park definition 3.20, pg 100
