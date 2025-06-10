@@ -19,49 +19,10 @@ from collections import defaultdict
 
 import numpy as np
 import warp as wp
-from pxr import Gf, Sdf, Usd, UsdGeom
 from warp.render import OpenGLRenderer, UsdRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
 
 import newton
-
-
-def xform_to_tqs(prim: Usd.Prim, time=Usd.TimeCode.Default()):
-    """Update the transformation stack of a primitive to translate/orient/scale format.
-
-    The original transformation stack is assumed to be a rigid transformation.
-    """
-    _tqs_op_order = [UsdGeom.XformOp.TypeTranslate, UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeScale]
-    _tqs_op_precision = [UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat]
-
-    xform = UsdGeom.Xform(prim)
-    xform_ops = xform.GetOrderedXformOps()
-
-    # if the order, type, and precision of the transformation is already in our canonical form, then there's no need to change anything.
-    if (
-        _tqs_op_order == [op.GetOpType() for op in xform_ops]
-        and _tqs_op_precision == [op.GetPrecision() for op in xform_ops]
-    ):
-        return
-
-    # this assumes no skewing
-    # NB: the rotation coming from Factor is the result of solving an eigenvalue problem. We found wrong answer with non-identity scaling.
-    m_lcl = xform.GetLocalTransformation(time)
-    (_, _, scale, _, translation, _) = m_lcl.Factor()
-
-    t = Gf.Vec3f(translation)
-    q = Gf.Quatf(m_lcl.ExtractRotationQuat())
-    s = Gf.Vec3f(scale)
-
-    # need to reset the transform
-    for op in xform_ops:
-        attr = op.GetAttr()
-        prim.RemoveProperty(attr.GetName())
-
-    xform.ClearXformOpOrder()
-    xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(t)
-    xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(q)
-    xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(s)
 
 
 @wp.kernel
@@ -475,6 +436,8 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
     This renderer exports simulation data to USD (Universal Scene Description)
     format, which can be visualized in Omniverse or other USD-compatible viewers.
 
+    This renderer supports rendering a Newton simulation as a time-sampled animation of USD prims.
+
     Args:
         model (newton.Model): The Newton physics model to render.
         path (str): Output path for the USD file.
@@ -505,10 +468,15 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             renderer.end_frame()
             renderer.save()  # Save the USD file
     """
+    try:
+        from pxr import Gf, Sdf, Usd, UsdGeom
+    except ImportError as e:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
+
     def __init__(
         self,
         model: newton.Model,
-        stage: str | Usd.Stage = None,
+        stage,
         scaling: float = 1.0,
         fps: int = 60,
         up_axis: newton.AxisType | None = None,
@@ -520,6 +488,32 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         builder_results: dict = None,
         **render_kwargs
     ):
+        """
+        Construct a SimRendererUsd object.
+
+        Args:
+            model (newton.Model): The Newton physics model to render.
+            stage (str | Usd.Stage): The USD stage to render to.
+            scaling (float, optional): Scaling factor for the rendered objects.
+                Defaults to 1.0.
+            fps (int, optional): Frames per second for the animation. Defaults to 60.
+            up_axis (newton.AxisType, optional): Up axis for the scene. If None,
+                uses model's up axis.
+            show_rigid_contact_points (bool, optional): Whether to show contact
+                points. Defaults to False.
+            contact_points_radius (float, optional): Radius of contact point
+                spheres. Defaults to 1e-3.
+            show_joints (bool, optional): Whether to show joint visualizations.
+                Defaults to False.
+            path_body_map (dict, optional): A dictionary mapping prim paths to
+                body IDs.
+            path_body_relative_transform (dict, optional): A dictionary mapping
+                prim paths to relative transformations.
+            builder_results (dict, optional): A dictionary containing builder
+                results.
+            **render_kwargs: Additional arguments passed to the underlying
+                UsdRenderer.
+        """
         super().__init__(
             model=model,
             stage_or_title=stage,
@@ -538,9 +532,13 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         self._prepare_output_stage()
         self._precompute_parents_xform_inverses()
 
-    def render_time_sampled_transform(self, state: newton.State, sim_time):
+    def _render_time_sampled_transform(self, state: newton.State, sim_time):
         """
-        Render transforms of USD prims.
+        Render transforms of USD prims as time-sampled animation in USD.
+
+        Args:
+            state (newton.State): The simulation state to render.
+            sim_time (float): The current simulation time.
         """
         time = sim_time * self.fps
         body_q = state.body_q.numpy()
@@ -564,7 +562,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         state: newton.State,
         sim_time,
     ):
-        self.render_time_sampled_transform(state, sim_time)
+        self._render_time_sampled_transform(state, sim_time)
 
     def _apply_parents_inverse_xform(self, full_xform, prim_path):
         """
@@ -682,13 +680,56 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
 
         for prim_path in self.path_body_map.keys():
             prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
-            xform_to_tqs(prim)
+            self._xform_to_tqs(prim)
 
     def _create_output_stage(input_path) -> Usd.Stage:
         stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
         flattened = stage.Flatten()
         stage = Usd.Stage.Open(flattened.identifier)
         return stage
+
+
+    def _xform_to_tqs(prim: Usd.Prim, time=Usd.TimeCode.Default()):
+        """Update the transformation stack of a primitive to translate/orient/scale format.
+
+        The original transformation stack is assumed to be a rigid transformation.
+        """
+        from pxr import Gf, UsdGeom
+
+        if time is None:
+            time = Usd.TimeCode.Default()
+
+        _tqs_op_order = [UsdGeom.XformOp.TypeTranslate, UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeScale]
+        _tqs_op_precision = [UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat, UsdGeom.XformOp.PrecisionFloat]
+
+        xform = UsdGeom.Xform(prim)
+        xform_ops = xform.GetOrderedXformOps()
+
+        # if the order, type, and precision of the transformation is already in our canonical form, then there's no need to change anything.
+        if (
+            _tqs_op_order == [op.GetOpType() for op in xform_ops]
+            and _tqs_op_precision == [op.GetPrecision() for op in xform_ops]
+        ):
+            return
+
+        # this assumes no skewing
+        # NB: the rotation coming from Factor is the result of solving an eigenvalue problem. We found wrong answer with non-identity scaling.
+        m_lcl = xform.GetLocalTransformation(time)
+        (_, _, scale, _, translation, _) = m_lcl.Factor()
+
+        t = Gf.Vec3f(translation)
+        q = Gf.Quatf(m_lcl.ExtractRotationQuat())
+        s = Gf.Vec3f(scale)
+
+        # need to reset the transform
+        for op in xform_ops:
+            attr = op.GetAttr()
+            prim.RemoveProperty(attr.GetName())
+
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(t)
+        xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(q)
+        xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(s)
 
     def save(self, output_path):
         self.stage.Export(output_path)
