@@ -22,7 +22,7 @@ from newton.core import PARTICLE_FLAG_ACTIVE
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_style3d.usd", num_frames=600):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_self_contact.usd",
+        default="example_cloth_style3d.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
