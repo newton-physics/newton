@@ -17,14 +17,25 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from enum import IntEnum
 from typing import Any, Literal
 
 import numpy as np
 import warp as wp
-from typing_extensions import override
 from warp.context import Devicelike
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    try:
+        from typing_extensions import override
+    except ImportError:
+        # Fallback no-op decorator if typing_extensions is not available
+        def override(func):
+            return func
+
 
 # Particle flags
 PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))

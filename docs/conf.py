@@ -54,6 +54,8 @@ extensions = [
     "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
     "sphinx_copybutton",
+    "sphinx_design",
+    "sphinx_tabs.tabs",
     "autodoc_filter",
 ]
 
@@ -63,8 +65,8 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
-    "jax": ("https://jax.readthedocs.io/en/latest", None),
-    "pytorch": ("https://pytorch.org/docs/stable", None),
+    "jax": ("https://docs.jax.dev/en/latest", None),
+    "pytorch": ("https://docs.pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp", None),
 }
 

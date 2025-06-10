@@ -14,7 +14,6 @@ Newton Physics
    Overview <guide/overview>
    guide/quickstart
    guide/key-concepts
-   development-guide
    guide/tutorials
    Conventions <conventions>
 
