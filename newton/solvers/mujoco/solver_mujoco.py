@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
-from typing_extensions import override
 
 import newton
 import newton.utils
 from newton.core import Contact, Control, Model, State, types
+from newton.core.types import override
 
 from ..solver import SolverBase
 

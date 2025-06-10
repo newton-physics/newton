@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from typing_extensions import override
 from warp.types import float32, matrix
 
 from newton.collision.collide import (
@@ -26,9 +25,11 @@ from newton.collision.collide import (
     triangle_closest_point,
 )
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, ModelShapeMaterials, State
+from newton.core.types import override
 
 from ..solver import SolverBase
 
+# TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
