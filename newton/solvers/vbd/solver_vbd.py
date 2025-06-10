@@ -19,16 +19,14 @@ import numpy as np
 import warp as wp
 from warp.types import float32, matrix
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Control, Model, State
+from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 from newton.core.model import ShapeMaterials
-from newton.geometry import Contacts
+from newton.core.types import override
 from newton.geometry.kernels import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
     triangle_closest_point,
 )
-from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, ModelShapeMaterials, State
-from newton.core.types import override
 
 from ..solver import SolverBase
 
