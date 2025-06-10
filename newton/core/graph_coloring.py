@@ -200,7 +200,7 @@ def color_graph(
 
     Args:
         num_nodes: The number of the nodes in the graph
-        graph_edge_indices: A `wp.array` with of shape (number_edges, 2)
+        graph_edge_indices: A `wp.array` of shape (number_edges, 2)
         balance_colors: Whether to apply the color balancing algorithm to balance the size of each color
         target_max_min_color_ratio: the color balancing algorithm will stop when the ratio between the largest color and
             the smallest color reaches this value

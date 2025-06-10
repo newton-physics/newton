@@ -1,6 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import warp as wp
 
-from .collide import CollisionPipeline, Contacts
 from .inertia import compute_shape_inertia, transform_inertia
 from .types import (
     GEO_BOX,
@@ -56,7 +70,6 @@ def create_none():
     return (GEO_NONE, wp.vec3(0.0, 0.0, 0.0))
 
 
-# Only expose what's commonly needed for independent use
 __all__ = [
     "GEO_BOX",
     "GEO_CAPSULE",
@@ -66,15 +79,11 @@ __all__ = [
     "GEO_NONE",
     "GEO_PLANE",
     "GEO_SDF",
-    # Geometry type constants (most commonly used)
     "GEO_SPHERE",
     "SDF",
-    "CollisionPipeline",
-    "Contacts",
-    # Geometry classes
     "Mesh",
     "compute_shape_inertia",
-    "get_shape_radius",
+    "compute_shape_radius",
     "create_box",
     "create_capsule",
     "create_cone",
@@ -82,6 +91,6 @@ __all__ = [
     "create_none",
     "create_plane",
     "create_sphere",
+    "get_shape_radius",
     "transform_inertia",
-    "compute_shape_radius",
 ]
