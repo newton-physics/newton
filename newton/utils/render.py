@@ -17,10 +17,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from pxr import Usd, Gf, Sdf, UsdGeom
-
 import numpy as np
 import warp as wp
+from pxr import Gf, Sdf, Usd, UsdGeom
 from warp.render import OpenGLRenderer, UsdRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
 
@@ -40,7 +39,7 @@ def xform_to_tqs(prim: Usd.Prim, time=Usd.TimeCode.Default()):
 
     # if the order, type, and precision of the transformation is already in our canonical form, then there's no need to change anything.
     if (
-        _tqs_op_order == [op.GetOpType() for op in xform_ops]  # noqa
+        _tqs_op_order == [op.GetOpType() for op in xform_ops]
         and _tqs_op_precision == [op.GetPrecision() for op in xform_ops]
     ):
         return
