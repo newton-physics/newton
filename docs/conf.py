@@ -53,6 +53,8 @@ extensions = [
     "sphinx.ext.doctest",  # Test code snippets in docs
     "sphinx.ext.mathjax",  # Math rendering support
     "sphinxcontrib.mermaid",
+    "sphinx_design",
+    "sphinx_tabs.tabs",
     "autodoc_filter",
 ]
 
