@@ -654,9 +654,9 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         Convention: prefix c is for **current** prim.
         Prefix p is for **parent** prim.
         """
-        self.p_trnslts = dict()
-        self.p_inv_Rs = dict()
-        self.p_inv_Rns = dict()
+        self.p_trnslts = {}
+        self.p_inv_Rs = {}
+        self.p_inv_Rns = {}
 
         with wp.ScopedTimer("prep_parents_xform"):
             time = Usd.TimeCode.Default()
