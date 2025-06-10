@@ -631,7 +631,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         if rot is not None:
             xform_ops[1].Set(Gf.Quatf(rot[3], rot[0], rot[1], rot[2]), time)
 
-    # TODO: if _compute_parents_inverses turns to be too slow, then we should conisder using a UsdGeomXformCache as described here:
+    # TODO: if _compute_parents_inverses turns to be too slow, then we should consider using a UsdGeomXformCache as described here:
     # https://openusd.org/release/api/class_usd_geom_imageable.html#a4313664fa692f724da56cc254bce70fc
     def _compute_parents_inverses(self, prim_path, time):
         from pxr import Gf, Sdf, UsdGeom
@@ -682,14 +682,13 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
             self._xform_to_tqs(prim)
 
-    def _create_output_stage(input_path) -> Usd.Stage:
+    def _create_output_stage(self, input_path) -> Usd.Stage:
         stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
         flattened = stage.Flatten()
         stage = Usd.Stage.Open(flattened.identifier)
         return stage
 
-
-    def _xform_to_tqs(prim: Usd.Prim, time=Usd.TimeCode.Default()):
+    def _xform_to_tqs(self, prim: Usd.Prim, time=Usd.TimeCode.Default()):
         """Update the transformation stack of a primitive to translate/orient/scale format.
 
         The original transformation stack is assumed to be a rigid transformation.
