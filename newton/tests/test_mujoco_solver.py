@@ -29,7 +29,6 @@ from newton.utils import SimRendererOpenGL
 
 
 class TestMuJoCoSolver(unittest.TestCase):
-
     def setUp(self):
         "Hook method for setting up the test fixture before exercising it."
         pass
@@ -142,7 +141,6 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
-
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
@@ -237,6 +235,7 @@ class TestMuJoCoSolver(unittest.TestCase):
             self.fail(f"Error during trajectory rendering: {e}")
         finally:
             print("Debug: test_render_trajectory finished.")
+
 
 # Test body mass, body com and body inertia.
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
@@ -543,5 +542,3 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
 
 if __name__ == "__main__":
     unittest.main()
-
-
