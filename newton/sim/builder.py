@@ -25,7 +25,6 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton.sim.graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from newton.core.spatial import quat_between_axes
 from newton.core.types import (
     JOINT_BALL,
@@ -73,6 +72,7 @@ from newton.geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from newton.sim.graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 
 from .model import Model
 
