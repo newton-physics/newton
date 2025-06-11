@@ -80,7 +80,10 @@ def ell_mat_vel_mul_kernel(
 
 @wp.kernel
 def update_cg_direnction_kernel(
-    p: wp.array(dtype=wp.vec3), z: wp.array(dtype=wp.vec3), rTz: wp.array(dtype=float), iter: int
+    iter: int,
+    p: wp.array(dtype=wp.vec3),
+    z: wp.array(dtype=wp.vec3),
+    rTz: wp.array(dtype=float),
 ):
     #    p = r + (rz_new / rz_old) * p;
     i = wp.tid()
@@ -90,13 +93,13 @@ def update_cg_direnction_kernel(
 
 @wp.kernel
 def step_cg_kernel(
+    iter: int,
     rTz: wp.array(dtype=float),
     pTAp: wp.array(dtype=float),
-    x: wp.array(dtype=wp.vec3),
-    r: wp.array(dtype=wp.vec3),
     p: wp.array(dtype=wp.vec3),
     Ap: wp.array(dtype=wp.vec3),
-    iter: int,
+    x: wp.array(dtype=wp.vec3),
+    r: wp.array(dtype=wp.vec3),
 ):
     i = wp.tid()
     alpha = rTz[iter] / pTAp[iter]
@@ -106,7 +109,11 @@ def step_cg_kernel(
 
 @wp.kernel
 def generate_test_data_kernel(
-    A: SparseMatrixELL, b: wp.array(dtype=wp.vec3), x0: wp.array(dtype=wp.vec3), diag_term: float, dim: int
+    dim: int,
+    diag_term: float,
+    A: SparseMatrixELL,
+    b: wp.array(dtype=wp.vec3),
+    x0: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
 
@@ -161,25 +168,27 @@ class PcgSolver:
         self.rTz = wp.array(shape=maxIter, dtype=float)
 
     def step1_update_r(self, A: SparseMatrixELL, x: wp.array(dtype=wp.vec3), b: wp.array(dtype=wp.vec3)):
-        wp.launch(eval_residual_kernel, dim=self.dim, inputs=[A, x, b, self.r])
+        wp.launch(eval_residual_kernel, dim=self.dim, inputs=[A, x, b], outputs=[self.r])
 
     def step2_update_z(self, inv_M: wp.array(dtype=Any)):
-        wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r, self.z])
+        wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z])
 
     def step3_update_rTz(self, iter: int):
         array_inner(self.r, self.z, self.rTz.ptr + iter * self.rTz.strides[0])
 
     def step4_update_p(self, iter: int):
-        wp.launch(update_cg_direnction_kernel, dim=self.dim, inputs=[self.p, self.z, self.rTz, iter])
+        wp.launch(update_cg_direnction_kernel, dim=self.dim, inputs=[iter, self.p, self.z], outputs=[self.rTz])
 
     def step5_update_Ap(self, A: SparseMatrixELL):
-        wp.launch(ell_mat_vel_mul_kernel, dim=self.dim, inputs=[A, self.p, self.Ap])
+        wp.launch(ell_mat_vel_mul_kernel, dim=self.dim, inputs=[A, self.p], outputs=[self.Ap])
 
     def step6_update_pTAp(self, iter: int):
         array_inner(self.p, self.Ap, self.pTAp.ptr + iter * self.pTAp.strides[0])
 
     def step7_update_x_r(self, x: wp.array(dtype=wp.vec3), iter: int):
-        wp.launch(step_cg_kernel, dim=self.dim, inputs=[self.rTz, self.pTAp, x, self.r, self.p, self.Ap, iter])
+        wp.launch(
+            step_cg_kernel, dim=self.dim, inputs=[iter, self.rTz, self.pTAp, self.p, self.Ap], outputs=[x, self.r]
+        )
 
     def solve(
         self,
@@ -213,7 +222,7 @@ if __name__ == "__main__":
     b = wp.zeros(dim, dtype=wp.vec3)
     x0 = wp.zeros(dim, dtype=wp.vec3)
     x1 = wp.zeros(dim, dtype=wp.vec3)
-    wp.launch(generate_test_data_kernel, dim=dim, inputs=[A, b, x0, diag_term, dim])
+    wp.launch(generate_test_data_kernel, dim=dim, inputs=[dim, diag_term], outputs=[A, b, x0])
 
     inv_M = wp.array([1.0 / diag_term] * dim, dtype=float)
 

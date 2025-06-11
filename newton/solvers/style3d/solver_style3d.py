@@ -89,11 +89,11 @@ def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm:
 @wp.kernel
 def eval_stretch_kernel(
     pos: wp.array(dtype=wp.vec3),
-    forces: wp.array(dtype=wp.vec3),
     face_areas: wp.array(dtype=float),
     inv_dms: wp.array(dtype=wp.mat22),
     faces: wp.array(dtype=wp.int32, ndim=2),
     aniso_ke: wp.array(dtype=wp.vec3),
+    forces: wp.array(dtype=wp.vec3),
 ):
     """
     Ref. Large Steps in Cloth Simulation, Baraff & Witkin in 1998.
@@ -130,15 +130,15 @@ def eval_stretch_kernel(
 
 @wp.kernel
 def forward_step(
-    pos: wp.array(dtype=wp.vec3),
+    dt: float,
+    gravity: wp.vec3,
     vel: wp.array(dtype=wp.vec3),
-    inertia: wp.array(dtype=wp.vec3),
     last_pos: wp.array(dtype=wp.vec3),
     external_forces: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
     inv_mass: wp.array(dtype=float),
-    gravity: wp.vec3,
-    dt: float,
+    inertia: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
     last_x = pos[tid]
@@ -155,6 +155,7 @@ def forward_step(
 
 @wp.kernel
 def solve_pd(
+    dt: float,
     pos: wp.array(dtype=wp.vec3),
     forces: wp.array(dtype=wp.vec3),
     diags: wp.array(dtype=float),
@@ -162,7 +163,6 @@ def solve_pd(
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
     pos_new: wp.array(dtype=wp.vec3),
-    dt: float,
 ):
     tid = wp.tid()
 
@@ -183,17 +183,21 @@ def solve_pd(
 
 
 @wp.kernel
-def apply_chebyshev_kernel(next_verts: wp.array(dtype=wp.vec3), prev_verts: wp.array(dtype=wp.vec3), omega: float):
+def apply_chebyshev_kernel(
+    omega: float,
+    prev_verts: wp.array(dtype=wp.vec3),
+    next_verts: wp.array(dtype=wp.vec3),
+):
     tid = wp.tid()
     next_verts[tid] = wp.lerp(prev_verts[tid], next_verts[tid], omega)
 
 
 @wp.kernel
 def update_velocity(
+    dt: float,
     prev_pos: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
-    dt: float,
 ):
     particle = wp.tid()
     vel[particle] = 0.998 * (pos[particle] - prev_pos[particle]) / dt
@@ -244,18 +248,20 @@ class Style3DSolver(SolverBase):
 
         wp.launch(
             kernel=forward_step,
+            dim=self.model.particle_count,
             inputs=[
-                state_in.particle_q,
+                dt,
+                model.gravity,
                 state_in.particle_qd,
-                self.inertia,
                 self.particle_q_prev,
                 state_in.particle_f,
                 self.model.particle_flags,
                 self.model.particle_inv_mass,
-                model.gravity,
-                dt,
             ],
-            dim=self.model.particle_count,
+            outputs=[
+                self.inertia,
+                state_in.particle_q,
+            ],
             device=self.device,
         )
 
@@ -265,29 +271,35 @@ class Style3DSolver(SolverBase):
             self.forces = wp.zeros(shape=self.model.particle_count, dtype=wp.vec3)
             wp.launch(
                 eval_stretch_kernel,
+                dim=len(self.model.tri_areas),
                 inputs=[
                     state_in.particle_q,
-                    self.forces,
                     self.model.tri_areas,
                     self.model.tri_poses,
                     self.model.tri_indices,
                     self.model.tri_aniso_ke,
                 ],
-                dim=len(self.model.tri_areas),
+                outputs=[
+                    self.forces,
+                ],
+                device=self.device,
             )
             wp.launch(
                 solve_pd,
+                dim=self.model.particle_count,
                 inputs=[
+                    dt,
                     state_in.particle_q,
                     self.forces,
                     self.pd_diags,
                     self.model.particle_mass,
                     self.inertia,
                     self.model.particle_flags,
-                    self.temp_verts0,
-                    dt,
                 ],
-                dim=self.model.particle_count,
+                outputs=[
+                    self.temp_verts0,
+                ],
+                device=self.device,
             )
 
             if self.enable_chebyshev:
@@ -296,7 +308,9 @@ class Style3DSolver(SolverBase):
                     wp.launch(
                         apply_chebyshev_kernel,
                         dim=self.model.particle_count,
-                        inputs=[self.temp_verts0, self.temp_verts1, omega],
+                        inputs=[omega, self.temp_verts1],
+                        outputs=[self.temp_verts0],
+                        device=self.device,
                     )
                 self.temp_verts1.assign(state_in.particle_q)
 
@@ -305,8 +319,9 @@ class Style3DSolver(SolverBase):
 
         wp.launch(
             kernel=update_velocity,
-            inputs=[self.particle_q_prev, state_out.particle_q, state_out.particle_qd, dt],
             dim=self.model.particle_count,
+            inputs=[dt, self.particle_q_prev, state_out.particle_q],
+            outputs=[state_out.particle_qd],
             device=self.device,
         )
 
