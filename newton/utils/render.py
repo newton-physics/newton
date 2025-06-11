@@ -87,6 +87,7 @@ def CreateSimRenderer(renderer):
             self.cam_axis = up_axis.value
             self.show_joints = show_joints
             self.show_particles = show_particles
+            self._instance_key_count = {}
             self.populate(model)
 
             self._contact_points0 = None
@@ -142,6 +143,13 @@ def CreateSimRenderer(renderer):
                     geo_is_solid = bool(shape_geo_is_solid[s])
                     geo_src = shape_geo_src[s]
                     name = model.shape_key[s]
+                    count = self._instance_key_count.get(name, 0)
+                    if count > 0:
+                        self._instance_key_count[name] += 1
+                        # ensure unique name for the shape instance
+                        name = f"{name}_{count + 1}"
+                    else:
+                        self._instance_key_count[name] = 1
                     add_shape_instance = True
 
                     # shape transform in body frame
