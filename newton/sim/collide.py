@@ -266,3 +266,9 @@ class CollisionPipeline:
     @property
     def device(self):
         return self.rigid_pair_shape0.device
+
+
+__all__ = [
+    "CollisionPipeline",
+    "count_rigid_contact_points",
+]

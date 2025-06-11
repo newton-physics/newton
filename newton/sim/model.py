@@ -389,7 +389,7 @@ class Model:
     def collide(
         self: Model,
         state: State,
-        collision_pipeline: "CollisionPipeline" | None = None,
+        collision_pipeline: CollisionPipeline | None = None,
         rigid_contact_max_per_pair: int | None = None,
         rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
