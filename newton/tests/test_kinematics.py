@@ -61,12 +61,12 @@ def test_fk_ik(test, device):
     q_fk = model.joint_q.numpy()
     qd_fk = model.joint_qd.numpy()
 
-    newton.core.eval_fk(model, model.joint_q, model.joint_qd, state)
+    newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state)
 
     q_ik = wp.zeros_like(model.joint_q, device=device)
     qd_ik = wp.zeros_like(model.joint_qd, device=device)
 
-    newton.core.eval_ik(model, state, q_ik, qd_ik)
+    newton.sim.eval_ik(model, state, q_ik, qd_ik)
 
     assert_np_equal(q_fk, q_ik.numpy(), tol=1e-6)
     assert_np_equal(qd_fk, qd_ik.numpy(), tol=1e-6)

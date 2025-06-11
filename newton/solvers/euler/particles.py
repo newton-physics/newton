@@ -15,7 +15,8 @@
 
 import warp as wp
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Model, State
+from newton.core import PARTICLE_FLAG_ACTIVE
+from newton.sim import Model, State
 
 
 @wp.func

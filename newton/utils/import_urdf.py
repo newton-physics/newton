@@ -21,9 +21,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import warp as wp
 
-from newton.core import Axis, AxisType, ModelBuilder, quat_between_axes
+from newton.core import Axis, AxisType, quat_between_axes
 from newton.core.types import Transform
 from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def _download_file(dst, url: str) -> None:

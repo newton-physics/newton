@@ -20,8 +20,8 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from newton.geometry import CollisionPipeline
-
+from ..core.types import Devicelike
+from ..geometry import Contacts
 from .control import Control
 from .state import State
 from .types import Devicelike, ModelShapeGeometry, ModelShapeMaterials
@@ -257,8 +257,6 @@ class Model:
 
         self.soft_contact_radius = 0.2
         """Contact radius used by :class:`~newton.solvers.VBDSolver` for self-collisions. Default is 0.2."""
-        self.soft_contact_margin = 0.2
-        """Contact margin for generation of soft contacts. Default is 0.2."""
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 1.0e3."""
         self.soft_contact_kd = 10.0
@@ -432,12 +430,13 @@ class Model:
     def collide(
         self: Model,
         state: State,
-        requires_grad: bool | None = None,
+        rigid_contact_max_per_pair: int | None = None,
+        rigid_contact_margin: float = 0.01,
+        soft_contact_max: int | None = None,
+        soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
         iterate_mesh_vertices: bool = True,
-        max_contacts_per_pair: int = 10,
-        soft_contact_margin: float = 0.0,
-        rigid_contact_margin: float = 0.0,
+        requires_grad: bool | None = None,
     ) -> Contacts:
         """Generate contact points for the particles and rigid bodies in the
         model for use in contact-dynamics kernels.
@@ -445,29 +444,30 @@ class Model:
         Args:
             state: The state of the model.
             requires_grad: Whether to duplicate contact arrays for gradient
-                computation (if ``None``, uses ``self.requires_grad``).
+                computation (if ``None``, uses :attr`Model.requires_grad`).
             edge_sdf_iter: Number of search iterations for finding closest
                 contact points between edges and SDF.
             iterate_mesh_vertices: Whether to iterate over all vertices of a
                 mesh for contact generation (used for capsule/box <> mesh
                 collision).
-            max_contacts_per_pair: Maximum number of contacts per shape pair.
+            max_contacts_per_pair: Maximum number of contacts per shape pair. If ``None``, launches a kernel to count the number of possible contacts.
             soft_contact_margin: Margin for soft contact generation.
             rigid_contact_margin: Margin for rigid contact generation.
 
         Returns:
             Contact: The contact object containing collision information.
         """
+        from .collide import CollisionPipeline
+
         if requires_grad is None:
             requires_grad = self.requires_grad
 
         if not hasattr(self, "_collision_pipeline"):
-            self._collision_pipeline = CollisionPipeline(
-                self.shape_count,
-                self.shape_contact_pairs,
-                max_contacts_per_pair,
+            self._collision_pipeline = CollisionPipeline.from_model(
+                self,
+                rigid_contact_max_per_pair,
                 rigid_contact_margin,
-                self.particle_count * self.shape_count,
+                soft_contact_max,
                 soft_contact_margin,
                 edge_sdf_iter,
                 iterate_mesh_vertices,
@@ -480,18 +480,4 @@ class Model:
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
         self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
-        return self._collision_pipeline.collide(
-            self.shape_geo.type,
-            self.shape_geo.is_solid,
-            self.shape_geo.thickness,
-            self.shape_geo.source,
-            self.shape_geo.scale,
-            self.shape_geo.filter,
-            self.shape_collision_radius,
-            self.shape_body,
-            self.shape_transform,
-            state.body_q,
-            state.particle_q,
-            self.particle_radius,
-            self.particle_flags,
-        )
+        return self._collision_pipeline.collide(self, state)

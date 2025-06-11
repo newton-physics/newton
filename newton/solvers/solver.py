@@ -15,8 +15,9 @@
 
 import warp as wp
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Control, Model, State
+from newton.core import PARTICLE_FLAG_ACTIVE
 from newton.geometry import Contacts
+from newton.sim import Control, Model, State
 
 
 @wp.kernel
