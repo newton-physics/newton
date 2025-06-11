@@ -13,18 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This module contains time-integration objects for simulating
-models + state forward in time.
-
-"""
-
 import warp as wp
 
 import newton
 from newton.collision.collide import triangle_closest_point_barycentric
 from newton.core import (
     PARTICLE_FLAG_ACTIVE,
-    Contact,
     Control,
     Model,
     ModelShapeGeometry,
@@ -33,9 +27,6 @@ from newton.core import (
     quat_decompose,
     quat_twist,
 )
-from newton.core.particles import eval_particle_forces
-
-from .solver import SolverBase
 
 
 @wp.kernel
@@ -417,6 +408,8 @@ def eval_bending(
     f: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
+    eps = 1.0e-6
+
     ke = bending_properties[tid, 0]
     kd = bending_properties[tid, 1]
 
@@ -442,27 +435,23 @@ def eval_bending(
 
     n1 = wp.cross(x3 - x1, x4 - x1)  # normal to face 1
     n2 = wp.cross(x4 - x2, x3 - x2)  # normal to face 2
+    e = x4 - x3
 
     n1_length = wp.length(n1)
     n2_length = wp.length(n2)
-
-    if n1_length < 1.0e-6 or n2_length < 1.0e-6:
-        return
-
-    rcp_n1 = 1.0 / n1_length
-    rcp_n2 = 1.0 / n2_length
-
-    cos_theta = wp.dot(n1, n2) * rcp_n1 * rcp_n2
-
-    n1 = n1 * rcp_n1 * rcp_n1
-    n2 = n2 * rcp_n2 * rcp_n2
-
-    e = x4 - x3
-    e_hat = wp.normalize(e)
     e_length = wp.length(e)
 
-    s = wp.sign(wp.dot(wp.cross(n2, n1), e_hat))
-    angle = wp.acos(cos_theta) * s
+    # Check for degenerate cases
+    if n1_length < eps or n2_length < eps or e_length < eps:
+        return
+
+    n1 = n1 / n1_length
+    n2 = n2 / n2_length
+    e_hat = e / e_length
+
+    cos_theta = wp.dot(n1, n2)
+    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    theta = wp.atan2(sin_theta, cos_theta)
 
     d1 = n1 * e_length
     d2 = n2 * e_length
@@ -470,7 +459,7 @@ def eval_bending(
     d4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
 
     # elastic
-    f_elastic = ke * (angle - rest_angle)
+    f_elastic = ke * (theta - rest_angle)
 
     # damping
     f_damp = kd * (wp.dot(d1, v1) + wp.dot(d2, v2) + wp.dot(d3, v3) + wp.dot(d4, v4))
@@ -1927,138 +1916,3 @@ def eval_muscle_forces(model: Model, state: State, control: Control, body_f: wp.
             outputs=[body_f],
             device=model.device,
         )
-
-
-def compute_forces(
-    model: Model,
-    state: State,
-    control: Control,
-    particle_f: wp.array,
-    body_f: wp.array,
-    dt: float,
-    joint_attach_ke: float,
-    joint_attach_kd: float,
-    friction_smoothing: float = 1.0,
-):
-    # damped springs
-    eval_spring_forces(model, state, particle_f)
-
-    # triangle elastic and lift/drag forces
-    eval_triangle_forces(model, state, control, particle_f)
-
-    # triangle/triangle contacts
-    eval_triangle_contact_forces(model, state, particle_f)
-
-    # triangle bending
-    eval_bending_forces(model, state, particle_f)
-
-    # tetrahedral FEM
-    eval_tetrahedral_forces(model, state, control, particle_f)
-
-    # body joints
-    eval_body_joint_forces(model, state, control, body_f, joint_attach_ke, joint_attach_kd)
-
-    # particle-particle interactions
-    eval_particle_forces(model, state, particle_f)
-
-    # particle ground contacts
-    eval_particle_ground_contact_forces(model, state, particle_f)
-
-    # body contacts
-    eval_body_contact_forces(model, state, particle_f, friction_smoothing=friction_smoothing)
-
-    # particle shape contact
-    eval_particle_body_contact_forces(model, state, particle_f, body_f, body_f_in_world_frame=False)
-
-    # muscles
-    if False:
-        eval_muscle_forces(model, state, control, body_f)
-
-
-class SemiImplicitSolver(SolverBase):
-    """A semi-implicit integrator using symplectic Euler
-
-    After constructing `Model` and `State` objects this time-integrator
-    may be used to advance the simulation state forward in time.
-
-    Semi-implicit time integration is a variational integrator that
-    preserves energy, however it not unconditionally stable, and requires a time-step
-    small enough to support the required stiffness and damping forces.
-
-    See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
-
-    Example
-    -------
-
-    .. code-block:: python
-
-        solver = newton.solvers.SemiImplicitSolver(model)
-
-        # simulation loop
-        for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
-
-    """
-
-    def __init__(
-        self,
-        model: Model,
-        angular_damping: float = 0.05,
-        friction_smoothing: float = 1.0,
-        joint_attach_ke: float = 1.0e4,
-        joint_attach_kd: float = 1.0e2,
-    ):
-        """Create a new Euler solver.
-
-        Args:
-            model (Model): Model to use by this solver.
-            angular_damping (float, optional): Angular damping factor to be used in rigid body integration. Defaults to 0.05.
-            friction_smoothing (float, optional): Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
-            joint_attach_ke (float, optional): Joint attachment spring stiffness. Defaults to 1.0e4.
-            joint_attach_kd (float, optional): Joint attachment spring damping. Defaults to 1.0e2.
-        """
-        super().__init__(model=model)
-        self.angular_damping = angular_damping
-        self.friction_smoothing = friction_smoothing
-        self.joint_attach_ke = joint_attach_ke
-        self.joint_attach_kd = joint_attach_kd
-
-    def step(
-        self,
-        model: Model,
-        state_in: State,
-        state_out: State,
-        control: Control,
-        contacts: Contact,
-        dt: float,
-    ):
-        with wp.ScopedTimer("simulate", False):
-            particle_f = None
-            body_f = None
-
-            if state_in.particle_count:
-                particle_f = state_in.particle_f
-
-            if state_in.body_count:
-                body_f = state_in.body_f
-
-            if control is None:
-                control = model.control(clone_variables=False)
-
-            compute_forces(
-                model,
-                state_in,
-                control,
-                particle_f,
-                body_f,
-                dt,
-                self.joint_attach_ke,
-                self.joint_attach_kd,
-                friction_smoothing=self.friction_smoothing,
-            )
-
-            self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-
-            self.integrate_particles(model, state_in, state_out, dt)
-
-            return state_out
