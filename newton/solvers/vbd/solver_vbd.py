@@ -20,15 +20,15 @@ import warp as wp
 from warp.types import float32, matrix
 
 from newton.core import PARTICLE_FLAG_ACTIVE
-from newton.sim.model import ShapeMaterials
-from newton.sim import Control, Model, State
-from newton.geometry import Contacts
 from newton.core.types import override
+from newton.geometry import Contacts
 from newton.geometry.kernels import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
     triangle_closest_point,
 )
+from newton.sim import Control, Model, State
+from newton.sim.model import ShapeMaterials
 
 from ..solver import SolverBase
 

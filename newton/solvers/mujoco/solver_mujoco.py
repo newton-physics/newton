@@ -22,9 +22,9 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.sim import Control,Model,State
-from newton.geometry import Contacts
 from newton.core.types import override
+from newton.geometry import Contacts
+from newton.sim import Control, Model, State
 
 from ..solver import SolverBase
 

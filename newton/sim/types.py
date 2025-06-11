@@ -16,6 +16,7 @@
 
 import warp as wp
 
+
 @wp.struct
 class ShapeMaterials:
     """
@@ -55,4 +56,3 @@ class ShapeGeometry:
     source: wp.array(dtype=wp.uint64)
     scale: wp.array(dtype=wp.vec3)
     filter: wp.array(dtype=int)
-
