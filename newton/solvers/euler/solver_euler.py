@@ -25,7 +25,6 @@ from .kernels import (
     eval_body_joint_forces,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
-    eval_particle_ground_contact_forces,
     eval_spring_forces,
     eval_tetrahedral_forces,
     eval_triangle_contact_forces,
@@ -125,14 +124,13 @@ class SemiImplicitSolver(SolverBase):
             # particle-particle interactions
             eval_particle_forces(model, state_in, particle_f)
 
-            # particle ground contacts
-            eval_particle_ground_contact_forces(model, state_in, particle_f)
-
             # body contacts
-            eval_body_contact_forces(model, state_in, particle_f, friction_smoothing=self.friction_smoothing)
+            eval_body_contact_forces(model, state_in, contacts, friction_smoothing=self.friction_smoothing)
 
             # particle shape contact
-            eval_particle_body_contact_forces(model, state_in, particle_f, body_f, body_f_in_world_frame=False)
+            eval_particle_body_contact_forces(
+                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
+            )
 
             # muscles
             if False:
