@@ -37,52 +37,8 @@ else:
             return func
 
 
-# Particle flags
-PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
-
-# Shape flags
-SHAPE_FLAG_VISIBLE = wp.constant(wp.uint32(1 << 0))
-SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
-SHAPE_FLAG_COLLIDE_GROUND = wp.constant(wp.uint32(1 << 2))
-SHAPE_FLAG_COLLIDE_PARTICLES = wp.constant(wp.uint32(1 << 3))
-
-
-# Types of joints linking rigid bodies
-JOINT_PRISMATIC = wp.constant(0)
-JOINT_REVOLUTE = wp.constant(1)
-JOINT_BALL = wp.constant(2)
-JOINT_FIXED = wp.constant(3)
-JOINT_FREE = wp.constant(4)
-JOINT_COMPOUND = wp.constant(5)
-JOINT_UNIVERSAL = wp.constant(6)
-JOINT_DISTANCE = wp.constant(7)
-JOINT_D6 = wp.constant(8)
-
-
-def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
-    """Return the number of degrees of freedom in position and velocity for a given joint type."""
-    dof_count = num_axes
-    coord_count = num_axes
-    if joint_type == JOINT_BALL:
-        dof_count = 3
-        coord_count = 4
-    elif joint_type == JOINT_FREE or joint_type == JOINT_DISTANCE:
-        dof_count = 6
-        coord_count = 7
-    elif joint_type == JOINT_FIXED:
-        dof_count = 0
-        coord_count = 0
-    return dof_count, coord_count
-
-
-# Joint axis control mode types
-JOINT_MODE_FORCE = wp.constant(0)
-JOINT_MODE_TARGET_POSITION = wp.constant(1)
-JOINT_MODE_TARGET_VELOCITY = wp.constant(2)
-
-
 def flag_to_int(flag):
-    """Converts a flag to an integer."""
+    """Converts a flag (Warp constant) to an integer."""
     if type(flag) in wp.types.int_types:
         return flag.value
     return int(flag)
@@ -174,22 +130,6 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 
 __all__ = [
-    "JOINT_BALL",
-    "JOINT_COMPOUND",
-    "JOINT_D6",
-    "JOINT_DISTANCE",
-    "JOINT_FIXED",
-    "JOINT_FREE",
-    "JOINT_MODE_FORCE",
-    "JOINT_MODE_TARGET_POSITION",
-    "JOINT_MODE_TARGET_VELOCITY",
-    "JOINT_PRISMATIC",
-    "JOINT_REVOLUTE",
-    "JOINT_UNIVERSAL",
-    "PARTICLE_FLAG_ACTIVE",
-    "SHAPE_FLAG_COLLIDE_GROUND",
-    "SHAPE_FLAG_COLLIDE_SHAPES",
-    "SHAPE_FLAG_VISIBLE",
     "Axis",
     "AxisType",
     "Devicelike",
@@ -200,5 +140,4 @@ __all__ = [
     "Vec3",
     "Vec4",
     "flag_to_int",
-    "get_joint_dof_count",
 ]

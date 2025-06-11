@@ -19,9 +19,8 @@ import numpy as np
 import warp as wp
 from warp.types import float32, matrix
 
-from newton.core import PARTICLE_FLAG_ACTIVE
 from newton.core.types import override
-from newton.geometry import Contacts
+from newton.geometry import PARTICLE_FLAG_ACTIVE, Contacts
 from newton.geometry.kernels import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,

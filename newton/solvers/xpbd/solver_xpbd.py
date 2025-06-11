@@ -16,16 +16,15 @@
 import warp as wp
 
 import newton
-from newton.core import (
+from newton.core import velocity_at_point
+from newton.geometry import PARTICLE_FLAG_ACTIVE, Contacts
+from newton.sim import Control, Model, State
+from newton.sim.joints import (
     JOINT_MODE_FORCE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
-    PARTICLE_FLAG_ACTIVE,
-    velocity_at_point,
 )
-from newton.geometry import Contacts
-from newton.sim import Control, Model, State
-from newton.sim.model import ShapeGeometry, ShapeMaterials
+from newton.sim.types import ShapeGeometry, ShapeMaterials
 from newton.utils import (
     vec_abs,
     vec_leaky_max,
