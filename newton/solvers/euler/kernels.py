@@ -406,6 +406,8 @@ def eval_bending(
     f: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
+    eps = 1.0e-6
+
     ke = bending_properties[tid, 0]
     kd = bending_properties[tid, 1]
 
@@ -431,27 +433,23 @@ def eval_bending(
 
     n1 = wp.cross(x3 - x1, x4 - x1)  # normal to face 1
     n2 = wp.cross(x4 - x2, x3 - x2)  # normal to face 2
+    e = x4 - x3
 
     n1_length = wp.length(n1)
     n2_length = wp.length(n2)
-
-    if n1_length < 1.0e-6 or n2_length < 1.0e-6:
-        return
-
-    rcp_n1 = 1.0 / n1_length
-    rcp_n2 = 1.0 / n2_length
-
-    cos_theta = wp.dot(n1, n2) * rcp_n1 * rcp_n2
-
-    n1 = n1 * rcp_n1 * rcp_n1
-    n2 = n2 * rcp_n2 * rcp_n2
-
-    e = x4 - x3
-    e_hat = wp.normalize(e)
     e_length = wp.length(e)
 
-    s = wp.sign(wp.dot(wp.cross(n2, n1), e_hat))
-    angle = wp.acos(cos_theta) * s
+    # Check for degenerate cases
+    if n1_length < eps or n2_length < eps or e_length < eps:
+        return
+
+    n1 = n1 / n1_length
+    n2 = n2 / n2_length
+    e_hat = e / e_length
+
+    cos_theta = wp.dot(n1, n2)
+    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    theta = wp.atan2(sin_theta, cos_theta)
 
     d1 = n1 * e_length
     d2 = n2 * e_length
@@ -459,7 +457,7 @@ def eval_bending(
     d4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
 
     # elastic
-    f_elastic = ke * (angle - rest_angle)
+    f_elastic = ke * (theta - rest_angle)
 
     # damping
     f_damp = kd * (wp.dot(d1, v1) + wp.dot(d2, v2) + wp.dot(d3, v3) + wp.dot(d4, v4))
