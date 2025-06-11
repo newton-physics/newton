@@ -17,10 +17,8 @@ from collections.abc import Sequence
 
 import numpy as np
 import warp as wp
-from typing_extensions import override
-from warp.context import Devicelike
 
-from newton.core.types import Vec3
+from newton.core.types import Devicelike, Vec3, override
 
 # Shape geometry types
 GEO_SPHERE = wp.constant(0)
