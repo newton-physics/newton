@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Many of these imports are mainly needed for graph capture to work on CUDA drivers < 12.3
+import importlib
 import unittest
 from functools import partial
 
@@ -20,6 +22,13 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.collision.collide
+import newton.solvers.euler.kernels
+import newton.solvers.euler.particles
+import newton.solvers.euler.solver_euler
+import newton.solvers.solver
+import newton.solvers.vbd.solver_vbd
+import newton.solvers.xpbd.solver_xpbd
 from newton.core.types import PARTICLE_FLAG_ACTIVE
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -301,7 +310,7 @@ class ClothSim:
         self.device = device
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
         self.builder = newton.ModelBuilder()
-        self.solver = solver
+        self.solver_name = solver
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -317,7 +326,7 @@ class ClothSim:
 
         kd = 1.0e-7
 
-        if self.solver != "semi_implicit":
+        if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
             spring_ke = 1e3
             bending_ke = 10
@@ -338,7 +347,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=kd,
             edge_ke=bending_ke,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=spring_ke,
             spring_kd=0.0,
         )
@@ -384,7 +393,7 @@ class ClothSim:
             tri_kd=stretching_damping,
             edge_ke=10,
             edge_kd=bending_damping,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -402,7 +411,7 @@ class ClothSim:
             tri_kd=stretching_damping,
             edge_ke=100,
             edge_kd=bending_damping,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -420,7 +429,7 @@ class ClothSim:
             tri_kd=stretching_damping,
             edge_ke=1000,
             edge_kd=bending_damping,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -447,7 +456,7 @@ class ClothSim:
             tri_ke=elasticity_ke,
             tri_ka=elasticity_ke,
             tri_kd=elasticity_kd,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -466,7 +475,7 @@ class ClothSim:
             tri_ke=elasticity_ke,
             tri_ka=elasticity_ke,
             tri_kd=elasticity_kd,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -541,7 +550,7 @@ class ClothSim:
             tri_kd=stretching_damping,
             edge_ke=edge_ke,
             edge_kd=bending_damping,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -599,7 +608,7 @@ class ClothSim:
             tri_kd=tri_kd,
             edge_ke=edge_ke,
             edge_kd=edge_kd,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
         )
@@ -613,7 +622,7 @@ class ClothSim:
         self.renderer_scale_factor = 0.01
         vertices = [wp.vec3(v) * self.input_scale_factor for v in CLOTH_POINTS]
         faces_flatten = [fv - 1 for fv in CLOTH_FACES]
-        if self.solver != "semi_implicit":
+        if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
             spring_ke = 1e3
             bending_ke = 10
@@ -635,7 +644,7 @@ class ClothSim:
             tri_ke=stretching_stiffness,
             tri_ka=stretching_stiffness,
             tri_kd=0.0,
-            add_springs=self.solver == "xpbd",
+            add_springs=self.solver_name == "xpbd",
             spring_ke=spring_ke,
             spring_kd=0.0,
         )
@@ -654,14 +663,14 @@ class ClothSim:
 
         self.set_points_fixed(self.model, self.fixed_particles)
 
-        if self.solver == "vbd":
+        if self.solver_name == "vbd":
             self.solver = newton.solvers.VBDSolver(self.model, self.iterations, handle_self_contact=handle_self_contact)
-        elif self.solver == "xpbd":
+        elif self.solver_name == "xpbd":
             self.solver = newton.solvers.XPBDSolver(self.iterations)
-        elif self.solver == "semi_implicit":
+        elif self.solver_name == "semi_implicit":
             self.solver = newton.solvers.SemiImplicitSolver(self.model)
         else:
-            raise ValueError("Unsupported solver type: " + self.solver)
+            raise ValueError("Unsupported solver type: " + self.solver_name)
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
@@ -670,15 +679,28 @@ class ClothSim:
 
         self.graph = None
         if self.use_cuda_graph:
-            if self.solver == "vbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd)
-                wp.load_module(newton.solvers.vbd, device=self.device)
-            elif self.solver == "xpbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd)
-                wp.load_module(newton.solvers.xpbd, device=self.device)
-            elif self.solver == "semi_implicit":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.semi_implicit)
-                wp.load_module(newton.solvers.semi_implicit, device=self.device)
+            # We need to set block_dim to 256 here because CPU launches will set block_dim to 1
+            if self.solver_name == "vbd":
+                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
+                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
+
+                collide_module = importlib.import_module("newton.collision.collide")
+                # Also for some tile stuff
+                wp.set_module_options({"block_dim": 16}, collide_module)
+                wp.load_module(collide_module, device=self.device)
+                wp.set_module_options({"block_dim": 256}, collide_module)
+                wp.load_module(collide_module, device=self.device)
+            elif self.solver_name == "xpbd":
+                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
+                wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
+            elif self.solver_name == "semi_implicit":
+                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.kernels)
+                wp.load_module(newton.solvers.euler.kernels, device=self.device)
+                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.particles)
+                wp.load_module(newton.solvers.euler.particles, device=self.device)
+                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
+                wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
+
             wp.load_module(newton.solvers.solver, device=self.device)
             wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
@@ -688,8 +710,8 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = newton.Contact()
-            control = newton.Control()
+            contacts = self.model.contact()
+            control = self.model.control()
             self.solver.step(self.model, self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
@@ -881,7 +903,11 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
     ],
-    "semi_implicit": [],
+    "semi_implicit": [
+        test_cloth_free_fall,
+        test_cloth_sagging,
+        test_cloth_bending,
+    ],
     "vbd": [
         test_cloth_free_fall,
         test_cloth_sagging,
