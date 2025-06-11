@@ -19,6 +19,7 @@ import warp as wp
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 
 from ..solver import SolverBase
+from .linear_solver import NonZeroEntry, SparseMatrixELL
 
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
@@ -77,6 +78,39 @@ class PDMatrixBuilder:
                     else:
                         self.diags[face[i]] += weight
 
+    @wp.kernel
+    def assemble_nz_ell_kernel(
+        neighbors: wp.array2d(dtype=int),
+        nz_values: wp.array2d(dtype=float),
+        neighbor_counts: wp.array(dtype=int),
+        # outputs
+        nz_ell: wp.array2d(dtype=NonZeroEntry),
+    ):
+        tid = wp.tid()
+        for k in range(neighbor_counts[tid]):
+            nz_entry = NonZeroEntry()
+            nz_entry.value = nz_values[tid, k]
+            nz_entry.column_index = neighbors[tid, k]
+            nz_ell[k, tid] = nz_entry
+
+    def finialize(self, device) -> SparseMatrixELL:
+        pd_matrix = SparseMatrixELL()
+        pd_matrix.diag = wp.array(self.diags, dtype=float, device=device)
+        pd_matrix.num_nz = wp.array(self.counts, dtype=int, device=device)
+        pd_matrix.nz_ell = wp.array2d(shape=(self.num_verts, 32), dtype=NonZeroEntry, device=device)
+
+        nz_values = wp.array2d(self.values, dtype=float, device=device)
+        neighbors = wp.array2d(self.neighbors, dtype=int, device=device)
+
+        wp.launch(
+            self.assemble_nz_ell_kernel,
+            dim=self.num_verts,
+            inputs=[neighbors, nz_values, pd_matrix.num_nz],
+            outputs=[pd_matrix.nz_ell],
+            device=device,
+        )
+        return pd_matrix
+
 
 @wp.func
 def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm: wp.mat22):
@@ -93,6 +127,7 @@ def eval_stretch_kernel(
     inv_dms: wp.array(dtype=wp.mat22),
     faces: wp.array(dtype=wp.int32, ndim=2),
     aniso_ke: wp.array(dtype=wp.vec3),
+    # outputs
     forces: wp.array(dtype=wp.vec3),
 ):
     """
@@ -129,57 +164,63 @@ def eval_stretch_kernel(
 
 
 @wp.kernel
-def forward_step(
+def init_step_kernel(
     dt: float,
     gravity: wp.vec3,
-    vel: wp.array(dtype=wp.vec3),
-    last_pos: wp.array(dtype=wp.vec3),
-    external_forces: wp.array(dtype=wp.vec3),
+    f_ext: wp.array(dtype=wp.vec3),
+    v_curr: wp.array(dtype=wp.vec3),
+    x_curr: wp.array(dtype=wp.vec3),
+    x_prev: wp.array(dtype=wp.vec3),
+    pd_diags: wp.array(dtype=float),
+    particle_masses: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.uint32),
-    inv_mass: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
+    # outputs
+    x_inertia: wp.array(dtype=wp.vec3),
+    inv_diags: wp.array(dtype=float),
+    dx: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
-    last_x = pos[tid]
-    last_pos[tid] = last_x
+    x_last = x_curr[tid]
+    x_prev[tid] = x_last
 
     if not particle_flags[tid] & PARTICLE_FLAG_ACTIVE:
-        inertia[tid] = last_pos[tid]
+        x_inertia[tid] = x_prev[tid]
+        dx[tid] = wp.vec3(0.0)
+        inv_diags[tid] = 0.0
     else:
-        last_v = vel[tid]
-        new_v = last_v + (gravity + external_forces[tid] * inv_mass[tid]) * dt
-        inertia[tid] = last_x + new_v * dt
-        pos[tid] = last_x + last_v * dt
+        v_prev = v_curr[tid]
+        mass = particle_masses[tid]
+        inv_diags[tid] = 1.0 / (pd_diags[tid] + mass / (dt * dt))
+        x_inertia[tid] = x_last + v_prev * dt + (gravity + f_ext[tid] / mass) * (dt * dt)
+        dx[tid] = v_prev * dt
+
+        # temp
+        x_curr[tid] = x_last + v_prev * dt
 
 
 @wp.kernel
-def solve_pd(
+def init_rhs_kernel(
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    forces: wp.array(dtype=wp.vec3),
-    diags: wp.array(dtype=float),
-    mass: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.uint32),
-    pos_new: wp.array(dtype=wp.vec3),
+    x_curr: wp.array(dtype=wp.vec3),
+    x_inertia: wp.array(dtype=wp.vec3),
+    particle_masses: wp.array(dtype=float),
+    # outputs
+    rhs: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
+    rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
 
-    particle_pos = pos[tid]
-    if not particle_flags[tid] & PARTICLE_FLAG_ACTIVE:
-        pos_new[tid] = particle_pos
-        return
 
-    dt_sqr_reciprocal = 1.0 / (dt * dt)
-    # inertia force and hessian
-    diag = mass[tid] * dt_sqr_reciprocal
-    f = mass[tid] * (inertia[tid] - particle_pos) * (dt_sqr_reciprocal)
-
-    f += forces[tid]
-    diag += diags[tid]
-
-    pos_new[tid] = particle_pos + f / diag
+@wp.kernel
+def PD_jacobi_step_kernel(
+    rhs: wp.array(dtype=wp.vec3),
+    x_in: wp.array(dtype=wp.vec3),
+    inv_diags: wp.array(dtype=float),
+    # outputs
+    x_out: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    x_out[tid] = x_in[tid] + rhs[tid] * inv_diags[tid]
 
 
 @wp.kernel
@@ -204,33 +245,50 @@ def update_velocity(
 
 
 class Style3DSolver(SolverBase):
-    """ """
+    """Projective dynamic based cloth simulator.
+
+    Ref[1]. Large Steps in Cloth Simulation, Baraff & Witkin.
+    Ref[2]. Fast Simulation of Mass-Spring Systems, Tiantian Liu etc.
+
+    Implicit-Euler method solves the following non-linear equation:
+
+        (M / dt^2 + H(x)) * dx = (M / dt^2) * (x_prev + v_prev * dt - x) + f_ext(x) + f_int(x)
+                               = (M / dt^2) * (x_prev + v_prev * dt + (dt^2 / M) * f_ext(x) - x) + f_int(x)
+                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                               = (M / dt^2) * (x_inertia - x) + f_int(x)
+
+    Notations:
+        M:  mass matrix
+        x:  unsolved particle position
+        H:  hessian matrix (function of x)
+        P:  PD-approximated hessian matrix (constant)
+        A:  M / dt^2 + H(x) or M / dt^2 + P
+      rhs:  Right hand side of the equation: (M / dt^2) * (inertia_x - x) + f_int(x)
+      res:  Residual: rhs - A * dx_init, or rhs if dx_init == 0
+    """
 
     def __init__(
         self,
         model: Model,
         iterations=10,
-        friction_epsilon=1e-2,
     ):
         super().__init__(model)
+        self.enable_chebyshev = True
         self.nonlinear_iterations = iterations
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
 
-        # add new attributes for VBD solve
-        self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
-        self.inertia = wp.zeros_like(model.particle_q, device=self.device)
+        self.P = SparseMatrixELL()
+        self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.rhs = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.x_prev = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.inv_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
+        self.x_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+
+        # add new attributes for Style3D solve
         self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.enable_chebyshev = True
-        self.forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
         self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
-
-        # spaces for particle force and hessian
-        self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
-        self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
-        self.friction_epsilon = friction_epsilon
 
     @staticmethod
     def get_chebyshev_omega(omega: float, iter: int):
@@ -244,23 +302,26 @@ class Style3DSolver(SolverBase):
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         if model is not self.model:
-            raise ValueError("model must be the one used to initialize VBDSolver")
+            raise ValueError("model must be the one used to initialize Style3DSolver")
 
         wp.launch(
-            kernel=forward_step,
+            kernel=init_step_kernel,
             dim=self.model.particle_count,
             inputs=[
                 dt,
                 model.gravity,
-                state_in.particle_qd,
-                self.particle_q_prev,
                 state_in.particle_f,
+                state_in.particle_qd,
+                state_in.particle_q,
+                self.x_prev,
+                self.P.diag,
+                self.model.particle_mass,
                 self.model.particle_flags,
-                self.model.particle_inv_mass,
             ],
             outputs=[
-                self.inertia,
-                state_in.particle_q,
+                self.x_inertia,
+                self.inv_diags,
+                self.dx,
             ],
             device=self.device,
         )
@@ -268,7 +329,21 @@ class Style3DSolver(SolverBase):
         omega = 1.0
         self.temp_verts1.assign(state_in.particle_q)
         for _iter in range(self.nonlinear_iterations):
-            self.forces.zero_()
+            wp.launch(
+                init_rhs_kernel,
+                dim=self.model.particle_count,
+                inputs=[
+                    dt,
+                    state_in.particle_q,
+                    self.x_inertia,
+                    self.model.particle_mass,
+                ],
+                outputs=[
+                    self.rhs,
+                ],
+                device=self.device,
+            )
+
             wp.launch(
                 eval_stretch_kernel,
                 dim=len(self.model.tri_areas),
@@ -279,22 +354,17 @@ class Style3DSolver(SolverBase):
                     self.model.tri_indices,
                     self.model.tri_aniso_ke,
                 ],
-                outputs=[
-                    self.forces,
-                ],
+                outputs=[self.rhs],
                 device=self.device,
             )
+
             wp.launch(
-                solve_pd,
+                PD_jacobi_step_kernel,
                 dim=self.model.particle_count,
                 inputs=[
-                    dt,
+                    self.rhs,
                     state_in.particle_q,
-                    self.forces,
-                    self.pd_diags,
-                    self.model.particle_mass,
-                    self.inertia,
-                    self.model.particle_flags,
+                    self.inv_diags,
                 ],
                 outputs=[
                     self.temp_verts0,
@@ -320,7 +390,7 @@ class Style3DSolver(SolverBase):
         wp.launch(
             kernel=update_velocity,
             dim=self.model.particle_count,
-            inputs=[dt, self.particle_q_prev, state_out.particle_q],
+            inputs=[dt, self.x_prev, state_out.particle_q],
             outputs=[state_out.particle_qd],
             device=self.device,
         )
@@ -333,4 +403,4 @@ class Style3DSolver(SolverBase):
         tri_areas: list[float],
     ):
         self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-        self.pd_diags = wp.array(self.pd_matrix_builder.diags, dtype=float, device=self.device)
+        self.P = self.pd_matrix_builder.finialize(self.device)
