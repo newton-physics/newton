@@ -75,10 +75,10 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        # self.solver = newton.solvers.XPBDSolver(self.model)
+        self.solver = newton.solvers.XPBDSolver(self.model)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model)
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        # self.solver = newton.solvers.MuJoCoSolver(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
@@ -139,7 +139,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=30000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
