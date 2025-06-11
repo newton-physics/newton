@@ -363,7 +363,7 @@ class Mesh:
 NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)  # joint_q, joint_X_p, joint_X_c
 NOTIFY_FLAG_JOINT_AXIS_PROPERTIES = wp.constant(
     1 << 1
-)  # joint_target, joint_target_ke, joint_target_kd, joint_axis_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd
+)  # joint_target, joint_target_ke, joint_target_kd, joint_axis_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd, joint_effort_limit, joint_velocity_limit, joint_friction
 NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 2)  # joint_qd, joint_f, joint_armature
 NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 3)  # body_q, body_qd
 NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(
@@ -396,6 +396,7 @@ __all__ = [
     "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
     "NOTIFY_FLAG_BODY_PROPERTIES",
     "NOTIFY_FLAG_DOF_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "PARTICLE_FLAG_ACTIVE",
