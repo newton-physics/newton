@@ -43,6 +43,8 @@ VBD_DEBUG_PRINTING_OPTIONS = {
     # "contact_info",
 }
 
+NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
+
 
 class mat66(matrix(shape=(6, 6), dtype=float32)):
     pass
@@ -1579,100 +1581,114 @@ def VBD_accumulate_contact_force_and_hessian(
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
-    # process edge-edge collisions
-    if t_id * 2 < collision_info.edge_colliding_edges.shape[0]:
-        e1_idx = collision_info.edge_colliding_edges[2 * t_id]
-        e2_idx = collision_info.edge_colliding_edges[2 * t_id + 1]
+    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
+    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
-        if e1_idx != -1 and e2_idx != -1:
-            e1_v1 = edge_indices[e1_idx, 2]
-            e1_v2 = edge_indices[e1_idx, 3]
-            if particle_colors[e1_v1] == current_color or particle_colors[e1_v2] == current_color:
-                has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
-                    evaluate_edge_edge_contact_2_vertices(
-                        e1_idx,
-                        e2_idx,
+    # process edge-edge collisions
+    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
+        e1_idx = primitive_id
+
+        collision_buffer_counter = t_id_current_primitive
+        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
+        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
+            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
+
+            if e1_idx != -1 and e2_idx != -1:
+                e1_v1 = edge_indices[e1_idx, 2]
+                e1_v2 = edge_indices[e1_idx, 3]
+                if particle_colors[e1_v1] == current_color or particle_colors[e1_v2] == current_color:
+                    has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
+                        evaluate_edge_edge_contact_2_vertices(
+                            e1_idx,
+                            e2_idx,
+                            pos,
+                            pos_prev,
+                            edge_indices,
+                            collision_radius,
+                            soft_contact_ke,
+                            soft_contact_kd,
+                            friction_mu,
+                            friction_epsilon,
+                            dt,
+                            edge_edge_parallel_epsilon,
+                        )
+                    )
+
+                    if has_contact:
+                        # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
+                        if particle_colors[e1_v1] == current_color:
+                            wp.atomic_add(particle_forces, e1_v1, collision_force_0)
+                            wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
+                        if particle_colors[e1_v2] == current_color:
+                            wp.atomic_add(particle_forces, e1_v2, collision_force_1)
+                            wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
+            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+
+    # process vertex-triangle collisions
+    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
+        particle_idx = primitive_id
+        collision_buffer_counter = t_id_current_primitive
+        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
+        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
+            tri_idx = collision_info.vertex_colliding_triangles[
+                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
+            ]
+
+            if particle_idx != -1 and tri_idx != -1:
+                tri_a = tri_indices[tri_idx, 0]
+                tri_b = tri_indices[tri_idx, 1]
+                tri_c = tri_indices[tri_idx, 2]
+                if (
+                    particle_colors[particle_idx] == current_color
+                    or particle_colors[tri_a] == current_color
+                    or particle_colors[tri_b] == current_color
+                    or particle_colors[tri_c] == current_color
+                ):
+                    (
+                        has_contact,
+                        collision_force_0,
+                        collision_force_1,
+                        collision_force_2,
+                        collision_force_3,
+                        collision_hessian_0,
+                        collision_hessian_1,
+                        collision_hessian_2,
+                        collision_hessian_3,
+                    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+                        particle_idx,
+                        tri_idx,
                         pos,
                         pos_prev,
-                        edge_indices,
+                        tri_indices,
                         collision_radius,
                         soft_contact_ke,
                         soft_contact_kd,
                         friction_mu,
                         friction_epsilon,
                         dt,
-                        edge_edge_parallel_epsilon,
                     )
-                )
 
-                if has_contact:
-                    # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
-                    if particle_colors[e1_v1] == current_color:
-                        wp.atomic_add(particle_forces, e1_v1, collision_force_0)
-                        wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
-                    if particle_colors[e1_v2] == current_color:
-                        wp.atomic_add(particle_forces, e1_v2, collision_force_1)
-                        wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
+                    if has_contact:
+                        # particle
+                        if particle_colors[particle_idx] == current_color:
+                            wp.atomic_add(particle_forces, particle_idx, collision_force_3)
+                            wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
 
-    # process vertex-triangle collisions
-    if t_id * 2 < collision_info.vertex_colliding_triangles.shape[0]:
-        particle_idx = collision_info.vertex_colliding_triangles[2 * t_id]
-        tri_idx = collision_info.vertex_colliding_triangles[2 * t_id + 1]
+                        # tri_a
+                        if particle_colors[tri_a] == current_color:
+                            wp.atomic_add(particle_forces, tri_a, collision_force_0)
+                            wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
 
-        if particle_idx != -1 and tri_idx != -1:
-            tri_a = tri_indices[tri_idx, 0]
-            tri_b = tri_indices[tri_idx, 1]
-            tri_c = tri_indices[tri_idx, 2]
-            if (
-                particle_colors[particle_idx] == current_color
-                or particle_colors[tri_a] == current_color
-                or particle_colors[tri_b] == current_color
-                or particle_colors[tri_c] == current_color
-            ):
-                (
-                    has_contact,
-                    collision_force_0,
-                    collision_force_1,
-                    collision_force_2,
-                    collision_force_3,
-                    collision_hessian_0,
-                    collision_hessian_1,
-                    collision_hessian_2,
-                    collision_hessian_3,
-                ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
-                    particle_idx,
-                    tri_idx,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    collision_radius,
-                    soft_contact_ke,
-                    soft_contact_kd,
-                    friction_mu,
-                    friction_epsilon,
-                    dt,
-                )
+                        # tri_b
+                        if particle_colors[tri_b] == current_color:
+                            wp.atomic_add(particle_forces, tri_b, collision_force_1)
+                            wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
 
-                if has_contact:
-                    # particle
-                    if particle_colors[particle_idx] == current_color:
-                        wp.atomic_add(particle_forces, particle_idx, collision_force_3)
-                        wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
-
-                    # tri_a
-                    if particle_colors[tri_a] == current_color:
-                        wp.atomic_add(particle_forces, tri_a, collision_force_0)
-                        wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
-
-                    # tri_b
-                    if particle_colors[tri_b] == current_color:
-                        wp.atomic_add(particle_forces, tri_b, collision_force_1)
-                        wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
-
-                    # tri_c
-                    if particle_colors[tri_c] == current_color:
-                        wp.atomic_add(particle_forces, tri_c, collision_force_2)
-                        wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
+                        # tri_c
+                        if particle_colors[tri_c] == current_color:
+                            wp.atomic_add(particle_forces, tri_c, collision_force_2)
+                            wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
+            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
     particle_body_contact_count = min(contact_max, contact_count[0])
 
@@ -1966,6 +1982,7 @@ class VBDSolver(SolverBase):
         friction_epsilon: float = 1e-2,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
+        collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
     ):
         """
@@ -1981,7 +1998,10 @@ class VBDSolver(SolverBase):
             vertex_collision_buffer_pre_alloc: Preallocation size for each vertex's vertex-triangle collision buffer.
             edge_collision_buffer_pre_alloc: Preallocation size for edge's edge-edge collision buffer.
             edge_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
-
+            collision_detection_interval: Controls how frequently collision detection is applied during the simulation.
+                If set to a value < 0, collision detection is only performed once before the initialization step.
+                If set to 0, collision detection is applied twice: once before and once immediately after initialization.
+                If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to Ture, the rigid states should be integrated externally, with `state_in`
@@ -1996,6 +2016,7 @@ class VBDSolver(SolverBase):
         super().__init__(model)
         self.iterations = iterations
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
+        self.collision_detection_interval = collision_detection_interval
 
         # add new attributes for VBD solve
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
@@ -2030,14 +2051,15 @@ class VBDSolver(SolverBase):
             )
 
             self.collision_evaluation_kernel_launch_size = max(
-                self.trimesh_collision_detector.vertex_colliding_triangles.shape[0] // 2,
-                self.trimesh_collision_detector.edge_colliding_edges.shape[0] // 2,
+                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+                self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
                 self.model.soft_contact_max,
             )
         else:
             self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
 
-        # spaces for hessian
+        # spaces for particle force and hessian
+        self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
 
         self.friction_epsilon = friction_epsilon
@@ -2166,7 +2188,7 @@ class VBDSolver(SolverBase):
         )
 
         for _iter in range(self.iterations):
-            state_in.particle_f.zero_()
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
@@ -2199,7 +2221,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                 )
 
@@ -2227,7 +2249,7 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
                         #   ground-particle contact
                         self.model.ground,
@@ -2280,11 +2302,14 @@ class VBDSolver(SolverBase):
             device=self.device,
         )
 
-        # after initialization, we do another collision detection to update the bounds
-        self.collision_detection_penetration_free(state_in, dt)
-
         for _iter in range(self.iterations):
-            state_in.particle_f.zero_()
+            # after initialization, we need new collision detection to update the bounds
+            if (self.collision_detection_interval == 0 and _iter == 0) or (
+                self.collision_detection_interval >= 1 and _iter % self.collision_detection_interval == 0
+            ):
+                self.collision_detection_penetration_free(state_in, dt)
+
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
@@ -2323,8 +2348,9 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_body_vel,
                         self.model.soft_contact_normal,
                     ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
+                    max_blocks=self.model.device.sm_count,
                 )
 
                 wp.launch(
@@ -2348,7 +2374,7 @@ class VBDSolver(SolverBase):
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.adjacency,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
                         self.pos_prev_collision_detection,
                         self.particle_conservative_bounds,
