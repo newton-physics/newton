@@ -16,8 +16,8 @@
    .. autosummary::
    
       ~Model.__init__
+      ~Model.collide
       ~Model.control
-      ~Model.count_contact_points
       ~Model.state
    
    
@@ -28,7 +28,6 @@
 
    .. autosummary::
    
-      ~Model.soft_contact_max
       ~Model.requires_grad
       ~Model.num_envs
       ~Model.particle_q
@@ -61,9 +60,7 @@
       ~Model.shape_collision_filter_pairs
       ~Model.shape_collision_radius
       ~Model.shape_contact_pairs
-      ~Model.shape_ground_contact_pairs
       ~Model.shape_contact_pair_count
-      ~Model.shape_ground_contact_pair_count
       ~Model.spring_indices
       ~Model.spring_rest_length
       ~Model.spring_stiffness
@@ -111,6 +108,10 @@
       ~Model.joint_armature
       ~Model.joint_target_ke
       ~Model.joint_target_kd
+      ~Model.joint_effort_limit
+      ~Model.joint_velocity_limit
+      ~Model.joint_friction
+      ~Model.dof_to_axis_map
       ~Model.joint_axis_start
       ~Model.joint_axis_dim
       ~Model.joint_axis_mode
@@ -127,40 +128,13 @@
       ~Model.articulation_start
       ~Model.articulation_key
       ~Model.soft_contact_radius
-      ~Model.soft_contact_margin
       ~Model.soft_contact_ke
       ~Model.soft_contact_kd
       ~Model.soft_contact_kf
       ~Model.soft_contact_mu
       ~Model.soft_contact_restitution
-      ~Model.soft_contact_count
-      ~Model.soft_contact_particle
-      ~Model.soft_contact_shape
-      ~Model.soft_contact_body_pos
-      ~Model.soft_contact_body_vel
-      ~Model.soft_contact_normal
-      ~Model.soft_contact_tids
-      ~Model.rigid_contact_max
-      ~Model.rigid_contact_max_limited
-      ~Model.rigid_mesh_contact_max
-      ~Model.rigid_contact_margin
       ~Model.rigid_contact_torsional_friction
       ~Model.rigid_contact_rolling_friction
-      ~Model.rigid_contact_count
-      ~Model.rigid_contact_point0
-      ~Model.rigid_contact_point1
-      ~Model.rigid_contact_offset0
-      ~Model.rigid_contact_offset1
-      ~Model.rigid_contact_normal
-      ~Model.rigid_contact_thickness
-      ~Model.rigid_contact_shape0
-      ~Model.rigid_contact_shape1
-      ~Model.rigid_contact_tids
-      ~Model.rigid_contact_pairwise_counter
-      ~Model.rigid_contact_broad_shape0
-      ~Model.rigid_contact_broad_shape1
-      ~Model.rigid_contact_point_id
-      ~Model.rigid_contact_point_limit
       ~Model.up_vector
       ~Model.up_axis
       ~Model.gravity
