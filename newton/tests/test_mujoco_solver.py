@@ -824,5 +824,6 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
         finally:
             print("Debug: test_render_trajectory finished.")
 
+
 if __name__ == "__main__":
     unittest.main()
