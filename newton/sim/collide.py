@@ -134,6 +134,7 @@ class CollisionPipeline:
             edge_sdf_iter,
             iterate_mesh_vertices,
             requires_grad,
+            model.device,
         )
 
     def collide(self, model: Model, state: State) -> Contacts:

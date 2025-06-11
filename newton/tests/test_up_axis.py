@@ -35,7 +35,6 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     builder.add_joint_free(b)
 
     model = builder.finalize(device=device)
-    model.ground = False
 
     solver = solver_fn(model)
 
