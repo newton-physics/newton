@@ -219,11 +219,11 @@ class Style3DSolver(SolverBase):
         # add new attributes for VBD solve
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)
-        self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3)
-        self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3)
+        self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.enable_chebyshev = True
-        self.forces = wp.zeros(model.particle_count, dtype=wp.vec3)
-        self.pd_diags = wp.zeros(model.particle_count, dtype=float)
+        self.forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
         self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
 
@@ -268,7 +268,7 @@ class Style3DSolver(SolverBase):
         omega = 1.0
         self.temp_verts1.assign(state_in.particle_q)
         for _iter in range(self.nonlinear_iterations):
-            self.forces = wp.zeros(shape=self.model.particle_count, dtype=wp.vec3)
+            self.forces.zero_()
             wp.launch(
                 eval_stretch_kernel,
                 dim=len(self.model.tri_areas),
@@ -333,4 +333,4 @@ class Style3DSolver(SolverBase):
         tri_areas: list[float],
     ):
         self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-        self.pd_diags = wp.array(self.pd_matrix_builder.diags, dtype=float)
+        self.pd_diags = wp.array(self.pd_matrix_builder.diags, dtype=float, device=self.device)
