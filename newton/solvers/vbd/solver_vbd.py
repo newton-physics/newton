@@ -1341,7 +1341,6 @@ def solve_trimesh_no_self_contact(
         return
 
     particle_pos = pos[particle_index]
-    particle_prev_pos = prev_pos[particle_index]
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
@@ -1991,7 +1990,6 @@ class VBDSolver(SolverBase):
         edges_array = model.edge_indices.to("cpu")
 
         with wp.ScopedDevice("cpu"):
-
             if edges_array.size:
                 # build vertex-edge adjacency data
                 num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
@@ -2009,9 +2007,7 @@ class VBDSolver(SolverBase):
                 adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32)
 
                 # temporal variables to record how much adjacent edges has been filled to each vertex
-                vertex_adjacent_edges_fill_count = wp.zeros(
-                    shape=(self.model.particle_count,), dtype=wp.int32
-                )
+                vertex_adjacent_edges_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 edge_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
                 # vertex order: o0: 0, o1: 1, v0: 2, v1: 3,
@@ -2036,9 +2032,7 @@ class VBDSolver(SolverBase):
             # count number of adjacent faces for each vertex
             face_indices = model.tri_indices.to("cpu")
             num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-            wp.launch(
-                kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1
-            )
+            wp.launch(kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
 
             # preallocate memory based on counting results
             num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
@@ -2077,7 +2071,9 @@ class VBDSolver(SolverBase):
         else:
             self.simulate_one_step_no_self_contact(model, state_in, state_out, control, contacts, dt)
 
-    def simulate_one_step_no_self_contact(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def simulate_one_step_no_self_contact(
+        self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
+    ):
         wp.launch(
             kernel=forward_step,
             inputs=[
