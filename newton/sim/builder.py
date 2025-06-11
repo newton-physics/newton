@@ -25,27 +25,9 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton.geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
-    SDF,
-    Mesh,
-    compute_shape_inertia,
-    compute_shape_radius,
-    transform_inertia,
-)
-
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
-from .model import Model
-from .spatial import quat_between_axes
-from .types import (
+from newton.sim.graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from newton.core.spatial import quat_between_axes
+from newton.core.types import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -75,6 +57,24 @@ from .types import (
     get_joint_dof_count,
     nparray,
 )
+from newton.geometry import (
+    GEO_BOX,
+    GEO_CAPSULE,
+    GEO_CONE,
+    GEO_CYLINDER,
+    GEO_MESH,
+    GEO_NONE,
+    GEO_PLANE,
+    GEO_SDF,
+    GEO_SPHERE,
+    SDF,
+    Mesh,
+    compute_shape_inertia,
+    compute_shape_radius,
+    transform_inertia,
+)
+
+from .model import Model
 
 
 class ModelBuilder:
@@ -3390,22 +3390,6 @@ class ModelBuilder:
 
             self.find_shape_contact_pairs(m)
 
-            # # contacts
-            # if m.particle_count:
-            #     m.allocate_soft_contacts(self.soft_contact_max, requires_grad=requires_grad)
-            # if self.num_rigid_contacts_per_env is None:
-            #     contact_count, limited_contact_count = m.count_contact_points()
-            # else:
-            #     contact_count = limited_contact_count = self.num_rigid_contacts_per_env * self.num_envs
-            # if contact_count:
-            #     if wp.config.verbose:
-            #         print(f"Allocating {contact_count} rigid contacts.")
-            #     m.allocate_rigid_contacts(
-            #         count=contact_count, limited_contact_count=limited_contact_count, requires_grad=requires_grad
-            #     )
-            # m.rigid_mesh_contact_max = self.rigid_mesh_contact_max
-            # m.rigid_contact_margin = self.rigid_contact_margin
-
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
@@ -3448,5 +3432,5 @@ class ModelBuilder:
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=model.device)
+        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)

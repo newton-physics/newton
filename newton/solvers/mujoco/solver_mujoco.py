@@ -22,7 +22,8 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core import Contact, Control, Model, State, types
+from newton.sim import Control,Model,State
+from newton.geometry import Contacts
 from newton.core.types import override
 
 from ..solver import SolverBase
@@ -694,7 +695,7 @@ class MuJoCoSolver(SolverBase):
         self._step = 0
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 

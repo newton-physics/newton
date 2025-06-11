@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import warp as wp
 
-from .model import Model
-from .spatial import quat_decompose, quat_twist
-from .state import State
-from .types import (
+from newton.core.spatial import quat_decompose, quat_twist
+from newton.core.types import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -31,6 +29,9 @@ from .types import (
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
 )
+
+from .model import Model
+from .state import State
 
 
 @wp.func

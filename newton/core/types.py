@@ -173,59 +173,6 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
         return Axis.from_any(axis).to_vec3()
 
 
-@wp.struct
-class ShapeMaterials:
-    """
-    Represents the contact material properties of a shape.
-        ke: The contact elastic stiffness (only used by the Euler integrators)
-        kd: The contact damping stiffness (only used by the Euler integrators)
-        kf: The contact friction stiffness (only used by the Euler integrators)
-        ka: The contact adhesion distance (values greater than 0 mean adhesive contact; only used by the Euler integrators)
-        mu: The coefficient of friction
-        restitution: The coefficient of restitution (only used by XPBD integrator)
-    """
-
-    ke: wp.array(dtype=float)
-    kd: wp.array(dtype=float)
-    kf: wp.array(dtype=float)
-    ka: wp.array(dtype=float)
-    mu: wp.array(dtype=float)
-    restitution: wp.array(dtype=float)
-
-
-@wp.struct
-class ShapeGeometry:
-    """
-    Represents the geometry of a shape.
-        type: The type of geometry (GEO_SPHERE, GEO_BOX, etc.)
-        is_solid: Indicates whether the shape is solid or hollow
-        thickness: The thickness of the shape (used for collision detection, and inertia computation of hollow shapes)
-        source: Pointer to the source geometry (can be a mesh or SDF index, zero otherwise)
-        scale: The 3D scale of the shape
-        filter: The filter group of the shape
-        transform: The transform of the shape in world space
-    """
-
-    type: wp.array(dtype=wp.int32)
-    is_solid: wp.array(dtype=bool)
-    thickness: wp.array(dtype=float)
-    source: wp.array(dtype=wp.uint64)
-    scale: wp.array(dtype=wp.vec3)
-    filter: wp.array(dtype=int)
-
-
-# model update flags - used for solver.notify_model_update()
-NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)  # joint_q, joint_X_p, joint_X_c
-NOTIFY_FLAG_JOINT_AXIS_PROPERTIES = wp.constant(
-    1 << 1
-)  # joint_target, joint_target_ke, joint_target_kd, joint_axis_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd
-NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 2)  # joint_qd, joint_f, joint_armature
-NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 3)  # body_q, body_qd
-NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(
-    1 << 4
-)  # body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass
-NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 5)  # shape_transform, shape_geo
-
 __all__ = [
     "JOINT_BALL",
     "JOINT_COMPOUND",
@@ -239,11 +186,6 @@ __all__ = [
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
-    "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
-    "NOTIFY_FLAG_BODY_PROPERTIES",
-    "NOTIFY_FLAG_DOF_PROPERTIES",
-    "NOTIFY_FLAG_JOINT_PROPERTIES",
-    "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "PARTICLE_FLAG_ACTIVE",
     "SHAPE_FLAG_COLLIDE_GROUND",
     "SHAPE_FLAG_COLLIDE_SHAPES",
@@ -254,7 +196,6 @@ __all__ = [
     "Mat33",
     "Quat",
     "Sequence",
-    "ShapeMaterials",
     "Transform",
     "Vec3",
     "Vec4",

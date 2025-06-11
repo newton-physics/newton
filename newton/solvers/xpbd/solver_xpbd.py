@@ -21,13 +21,11 @@ from newton.core import (
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
     PARTICLE_FLAG_ACTIVE,
-    Control,
-    Model,
-    State,
     velocity_at_point,
 )
-from newton.core.model import ShapeGeometry, ShapeMaterials
 from newton.geometry import Contacts
+from newton.sim import Control, Model, State
+from newton.sim.model import ShapeGeometry, ShapeMaterials
 from newton.utils import (
     vec_abs,
     vec_leaky_max,

@@ -15,12 +15,8 @@
 
 import warp as wp
 
-from newton.core import (
-    Contact,
-    Control,
-    Model,
-    State,
-)
+from newton.geometry import Contacts
+from newton.sim import Control, Model, State
 
 from ..solver import SolverBase
 from .kernels import (
@@ -92,7 +88,7 @@ class SemiImplicitSolver(SolverBase):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contact,
+        contacts: Contacts,
         dt: float,
     ):
         with wp.ScopedTimer("simulate", False):
