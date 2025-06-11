@@ -247,6 +247,20 @@ def apply_mjc_control_kernel(
     if actuator_id != -1:
         mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
 
+@wp.kernel
+def apply_mjc_body_f_kernel(
+    body_f: wp.array(dtype=wp.spatial_vector),
+    to_mjc_body_index: wp.array(dtype=wp.int32),
+    bodies_per_env: int,
+    # outputs
+    xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
+):
+    worldid, bodyid = wp.tid()
+    mj_body_id = to_mjc_body_index[bodyid]
+    if mj_body_id != -1:
+        f = body_f[worldid * bodies_per_env + bodyid]
+        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(wp.spatial_bottom(f), wp.spatial_top(f))
+
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
@@ -788,10 +802,12 @@ class MuJoCoSolver(SolverBase):
         if is_mjwarp:
             ctrl = mj_data.ctrl
             qfrc = mj_data.qfrc_applied
+            xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+            xfrc = wp.empty((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
         joints_per_env = model.joint_count // nworld
@@ -829,7 +845,21 @@ class MuJoCoSolver(SolverBase):
             ],
             device=model.device,
         )
+        wp.launch(
+            apply_mjc_body_f_kernel,
+            dim=(nworld, bodies_per_env),
+            inputs=[
+                state.body_f,
+                model.to_mjc_body_index,
+                bodies_per_env,
+            ],
+            outputs=[
+                xfrc,
+            ],
+            device=model.device,
+        )
         if not is_mjwarp:
+            mj_data.xfrc_applied = xfrc.numpy()
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
