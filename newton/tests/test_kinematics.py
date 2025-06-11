@@ -53,7 +53,6 @@ def test_fk_ik(test, device):
 
     # finalize model
     model = builder.finalize(device=device)
-    model.ground = True
 
     state = model.state()
 
