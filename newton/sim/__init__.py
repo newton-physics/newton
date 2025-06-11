@@ -15,6 +15,7 @@
 
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
+from .collide import CollisionPipeline
 from .control import Control
 from .joints import (
     JOINT_BALL,
@@ -48,6 +49,7 @@ __all__ = [
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
+    "CollisionPipeline",
     "Control",
     "Model",
     "ModelBuilder",

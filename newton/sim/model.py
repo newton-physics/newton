@@ -265,7 +265,6 @@ class Model:
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
-        # toggles ground contact for all shapes
         self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
@@ -379,49 +378,10 @@ class Model:
             c.muscle_activations = self.muscle_activations
         return c
 
-    @wp.kernel
-    def _compute_shape_world_transforms(
-        shape_transform: wp.array(dtype=wp.transform),
-        shape_body: wp.array(dtype=int),
-        body_q: wp.array(dtype=wp.transform),
-        # outputs
-        shape_world_transform: wp.array(dtype=wp.transform),
-    ):
-        """Compute world-space transforms for shapes by concatenating local shape
-        transforms with body transforms.
-
-        Args:
-            shape_transform: Local shape transforms in body frame,
-                shape [shape_count, 7]
-            shape_body: Body index for each shape, shape [shape_count]
-            body_q: Body transforms in world frame, shape [body_count, 7]
-            shape_world_transform: Output world transforms for shapes,
-                shape [shape_count, 7]
-        """
-        shape_idx = wp.tid()
-
-        # Get the local shape transform
-        X_bs = shape_transform[shape_idx]
-
-        # Get the body index for this shape
-        body_idx = shape_body[shape_idx]
-
-        # If shape is attached to a body (body_idx >= 0), concatenate transforms
-        if body_idx >= 0:
-            # Get the body transform in world space
-            X_wb = body_q[body_idx]
-
-            # Concatenate: world_transform = body_transform * shape_transform
-            X_ws = wp.transform_multiply(X_wb, X_bs)
-            shape_world_transform[shape_idx] = X_ws
-        else:
-            # Shape is not attached to a body (static shape), use local
-            # transform as world transform
-            shape_world_transform[shape_idx] = X_bs
-
     def collide(
         self: Model,
         state: State,
+        collision_pipeline: "CollisionPipeline" | None = None,
         rigid_contact_max_per_pair: int | None = None,
         rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
@@ -430,31 +390,31 @@ class Model:
         iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
     ) -> Contacts:
-        """Generate contact points for the particles and rigid bodies in the
-        model for use in contact-dynamics kernels.
+        """
+        Generates contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.
 
         Args:
-            state: The state of the model.
-            requires_grad: Whether to duplicate contact arrays for gradient
-                computation (if ``None``, uses :attr`Model.requires_grad`).
-            edge_sdf_iter: Number of search iterations for finding closest
-                contact points between edges and SDF.
-            iterate_mesh_vertices: Whether to iterate over all vertices of a
-                mesh for contact generation (used for capsule/box <> mesh
-                collision).
-            max_contacts_per_pair: Maximum number of contacts per shape pair. If ``None``, launches a kernel to count the number of possible contacts.
-            soft_contact_margin: Margin for soft contact generation.
-            rigid_contact_margin: Margin for rigid contact generation.
+            state (State): The current state of the model.
+            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation. If not provided, a new one will be created if it hasn't been constructed before for this model.
+            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair. If None, a kernel is launched to count the number of possible contacts.
+            rigid_contact_margin (float, optional): Margin for rigid contact generation. Default is 0.01.
+            soft_contact_max (int, optional): Maximum number of soft contacts. If None, a kernel is launched to count the number of possible contacts.
+            soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
+            edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
+            iterate_mesh_vertices (bool, optional): Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box <> mesh collision). Default is True.
+            requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
 
         Returns:
-            Contact: The contact object containing collision information.
+            Contacts: The contact object containing collision information.
         """
         from .collide import CollisionPipeline
 
         if requires_grad is None:
             requires_grad = self.requires_grad
 
-        if not hasattr(self, "_collision_pipeline"):
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
+        elif not hasattr(self, "_collision_pipeline"):
             self._collision_pipeline = CollisionPipeline.from_model(
                 self,
                 rigid_contact_max_per_pair,
