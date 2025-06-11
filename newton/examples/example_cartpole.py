@@ -25,7 +25,6 @@
 import warp as wp
 
 import newton
-import newton.core.articulation
 import newton.examples
 import newton.utils
 
@@ -66,7 +65,6 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-        self.model.ground = False
 
         self.solver = newton.solvers.MuJoCoSolver(self.model, disable_contacts=True)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
@@ -80,7 +78,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
