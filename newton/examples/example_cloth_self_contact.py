@@ -189,8 +189,8 @@ class Example:
             self.model,
             self.iterations,
             handle_self_contact=True,
-            soft_contact_radius = 0.2,
-            soft_contact_margin = 0.35,
+            soft_contact_radius=0.2,
+            soft_contact_margin=0.35,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
