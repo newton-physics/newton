@@ -18,18 +18,6 @@ from ._version import __version__
 
 # Core functionality
 from .core import (
-    JOINT_BALL,
-    JOINT_COMPOUND,
-    JOINT_D6,
-    JOINT_DISTANCE,
-    JOINT_FIXED,
-    JOINT_FREE,
-    JOINT_MODE_FORCE,
-    JOINT_MODE_TARGET_POSITION,
-    JOINT_MODE_TARGET_VELOCITY,
-    JOINT_PRISMATIC,
-    JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
     Axis,
     AxisType,
 )
@@ -56,7 +44,21 @@ from .geometry import (
     create_plane,
     create_sphere,
 )
+
+# Simulation functionality
 from .sim import (
+    JOINT_BALL,
+    JOINT_COMPOUND,
+    JOINT_D6,
+    JOINT_DISTANCE,
+    JOINT_FIXED,
+    JOINT_FREE,
+    JOINT_MODE_FORCE,
+    JOINT_MODE_TARGET_POSITION,
+    JOINT_MODE_TARGET_VELOCITY,
+    JOINT_PRISMATIC,
+    JOINT_REVOLUTE,
+    JOINT_UNIVERSAL,
     Control,
     Model,
     ModelBuilder,

@@ -25,7 +25,11 @@ def build_orthonormal_basis(n: wp.vec3):
     """
     Builds an orthonormal basis given a normal vector `n`. Return the two axes that are perpendicular to `n`.
 
-    :param n: A 3D vector (list or array-like) representing the normal vector
+    Args:
+        n: A 3D vector representing the normal vector.
+
+    Returns:
+        A tuple of two 3D vectors that are orthogonal to each other and to `n`.
     """
     b1 = wp.vec3()
     b2 = wp.vec3()
@@ -679,27 +683,27 @@ def create_soft_contacts(
     n = wp.vec3()
     v = wp.vec3()
 
-    if geo_type == newton.GEO_SPHERE:
+    if geo_type == GEO_SPHERE:
         d = sphere_sdf(wp.vec3(), geo_scale[0], x_local)
         n = sphere_sdf_grad(wp.vec3(), geo_scale[0], x_local)
 
-    if geo_type == newton.GEO_BOX:
+    if geo_type == GEO_BOX:
         d = box_sdf(geo_scale, x_local)
         n = box_sdf_grad(geo_scale, x_local)
 
-    if geo_type == newton.GEO_CAPSULE:
+    if geo_type == GEO_CAPSULE:
         d = capsule_sdf(geo_scale[0], geo_scale[1], x_local)
         n = capsule_sdf_grad(geo_scale[0], geo_scale[1], x_local)
 
-    if geo_type == newton.GEO_CYLINDER:
+    if geo_type == GEO_CYLINDER:
         d = cylinder_sdf(geo_scale[0], geo_scale[1], x_local)
         n = cylinder_sdf_grad(geo_scale[0], geo_scale[1], x_local)
 
-    if geo_type == newton.GEO_CONE:
+    if geo_type == GEO_CONE:
         d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
         n = cone_sdf_grad(geo_scale[0], geo_scale[1], x_local)
 
-    if geo_type == newton.GEO_MESH:
+    if geo_type == GEO_MESH:
         mesh = shape_source[shape_index]
 
         face_index = int(0)
@@ -723,14 +727,14 @@ def create_soft_contacts(
             n = wp.normalize(delta) * sign
             v = shape_v
 
-    if geo_type == newton.GEO_SDF:
+    if geo_type == GEO_SDF:
         volume = shape_source[shape_index]
         xpred_local = wp.volume_world_to_index(volume, wp.cw_div(x_local, geo_scale))
         nn = wp.vec3(0.0, 0.0, 0.0)
         d = wp.volume_sample_grad_f(volume, xpred_local, wp.Volume.LINEAR, nn)
         n = wp.normalize(nn)
 
-    if geo_type == newton.GEO_PLANE:
+    if geo_type == GEO_PLANE:
         d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
         n = wp.vec3(0.0, 1.0, 0.0)
 
@@ -773,7 +777,7 @@ def count_contact_points(
         actual_shape_a = shape_a
         actual_type_a = shape_type[shape_a]
         # ground plane
-        actual_type_b = newton.GEO_PLANE
+        actual_type_b = GEO_PLANE
         actual_shape_b = -1
     else:
         type_a = shape_type[shape_a]
@@ -792,47 +796,47 @@ def count_contact_points(
 
     # determine how many contact points need to be evaluated
     num_contacts = 0
-    if actual_type_a == newton.GEO_SPHERE:
+    if actual_type_a == GEO_SPHERE:
         num_contacts = 1
-    elif actual_type_a == newton.GEO_CAPSULE:
-        if actual_type_b == newton.GEO_PLANE:
+    elif actual_type_a == GEO_CAPSULE:
+        if actual_type_b == GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 2  # vertex-based collision for infinite plane
             else:
                 num_contacts = 2 + 4  # vertex-based collision + plane edges
-        elif actual_type_b == newton.GEO_MESH:
+        elif actual_type_b == GEO_MESH:
             num_contacts_a = 2
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
         else:
             num_contacts = 2
-    elif actual_type_a == newton.GEO_BOX:
-        if actual_type_b == newton.GEO_BOX:
+    elif actual_type_a == GEO_BOX:
+        if actual_type_b == GEO_BOX:
             num_contacts = 24
-        elif actual_type_b == newton.GEO_MESH:
+        elif actual_type_b == GEO_MESH:
             num_contacts_a = 8
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
-        elif actual_type_b == newton.GEO_PLANE:
+        elif actual_type_b == GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 8  # vertex-based collision
             else:
                 num_contacts = 8 + 4  # vertex-based collision + plane edges
         else:
             num_contacts = 8
-    elif actual_type_a == newton.GEO_MESH:
+    elif actual_type_a == GEO_MESH:
         mesh_a = wp.mesh_get(shape_source[actual_shape_a])
         num_contacts_a = mesh_a.points.shape[0]
-        if actual_type_b == newton.GEO_MESH:
+        if actual_type_b == GEO_MESH:
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
         else:
             num_contacts_b = 0
         num_contacts = num_contacts_a + num_contacts_b
-    elif actual_type_a == newton.GEO_PLANE:
+    elif actual_type_a == GEO_PLANE:
         return  # no plane-plane contacts
 
     wp.atomic_add(contact_count, 0, num_contacts)
@@ -895,8 +899,8 @@ def broadphase_collision_pairs(
         actual_X_ws_b = X_ws_a
 
     p_a = wp.transform_get_translation(actual_X_ws_a)
-    if actual_type_b == newton.GEO_PLANE:
-        if actual_type_a == newton.GEO_PLANE:
+    if actual_type_b == GEO_PLANE:
+        if actual_type_a == GEO_PLANE:
             return
         query_b = wp.transform_point(wp.transform_inverse(actual_X_ws_b), p_a)
         scale = shape_scale[actual_shape_b]
@@ -918,15 +922,15 @@ def broadphase_collision_pairs(
 
     # determine how many contact points need to be evaluated
     num_contacts = 0
-    if actual_type_a == newton.GEO_SPHERE:
+    if actual_type_a == GEO_SPHERE:
         num_contacts = 1
-    elif actual_type_a == newton.GEO_CAPSULE:
-        if actual_type_b == newton.GEO_PLANE:
+    elif actual_type_a == GEO_CAPSULE:
+        if actual_type_b == GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 2  # vertex-based collision for infinite plane
             else:
                 num_contacts = 2 + 4  # vertex-based collision + plane edges
-        elif actual_type_b == newton.GEO_MESH:
+        elif actual_type_b == GEO_MESH:
             num_contacts_a = 2
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             if iterate_mesh_vertices:
@@ -954,8 +958,8 @@ def broadphase_collision_pairs(
             return
         else:
             num_contacts = 2
-    elif actual_type_a == newton.GEO_BOX:
-        if actual_type_b == newton.GEO_BOX:
+    elif actual_type_a == GEO_BOX:
+        if actual_type_b == GEO_BOX:
             index = wp.atomic_add(contact_count, 0, 24)
             if index + 23 >= rigid_contact_max:
                 print("Number of rigid contacts exceeded limit. Increase Model.rigid_contact_max.")
@@ -971,7 +975,7 @@ def broadphase_collision_pairs(
                 contact_shape1[index + 12 + i] = shape_a
                 contact_point_id[index + 12 + i] = i
             return
-        elif actual_type_b == newton.GEO_MESH:
+        elif actual_type_b == GEO_MESH:
             num_contacts_a = 8
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             if iterate_mesh_vertices:
@@ -998,21 +1002,21 @@ def broadphase_collision_pairs(
                 num_contacts_b = wp.min(mesh_contact_max, num_contacts_b)
                 contact_point_limit[pair_index_ba] = num_contacts_b
             return
-        elif actual_type_b == newton.GEO_PLANE:
+        elif actual_type_b == GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 8  # vertex-based collision
             else:
                 num_contacts = 8 + 4  # vertex-based collision + plane edges
         else:
             num_contacts = 8
-    elif actual_type_a == newton.GEO_MESH:
+    elif actual_type_a == GEO_MESH:
         mesh_a = wp.mesh_get(shape_source[actual_shape_a])
         num_contacts_a = mesh_a.points.shape[0]
         num_contacts_b = 0
-        if actual_type_b == newton.GEO_MESH:
+        if actual_type_b == GEO_MESH:
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
-        elif actual_type_b != newton.GEO_PLANE:
+        elif actual_type_b != GEO_PLANE:
             print("broadphase_collision_pairs: unsupported geometry type for mesh collision")
             return
         num_contacts = num_contacts_a + num_contacts_b
@@ -1040,7 +1044,7 @@ def broadphase_collision_pairs(
                 if pair_index_ba < contact_point_limit.shape[0]:
                     contact_point_limit[pair_index_ba] = num_contacts_b
         return
-    elif actual_type_a == newton.GEO_PLANE:
+    elif actual_type_a == GEO_PLANE:
         return  # no plane-plane contacts
     else:
         print("broadphase_collision_pairs: unsupported geometry type")
@@ -1123,12 +1127,7 @@ def handle_contact_pairs(
 
     # Determine effective radius for shape A
     radius_a_eff = float(0.0)
-    if (
-        geo_type_a == newton.GEO_SPHERE
-        or geo_type_a == newton.GEO_CAPSULE
-        or geo_type_a == newton.GEO_CYLINDER
-        or geo_type_a == newton.GEO_CONE
-    ):
+    if geo_type_a == GEO_SPHERE or geo_type_a == GEO_CAPSULE or geo_type_a == GEO_CYLINDER or geo_type_a == GEO_CONE:
         radius_a_eff = geo_scale_a[0]
 
     rigid_b = shape_body[shape_b]
@@ -1147,34 +1146,29 @@ def handle_contact_pairs(
 
     # Determine effective radius for shape B
     radius_b_eff = float(0.0)
-    if (
-        geo_type_b == newton.GEO_SPHERE
-        or geo_type_b == newton.GEO_CAPSULE
-        or geo_type_b == newton.GEO_CYLINDER
-        or geo_type_b == newton.GEO_CONE
-    ):
+    if geo_type_b == GEO_SPHERE or geo_type_b == GEO_CAPSULE or geo_type_b == GEO_CYLINDER or geo_type_b == GEO_CONE:
         radius_b_eff = geo_scale_b[0]
 
     distance = 1.0e6
     u = float(0.0)
     thickness = thickness_a + thickness_b
 
-    if geo_type_a == newton.GEO_SPHERE:
+    if geo_type_a == GEO_SPHERE:
         p_a_world = wp.transform_get_translation(X_ws_a)
-        if geo_type_b == newton.GEO_SPHERE:
+        if geo_type_b == GEO_SPHERE:
             p_b_world = wp.transform_get_translation(X_ws_b)
-        elif geo_type_b == newton.GEO_BOX:
+        elif geo_type_b == GEO_BOX:
             # contact point in frame of body B
             p_a_body = wp.transform_point(X_sw_b, p_a_world)
             p_b_body = closest_point_box(geo_scale_b, p_a_body)
             p_b_world = wp.transform_point(X_ws_b, p_b_body)
-        elif geo_type_b == newton.GEO_CAPSULE:
+        elif geo_type_b == GEO_CAPSULE:
             half_height_b = geo_scale_b[1]
             # capsule B
             A_b = wp.transform_point(X_ws_b, wp.vec3(0.0, half_height_b, 0.0))
             B_b = wp.transform_point(X_ws_b, wp.vec3(0.0, -half_height_b, 0.0))
             p_b_world = closest_point_line_segment(A_b, B_b, p_a_world)
-        elif geo_type_b == newton.GEO_MESH:
+        elif geo_type_b == GEO_MESH:
             mesh_b = shape_source[shape_b]
             query_b_local = wp.transform_point(X_sw_b, p_a_world)
             face_index = int(0)
@@ -1191,7 +1185,7 @@ def handle_contact_pairs(
                 p_b_world = wp.transform_point(X_ws_b, shape_p)
             else:
                 return
-        elif geo_type_b == newton.GEO_PLANE:
+        elif geo_type_b == GEO_PLANE:
             p_b_body = closest_point_plane(geo_scale_b[0], geo_scale_b[1], wp.transform_point(X_sw_b, p_a_world))
             p_b_world = wp.transform_point(X_ws_b, p_b_body)
         else:
@@ -1202,7 +1196,7 @@ def handle_contact_pairs(
         normal = wp.normalize(diff)
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_BOX and geo_type_b == newton.GEO_BOX:
+    elif geo_type_a == GEO_BOX and geo_type_b == GEO_BOX:
         # edge-based box contact
         edge = get_box_edge(point_id, geo_scale_a)
         edge0_world = wp.transform_point(X_ws_a, wp.spatial_top(edge))
@@ -1223,7 +1217,7 @@ def handle_contact_pairs(
         normal = wp.transform_vector(X_ws_b, box_sdf_grad(geo_scale_b, query_b))
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_BOX and geo_type_b == newton.GEO_CAPSULE:
+    elif geo_type_a == GEO_BOX and geo_type_b == GEO_CAPSULE:
         half_height_b = geo_scale_b[1]
         # capsule B
         # depending on point id, we query an edge from 0 to 0.5 or 0.5 to 1
@@ -1245,7 +1239,7 @@ def handle_contact_pairs(
         normal = -wp.transform_vector(X_ws_a, box_sdf_grad(geo_scale_a, query_a))
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_BOX and geo_type_b == newton.GEO_PLANE:
+    elif geo_type_a == GEO_BOX and geo_type_b == GEO_PLANE:
         plane_width = geo_scale_b[0]
         plane_length = geo_scale_b[1]
         if point_id < 8:
@@ -1297,7 +1291,7 @@ def handle_contact_pairs(
                 normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
             distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_CAPSULE and geo_type_b == newton.GEO_CAPSULE:
+    elif geo_type_a == GEO_CAPSULE and geo_type_b == GEO_CAPSULE:
         # find closest edge coordinate to capsule SDF B
         half_height_a = geo_scale_a[1]
         half_height_b = geo_scale_b[1]
@@ -1319,7 +1313,7 @@ def handle_contact_pairs(
         normal = wp.normalize(diff)
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_CAPSULE and geo_type_b == newton.GEO_MESH:
+    elif geo_type_a == GEO_CAPSULE and geo_type_b == GEO_MESH:
         # find closest edge coordinate to mesh SDF B
         half_height_a = geo_scale_a[1]
         # edge from capsule A
@@ -1359,7 +1353,7 @@ def handle_contact_pairs(
         else:
             return
 
-    elif geo_type_a == newton.GEO_MESH and geo_type_b == newton.GEO_CAPSULE:
+    elif geo_type_a == GEO_MESH and geo_type_b == GEO_CAPSULE:
         # vertex-based contact
         mesh = wp.mesh_get(shape_source[shape_a])
         body_a_pos = wp.cw_mul(mesh.points[point_id], geo_scale_a)
@@ -1374,7 +1368,7 @@ def handle_contact_pairs(
         normal = wp.normalize(diff)
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_CAPSULE and geo_type_b == newton.GEO_PLANE:
+    elif geo_type_a == GEO_CAPSULE and geo_type_b == GEO_PLANE:
         plane_width = geo_scale_b[0]
         plane_length = geo_scale_b[1]
         if point_id < 2:
@@ -1414,7 +1408,7 @@ def handle_contact_pairs(
             normal = wp.normalize(diff)
             distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_MESH and geo_type_b == newton.GEO_BOX:
+    elif geo_type_a == GEO_MESH and geo_type_b == GEO_BOX:
         # vertex-based contact
         mesh = wp.mesh_get(shape_source[shape_a])
         body_a_pos = wp.cw_mul(mesh.points[point_id], geo_scale_a)
@@ -1430,7 +1424,7 @@ def handle_contact_pairs(
             normal = -normal
         distance = wp.dot(diff, normal)
 
-    elif geo_type_a == newton.GEO_BOX and geo_type_b == newton.GEO_MESH:
+    elif geo_type_a == GEO_BOX and geo_type_b == GEO_MESH:
         # vertex-based contact
         query_a = get_box_vertex(point_id, geo_scale_a)
         p_a_world = wp.transform_point(X_ws_a, query_a)
@@ -1456,7 +1450,7 @@ def handle_contact_pairs(
         else:
             return
 
-    elif geo_type_a == newton.GEO_MESH and geo_type_b == newton.GEO_MESH:
+    elif geo_type_a == GEO_MESH and geo_type_b == GEO_MESH:
         # vertex-based contact
         mesh = wp.mesh_get(shape_source[shape_a])
         mesh_b = shape_source[shape_b]
@@ -1487,7 +1481,7 @@ def handle_contact_pairs(
         else:
             return
 
-    elif geo_type_a == newton.GEO_MESH and geo_type_b == newton.GEO_PLANE:
+    elif geo_type_a == GEO_MESH and geo_type_b == GEO_PLANE:
         # vertex-based contact
         mesh = wp.mesh_get(shape_source[shape_a])
         body_a_pos = wp.cw_mul(mesh.points[point_id], geo_scale_a)

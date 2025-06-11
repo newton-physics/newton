@@ -16,11 +16,38 @@
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .control import Control
+from .joints import (
+    JOINT_BALL,
+    JOINT_COMPOUND,
+    JOINT_D6,
+    JOINT_DISTANCE,
+    JOINT_FIXED,
+    JOINT_FREE,
+    JOINT_MODE_FORCE,
+    JOINT_MODE_TARGET_POSITION,
+    JOINT_MODE_TARGET_VELOCITY,
+    JOINT_PRISMATIC,
+    JOINT_REVOLUTE,
+    JOINT_UNIVERSAL,
+    get_joint_dof_count,
+)
 from .model import Model
 from .state import State
 from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
+    "JOINT_BALL",
+    "JOINT_COMPOUND",
+    "JOINT_D6",
+    "JOINT_DISTANCE",
+    "JOINT_FIXED",
+    "JOINT_FREE",
+    "JOINT_MODE_FORCE",
+    "JOINT_MODE_TARGET_POSITION",
+    "JOINT_MODE_TARGET_VELOCITY",
+    "JOINT_PRISMATIC",
+    "JOINT_REVOLUTE",
+    "JOINT_UNIVERSAL",
     "Control",
     "Model",
     "ModelBuilder",
@@ -29,4 +56,5 @@ __all__ = [
     "State",
     "eval_fk",
     "eval_ik",
+    "get_joint_dof_count",
 ]

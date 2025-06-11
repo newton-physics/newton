@@ -27,21 +27,6 @@ import warp as wp
 
 from newton.core.spatial import quat_between_axes
 from newton.core.types import (
-    JOINT_BALL,
-    JOINT_COMPOUND,
-    JOINT_D6,
-    JOINT_DISTANCE,
-    JOINT_FIXED,
-    JOINT_FREE,
-    JOINT_MODE_TARGET_POSITION,
-    JOINT_PRISMATIC,
-    JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
-    PARTICLE_FLAG_ACTIVE,
-    SHAPE_FLAG_COLLIDE_GROUND,
-    SHAPE_FLAG_COLLIDE_PARTICLES,
-    SHAPE_FLAG_COLLIDE_SHAPES,
-    SHAPE_FLAG_VISIBLE,
     Axis,
     AxisType,
     Devicelike,
@@ -53,7 +38,6 @@ from newton.core.types import (
     Vec4,
     axis_to_vec3,
     flag_to_int,
-    get_joint_dof_count,
     nparray,
 )
 from newton.geometry import (
@@ -66,14 +50,31 @@ from newton.geometry import (
     GEO_PLANE,
     GEO_SDF,
     GEO_SPHERE,
+    PARTICLE_FLAG_ACTIVE,
     SDF,
+    SHAPE_FLAG_COLLIDE_PARTICLES,
+    SHAPE_FLAG_COLLIDE_SHAPES,
+    SHAPE_FLAG_VISIBLE,
     Mesh,
     compute_shape_inertia,
     compute_shape_radius,
     transform_inertia,
 )
-from newton.sim.graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 
+from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .joints import (
+    JOINT_BALL,
+    JOINT_COMPOUND,
+    JOINT_D6,
+    JOINT_DISTANCE,
+    JOINT_FIXED,
+    JOINT_FREE,
+    JOINT_MODE_TARGET_POSITION,
+    JOINT_PRISMATIC,
+    JOINT_REVOLUTE,
+    JOINT_UNIVERSAL,
+    get_joint_dof_count,
+)
 from .model import Model
 
 
@@ -151,8 +152,6 @@ class ModelBuilder:
         """The collision group ID for the shape. Defaults to -1."""
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
-        has_ground_collision: bool = True
-        """Whether the shape can collide with the ground. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
         has_particle_collision: bool = True
@@ -166,7 +165,6 @@ class ModelBuilder:
 
             shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
-            shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_PARTICLES) if self.has_particle_collision else 0
             return shape_flags
 
@@ -176,7 +174,6 @@ class ModelBuilder:
 
             self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
             self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-            self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
             self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
 
         def copy(self) -> ShapeConfig:
