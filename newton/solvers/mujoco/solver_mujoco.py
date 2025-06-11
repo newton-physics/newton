@@ -773,7 +773,7 @@ class MuJoCoSolver(SolverBase):
     def notify_model_changed(self, flags: int):
         if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
-        if flags & (types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | types.NOTIFY_FLAG_DOF_PROPERTIES):
+        if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
 
     @staticmethod
