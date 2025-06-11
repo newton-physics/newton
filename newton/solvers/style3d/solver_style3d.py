@@ -18,7 +18,7 @@ import warp as wp
 
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 
-from .solver import SolverBase
+from ..solver import SolverBase
 
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
