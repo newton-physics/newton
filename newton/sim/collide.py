@@ -172,6 +172,7 @@ class CollisionPipeline:
                     self.soft_contact_margin,
                     self.soft_contact_max,
                     shape_count,
+                    model.shape_flags,
                 ],
                 outputs=[
                     contacts.soft_contact_count,
