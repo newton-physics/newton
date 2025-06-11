@@ -15,7 +15,6 @@
 
 import warp as wp
 
-
 # Types of joints linking rigid bodies
 JOINT_PRISMATIC = wp.constant(0)
 JOINT_REVOLUTE = wp.constant(1)

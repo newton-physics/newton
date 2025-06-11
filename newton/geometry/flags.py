@@ -15,7 +15,6 @@
 
 import warp as wp
 
-
 # Particle flags
 PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
 """Indicates that the particle is active."""
