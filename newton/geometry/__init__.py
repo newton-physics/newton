@@ -16,6 +16,12 @@
 import warp as wp
 
 from .contacts import Contacts
+from .flags import (
+    PARTICLE_FLAG_ACTIVE,
+    SHAPE_FLAG_COLLIDE_PARTICLES,
+    SHAPE_FLAG_COLLIDE_SHAPES,
+    SHAPE_FLAG_VISIBLE,
+)
 from .inertia import compute_shape_inertia, transform_inertia
 from .types import (
     GEO_BOX,
@@ -81,7 +87,11 @@ __all__ = [
     "GEO_PLANE",
     "GEO_SDF",
     "GEO_SPHERE",
+    "PARTICLE_FLAG_ACTIVE",
     "SDF",
+    "SHAPE_FLAG_COLLIDE_PARTICLES",
+    "SHAPE_FLAG_COLLIDE_SHAPES",
+    "SHAPE_FLAG_VISIBLE",
     "Contacts",
     "Mesh",
     "compute_shape_inertia",

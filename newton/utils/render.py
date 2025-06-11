@@ -224,7 +224,7 @@ def CreateSimRenderer(renderer):
 
                         self.geo_shape[geo_hash] = shape
 
-                    if add_shape_instance and shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
+                    if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
                         self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1

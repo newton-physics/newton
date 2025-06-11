@@ -118,7 +118,6 @@ def parse_urdf(
         shape_cfg = builder.default_shape_cfg.copy()
         shape_cfg.density = density
         shape_cfg.is_visible = visible
-        shape_cfg.has_ground_collision = not just_visual
         shape_cfg.has_shape_collision = not just_visual
         shape_cfg.has_particle_collision = not just_visual
         shapes = []

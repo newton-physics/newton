@@ -17,10 +17,10 @@ import warp as wp
 
 import newton
 from newton.core import (
-    PARTICLE_FLAG_ACTIVE,
     quat_decompose,
     quat_twist,
 )
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.sim import Control, Model, ShapeGeometry, ShapeMaterials, State
 
 

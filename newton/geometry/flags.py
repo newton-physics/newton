@@ -13,34 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .spatial import (
-    quat_between_axes,
-    quat_decompose,
-    quat_from_euler,
-    quat_to_euler,
-    quat_to_rpy,
-    quat_twist,
-    quat_twist_angle,
-    transform_twist,
-    transform_wrench,
-    velocity_at_point,
-)
-from .types import (
-    Axis,
-    AxisType,
-)
+import warp as wp
+
+
+# Particle flags
+PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
+"""Indicates that the particle is active."""
+
+# Shape flags
+SHAPE_FLAG_VISIBLE = wp.constant(wp.uint32(1 << 0))
+"""Indicates that the shape is visible."""
+
+SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
+"""Indicates that the shape collides with other shapes."""
+
+SHAPE_FLAG_COLLIDE_PARTICLES = wp.constant(wp.uint32(1 << 2))
+"""Indicates that the shape collides with particles."""
 
 __all__ = [
-    "Axis",
-    "AxisType",
-    "quat_between_axes",
-    "quat_decompose",
-    "quat_from_euler",
-    "quat_to_euler",
-    "quat_to_rpy",
-    "quat_twist",
-    "quat_twist_angle",
-    "transform_twist",
-    "transform_wrench",
-    "velocity_at_point",
+    "PARTICLE_FLAG_ACTIVE",
+    "SHAPE_FLAG_COLLIDE_PARTICLES",
+    "SHAPE_FLAG_COLLIDE_SHAPES",
+    "SHAPE_FLAG_VISIBLE",
 ]

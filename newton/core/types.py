@@ -84,7 +84,7 @@ JOINT_MODE_TARGET_VELOCITY = wp.constant(2)
 
 
 def flag_to_int(flag):
-    """Converts a flag to an integer."""
+    """Converts a flag (Warp constant) to an integer."""
     if type(flag) in wp.types.int_types:
         return flag.value
     return int(flag)
@@ -261,5 +261,4 @@ __all__ = [
     "Vec3",
     "Vec4",
     "flag_to_int",
-    "get_joint_dof_count",
 ]
