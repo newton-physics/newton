@@ -2735,7 +2735,7 @@ class XPBDSolver(SolverBase):
                         if model.shape_count:
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
-                                dim=model.soft_contact_max,
+                                dim=contacts.soft_contact_max,
                                 inputs=[
                                     particle_q,
                                     particle_qd,
@@ -2928,7 +2928,7 @@ class XPBDSolver(SolverBase):
                         body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
                     # Solve rigid contact constraints
-                    if contacts is not None:
+                    if model.body_count and contacts is not None:
                         if self.rigid_contact_con_weighting:
                             rigid_contact_inv_weight.zero_()
                         body_deltas.zero_()
