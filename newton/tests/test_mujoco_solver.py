@@ -30,6 +30,120 @@ from newton.utils import SimRendererOpenGL
 
 class TestMuJoCoSolver(unittest.TestCase):
     def setUp(self):
+        "Hook method for setting up the test fixture before exercising it."
+        pass
+
+    def _run_substeps_for_frame(self, sim_dt, sim_substeps):
+        """Helper method to run simulation substeps for one rendered frame."""
+        for _ in range(sim_substeps):
+            self.solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, sim_dt)
+            self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
+
+    def test_setup_completes(self):
+        """
+        Tests if the setUp method completes successfully.
+        This implicitly tests model creation, finalization, solver, and renderer initialization.
+        """
+        self.assertTrue(True, "setUp method completed.")
+
+    @unittest.skip("Trajectory rendering for debugging")
+    def test_render_trajectory(self):
+        """Simulates and renders a trajectory if solver and renderer are available."""
+        print("\nDebug: Starting test_render_trajectory...")
+
+        solver = None
+        renderer = None
+        substep_graph = None
+        use_cuda_graph = wp.get_device().is_cuda
+
+        try:
+            print("Debug: Attempting to initialize MuJoCoSolver for trajectory test...")
+            solver = MuJoCoSolver(self.model, iterations=10, ls_iterations=10)
+            print("Debug: MuJoCoSolver initialized successfully for trajectory test.")
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
+            return
+        except Exception as e:
+            self.skipTest(f"Error initializing MuJoCoSolver for trajectory test: {e}")
+            return
+
+        if self.debug_stage_path:
+            try:
+                print(f"Debug: Attempting to initialize SimRendererOpenGL (stage: {self.debug_stage_path})...")
+                stage_dir = os.path.dirname(self.debug_stage_path)
+                if stage_dir and not os.path.exists(stage_dir):
+                    os.makedirs(stage_dir)
+                    print(f"Debug: Created directory for stage: {stage_dir}")
+                renderer = SimRendererOpenGL(
+                    path=self.debug_stage_path, model=self.model, scaling=1.0, show_joints=True
+                )
+                print("Debug: SimRendererOpenGL initialized successfully for trajectory test.")
+            except ImportError as e:
+                self.skipTest(f"SimRendererOpenGL dependencies not met. Skipping trajectory rendering: {e}")
+                return
+            except Exception as e:
+                self.skipTest(f"Error initializing SimRendererOpenGL for trajectory test: {e}")
+                return
+        else:
+            self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
+            return
+
+        num_frames = 200
+        sim_substeps = 2
+        frame_dt = 1.0 / 60.0
+        sim_dt = frame_dt / sim_substeps
+        sim_time = 0.0
+
+        # Override self.solver for _run_substeps_for_frame if it was defined in setUp
+        # However, since we moved initialization here, we pass it directly or use the local var.
+        # For simplicity, let _run_substeps_for_frame use self.solver, so we assign the local one to it.
+        self.solver = solver  # Make solver accessible to _run_substeps_for_frame via self
+
+        if use_cuda_graph:
+            print(
+                f"Debug: CUDA device detected. Attempting to capture {sim_substeps} substeps with dt={sim_dt:.4f} into a CUDA graph..."
+            )
+            try:
+                with wp.ScopedCapture() as capture:
+                    self._run_substeps_for_frame(sim_dt, sim_substeps)
+                substep_graph = capture.graph
+                print("Debug: CUDA graph captured successfully.")
+            except Exception as e:
+                print(f"Debug: CUDA graph capture failed: {e}. Falling back to regular execution.")
+                substep_graph = None
+        else:
+            print("Debug: Not using CUDA graph (non-CUDA device or flag disabled).")
+
+        print(f"Debug: Simulating and rendering {num_frames} frames ({sim_substeps} substeps/frame)...")
+        print("       Press Ctrl+C in the console to stop early.")
+
+        try:
+            for frame_num in range(num_frames):
+                if frame_num % 20 == 0:
+                    print(f"Debug: Frame {frame_num}/{num_frames}, Sim time: {sim_time:.2f}s")
+
+                renderer.begin_frame(sim_time)
+                renderer.render(self.state_in)
+                renderer.end_frame()
+
+                if use_cuda_graph and substep_graph:
+                    wp.capture_launch(substep_graph)
+                else:
+                    self._run_substeps_for_frame(sim_dt, sim_substeps)
+
+                sim_time += frame_dt
+                time.sleep(0.016)
+
+        except KeyboardInterrupt:
+            print("\nDebug: Trajectory rendering stopped by user.")
+        except Exception as e:
+            self.fail(f"Error during trajectory rendering: {e}")
+        finally:
+            print("Debug: test_render_trajectory finished.")
+
+
+class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
+    def setUp(self):
         """Set up a model with multiple environments, each with a free body and an articulated tree."""
         self.seed = 123
         self.rng = np.random.default_rng(self.seed)
@@ -123,19 +237,6 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.state_out = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contact()
-
-    def _run_substeps_for_frame(self, sim_dt, sim_substeps):
-        """Helper method to run simulation substeps for one rendered frame."""
-        for _ in range(sim_substeps):
-            self.solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, sim_dt)
-            self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
-
-    def test_setup_completes(self):
-        """
-        Tests if the setUp method completes successfully.
-        This implicitly tests model creation, finalization, solver, and renderer initialization.
-        """
-        self.assertTrue(True, "setUp method completed.")
 
     def test_randomize_body_mass(self):
         """
@@ -342,6 +443,8 @@ class TestMuJoCoSolver(unittest.TestCase):
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
 
+
+class TestMuJoCoSolverJointProperties(TestMuJoCoSolverMassProperties):
     def test_joint_attributes_registration_and_updates(self):
         """
         Verify that joint effort limit, velocity limit, armature, and friction:
@@ -531,101 +634,6 @@ class TestMuJoCoSolver(unittest.TestCase):
                         places=4,
                         msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
                     )
-
-    @unittest.skip("Trajectory rendering for debugging")
-    def test_render_trajectory(self):
-        """Simulates and renders a trajectory if solver and renderer are available."""
-        print("\nDebug: Starting test_render_trajectory...")
-
-        solver = None
-        renderer = None
-        substep_graph = None
-        use_cuda_graph = wp.get_device().is_cuda
-
-        try:
-            print("Debug: Attempting to initialize MuJoCoSolver for trajectory test...")
-            solver = MuJoCoSolver(self.model, iterations=10, ls_iterations=10)
-            print("Debug: MuJoCoSolver initialized successfully for trajectory test.")
-        except ImportError as e:
-            self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
-            return
-        except Exception as e:
-            self.skipTest(f"Error initializing MuJoCoSolver for trajectory test: {e}")
-            return
-
-        if self.debug_stage_path:
-            try:
-                print(f"Debug: Attempting to initialize SimRendererOpenGL (stage: {self.debug_stage_path})...")
-                stage_dir = os.path.dirname(self.debug_stage_path)
-                if stage_dir and not os.path.exists(stage_dir):
-                    os.makedirs(stage_dir)
-                    print(f"Debug: Created directory for stage: {stage_dir}")
-                renderer = SimRendererOpenGL(
-                    path=self.debug_stage_path, model=self.model, scaling=1.0, show_joints=True
-                )
-                print("Debug: SimRendererOpenGL initialized successfully for trajectory test.")
-            except ImportError as e:
-                self.skipTest(f"SimRendererOpenGL dependencies not met. Skipping trajectory rendering: {e}")
-                return
-            except Exception as e:
-                self.skipTest(f"Error initializing SimRendererOpenGL for trajectory test: {e}")
-                return
-        else:
-            self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
-            return
-
-        num_frames = 200
-        sim_substeps = 2
-        frame_dt = 1.0 / 60.0
-        sim_dt = frame_dt / sim_substeps
-        sim_time = 0.0
-
-        # Override self.solver for _run_substeps_for_frame if it was defined in setUp
-        # However, since we moved initialization here, we pass it directly or use the local var.
-        # For simplicity, let _run_substeps_for_frame use self.solver, so we assign the local one to it.
-        self.solver = solver  # Make solver accessible to _run_substeps_for_frame via self
-
-        if use_cuda_graph:
-            print(
-                f"Debug: CUDA device detected. Attempting to capture {sim_substeps} substeps with dt={sim_dt:.4f} into a CUDA graph..."
-            )
-            try:
-                with wp.ScopedCapture() as capture:
-                    self._run_substeps_for_frame(sim_dt, sim_substeps)
-                substep_graph = capture.graph
-                print("Debug: CUDA graph captured successfully.")
-            except Exception as e:
-                print(f"Debug: CUDA graph capture failed: {e}. Falling back to regular execution.")
-                substep_graph = None
-        else:
-            print("Debug: Not using CUDA graph (non-CUDA device or flag disabled).")
-
-        print(f"Debug: Simulating and rendering {num_frames} frames ({sim_substeps} substeps/frame)...")
-        print("       Press Ctrl+C in the console to stop early.")
-
-        try:
-            for frame_num in range(num_frames):
-                if frame_num % 20 == 0:
-                    print(f"Debug: Frame {frame_num}/{num_frames}, Sim time: {sim_time:.2f}s")
-
-                renderer.begin_frame(sim_time)
-                renderer.render(self.state_in)
-                renderer.end_frame()
-
-                if use_cuda_graph and substep_graph:
-                    wp.capture_launch(substep_graph)
-                else:
-                    self._run_substeps_for_frame(sim_dt, sim_substeps)
-
-                sim_time += frame_dt
-                time.sleep(0.016)
-
-        except KeyboardInterrupt:
-            print("\nDebug: Trajectory rendering stopped by user.")
-        except Exception as e:
-            self.fail(f"Error during trajectory rendering: {e}")
-        finally:
-            print("Debug: test_render_trajectory finished.")
 
 
 if __name__ == "__main__":
