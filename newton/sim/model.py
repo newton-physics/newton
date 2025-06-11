@@ -255,8 +255,6 @@ class Model:
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
 
-        self.soft_contact_radius = 0.2
-        """Contact radius used by :class:`~newton.solvers.VBDSolver` for self-collisions. Default is 0.2."""
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 1.0e3."""
         self.soft_contact_kd = 10.0

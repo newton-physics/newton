@@ -37,53 +37,6 @@ from ..solver import SolverBase
 
 
 @wp.kernel
-def solve_particle_ground_contacts(
-    particle_x: wp.array(dtype=wp.vec3),
-    particle_v: wp.array(dtype=wp.vec3),
-    invmass: wp.array(dtype=float),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.uint32),
-    ke: float,
-    kd: float,
-    kf: float,
-    mu: float,
-    ground: wp.array(dtype=float),
-    dt: float,
-    relaxation: float,
-    delta: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    if (particle_flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
-        return
-
-    wi = invmass[tid]
-    if wi == 0.0:
-        return
-
-    x = particle_x[tid]
-    v = particle_v[tid]
-
-    n = wp.vec3(ground[0], ground[1], ground[2])
-    c = wp.min(wp.dot(n, x) + ground[3] - particle_radius[tid], 0.0)
-
-    if c > 0.0:
-        return
-
-    # normal
-    lambda_n = c
-    delta_n = n * lambda_n
-
-    # friction
-    vn = wp.dot(n, v)
-    vt = v - n * vn
-
-    lambda_f = wp.max(mu * lambda_n, 0.0 - wp.length(vt) * dt)
-    delta_f = wp.normalize(vt) * lambda_f
-
-    wp.atomic_add(delta, tid, (delta_f - delta_n) * relaxation)
-
-
-@wp.kernel
 def apply_particle_shape_restitution(
     particle_x_new: wp.array(dtype=wp.vec3),
     particle_v_new: wp.array(dtype=wp.vec3),
@@ -168,48 +121,6 @@ def apply_particle_shape_restitution(
         # if denom == 0.0:
         #     return
 
-        wp.atomic_add(particle_v_out, tid, dv)
-
-
-@wp.kernel
-def apply_particle_ground_restitution(
-    particle_x_new: wp.array(dtype=wp.vec3),
-    particle_v_new: wp.array(dtype=wp.vec3),
-    particle_x_old: wp.array(dtype=wp.vec3),
-    particle_v_old: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.uint32),
-    particle_ka: float,
-    restitution: float,
-    ground: wp.array(dtype=float),
-    dt: float,
-    relaxation: float,
-    particle_v_out: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    if (particle_flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
-        return
-
-    wi = particle_invmass[tid]
-    if wi == 0.0:
-        return
-
-    x = particle_x_old[tid]
-    v_old = particle_v_old[tid]
-    v_new = particle_v_new[tid]
-
-    n = wp.vec3(ground[0], ground[1], ground[2])
-    c = wp.dot(n, x) + ground[3] - particle_radius[tid]
-
-    if c > particle_ka:
-        return
-
-    vn = wp.dot(n, v_old)
-    vn_new = wp.dot(n, v_new)
-
-    if vn < 0.0:
-        dv = n * (-vn_new + wp.max(-restitution * vn, 0.0))
         wp.atomic_add(particle_v_out, tid, dv)
 
 
@@ -2820,32 +2731,8 @@ class XPBDSolver(SolverBase):
                         else:
                             particle_deltas.zero_()
 
-                        # particle ground contact
-                        if model.ground:
-                            # TODO remove
-                            wp.launch(
-                                kernel=solve_particle_ground_contacts,
-                                dim=model.particle_count,
-                                inputs=[
-                                    particle_q,
-                                    particle_qd,
-                                    model.particle_inv_mass,
-                                    model.particle_radius,
-                                    model.particle_flags,
-                                    model.soft_contact_ke,
-                                    model.soft_contact_kd,
-                                    model.soft_contact_kf,
-                                    model.soft_contact_mu,
-                                    model.ground_plane,
-                                    dt,
-                                    self.soft_contact_relaxation,
-                                ],
-                                outputs=[particle_deltas],
-                                device=model.device,
-                            )
-
                         # particle-rigid body contacts (besides ground plane)
-                        if model.shape_count > 1:
+                        if model.shape_count:
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
                                 dim=model.soft_contact_max,
@@ -3041,7 +2928,7 @@ class XPBDSolver(SolverBase):
                         body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
                     # Solve rigid contact constraints
-                    if contacts:
+                    if contacts is not None:
                         if self.rigid_contact_con_weighting:
                             rigid_contact_inv_weight.zero_()
                         body_deltas.zero_()
@@ -3126,7 +3013,7 @@ class XPBDSolver(SolverBase):
                     device=model.device,
                 )
 
-            if self.enable_restitution:
+            if self.enable_restitution and contacts is not None:
                 if model.particle_count:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
@@ -3148,46 +3035,25 @@ class XPBDSolver(SolverBase):
                             model.shape_materials,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
-                            model.soft_contact_count,
-                            model.soft_contact_particle,
-                            model.soft_contact_shape,
-                            model.soft_contact_body_pos,
-                            model.soft_contact_body_vel,
-                            model.soft_contact_normal,
-                            model.soft_contact_max,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_particle,
+                            contacts.soft_contact_shape,
+                            contacts.soft_contact_body_pos,
+                            contacts.soft_contact_body_vel,
+                            contacts.soft_contact_normal,
+                            contacts.soft_contact_max,
                             dt,
                             self.soft_contact_relaxation,
                         ],
                         outputs=[state_out.particle_qd],
                         device=model.device,
                     )
-                    if model.ground:
-                        wp.launch(
-                            kernel=apply_particle_ground_restitution,
-                            dim=model.particle_count,
-                            inputs=[
-                                particle_q,
-                                particle_qd,
-                                self.particle_q_init,
-                                self.particle_qd_init,
-                                model.particle_inv_mass,
-                                model.particle_radius,
-                                model.particle_flags,
-                                model.particle_adhesion,
-                                model.soft_contact_restitution,
-                                model.ground_plane,
-                                dt,
-                                self.soft_contact_relaxation,
-                            ],
-                            outputs=[state_out.particle_qd],
-                            device=model.device,
-                        )
 
                 if model.body_count:
                     body_deltas.zero_()
                     wp.launch(
                         kernel=apply_rigid_restitution,
-                        dim=model.rigid_contact_max,
+                        dim=contacts.rigid_contact_max,
                         inputs=[
                             state_out.body_q,
                             state_out.body_qd,
@@ -3197,16 +3063,16 @@ class XPBDSolver(SolverBase):
                             model.body_inv_mass,
                             model.body_inv_inertia,
                             model.shape_body,
-                            model.rigid_contact_count,
-                            model.rigid_contact_normal,
-                            model.rigid_contact_shape0,
-                            model.rigid_contact_shape1,
+                            contacts.rigid_contact_count,
+                            contacts.rigid_contact_normal,
+                            contacts.rigid_contact_shape0,
+                            contacts.rigid_contact_shape1,
                             model.shape_materials,
-                            model.rigid_contact_point0,
-                            model.rigid_contact_point1,
-                            model.rigid_contact_offset0,
-                            model.rigid_contact_offset1,
-                            model.rigid_contact_thickness,
+                            contacts.rigid_contact_point0,
+                            contacts.rigid_contact_point1,
+                            contacts.rigid_contact_offset0,
+                            contacts.rigid_contact_offset1,
+                            contacts.rigid_contact_thickness,
                             rigid_contact_inv_weight_init,
                             model.gravity,
                             dt,

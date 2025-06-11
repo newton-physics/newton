@@ -120,7 +120,6 @@ class CollisionPipeline:
             # count the number of contacts
             rigid_contact_max = count_rigid_contact_points(model)
             rigid_contact_max_per_pair = 0
-        soft_contact_max = None
         if requires_grad is None:
             requires_grad = model.requires_grad
         return CollisionPipeline(
