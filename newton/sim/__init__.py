@@ -15,8 +15,16 @@
 
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
-from .collide import CollisionPipeline
+from .collide import CollisionPipeline, count_rigid_contact_points
 from .control import Control
+from .flags import (
+    NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES,
+    NOTIFY_FLAG_BODY_PROPERTIES,
+    NOTIFY_FLAG_DOF_PROPERTIES,
+    NOTIFY_FLAG_JOINT_AXIS_PROPERTIES,
+    NOTIFY_FLAG_JOINT_PROPERTIES,
+    NOTIFY_FLAG_SHAPE_PROPERTIES,
+)
 from .joints import (
     JOINT_BALL,
     JOINT_COMPOUND,
@@ -49,6 +57,12 @@ __all__ = [
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
+    "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
+    "NOTIFY_FLAG_BODY_PROPERTIES",
+    "NOTIFY_FLAG_DOF_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_PROPERTIES",
+    "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "CollisionPipeline",
     "Control",
     "Model",
@@ -56,6 +70,7 @@ __all__ = [
     "ShapeGeometry",
     "ShapeMaterials",
     "State",
+    "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
     "get_joint_dof_count",

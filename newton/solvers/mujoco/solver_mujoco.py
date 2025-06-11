@@ -775,7 +775,7 @@ class MuJoCoSolver(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
+        if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
         if flags & (types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | types.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
@@ -1210,10 +1210,7 @@ class MuJoCoSolver(SolverBase):
             if not shapes:
                 return
             for shape in shapes:
-                if shape == model.shape_count - 1 and not model.ground:
-                    # skip ground plane
-                    continue
-                elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
+                if skip_visual_only_geoms and not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
                 #     # this is a shape in a different environment, skip it
@@ -1551,7 +1548,8 @@ class MuJoCoSolver(SolverBase):
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
-            nconmax = max(model.rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            rigid_contact_max = newton.sim.count_rigid_contact_points(model)
+            nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax

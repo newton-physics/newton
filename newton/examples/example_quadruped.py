@@ -75,9 +75,10 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
+        # self.solver = newton.solvers.XPBDSolver(self.model)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model)
+        self.solver = newton.solvers.MuJoCoSolver(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)

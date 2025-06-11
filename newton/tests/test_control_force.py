@@ -42,13 +42,12 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
     builder.joint_q = [1.0, 2.0, 3.0, *wp.quat_rpy(-1.3, 0.8, 2.4)]
 
     model = builder.finalize(device=device)
-    model.ground = False
 
     solver = solver_fn(model)
 
     state_0, state_1 = model.state(), model.state()
 
-    newton.core.articulation.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
     if test_angular:
@@ -93,7 +92,6 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
     )
 
     model = builder.finalize(device=device)
-    model.ground = False
 
     test.assertEqual(model.joint_dof_count, 3)
 
@@ -115,7 +113,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
 
         if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
             # need to compute joint_qd from body_qd
-            newton.core.articulation.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
+            newton.sim.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
         qd = state_0.joint_qd.numpy()
         test.assertGreater(qd[control_dim], 0.009)
