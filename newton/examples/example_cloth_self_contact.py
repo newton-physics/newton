@@ -32,7 +32,7 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.utils
-from newton.core import PARTICLE_FLAG_ACTIVE
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 
 
 @wp.kernel
@@ -169,14 +169,9 @@ class Example:
         )
         builder.color()
         self.model = builder.finalize()
-        self.model.ground = False
         self.model.soft_contact_ke = 1.0e5
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
-
-        # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2
-        self.model.soft_contact_margin = 0.35
 
         cloth_size = 50
         left_side = [cloth_size - 1 + i * cloth_size for i in range(cloth_size)]
@@ -194,10 +189,13 @@ class Example:
             self.model,
             self.iterations,
             handle_self_contact=True,
+            soft_contact_radius = 0.2,
+            soft_contact_margin = 0.35,
         )
-        self.state0 = self.model.state()
-        self.state1 = self.model.state()
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
         rot_axes = [[1, 0, 0]] * len(right_side) + [[-1, 0, 0]] * len(left_side)
 
@@ -214,7 +212,7 @@ class Example:
             dim=self.rot_point_indices.shape[0],
             inputs=[
                 self.rot_point_indices,
-                self.state0.particle_q,
+                self.state_0.particle_q,
                 self.rot_centers,
                 self.rot_axes,
                 self.t,
@@ -240,6 +238,7 @@ class Example:
             self.cuda_graph = capture.graph
 
     def integrate_frame_substeps(self):
+        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.num_substeps):
             wp.launch(
                 kernel=apply_rotation,
@@ -255,13 +254,13 @@ class Example:
                     self.rot_end_time,
                 ],
                 outputs=[
-                    self.state0.particle_q,
-                    self.state1.particle_q,
+                    self.state_0.particle_q,
+                    self.state_1.particle_q,
                 ],
             )
 
-            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
-            (self.state0, self.state1) = (self.state1, self.state0)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.dt)
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def advance_frame(self):
         with wp.ScopedTimer("step", print=False, dict=self.profiler):
@@ -279,7 +278,7 @@ class Example:
             print(f"[{i:4d}/{self.num_frames}]")
 
             if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph and self.solver.handle_self_contact:
-                self.solver.rebuild_bvh(self.state0)
+                self.solver.rebuild_bvh(self.state_0)
                 with wp.ScopedCapture() as capture:
                     self.integrate_frame_substeps()
                 self.cuda_graph = capture.graph
@@ -289,7 +288,7 @@ class Example:
             return
 
         self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state0)
+        self.renderer.render(self.state_0)
         self.renderer.end_frame()
 
 
