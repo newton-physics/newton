@@ -756,17 +756,18 @@ def create_soft_contacts(
 
 @wp.kernel(enable_backward=False)
 def count_contact_points(
-    contact_pairs: wp.array(dtype=int, ndim=2),
+    contact_pairs: wp.array(dtype=wp.vec2i),
     shape_type: wp.array(dtype=int),
     shape_scale: wp.array(dtype=wp.vec3),
     shape_source: wp.array(dtype=wp.uint64),
-    mesh_contact_max: int,
     # outputs
     contact_count: wp.array(dtype=int),
 ):
     tid = wp.tid()
-    shape_a = contact_pairs[tid, 0]
-    shape_b = contact_pairs[tid, 1]
+
+    shape_ab = contact_pairs[tid]
+    shape_a = shape_ab[0]
+    shape_b = shape_ab[1]
 
     if shape_b == -1:
         actual_shape_a = shape_a
@@ -791,75 +792,50 @@ def count_contact_points(
 
     # determine how many contact points need to be evaluated
     num_contacts = 0
-    num_actual_contacts = 0
     if actual_type_a == newton.GEO_SPHERE:
         num_contacts = 1
-        num_actual_contacts = 1
     elif actual_type_a == newton.GEO_CAPSULE:
         if actual_type_b == newton.GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 2  # vertex-based collision for infinite plane
-                num_actual_contacts = 2
             else:
                 num_contacts = 2 + 4  # vertex-based collision + plane edges
-                num_actual_contacts = 2 + 4
         elif actual_type_b == newton.GEO_MESH:
             num_contacts_a = 2
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
-            if mesh_contact_max > 0:
-                num_contacts_b = wp.min(mesh_contact_max, num_contacts_b)
-            num_actual_contacts = num_contacts_a + num_contacts_b
         else:
             num_contacts = 2
-            num_actual_contacts = 2
     elif actual_type_a == newton.GEO_BOX:
         if actual_type_b == newton.GEO_BOX:
             num_contacts = 24
-            num_actual_contacts = 24
         elif actual_type_b == newton.GEO_MESH:
             num_contacts_a = 8
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
-            if mesh_contact_max > 0:
-                num_contacts_b = wp.min(mesh_contact_max, num_contacts_b)
-            num_actual_contacts = num_contacts_a + num_contacts_b
         elif actual_type_b == newton.GEO_PLANE:
             if shape_scale[actual_shape_b][0] == 0.0 and shape_scale[actual_shape_b][1] == 0.0:
                 num_contacts = 8  # vertex-based collision
-                num_actual_contacts = 8
             else:
                 num_contacts = 8 + 4  # vertex-based collision + plane edges
-                num_actual_contacts = 8 + 4
         else:
             num_contacts = 8
-            num_actual_contacts = 8
     elif actual_type_a == newton.GEO_MESH:
         mesh_a = wp.mesh_get(shape_source[actual_shape_a])
         num_contacts_a = mesh_a.points.shape[0]
-        if mesh_contact_max > 0:
-            num_contacts_a = wp.min(mesh_contact_max, num_contacts_a)
         if actual_type_b == newton.GEO_MESH:
             mesh_b = wp.mesh_get(shape_source[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             num_contacts = num_contacts_a + num_contacts_b
-            if mesh_contact_max > 0:
-                num_contacts_b = wp.min(mesh_contact_max, num_contacts_b)
         else:
             num_contacts_b = 0
         num_contacts = num_contacts_a + num_contacts_b
-        num_actual_contacts = num_contacts_a + num_contacts_b
     elif actual_type_a == newton.GEO_PLANE:
         return  # no plane-plane contacts
-    else:
-        wp.printf(
-            "count_contact_points: unsupported geometry type combination %d and %d\n", actual_type_a, actual_type_b
-        )
 
     wp.atomic_add(contact_count, 0, num_contacts)
-    wp.atomic_add(contact_count, 1, num_actual_contacts)
 
 
 @wp.kernel(enable_backward=False)
@@ -870,7 +846,7 @@ def broadphase_collision_pairs(
     shape_type: wp.array(dtype=int),
     shape_scale: wp.array(dtype=wp.vec3),
     shape_source: wp.array(dtype=wp.uint64),
-    shape_pairs_filtered: wp.array(dtype=int, ndim=2),
+    shape_pairs_filtered: wp.array(dtype=wp.vec2i),
     shape_radius: wp.array(dtype=float),
     num_shapes: int,
     rigid_contact_max: int,
@@ -885,8 +861,9 @@ def broadphase_collision_pairs(
     contact_point_limit: wp.array(dtype=int),
 ):
     tid = wp.tid()
-    shape_a = shape_pairs_filtered[tid, 0]
-    shape_b = shape_pairs_filtered[tid, 1]
+    shape_ab = shape_pairs_filtered[tid]
+    shape_a = shape_ab[0]
+    shape_b = shape_ab[1]
 
     rigid_a = shape_body[shape_a]
     if rigid_a == -1:

@@ -19,8 +19,10 @@ import numpy as np
 import warp as wp
 from warp.types import float32, matrix
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
-from newton.core.model import ShapeMaterials
+from newton.core import PARTICLE_FLAG_ACTIVE
+from newton.sim.model import ShapeMaterials
+from newton.sim import Control, Model, State
+from newton.geometry import Contacts
 from newton.core.types import override
 from newton.geometry.kernels import (
     TriMeshCollisionDetector,
@@ -2159,7 +2161,7 @@ class VBDSolver(SolverBase):
         return adjacency
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if model is not self.model:
             raise ValueError("model must be the one used to initialize VBDSolver")
 

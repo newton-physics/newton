@@ -18,12 +18,10 @@ import warp as wp
 import newton
 from newton.core import (
     PARTICLE_FLAG_ACTIVE,
-    Control,
-    Model,
-    State,
     quat_decompose,
     quat_twist,
 )
+from newton.sim import Control, Model, ShapeGeometry, ShapeMaterials, State
 
 
 @wp.kernel
@@ -1712,6 +1710,24 @@ def eval_triangle_forces(model: Model, state: State, control: Control, particle_
                 model.tri_poses,
                 control.tri_activations,
                 model.tri_materials,
+            ],
+            outputs=[particle_f],
+            device=model.device,
+        )
+
+
+def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.array):
+    if model.enable_tri_collisions:
+        wp.launch(
+            kernel=eval_triangles_contact,
+            dim=model.tri_count * model.particle_count,
+            inputs=[
+                model.particle_count,
+                state.particle_q,
+                state.particle_qd,
+                model.tri_indices,
+                model.tri_materials,
+                model.particle_radius,
             ],
             outputs=[particle_f],
             device=model.device,

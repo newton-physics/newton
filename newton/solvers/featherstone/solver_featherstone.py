@@ -16,13 +16,13 @@
 import warp as wp
 
 import newton
-from newton.core import Control, Model, State
-from newton.core.articulation import (
+from newton.geometry import Contacts
+from newton.sim import Control, Model, State
+from newton.sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
     eval_fk,
 )
-from newton.geometry import Contacts
 
 from ..euler.kernels import (
     eval_bending_forces,

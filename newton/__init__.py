@@ -32,12 +32,6 @@ from .core import (
     JOINT_UNIVERSAL,
     Axis,
     AxisType,
-    Control,
-    Model,
-    ModelBuilder,
-    State,
-    eval_fk,
-    eval_ik,
 )
 
 # Geometry functionality
@@ -61,6 +55,14 @@ from .geometry import (
     create_none,
     create_plane,
     create_sphere,
+)
+from .sim import (
+    Control,
+    Model,
+    ModelBuilder,
+    State,
+    eval_fk,
+    eval_ik,
 )
 
 __all__ = [

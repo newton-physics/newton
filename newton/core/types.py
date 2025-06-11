@@ -257,7 +257,6 @@ __all__ = [
     "Mat33",
     "Quat",
     "Sequence",
-    "ShapeMaterials",
     "Transform",
     "Vec3",
     "Vec4",

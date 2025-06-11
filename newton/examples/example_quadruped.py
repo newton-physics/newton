@@ -27,11 +27,9 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.core.articulation
 import newton.examples
+import newton.sim
 import newton.utils
-
-wp.config.verify_cuda = True
 
 
 class Example:
@@ -91,10 +89,10 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
-        self.use_cuda_graph = False  # wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()

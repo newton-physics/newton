@@ -24,9 +24,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import ModelBuilder, quat_between_axes
+from newton.core import quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
 from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def parse_mjcf(

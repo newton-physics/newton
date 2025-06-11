@@ -82,4 +82,3 @@ class Contacts:
     @property
     def device(self):
         return self.rigid_contact_count.device
-
