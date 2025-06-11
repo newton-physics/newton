@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from .contacts import Contacts
 from .inertia import compute_shape_inertia, transform_inertia
 from .types import (
     GEO_BOX,
@@ -81,6 +82,7 @@ __all__ = [
     "GEO_SDF",
     "GEO_SPHERE",
     "SDF",
+    "Contacts",
     "Mesh",
     "compute_shape_inertia",
     "compute_shape_radius",
