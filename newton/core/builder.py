@@ -198,6 +198,9 @@ class ModelBuilder:
             target_kd: float = 0.0,
             mode: int = JOINT_MODE_TARGET_POSITION,
             armature: float = 1e-2,
+            effort_limit: float = 1e6,
+            velocity_limit: float = 1e6,
+            friction: float = 0.0,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
@@ -221,6 +224,12 @@ class ModelBuilder:
             """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
             self.armature = armature
             """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+            self.effort_limit = effort_limit
+            """Maximum effort (force or torque) the joint axis can exert. Defaults to 1e6."""
+            self.velocity_limit = velocity_limit
+            """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
+            self.friction = friction
+            """Friction coefficient for the joint axis. Defaults to 0.0."""
 
             if self.mode == JOINT_MODE_TARGET_POSITION and (
                 self.target > self.limit_upper or self.target < self.limit_lower
@@ -363,6 +372,9 @@ class ModelBuilder:
         self.joint_limit_ke = []
         self.joint_limit_kd = []
         self.joint_target = []
+        self.joint_effort_limit = []
+        self.joint_velocity_limit = []
+        self.joint_friction = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -409,6 +421,8 @@ class ModelBuilder:
         # number of rigid contact points to allocate in the model during self.finalize() per environment
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
+
+        self.dof_to_axis_map = []
 
     @property
     def up_vector(self) -> Vec3:
@@ -622,6 +636,9 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_effort_limit",
+            "joint_velocity_limit",
+            "joint_friction",
             "shape_key",
             "shape_flags",
             "shape_geo_type",
@@ -658,6 +675,14 @@ class ModelBuilder:
 
         for attr in more_builder_attrs:
             getattr(self, attr).extend(getattr(builder, attr))
+
+        # Handle dof_to_axis_map specially - need to offset axis indices
+        axis_offset = self.joint_axis_total_count
+        for dof_axis_idx in builder.dof_to_axis_map:
+            if dof_axis_idx >= 0:
+                self.dof_to_axis_map.append(dof_axis_idx + axis_offset)
+            else:
+                self.dof_to_axis_map.append(dof_axis_idx)
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
@@ -807,6 +832,9 @@ class ModelBuilder:
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
+            self.joint_effort_limit.append(dim.effort_limit)
+            self.joint_velocity_limit.append(dim.velocity_limit)
+            self.joint_friction.append(dim.friction)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -837,10 +865,16 @@ class ModelBuilder:
                 # distance joint has already 1 armature setting defined from the linear dof
                 for _ in range(dof_count - 1):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
             else:
                 # free and ball joints need armature defined for all velocity dofs
                 for _ in range(dof_count):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -852,6 +886,27 @@ class ModelBuilder:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
                     self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+
+        # Fill dof_to_axis_map
+        axis_start = self.joint_axis_start[-1]  # Get the axis start for this joint
+        num_axes = len(linear_axes) + len(angular_axes)
+
+        if joint_type in [JOINT_PRISMATIC, JOINT_REVOLUTE, JOINT_D6, JOINT_COMPOUND, JOINT_UNIVERSAL]:
+            for i in range(dof_count):
+                if i < num_axes:
+                    self.dof_to_axis_map.append(axis_start + i)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        elif joint_type == JOINT_DISTANCE:
+            # Only first DOF maps to the axis
+            for i in range(dof_count):
+                if i == 0 and num_axes > 0:
+                    self.dof_to_axis_map.append(axis_start)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        else:  # JOINT_FREE, JOINT_BALL, JOINT_FIXED
+            for _ in range(dof_count):
+                self.dof_to_axis_map.append(-1)
 
         return self.joint_count - 1
 
@@ -871,6 +926,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -892,6 +950,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -917,6 +978,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_REVOLUTE,
@@ -946,6 +1010,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -967,6 +1034,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -992,6 +1062,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_PRISMATIC,
@@ -2456,11 +2529,10 @@ class ModelBuilder:
         edge_ke: float | None = None,
         edge_kd: float | None = None,
     ) -> None:
-        """Adds a bending edge element between four particles in the system.
+        """Adds a bending edge element between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2468,10 +2540,12 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angle across the edge in radians, if not specified it will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
@@ -2482,19 +2556,18 @@ class ModelBuilder:
         x3 = self.particle_q[k]
         x4 = self.particle_q[l]
         if rest is None:
-            x1 = self.particle_q[i]
-            x2 = self.particle_q[j]
+            rest = 0.0
+            if i != -1 and j != -1:
+                x1 = self.particle_q[i]
+                x2 = self.particle_q[j]
 
-            n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
-            n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
-            e = wp.normalize(x4 - x3)
+                n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
+                n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
+                e = wp.normalize(x4 - x3)
 
-            d = np.clip(np.dot(n2, n1), -1.0, 1.0)
-
-            angle = math.acos(d)
-            sign = np.sign(np.dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+                cos_theta = np.clip(np.dot(n1, n2), -1.0, 1.0)
+                sin_theta = np.dot(np.cross(n1, n2), e)
+                rest = math.atan2(sin_theta, cos_theta)
 
         self.edge_indices.append((i, j, k, l))
         self.edge_rest_angle.append(rest)
@@ -2511,11 +2584,10 @@ class ModelBuilder:
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
     ) -> None:
-        """Adds bending edge elements between groups of four particles in the system.
+        """Adds bending edge elements between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2523,40 +2595,42 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angles across the edges in radians, if not specified they will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
         x3 = np.array(self.particle_q)[k]
         x4 = np.array(self.particle_q)[l]
         if rest is None:
+            rest = np.zeros_like(i, dtype=float)
+            valid_mask = (i != -1) & (j != -1)
+
             # compute rest angle
-            x1 = np.array(self.particle_q)[i]
-            x2 = np.array(self.particle_q)[j]
-            x3 = np.array(self.particle_q)[k]
-            x4 = np.array(self.particle_q)[l]
+            x1_valid = np.array(self.particle_q)[i[valid_mask]]
+            x2_valid = np.array(self.particle_q)[j[valid_mask]]
+            x3_valid = np.array(self.particle_q)[k[valid_mask]]
+            x4_valid = np.array(self.particle_q)[l[valid_mask]]
 
             def normalized(a):
                 l = np.linalg.norm(a, axis=-1, keepdims=True)
                 l[l == 0] = 1.0
                 return a / l
 
-            n1 = normalized(np.cross(x3 - x1, x4 - x1))
-            n2 = normalized(np.cross(x4 - x2, x3 - x2))
-            e = normalized(x4 - x3)
+            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
+            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
+            e = normalized(x4_valid - x3_valid)
 
             def dot(a, b):
                 return (a * b).sum(axis=-1)
 
-            d = np.clip(dot(n2, n1), -1.0, 1.0)
-
-            angle = np.arccos(d)
-            sign = np.sign(dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
+            sin_theta = dot(np.cross(n1, n2), e)
+            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
 
         inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
 
@@ -3382,12 +3456,17 @@ class ModelBuilder:
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
+
+            m.dof_to_axis_map = wp.array(self.dof_to_axis_map, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
