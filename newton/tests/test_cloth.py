@@ -658,7 +658,6 @@ class ClothSim:
             builder.add_ground_plane()
         builder.color(include_bending=True)
 
-
         self.model = builder.finalize(device=self.device)
         self.model.gravity = wp.vec3(0, -1000.0, 0) if use_gravity else wp.vec3(0, 0, 0)
         self.model.soft_contact_ke = 1.0e4
