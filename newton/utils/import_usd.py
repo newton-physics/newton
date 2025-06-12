@@ -320,6 +320,7 @@ def parse_usd(
         if incoming_xform is not None:
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
+        name = str(prim.GetName())
 
         body_armature = parse_float_with_fallback(
             (prim, physics_scene_prim), "warp:armature", builder.default_body_armature
@@ -327,9 +328,11 @@ def parse_usd(
 
         b = builder.add_body(
             xform=origin,
-            key=path,
+            key=name,
             armature=body_armature,
         )
+        builder.add_joint_free(b)
+        builder.joint_q[-7:] = list(origin.p) + list(origin.q)
         path_body_map[path] = b
         return b
 
