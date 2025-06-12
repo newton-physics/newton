@@ -1005,9 +1005,7 @@ def eval_joint_force(
     damping_f = 0.0
     target_f = 0.0
 
-    if mode == newton.JOINT_MODE_FORCE:
-        target_f = act
-    elif mode == newton.JOINT_MODE_TARGET_POSITION:
+    if mode == newton.JOINT_MODE_TARGET_POSITION:
         target_f = target_ke * (act - q) - target_kd * qd
     elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
         target_f = target_ke * (act - qd)
@@ -1402,7 +1400,7 @@ def eval_body_joints(
                 0.0,
                 0.0,
                 0.0,
-                newton.JOINT_MODE_FORCE,
+                newton.JOINT_MODE_NONE,
             )
 
         if ang_axis_count == 3:

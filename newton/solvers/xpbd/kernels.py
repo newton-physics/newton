@@ -19,7 +19,7 @@ import newton
 from newton.core import velocity_at_point
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.sim.joints import (
-    JOINT_MODE_FORCE,
+    JOINT_MODE_NONE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
 )
@@ -1638,7 +1638,7 @@ def solve_body_joints(
             up_temp = axis * joint_limit_upper[axis_start]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             mode = joint_axis_mode[axis_start]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_start]
                 kd = joint_target_kd[axis_start]
                 target = joint_act[axis_start]
@@ -1652,7 +1652,7 @@ def solve_body_joints(
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             mode = joint_axis_mode[axis_idx]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
@@ -1666,7 +1666,7 @@ def solve_body_joints(
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             mode = joint_axis_mode[axis_idx]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
@@ -1839,7 +1839,7 @@ def solve_body_joints(
             up_temp = axis * joint_limit_upper[axis_idx]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             mode = joint_axis_mode[axis_idx]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
@@ -1853,7 +1853,7 @@ def solve_body_joints(
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             mode = joint_axis_mode[axis_idx]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
@@ -1867,7 +1867,7 @@ def solve_body_joints(
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             mode = joint_axis_mode[axis_idx]
-            if mode != JOINT_MODE_FORCE:  # position or velocity target
+            if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
