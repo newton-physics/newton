@@ -249,6 +249,7 @@ def apply_mjc_control_kernel(
 
 @wp.kernel
 def apply_mjc_body_f_kernel(
+    body_q: wp.array(dtype=wp.transform),
     body_f: wp.array(dtype=wp.spatial_vector),
     to_mjc_body_index: wp.array(dtype=wp.int32),
     bodies_per_env: int,
@@ -259,7 +260,18 @@ def apply_mjc_body_f_kernel(
     mj_body_id = to_mjc_body_index[bodyid]
     if mj_body_id != -1:
         f = body_f[worldid * bodies_per_env + bodyid]
+        tf = body_q[worldid * bodies_per_env + bodyid]
+        rot = wp.transform_get_rotation(tf)
+        # com_world = wp.transform_point(tf, body_com[child])
+        # swap angular and linear components
+        w = wp.vec3(f[0], f[1], f[2])
+        v = wp.vec3(f[3], f[4], f[5])
+        # rotate angular torque to world frame
+        # w = wp.quat_rotate(rot, w)
+        w = wp.quat_rotate_inv(rot, w)
+        # xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
         xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(wp.spatial_bottom(f), wp.spatial_top(f))
+
 
 
 @wp.kernel
@@ -762,7 +774,6 @@ class MuJoCoSolver(SolverBase):
             dt (float): The time step (typically in seconds).
             control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
         """
-
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:
@@ -797,7 +808,8 @@ class MuJoCoSolver(SolverBase):
     @staticmethod
     def apply_mjc_control(model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
         if control is None or control.joint_f is None:
-            return
+            if state.body_f is None:
+                return
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             ctrl = mj_data.ctrl
@@ -807,57 +819,61 @@ class MuJoCoSolver(SolverBase):
         else:
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
-            xfrc = wp.empty((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
+            xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_axis_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
-        wp.launch(
-            apply_mjc_control_kernel,
-            dim=(nworld, axes_per_env),
-            inputs=[
-                control.joint_target,
-                model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
-                axes_per_env,
-            ],
-            outputs=[
-                ctrl,
-            ],
-            device=model.device,
-        )
-        wp.launch(
-            apply_mjc_qfrc_kernel,
-            dim=(nworld, joints_per_env),
-            inputs=[
-                state.body_q,
-                control.joint_f,
-                model.joint_type,
-                model.body_com,
-                model.joint_child,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_axis_dim,
-                joints_per_env,
-                bodies_per_env,
-            ],
-            outputs=[
-                qfrc,
-            ],
-            device=model.device,
-        )
-        wp.launch(
-            apply_mjc_body_f_kernel,
-            dim=(nworld, bodies_per_env),
-            inputs=[
-                state.body_f,
-                model.to_mjc_body_index,
-                bodies_per_env,
-            ],
-            outputs=[
-                xfrc,
-            ],
-            device=model.device,
-        )
+        if control is not None:
+            wp.launch(
+                apply_mjc_control_kernel,
+                dim=(nworld, axes_per_env),
+                inputs=[
+                    control.joint_target,
+                    model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
+                    axes_per_env,
+                ],
+                outputs=[
+                    ctrl,
+                ],
+                device=model.device,
+            )
+            wp.launch(
+                apply_mjc_qfrc_kernel,
+                dim=(nworld, joints_per_env),
+                inputs=[
+                    state.body_q,
+                    control.joint_f,
+                    model.joint_type,
+                    model.body_com,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_axis_dim,
+                    joints_per_env,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    qfrc,
+                ],
+                device=model.device,
+            )
+
+        if state.body_f is not None:
+            wp.launch(
+                apply_mjc_body_f_kernel,
+                dim=(nworld, bodies_per_env),
+                inputs=[
+                    state.body_q,
+                    state.body_f,
+                    model.to_mjc_body_index,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    xfrc,
+                ],
+                device=model.device,
+            )
         if not is_mjwarp:
             mj_data.xfrc_applied = xfrc.numpy()
             mj_data.ctrl[:] = ctrl.numpy().flatten()
