@@ -15,7 +15,6 @@
 
 import warp as wp
 
-from .contacts import Contacts
 from .flags import (
     PARTICLE_FLAG_ACTIVE,
     SHAPE_FLAG_COLLIDE_PARTICLES,
@@ -92,7 +91,6 @@ __all__ = [
     "SHAPE_FLAG_COLLIDE_PARTICLES",
     "SHAPE_FLAG_COLLIDE_SHAPES",
     "SHAPE_FLAG_VISIBLE",
-    "Contacts",
     "Mesh",
     "compute_shape_inertia",
     "compute_shape_radius",

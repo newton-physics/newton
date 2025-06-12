@@ -23,8 +23,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.core.types import override
-from newton.geometry import Contacts
-from newton.sim import Control, Model, State
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 
@@ -664,6 +663,7 @@ class MuJoCoSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
     """
 
     def __init__(
@@ -683,7 +683,7 @@ class MuJoCoSolver(SolverBase):
         register_collision_groups: bool = True,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
-        update_data_every: int = 1,
+        update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
     ):
         """
@@ -702,7 +702,7 @@ class MuJoCoSolver(SolverBase):
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
-            update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
 
         """
@@ -734,25 +734,14 @@ class MuJoCoSolver(SolverBase):
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
             )
-        self.update_data_every = update_data_every
+        self.update_data_interval = update_data_interval
         self._step = 0
 
     @override
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        """
-        Simulate the model for a given time step using the given control input.
-
-        Args:
-            model (Model): The model to simulate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
-        """
-
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self.update_mjc_data(self.mj_data, model, state_in)
             self.mj_model.opt.timestep = dt
@@ -760,7 +749,7 @@ class MuJoCoSolver(SolverBase):
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
             with wp.ScopedDevice(self.model.device):

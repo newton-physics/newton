@@ -21,7 +21,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..geometry import Contacts
+from .contacts import Contacts
 from .control import Control
 from .state import State
 from .types import ShapeGeometry, ShapeMaterials
