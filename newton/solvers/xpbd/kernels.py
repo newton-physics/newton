@@ -904,7 +904,6 @@ def apply_joint_forces(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_f: wp.array(dtype=float),
@@ -943,7 +942,6 @@ def apply_joint_forces(
     # q_c = wp.transform_get_rotation(X_wc)
 
     # joint properties (for 1D joints)
-    axis_start = joint_axis_start[tid]
     qd_start = joint_qd_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
     ang_axis_count = joint_axis_dim[tid, 1]
@@ -958,44 +956,38 @@ def apply_joint_forces(
     elif type == newton.JOINT_BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 
-    elif (
-        type == newton.JOINT_REVOLUTE
-        or type == newton.JOINT_PRISMATIC
-        or type == newton.JOINT_D6
-        or type == newton.JOINT_UNIVERSAL
-        or type == newton.JOINT_COMPOUND
-    ):
+    elif type == newton.JOINT_REVOLUTE or type == newton.JOINT_PRISMATIC or type == newton.JOINT_D6:
         # unroll for loop to ensure joint actions remain differentiable
         # (since differentiating through a dynamic for loop that updates a local variable is not supported)
 
         if lin_axis_count > 0:
-            axis = joint_axis[axis_start + 0]
+            axis = joint_axis[qd_start + 0]
             f = joint_f[qd_start + 0]
             a_p = wp.transform_vector(X_wp, axis)
             f_total += f * a_p
         if lin_axis_count > 1:
-            axis = joint_axis[axis_start + 1]
+            axis = joint_axis[qd_start + 1]
             f = joint_f[qd_start + 1]
             a_p = wp.transform_vector(X_wp, axis)
             f_total += f * a_p
         if lin_axis_count > 2:
-            axis = joint_axis[axis_start + 2]
+            axis = joint_axis[qd_start + 2]
             f = joint_f[qd_start + 2]
             a_p = wp.transform_vector(X_wp, axis)
             f_total += f * a_p
 
         if ang_axis_count > 0:
-            axis = joint_axis[axis_start + lin_axis_count + 0]
+            axis = joint_axis[qd_start + lin_axis_count + 0]
             f = joint_f[qd_start + lin_axis_count + 0]
             a_p = wp.transform_vector(X_wp, axis)
             t_total += f * a_p
         if ang_axis_count > 1:
-            axis = joint_axis[axis_start + lin_axis_count + 1]
+            axis = joint_axis[qd_start + lin_axis_count + 1]
             f = joint_f[qd_start + lin_axis_count + 1]
             a_p = wp.transform_vector(X_wp, axis)
             t_total += f * a_p
         if ang_axis_count > 2:
-            axis = joint_axis[axis_start + lin_axis_count + 2]
+            axis = joint_axis[qd_start + lin_axis_count + 2]
             f = joint_f[qd_start + lin_axis_count + 2]
             a_p = wp.transform_vector(X_wp, axis)
             t_total += f * a_p
@@ -1162,7 +1154,7 @@ def solve_simple_body_joints(
     joint_X_c: wp.array(dtype=wp.transform),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
-    joint_axis_start: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     joint_axis_mode: wp.array(dtype=int),
     joint_axis: wp.array(dtype=wp.vec3),
@@ -1182,10 +1174,6 @@ def solve_simple_body_joints(
     if joint_enabled[tid] == 0:
         return
     if type == newton.JOINT_FREE:
-        return
-    if type == newton.JOINT_COMPOUND:
-        return
-    if type == newton.JOINT_UNIVERSAL:
         return
     if type == newton.JOINT_DISTANCE:
         return
@@ -1242,7 +1230,7 @@ def solve_simple_body_joints(
     angular_compliance = joint_angular_compliance
     damping = 0.0
 
-    axis_start = joint_axis_start[tid]
+    axis_start = joint_qd_start[tid]
     # mode = joint_axis_mode[axis_start]
 
     # local joint rotations
@@ -1484,7 +1472,7 @@ def solve_body_joints(
     joint_X_c: wp.array(dtype=wp.transform),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
-    joint_axis_start: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     joint_axis_mode: wp.array(dtype=int),
     joint_axis: wp.array(dtype=wp.vec3),
@@ -1567,7 +1555,7 @@ def solve_body_joints(
     linear_compliance = joint_linear_compliance
     angular_compliance = joint_angular_compliance
 
-    axis_start = joint_axis_start[tid]
+    axis_start = joint_qd_start[tid]
     lin_axis_count = joint_axis_dim[tid, 0]
     ang_axis_count = joint_axis_dim[tid, 1]
 
@@ -1772,8 +1760,6 @@ def solve_body_joints(
         type == newton.JOINT_FIXED
         or type == newton.JOINT_PRISMATIC
         or type == newton.JOINT_REVOLUTE
-        or type == newton.JOINT_UNIVERSAL
-        or type == newton.JOINT_COMPOUND
         or type == newton.JOINT_D6
     ):
         # handle angular constraints

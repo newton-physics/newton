@@ -315,7 +315,6 @@ def eval_single_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
@@ -348,7 +347,6 @@ def eval_single_articulation_fk(
 
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
-        axis_start = joint_axis_start[i]
         lin_axis_count = joint_axis_dim[i, 0]
         ang_axis_count = joint_axis_dim[i, 1]
 
@@ -356,7 +354,7 @@ def eval_single_articulation_fk(
         v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
 
         if type == newton.JOINT_PRISMATIC:
-            axis = joint_axis[axis_start]
+            axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
             qd = joint_qd[qd_start]
@@ -365,7 +363,7 @@ def eval_single_articulation_fk(
             v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
         if type == newton.JOINT_REVOLUTE:
-            axis = joint_axis[axis_start]
+            axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
             qd = joint_qd[qd_start]
@@ -395,22 +393,21 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == newton.JOINT_D6 or type == newton.JOINT_COMPOUND or type == newton.JOINT_UNIVERSAL:
+        if type == newton.JOINT_D6:
             pos = wp.vec3(0.0)
             rot = wp.quat_identity()
             vel_v = wp.vec3(0.0)
             vel_w = wp.vec3(0.0)
 
             for j in range(lin_axis_count):
-                axis = joint_axis[axis_start + j]
+                axis = joint_axis[qd_start + j]
                 pos += axis * joint_q[q_start + j]
                 vel_v += axis * joint_qd[qd_start + j]
 
-            ia = axis_start + lin_axis_count
             iq = q_start + lin_axis_count
             iqd = qd_start + lin_axis_count
             for j in range(ang_axis_count):
-                axis = joint_axis[ia + j]
+                axis = joint_axis[iqd + j]
                 rot = rot * wp.quat_from_axis_angle(axis, joint_q[iq + j])
                 vel_w += joint_qd[iqd + j] * axis
 
@@ -445,7 +442,6 @@ def eval_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
@@ -470,7 +466,6 @@ def eval_articulation_fk(
         joint_X_p,
         joint_X_c,
         joint_axis,
-        joint_axis_start,
         joint_axis_dim,
         body_com,
         # outputs
@@ -626,7 +621,6 @@ def update_axis_properties_kernel(
 def update_dof_properties_kernel(
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
-    dof_to_axis_map: wp.array(dtype=wp.int32),
     dofs_per_env: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
@@ -641,9 +635,7 @@ def update_dof_properties_kernel(
     dof_armature[worldid, dof_in_env] = joint_armature[tid]
 
     # Update friction loss
-    axis_idx = dof_to_axis_map[tid]
-    if axis_idx >= 0:
-        dof_frictionloss[worldid, dof_in_env] = joint_friction[axis_idx]
+    dof_frictionloss[worldid, dof_in_env] = joint_friction[tid]
 
 
 class MuJoCoSolver(SolverBase):
@@ -788,7 +780,7 @@ class MuJoCoSolver(SolverBase):
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             nworld = 1
-        axes_per_env = model.joint_axis_count // nworld
+        axes_per_env = model.joint_dof_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
         wp.launch(
@@ -923,7 +915,6 @@ class MuJoCoSolver(SolverBase):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    model.joint_axis_start,
                     model.joint_axis_dim,
                     model.body_com,
                 ],
@@ -1095,7 +1086,6 @@ class MuJoCoSolver(SolverBase):
         joint_limit_upper = model.joint_limit_upper.numpy()
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
-        joint_axis_start = model.joint_axis_start.numpy()
         joint_axis_dim = model.joint_axis_dim.numpy()
         joint_axis_mode = model.joint_axis_mode.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
@@ -1128,7 +1118,7 @@ class MuJoCoSolver(SolverBase):
             collision_mask_everything = INT32_MAX
 
         # mapping from joint axis to actuator index
-        axis_to_actuator = np.zeros((model.joint_axis_count,), dtype=np.int32) - 1
+        axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
@@ -1141,8 +1131,6 @@ class MuJoCoSolver(SolverBase):
             newton.JOINT_BALL,
             newton.JOINT_PRISMATIC,
             newton.JOINT_REVOLUTE,
-            newton.JOINT_UNIVERSAL,
-            newton.JOINT_COMPOUND,
             newton.JOINT_D6,
         }
 
@@ -1324,7 +1312,6 @@ class MuJoCoSolver(SolverBase):
 
             # add joint
             j_type = joint_type[ji]
-            axis_start = joint_axis_start[ji]
             qd_start = joint_qd_start[ji]
             name = model.joint_key[ji]
             if name not in joint_names:
@@ -1345,7 +1332,7 @@ class MuJoCoSolver(SolverBase):
                 lin_axis_count, ang_axis_count = joint_axis_dim[ji]
                 # linear dofs
                 for i in range(lin_axis_count):
-                    ai = axis_start + i
+                    ai = qd_start + i
                     axis = wp.vec3(*joint_axis[ai])
                     # reverse rotation of body to joint axis
                     # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
@@ -1408,7 +1395,7 @@ class MuJoCoSolver(SolverBase):
 
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
-                    ai = axis_start + i
+                    ai = qd_start + i
                     axis = wp.vec3(*joint_axis[ai])
                     # reverse rotation of body to joint axis
                     # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
@@ -1683,7 +1670,6 @@ class MuJoCoSolver(SolverBase):
         if not hasattr(self, "mjw_model") or self.mjw_model is None:
             return
 
-        axes_per_env = self.model.joint_axis_count // self.model.num_envs
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
@@ -1695,11 +1681,11 @@ class MuJoCoSolver(SolverBase):
         ):
             wp.launch(
                 update_axis_properties_kernel,
-                dim=self.model.joint_axis_count,
+                dim=self.model.joint_dof_count,
                 inputs=[
                     self.model.joint_effort_limit,
                     self.model.mjc_axis_to_actuator,
-                    axes_per_env,
+                    dofs_per_env,
                 ],
                 outputs=[self.mjw_model.actuator_forcerange],
                 device=self.model.device,
@@ -1718,7 +1704,6 @@ class MuJoCoSolver(SolverBase):
                 inputs=[
                     self.model.joint_armature,
                     self.model.joint_friction,
-                    self.model.dof_to_axis_map,
                     dofs_per_env,
                 ],
                 outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
