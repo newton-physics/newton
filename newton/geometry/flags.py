@@ -13,19 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 import warp as wp
 
+# Particle flags
+PARTICLE_FLAG_ACTIVE = wp.constant(wp.uint32(1 << 0))
+"""Indicates that the particle is active."""
 
-class Contact:
-    """Provides contact information to be consumed by a solver.
-    Stores the contact distance, position, frame, and geometry for each contact point.
-    """
+# Shape flags
+SHAPE_FLAG_VISIBLE = wp.constant(wp.uint32(1 << 0))
+"""Indicates that the shape is visible."""
 
-    def __init__(self):
-        self.dist: wp.array(dtype=wp.float32) | None = None
-        self.pos: wp.array(dtype=wp.vec3f) | None = None
-        self.frame: wp.array(dtype=wp.mat33f) | None = None
-        self.dim: wp.array(dtype=wp.int32) | None = None
-        self.geom: wp.array(dtype=wp.vec2i) | None = None
+SHAPE_FLAG_COLLIDE_SHAPES = wp.constant(wp.uint32(1 << 1))
+"""Indicates that the shape collides with other shapes."""
+
+SHAPE_FLAG_COLLIDE_PARTICLES = wp.constant(wp.uint32(1 << 2))
+"""Indicates that the shape collides with particles."""
+
+__all__ = [
+    "PARTICLE_FLAG_ACTIVE",
+    "SHAPE_FLAG_COLLIDE_PARTICLES",
+    "SHAPE_FLAG_COLLIDE_SHAPES",
+    "SHAPE_FLAG_VISIBLE",
+]

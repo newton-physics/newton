@@ -25,14 +25,22 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
-from .inertia import (
-    compute_shape_inertia,
-    transform_inertia,
+from newton.core.spatial import quat_between_axes
+from newton.core.types import (
+    Axis,
+    AxisType,
+    Devicelike,
+    Mat33,
+    Quat,
+    Sequence,
+    Transform,
+    Vec3,
+    Vec4,
+    axis_to_vec3,
+    flag_to_int,
+    nparray,
 )
-from .model import Model
-from .spatial import quat_between_axes
-from .types import (
+from newton.geometry import (
     GEO_BOX,
     GEO_CAPSULE,
     GEO_CONE,
@@ -42,6 +50,19 @@ from .types import (
     GEO_PLANE,
     GEO_SDF,
     GEO_SPHERE,
+    PARTICLE_FLAG_ACTIVE,
+    SDF,
+    SHAPE_FLAG_COLLIDE_PARTICLES,
+    SHAPE_FLAG_COLLIDE_SHAPES,
+    SHAPE_FLAG_VISIBLE,
+    Mesh,
+    compute_shape_inertia,
+    compute_shape_radius,
+    transform_inertia,
+)
+
+from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .joints import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -52,28 +73,9 @@ from .types import (
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
-    PARTICLE_FLAG_ACTIVE,
-    SDF,
-    SHAPE_FLAG_COLLIDE_GROUND,
-    SHAPE_FLAG_COLLIDE_PARTICLES,
-    SHAPE_FLAG_COLLIDE_SHAPES,
-    SHAPE_FLAG_VISIBLE,
-    Axis,
-    AxisType,
-    Devicelike,
-    Mat33,
-    Mesh,
-    Quat,
-    Sequence,
-    Transform,
-    Vec3,
-    Vec4,
-    axis_to_vec3,
-    flag_to_int,
     get_joint_dof_count,
-    get_shape_radius,
-    nparray,
 )
+from .model import Model
 
 
 class ModelBuilder:
@@ -108,12 +110,12 @@ class ModelBuilder:
 
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        contact = model.contact()
         solver = XPBDSolver(model)
 
         for i in range(10):
             state_0.clear_forces()
-            solver.step(model, state_0, state_1, control, contact, dt=1.0 / 60.0)
+            contacts = model.collide(state_0)
+            solver.step(model, state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
     Note:
@@ -150,8 +152,6 @@ class ModelBuilder:
         """The collision group ID for the shape. Defaults to -1."""
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
-        has_ground_collision: bool = True
-        """Whether the shape can collide with the ground. Defaults to True."""
         has_shape_collision: bool = True
         """Whether the shape can collide with other shapes. Defaults to True."""
         has_particle_collision: bool = True
@@ -165,7 +165,6 @@ class ModelBuilder:
 
             shape_flags = int(SHAPE_FLAG_VISIBLE) if self.is_visible else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_SHAPES) if self.has_shape_collision else 0
-            shape_flags |= int(SHAPE_FLAG_COLLIDE_GROUND) if self.has_ground_collision else 0
             shape_flags |= int(SHAPE_FLAG_COLLIDE_PARTICLES) if self.has_particle_collision else 0
             return shape_flags
 
@@ -175,7 +174,6 @@ class ModelBuilder:
 
             self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
             self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-            self.has_ground_collision = bool(value & SHAPE_FLAG_COLLIDE_GROUND)
             self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
 
         def copy(self) -> ShapeConfig:
@@ -198,6 +196,9 @@ class ModelBuilder:
             target_kd: float = 0.0,
             mode: int = JOINT_MODE_TARGET_POSITION,
             armature: float = 1e-2,
+            effort_limit: float = 1e6,
+            velocity_limit: float = 1e6,
+            friction: float = 0.0,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
@@ -221,6 +222,12 @@ class ModelBuilder:
             """The mode of the joint axis (e.g., `JOINT_MODE_TARGET_POSITION` or `JOINT_MODE_TARGET_VELOCITY`). Defaults to `JOINT_MODE_TARGET_POSITION`."""
             self.armature = armature
             """Artificial inertia added around the joint axis. Defaults to 1e-2."""
+            self.effort_limit = effort_limit
+            """Maximum effort (force or torque) the joint axis can exert. Defaults to 1e6."""
+            self.velocity_limit = velocity_limit
+            """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
+            self.friction = friction
+            """Friction coefficient for the joint axis. Defaults to 0.0."""
 
             if self.mode == JOINT_MODE_TARGET_POSITION and (
                 self.target > self.limit_upper or self.target < self.limit_lower
@@ -363,6 +370,9 @@ class ModelBuilder:
         self.joint_limit_ke = []
         self.joint_limit_kd = []
         self.joint_target = []
+        self.joint_effort_limit = []
+        self.joint_velocity_limit = []
+        self.joint_friction = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -383,20 +393,6 @@ class ModelBuilder:
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
-        # indicates whether a ground plane has been created
-        self._ground_created = False
-        # constructor parameters for ground plane shape
-        self._ground_params = {
-            "plane": None,
-            "width": 0.0,
-            "length": 0.0,
-        }
-
-        # Maximum number of soft contacts that can be registered
-        self.soft_contact_max = 64 * 1024
-
-        # maximum number of contact points to generate per mesh shape
-        self.rigid_mesh_contact_max = 0  # 0 = unlimited
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -409,6 +405,8 @@ class ModelBuilder:
         # number of rigid contact points to allocate in the model during self.finalize() per environment
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
+
+        self.dof_to_axis_map = []
 
     @property
     def up_vector(self) -> Vec3:
@@ -622,6 +620,9 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_effort_limit",
+            "joint_velocity_limit",
+            "joint_friction",
             "shape_key",
             "shape_flags",
             "shape_geo_type",
@@ -659,13 +660,20 @@ class ModelBuilder:
         for attr in more_builder_attrs:
             getattr(self, attr).extend(getattr(builder, attr))
 
+        # Handle dof_to_axis_map specially - need to offset axis indices
+        axis_offset = self.joint_axis_total_count
+        for dof_axis_idx in builder.dof_to_axis_map:
+            if dof_axis_idx >= 0:
+                self.dof_to_axis_map.append(dof_axis_idx + axis_offset)
+            else:
+                self.dof_to_axis_map.append(dof_axis_idx)
+
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
         self.joint_axis_total_count += builder.joint_axis_total_count
 
         self.up_axis = builder.up_axis
         self.gravity = builder.gravity
-        self._ground_params = builder._ground_params
 
         if update_num_env_count:
             self.num_envs += 1
@@ -807,6 +815,9 @@ class ModelBuilder:
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
+            self.joint_effort_limit.append(dim.effort_limit)
+            self.joint_velocity_limit.append(dim.velocity_limit)
+            self.joint_friction.append(dim.friction)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -837,10 +848,16 @@ class ModelBuilder:
                 # distance joint has already 1 armature setting defined from the linear dof
                 for _ in range(dof_count - 1):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
             else:
                 # free and ball joints need armature defined for all velocity dofs
                 for _ in range(dof_count):
                     self.joint_armature.append(0.0)
+                    self.joint_effort_limit.append(1e6)
+                    self.joint_velocity_limit.append(1e6)
+                    self.joint_friction.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -852,6 +869,27 @@ class ModelBuilder:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
                     self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+
+        # Fill dof_to_axis_map
+        axis_start = self.joint_axis_start[-1]  # Get the axis start for this joint
+        num_axes = len(linear_axes) + len(angular_axes)
+
+        if joint_type in [JOINT_PRISMATIC, JOINT_REVOLUTE, JOINT_D6, JOINT_COMPOUND, JOINT_UNIVERSAL]:
+            for i in range(dof_count):
+                if i < num_axes:
+                    self.dof_to_axis_map.append(axis_start + i)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        elif joint_type == JOINT_DISTANCE:
+            # Only first DOF maps to the axis
+            for i in range(dof_count):
+                if i == 0 and num_axes > 0:
+                    self.dof_to_axis_map.append(axis_start)
+                else:
+                    self.dof_to_axis_map.append(-1)
+        else:  # JOINT_FREE, JOINT_BALL, JOINT_FIXED
+            for _ in range(dof_count):
+                self.dof_to_axis_map.append(-1)
 
         return self.joint_count - 1
 
@@ -871,6 +909,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -892,6 +933,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -917,6 +961,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_REVOLUTE,
@@ -946,6 +993,9 @@ class ModelBuilder:
         limit_ke: float | None = None,
         limit_kd: float | None = None,
         armature: float | None = None,
+        effort_limit: float | None = None,
+        velocity_limit: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -967,6 +1017,9 @@ class ModelBuilder:
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
+            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -992,6 +1045,9 @@ class ModelBuilder:
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
+                effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
+                velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
+                friction=friction if friction is not None else self.default_joint_cfg.friction,
             )
         return self.add_joint(
             JOINT_PRISMATIC,
@@ -1820,7 +1876,7 @@ class ModelBuilder:
             self.shape_collision_group_map[cfg.collision_group] = []
         self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
-        self.shape_collision_radius.append(get_shape_radius(type, scale, src))
+        self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -1835,7 +1891,7 @@ class ModelBuilder:
 
     def add_shape_plane(
         self,
-        plane: Vec4 | None = (0.0, 1.0, 0.0, 0.0),
+        plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
         xform: Transform | None = None,
         width: float = 10.0,
         length: float = 10.0,
@@ -1890,6 +1946,28 @@ class ModelBuilder:
             scale=scale,
             is_static=True,
             key=key,
+        )
+
+    def add_ground_plane(
+        self,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a ground plane collision shape to the model.
+
+        Args:
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        return self.add_shape_plane(
+            plane=(*self.up_vector, 0.0),
+            width=0.0,
+            length=0.0,
+            cfg=cfg,
+            key=key or "ground_plane",
         )
 
     def add_shape_sphere(
@@ -2456,11 +2534,10 @@ class ModelBuilder:
         edge_ke: float | None = None,
         edge_kd: float | None = None,
     ) -> None:
-        """Adds a bending edge element between four particles in the system.
+        """Adds a bending edge element between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2468,10 +2545,12 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angle across the edge in radians, if not specified it will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
@@ -2482,19 +2561,18 @@ class ModelBuilder:
         x3 = self.particle_q[k]
         x4 = self.particle_q[l]
         if rest is None:
-            x1 = self.particle_q[i]
-            x2 = self.particle_q[j]
+            rest = 0.0
+            if i != -1 and j != -1:
+                x1 = self.particle_q[i]
+                x2 = self.particle_q[j]
 
-            n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
-            n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
-            e = wp.normalize(x4 - x3)
+                n1 = wp.normalize(wp.cross(x3 - x1, x4 - x1))
+                n2 = wp.normalize(wp.cross(x4 - x2, x3 - x2))
+                e = wp.normalize(x4 - x3)
 
-            d = np.clip(np.dot(n2, n1), -1.0, 1.0)
-
-            angle = math.acos(d)
-            sign = np.sign(np.dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+                cos_theta = np.clip(np.dot(n1, n2), -1.0, 1.0)
+                sin_theta = np.dot(np.cross(n1, n2), e)
+                rest = math.atan2(sin_theta, cos_theta)
 
         self.edge_indices.append((i, j, k, l))
         self.edge_rest_angle.append(rest)
@@ -2511,11 +2589,10 @@ class ModelBuilder:
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
     ) -> None:
-        """Adds bending edge elements between groups of four particles in the system.
+        """Adds bending edge elements between two adjacent triangles in the cloth mesh, defined by four vertices.
 
-        Bending elements are designed to be between two connected triangles. Then
-        bending energy is based of [Bridson et al. 2002]. Bending stiffness is controlled
-        by the `model.tri_kb` parameter.
+        The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
+        The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
             i: The index of the first particle, i.e., opposite vertex 0
@@ -2523,40 +2600,42 @@ class ModelBuilder:
             k: The index of the third particle, i.e., vertex 0
             l: The index of the fourth particle, i.e., vertex 1
             rest: The rest angles across the edges in radians, if not specified they will be computed
+            edge_ke: The bending stiffness coefficient
+            edge_kd: The bending damping coefficient
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
-            vertices indexed by 'i' and 'j'. This defines two connected triangles with counter clockwise
+            vertices indexed by 'i' and 'j'. This defines two connected triangles with counterclockwise
             winding: (i, k, l), (j, l, k).
 
         """
         x3 = np.array(self.particle_q)[k]
         x4 = np.array(self.particle_q)[l]
         if rest is None:
+            rest = np.zeros_like(i, dtype=float)
+            valid_mask = (i != -1) & (j != -1)
+
             # compute rest angle
-            x1 = np.array(self.particle_q)[i]
-            x2 = np.array(self.particle_q)[j]
-            x3 = np.array(self.particle_q)[k]
-            x4 = np.array(self.particle_q)[l]
+            x1_valid = np.array(self.particle_q)[i[valid_mask]]
+            x2_valid = np.array(self.particle_q)[j[valid_mask]]
+            x3_valid = np.array(self.particle_q)[k[valid_mask]]
+            x4_valid = np.array(self.particle_q)[l[valid_mask]]
 
             def normalized(a):
                 l = np.linalg.norm(a, axis=-1, keepdims=True)
                 l[l == 0] = 1.0
                 return a / l
 
-            n1 = normalized(np.cross(x3 - x1, x4 - x1))
-            n2 = normalized(np.cross(x4 - x2, x3 - x2))
-            e = normalized(x4 - x3)
+            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
+            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
+            e = normalized(x4_valid - x3_valid)
 
             def dot(a, b):
                 return (a * b).sum(axis=-1)
 
-            d = np.clip(dot(n2, n1), -1.0, 1.0)
-
-            angle = np.arccos(d)
-            sign = np.sign(dot(np.cross(n2, n1), e))
-
-            rest = angle * sign
+            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
+            sin_theta = dot(np.cross(n1, n2), e)
+            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
 
         inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
 
@@ -3099,35 +3178,6 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
-    def set_ground_plane(
-        self,
-        normal: Vec3 | None = None,
-        offset: float = 0.0,
-        cfg: ShapeConfig | None = None,
-    ):
-        """
-        Creates a ground plane for the world. If the normal is not specified,
-        the up_vector of the ModelBuilder is used.
-        """
-        if normal is None:
-            normal = self.up_vector
-        self._ground_params = {
-            "plane": (*normal, offset),
-            "width": 0.0,
-            "length": 0.0,
-            "cfg": cfg,
-            "key": "ground_plane",
-        }
-
-    def _create_ground_plane(self):
-        if self._ground_params["plane"] is None:
-            self._ground_params["plane"] = (*self.up_vector, 0.0)
-        ground_id = self.add_shape_plane(**self._ground_params)
-        self._ground_created = True
-        # disable ground collisions as they will be treated separately
-        for i in range(self.shape_count - 1):
-            self.shape_collision_filter_pairs.add((i, ground_id))
-
     def set_coloring(self, particle_color_groups):
         """
         Sets coloring information with user-provided coloring.
@@ -3203,10 +3253,6 @@ class ModelBuilder:
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
 
-        # add ground plane if not already created
-        if not self._ground_created:
-            self._create_ground_plane()
-
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -3218,8 +3264,6 @@ class ModelBuilder:
 
             m = Model(device)
             m.requires_grad = requires_grad
-
-            m.ground_plane_params = self._ground_params["plane"]
 
             m.num_envs = self.num_envs
 
@@ -3272,7 +3316,12 @@ class ModelBuilder:
             m.shape_geo.scale = wp.array(self.shape_geo_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_geo.is_solid = wp.array(self.shape_geo_is_solid, dtype=wp.bool)
             m.shape_geo.thickness = wp.array(self.shape_geo_thickness, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_collision_radius = wp.array(
+                self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
+            )
+
             m.shape_geo_src = self.shape_geo_src  # used for rendering
+
             # store refs to geometry
             m.geo_meshes = self.geo_meshes
             m.geo_sdfs = self.geo_sdfs
@@ -3289,9 +3338,6 @@ class ModelBuilder:
             m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
             m.shape_collision_group = self.shape_collision_group
             m.shape_collision_group_map = self.shape_collision_group_map
-            m.shape_collision_radius = wp.array(
-                self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
-            )
 
             # ---------------------
             # springs
@@ -3382,12 +3428,17 @@ class ModelBuilder:
             m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
+
+            m.dof_to_axis_map = wp.array(self.dof_to_axis_map, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
@@ -3417,32 +3468,15 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
 
-            # contacts
-            if m.particle_count:
-                m.allocate_soft_contacts(self.soft_contact_max, requires_grad=requires_grad)
             self.find_shape_contact_pairs(m)
-            if self.num_rigid_contacts_per_env is None:
-                contact_count, limited_contact_count = m.count_contact_points()
-            else:
-                contact_count = limited_contact_count = self.num_rigid_contacts_per_env * self.num_envs
-            if contact_count:
-                if wp.config.verbose:
-                    print(f"Allocating {contact_count} rigid contacts.")
-                m.allocate_rigid_contacts(
-                    count=contact_count, limited_contact_count=limited_contact_count, requires_grad=requires_grad
-                )
-            m.rigid_mesh_contact_max = self.rigid_mesh_contact_max
-            m.rigid_contact_margin = self.rigid_contact_margin
+
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
-            m.ground_plane = wp.array(self._ground_params["plane"], dtype=wp.float32, requires_grad=requires_grad)
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
-
-            m.enable_tri_collisions = False
 
             return m
 
@@ -3452,20 +3486,16 @@ class ModelBuilder:
         import itertools
 
         filters = copy.copy(self.shape_collision_filter_pairs)
-        # for a, b in self.shape_collision_filter_pairs:
-        #     filters.add((b, a))
         contact_pairs = []
         # iterate over collision groups (islands)
         for group, shapes in self.shape_collision_group_map.items():
             for s1, s2 in itertools.combinations(shapes, 2):
-                # Original flag checks, using s1 and s2
                 if not (self.shape_flags[s1] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 if not (self.shape_flags[s2] & int(SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
-                # This effectively replaces the `if shape_a < shape_b` condition logic
                 shape_a, shape_b = min(s1, s2), max(s1, s2)
 
                 if (shape_a, shape_b) not in filters:
@@ -3482,13 +3512,5 @@ class ModelBuilder:
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.int32, device=model.device)
+        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
-        # find ground contact pairs
-        ground_contact_pairs = []
-        ground_id = self.shape_count - 1
-        for i in range(ground_id):
-            if self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_GROUND):
-                ground_contact_pairs.append((i, ground_id))
-        model.shape_ground_contact_pairs = wp.array(np.array(ground_contact_pairs), dtype=wp.int32, device=model.device)
-        model.shape_ground_contact_pair_count = len(ground_contact_pairs)

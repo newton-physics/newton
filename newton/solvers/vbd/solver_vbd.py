@@ -17,18 +17,21 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from typing_extensions import override
 from warp.types import float32, matrix
 
-from newton.collision.collide import (
+from newton.core.types import override
+from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.geometry.kernels import triangle_closest_point
+from newton.sim import Contacts, Control, Model, State
+from newton.sim.model import ShapeMaterials
+
+from ..solver import SolverBase
+from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
-    triangle_closest_point,
 )
-from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, ModelShapeMaterials, State
 
-from .solver import SolverBase
-
+# TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
@@ -41,6 +44,8 @@ VBD_DEBUG_PRINTING_OPTIONS = {
     # "connectivity",
     # "contact_info",
 }
+
+NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
 
 class mat66(matrix(shape=(6, 6), dtype=float32)):
@@ -350,31 +355,30 @@ def evaluate_stvk_force_hessian(
 
 
 @wp.func
-def mat_vec_cross_from_3_basis(e1: wp.vec3, e2: wp.vec3, e3: wp.vec3, a: wp.vec3):
-    e1_cross_a = wp.cross(e1, a)
-    e2_cross_a = wp.cross(e2, a)
-    e3_cross_a = wp.cross(e3, a)
-
-    return wp.mat33(
-        e1_cross_a[0],
-        e2_cross_a[0],
-        e3_cross_a[0],
-        e1_cross_a[1],
-        e2_cross_a[1],
-        e3_cross_a[1],
-        e1_cross_a[2],
-        e2_cross_a[2],
-        e3_cross_a[2],
+def compute_normalized_vector_derivative(
+    unnormalized_vec_length: float, normalized_vec_hat: wp.vec3, unnormalized_vec_deriv: wp.mat33
+) -> wp.mat33:
+    projection_matrix = wp.identity(n=3, dtype=normalized_vec_hat.dtype) - wp.outer(
+        normalized_vec_hat, normalized_vec_hat
     )
+    normalized_vec_derivative = (1.0 / unnormalized_vec_length) * projection_matrix * unnormalized_vec_deriv
+    return normalized_vec_derivative
 
 
 @wp.func
-def mat_vec_cross(mat: wp.mat33, a: wp.vec3):
-    e1 = wp.vec3(mat[0, 0], mat[1, 0], mat[2, 0])
-    e2 = wp.vec3(mat[0, 1], mat[1, 1], mat[2, 1])
-    e3 = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+def compute_dsin_theta_dx(
+    n1_hat: wp.vec3, n2_hat: wp.vec3, e_hat: wp.vec3, dn1hat_dx: wp.mat33, dn2hat_dx: wp.mat33
+) -> wp.vec3:
+    term1 = wp.skew(n1_hat) * dn2hat_dx
+    term2 = wp.skew(n2_hat) * dn1hat_dx
+    return wp.transpose(term1 - term2) * e_hat
 
-    return mat_vec_cross_from_3_basis(e1, e2, e3, a)
+
+@wp.func
+def compute_dcos_theta_dx(n1_hat: wp.vec3, n2_hat: wp.vec3, dn1hat_dx: wp.mat33, dn2hat_dx: wp.mat33) -> wp.vec3:
+    term1 = wp.transpose(dn1hat_dx) * n2_hat
+    term2 = wp.transpose(dn2hat_dx) * n1_hat
+    return term1 + term2
 
 
 @wp.func
@@ -393,172 +397,97 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
         return wp.vec3(0.0), wp.mat33(0.0)
 
-    x1 = pos[edge_indices[bending_index, 0]]
-    x2 = pos[edge_indices[bending_index, 2]]
-    x3 = pos[edge_indices[bending_index, 3]]
-    x4 = pos[edge_indices[bending_index, 1]]
+    eps = 1.0e-6
 
-    e1 = wp.vec3(1.0, 0.0, 0.0)
-    e2 = wp.vec3(0.0, 1.0, 0.0)
-    e3 = wp.vec3(0.0, 0.0, 1.0)
+    x1 = pos[edge_indices[bending_index, 0]]  # opposite 0
+    x2 = pos[edge_indices[bending_index, 2]]  # edge start
+    x3 = pos[edge_indices[bending_index, 3]]  # edge end
+    x4 = pos[edge_indices[bending_index, 1]]  # opposite 1
 
-    n1 = wp.cross((x2 - x1), (x3 - x1))
-    n2 = wp.cross((x3 - x4), (x2 - x4))
+    x12 = x2 - x1
+    x13 = x3 - x1
+    x43 = x3 - x4
+    x42 = x2 - x4
+
+    n1 = wp.cross(x12, x13)
+    n2 = wp.cross(x43, x42)
+    e = x3 - x2
+
     n1_norm = wp.length(n1)
     n2_norm = wp.length(n2)
+    e_norm = wp.length(e)
 
-    # degenerated bending edge
-    if n1_norm < 1.0e-6 or n2_norm < 1.0e-6:
+    # Check for degenerate cases
+    if n1_norm < eps or n2_norm < eps or e_norm < eps:
         return wp.vec3(0.0), wp.mat33(0.0)
 
-    n1_n = n1 / n1_norm
-    n2_n = n2 / n2_norm
+    # Compute bending stiffness
+    e_rest_len = edge_rest_length[bending_index]
+    k = stiffness * e_rest_len
 
-    # avoid the infinite gradient of acos at -1 or 1
-    cos_theta = wp.dot(n1_n, n2_n)
-    if wp.abs(cos_theta) > 0.9999:
-        cos_theta = 0.9999 * wp.sign(cos_theta)
+    n1_hat = n1 / n1_norm
+    n2_hat = n2 / n2_norm
+    e_hat = e / e_norm
 
-    angle_sign = wp.sign(wp.dot(wp.cross(n2, n1), x3 - x2))
-    theta = wp.acos(cos_theta) * angle_sign
+    sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
+    cos_theta = wp.dot(n1_hat, n2_hat)
+    theta = wp.atan2(sin_theta, cos_theta)
     rest_angle = edge_rest_angle[bending_index]
 
-    dE_dtheta = stiffness * (theta - rest_angle)
+    dE_dtheta = k * (theta - rest_angle)
 
-    d_theta_d_cos_theta = angle_sign * (-1.0 / wp.sqrt(1.0 - cos_theta * cos_theta))
-    sin_theta = angle_sign * wp.sqrt(1.0 - cos_theta * cos_theta)
-    one_over_sin_theta = 1.0 / sin_theta
-    d_one_over_sin_theta_d_cos_theta = cos_theta / (sin_theta * sin_theta * sin_theta)
+    bending_force = wp.vec3(0.0)
+    bending_hessian = wp.mat33(0.0)
 
-    e_rest_len = edge_rest_length[bending_index]
+    zero_mat = wp.mat33(0.0)
 
-    if v_order == 0:
-        d_cos_theta_dx1 = 1.0 / n1_norm * (-wp.cross(x3 - x1, n2_n) + wp.cross(x2 - x1, n2_n))
-        d_one_over_sin_theta_dx1 = d_cos_theta_dx1 * d_one_over_sin_theta_d_cos_theta
+    # Initialize derivatives of unnormalized normals w.r.t. the current particle's position
+    dn1_dx = zero_mat
+    dn2_dx = zero_mat
 
-        d_theta_dx1 = d_theta_d_cos_theta * d_cos_theta_dx1
-        d2_theta_dx1_dx1 = -wp.outer(d_one_over_sin_theta_dx1, d_cos_theta_dx1)
+    if v_order == 0:  # Particle x1 (edge_indices[bending_index, 0])
+        dn1_dx = wp.skew(e)
+        # dn2_dx remains zero_mat as n2 does not depend on x1
+        current_particle_idx = edge_indices[bending_index, 0]
 
-        dE_dx1 = e_rest_len * dE_dtheta * d_theta_d_cos_theta * d_cos_theta_dx1
+    elif v_order == 1:  # Particle x4 (edge_indices[bending_index, 1])
+        # dn1_dx remains zero_mat as n1 does not depend on x4
+        dn2_dx = -wp.skew(e)
+        current_particle_idx = edge_indices[bending_index, 1]
 
-        d2_E_dx1_dx1 = (
-            e_rest_len * stiffness * (wp.outer(d_theta_dx1, d_theta_dx1) + (theta - rest_angle) * d2_theta_dx1_dx1)
-        )
+    elif v_order == 2:  # Particle x2 (edge_indices[bending_index, 2])
+        dn1_dx = -wp.skew(x13)
+        dn2_dx = wp.skew(x43)
+        current_particle_idx = edge_indices[bending_index, 2]
 
-        bending_force = -dE_dx1
-        bending_hessian = d2_E_dx1_dx1
-    elif v_order == 1:
-        d_cos_theta_dx4 = 1.0 / n2_norm * (-wp.cross(x2 - x4, n1_n) + wp.cross(x3 - x4, n1_n))
-        d_one_over_sin_theta_dx4 = d_cos_theta_dx4 * d_one_over_sin_theta_d_cos_theta
+    elif v_order == 3:  # Particle x3 (edge_indices[bending_index, 3])
+        dn1_dx = wp.skew(x12)
+        dn2_dx = -wp.skew(x42)
+        current_particle_idx = edge_indices[bending_index, 3]
 
-        d_theta_dx4 = d_theta_d_cos_theta * d_cos_theta_dx4
-        d2_theta_dx4_dx4 = -wp.outer(d_one_over_sin_theta_dx4, d_cos_theta_dx4)
+    dn1hat_dx = compute_normalized_vector_derivative(n1_norm, n1_hat, dn1_dx)
+    dn2hat_dx = compute_normalized_vector_derivative(n2_norm, n2_hat, dn2_dx)
 
-        dE_dx4 = e_rest_len * dE_dtheta * d_theta_d_cos_theta * d_cos_theta_dx4
-        d2_E_dx4_dx4 = (
-            e_rest_len * stiffness * (wp.outer(d_theta_dx4, d_theta_dx4) + (theta - rest_angle) * (d2_theta_dx4_dx4))
-        )
+    dsin_dx = compute_dsin_theta_dx(n1_hat, n2_hat, e_hat, dn1hat_dx, dn2hat_dx)
+    dcos_dx = compute_dcos_theta_dx(n1_hat, n2_hat, dn1hat_dx, dn2hat_dx)
 
-        bending_force = -dE_dx4
-        bending_hessian = d2_E_dx4_dx4
-    elif v_order == 2:
-        d_cos_theta_dx2 = 1.0 / n1_norm * wp.cross(x3 - x1, n2_n) - 1.0 / n2_norm * wp.cross(x3 - x4, n1_n)
-        dn1_dx2 = mat_vec_cross_from_3_basis(e1, e2, e3, x3 - x1)
-        dn2_dx2 = -mat_vec_cross_from_3_basis(e1, e2, e3, x3 - x4)
-        d_one_over_sin_theta_dx2 = d_cos_theta_dx2 * d_one_over_sin_theta_d_cos_theta
-        d2_cos_theta_dx2_dx2 = -mat_vec_cross(dn2_dx2, (x3 - x1)) / (n1_norm * n2_norm) + mat_vec_cross(
-            dn1_dx2, x3 - x4
-        ) / (n1_norm * n2_norm)
+    dtheta_dx = dsin_dx * cos_theta - dcos_dx * sin_theta
 
-        d_theta_dx2 = d_theta_d_cos_theta * d_cos_theta_dx2
-        d2_theta_dx2_dx2 = (
-            -wp.outer(d_one_over_sin_theta_dx2, d_cos_theta_dx2) - one_over_sin_theta * d2_cos_theta_dx2_dx2
-        )
+    bending_force = -dE_dtheta * dtheta_dx
+    bending_hessian = k * wp.outer(dtheta_dx, dtheta_dx)  # approximation of the hessian
 
-        dE_dx2 = e_rest_len * dE_dtheta * d_theta_d_cos_theta * d_cos_theta_dx2
-        d2_E_dx2_dx2 = (
-            e_rest_len * stiffness * (wp.outer(d_theta_dx2, d_theta_dx2) + (theta - rest_angle) * d2_theta_dx2_dx2)
-        )
+    if damping > 0.0:
+        current_pos = pos[current_particle_idx]
+        previous_pos = pos_prev[current_particle_idx]
+        displacement = previous_pos - current_pos
 
-        bending_force = -dE_dx2
-        bending_hessian = d2_E_dx2_dx2
-    else:
-        d_cos_theta_dx3 = -1.0 / n1_norm * wp.cross(x2 - x1, n2_n) + 1.0 / n2_norm * wp.cross(x2 - x4, n1_n)
-        dn1_dx3 = -mat_vec_cross_from_3_basis(e1, e2, e3, x2 - x1)
-        dn2_dx3 = mat_vec_cross_from_3_basis(e1, e2, e3, x2 - x4)
-        d_one_over_sin_theta_dx3 = d_cos_theta_dx3 * d_one_over_sin_theta_d_cos_theta
-        d2_cos_theta_dx3_dx3 = mat_vec_cross(dn2_dx3, (x2 - x1)) / (n1_norm * n2_norm) - mat_vec_cross(
-            dn1_dx3, x2 - x4
-        ) / (n1_norm * n2_norm)
+        h_d = bending_hessian * (damping / dt)
+        f_d = h_d * displacement
 
-        d_theta_dx3 = d_theta_d_cos_theta * d_cos_theta_dx3
-        d2_theta_dx3_dx3 = (
-            -wp.outer(d_one_over_sin_theta_dx3, d_cos_theta_dx3) - one_over_sin_theta * d2_cos_theta_dx3_dx3
-        )
-
-        dE_dx3 = e_rest_len * dE_dtheta * d_theta_d_cos_theta * d_cos_theta_dx3
-
-        d2_E_dx3_dx3 = (
-            e_rest_len * stiffness * (wp.outer(d_theta_dx3, d_theta_dx3) + (theta - rest_angle) * d2_theta_dx3_dx3)
-        )
-
-        bending_force = -dE_dx3
-        bending_hessian = d2_E_dx3_dx3
-
-    displacement = pos_prev[edge_indices[bending_index, v_order]] - pos[edge_indices[bending_index, v_order]]
-    h_d = bending_hessian * (damping / dt)
-    f_d = h_d * displacement
-
-    bending_force = bending_force + f_d
-    bending_hessian = bending_hessian + h_d
+        bending_force = bending_force + f_d
+        bending_hessian = bending_hessian + h_d
 
     return bending_force, bending_hessian
-
-
-@wp.func
-def evaluate_ground_contact_force_hessian(
-    particle_pos: wp.vec3,
-    particle_prev_pos: wp.vec3,
-    particle_radius: float,
-    ground_normal: wp.vec3,
-    ground_level: float,
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    friction_mu: float,
-    friction_epsilon: float,
-    dt: float,
-):
-    penetration_depth = -(wp.dot(ground_normal, particle_pos) + ground_level - particle_radius)
-
-    if penetration_depth > 0:
-        ground_contact_force_norm = penetration_depth * soft_contact_ke
-        ground_contact_force = ground_normal * ground_contact_force_norm
-        ground_contact_hessian = soft_contact_ke * wp.outer(ground_normal, ground_normal)
-
-        dx = particle_pos - particle_prev_pos
-
-        if wp.dot(dx, ground_normal) < 0:
-            damping_hessian = (soft_contact_kd / dt) * ground_contact_hessian
-            ground_contact_hessian = ground_contact_hessian + damping_hessian
-            ground_contact_force = ground_contact_force - damping_hessian * dx
-
-        # friction
-        e0, e1 = build_orthonormal_basis(ground_normal)
-
-        T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
-
-        relative_translation = dx
-        u = wp.transpose(T) * relative_translation
-        eps_u = friction_epsilon * dt
-
-        friction_force, friction_hessian = compute_friction(friction_mu, ground_contact_force_norm, T, u, eps_u)
-        ground_contact_force = ground_contact_force + friction_force
-        ground_contact_hessian = ground_contact_hessian + friction_hessian
-    else:
-        ground_contact_force = wp.vec3(0.0, 0.0, 0.0)
-        ground_contact_hessian = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-    return ground_contact_force, ground_contact_hessian
 
 
 @wp.func
@@ -572,7 +501,7 @@ def evaluate_body_particle_contact(
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array(dtype=float),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1379,7 +1308,7 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
-def VBD_solve_trimesh_no_self_contact(
+def solve_trimesh_no_self_contact(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     prev_pos: wp.array(dtype=wp.vec3),
@@ -1398,16 +1327,8 @@ def VBD_solve_trimesh_no_self_contact(
     edge_bending_properties: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
     # contact info
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    friction_mu: float,
-    friction_epsilon: float,
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
-    # ground-particle contact
-    has_ground: bool,
-    ground: wp.array(dtype=float),
-    particle_radius: wp.array(dtype=float),
     # output
     pos_new: wp.array(dtype=wp.vec3),
 ):
@@ -1420,7 +1341,6 @@ def VBD_solve_trimesh_no_self_contact(
         return
 
     particle_pos = pos[particle_index]
-    particle_prev_pos = prev_pos[particle_index]
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
@@ -1497,25 +1417,6 @@ def VBD_solve_trimesh_no_self_contact(
         f = f + f_edge
         h = h + h_edge
 
-    if has_ground:
-        ground_normal = wp.vec3(ground[0], ground[1], ground[2])
-        ground_level = ground[3]
-        ground_contact_force, ground_contact_hessian = evaluate_ground_contact_force_hessian(
-            particle_pos,
-            particle_prev_pos,
-            particle_radius[particle_index],
-            ground_normal,
-            ground_level,
-            soft_contact_ke,
-            soft_contact_kd,
-            friction_mu,
-            friction_epsilon,
-            dt,
-        )
-
-        f = f + ground_contact_force
-        h = h + ground_contact_hessian
-
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
 
@@ -1525,7 +1426,7 @@ def VBD_solve_trimesh_no_self_contact(
 
 
 @wp.kernel
-def VBD_copy_particle_positions_back(
+def copy_particle_positions_back(
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos: wp.array(dtype=wp.vec3),
     pos_new: wp.array(dtype=wp.vec3),
@@ -1569,7 +1470,7 @@ def convert_body_particle_contact_data_kernel(
 
 
 @wp.kernel
-def VBD_accumulate_contact_force_and_hessian(
+def accumulate_contact_force_and_hessian(
     # inputs
     dt: float,
     current_color: int,
@@ -1591,7 +1492,7 @@ def VBD_accumulate_contact_force_and_hessian(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1608,100 +1509,114 @@ def VBD_accumulate_contact_force_and_hessian(
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
-    # process edge-edge collisions
-    if t_id * 2 < collision_info.edge_colliding_edges.shape[0]:
-        e1_idx = collision_info.edge_colliding_edges[2 * t_id]
-        e2_idx = collision_info.edge_colliding_edges[2 * t_id + 1]
+    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
+    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
-        if e1_idx != -1 and e2_idx != -1:
-            e1_v1 = edge_indices[e1_idx, 2]
-            e1_v2 = edge_indices[e1_idx, 3]
-            if particle_colors[e1_v1] == current_color or particle_colors[e1_v2] == current_color:
-                has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
-                    evaluate_edge_edge_contact_2_vertices(
-                        e1_idx,
-                        e2_idx,
+    # process edge-edge collisions
+    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
+        e1_idx = primitive_id
+
+        collision_buffer_counter = t_id_current_primitive
+        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
+        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
+            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
+
+            if e1_idx != -1 and e2_idx != -1:
+                e1_v1 = edge_indices[e1_idx, 2]
+                e1_v2 = edge_indices[e1_idx, 3]
+                if particle_colors[e1_v1] == current_color or particle_colors[e1_v2] == current_color:
+                    has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
+                        evaluate_edge_edge_contact_2_vertices(
+                            e1_idx,
+                            e2_idx,
+                            pos,
+                            pos_prev,
+                            edge_indices,
+                            collision_radius,
+                            soft_contact_ke,
+                            soft_contact_kd,
+                            friction_mu,
+                            friction_epsilon,
+                            dt,
+                            edge_edge_parallel_epsilon,
+                        )
+                    )
+
+                    if has_contact:
+                        # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
+                        if particle_colors[e1_v1] == current_color:
+                            wp.atomic_add(particle_forces, e1_v1, collision_force_0)
+                            wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
+                        if particle_colors[e1_v2] == current_color:
+                            wp.atomic_add(particle_forces, e1_v2, collision_force_1)
+                            wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
+            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+
+    # process vertex-triangle collisions
+    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
+        particle_idx = primitive_id
+        collision_buffer_counter = t_id_current_primitive
+        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
+        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
+            tri_idx = collision_info.vertex_colliding_triangles[
+                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
+            ]
+
+            if particle_idx != -1 and tri_idx != -1:
+                tri_a = tri_indices[tri_idx, 0]
+                tri_b = tri_indices[tri_idx, 1]
+                tri_c = tri_indices[tri_idx, 2]
+                if (
+                    particle_colors[particle_idx] == current_color
+                    or particle_colors[tri_a] == current_color
+                    or particle_colors[tri_b] == current_color
+                    or particle_colors[tri_c] == current_color
+                ):
+                    (
+                        has_contact,
+                        collision_force_0,
+                        collision_force_1,
+                        collision_force_2,
+                        collision_force_3,
+                        collision_hessian_0,
+                        collision_hessian_1,
+                        collision_hessian_2,
+                        collision_hessian_3,
+                    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+                        particle_idx,
+                        tri_idx,
                         pos,
                         pos_prev,
-                        edge_indices,
+                        tri_indices,
                         collision_radius,
                         soft_contact_ke,
                         soft_contact_kd,
                         friction_mu,
                         friction_epsilon,
                         dt,
-                        edge_edge_parallel_epsilon,
                     )
-                )
 
-                if has_contact:
-                    # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
-                    if particle_colors[e1_v1] == current_color:
-                        wp.atomic_add(particle_forces, e1_v1, collision_force_0)
-                        wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
-                    if particle_colors[e1_v2] == current_color:
-                        wp.atomic_add(particle_forces, e1_v2, collision_force_1)
-                        wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
+                    if has_contact:
+                        # particle
+                        if particle_colors[particle_idx] == current_color:
+                            wp.atomic_add(particle_forces, particle_idx, collision_force_3)
+                            wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
 
-    # process vertex-triangle collisions
-    if t_id * 2 < collision_info.vertex_colliding_triangles.shape[0]:
-        particle_idx = collision_info.vertex_colliding_triangles[2 * t_id]
-        tri_idx = collision_info.vertex_colliding_triangles[2 * t_id + 1]
+                        # tri_a
+                        if particle_colors[tri_a] == current_color:
+                            wp.atomic_add(particle_forces, tri_a, collision_force_0)
+                            wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
 
-        if particle_idx != -1 and tri_idx != -1:
-            tri_a = tri_indices[tri_idx, 0]
-            tri_b = tri_indices[tri_idx, 1]
-            tri_c = tri_indices[tri_idx, 2]
-            if (
-                particle_colors[particle_idx] == current_color
-                or particle_colors[tri_a] == current_color
-                or particle_colors[tri_b] == current_color
-                or particle_colors[tri_c] == current_color
-            ):
-                (
-                    has_contact,
-                    collision_force_0,
-                    collision_force_1,
-                    collision_force_2,
-                    collision_force_3,
-                    collision_hessian_0,
-                    collision_hessian_1,
-                    collision_hessian_2,
-                    collision_hessian_3,
-                ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
-                    particle_idx,
-                    tri_idx,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    collision_radius,
-                    soft_contact_ke,
-                    soft_contact_kd,
-                    friction_mu,
-                    friction_epsilon,
-                    dt,
-                )
+                        # tri_b
+                        if particle_colors[tri_b] == current_color:
+                            wp.atomic_add(particle_forces, tri_b, collision_force_1)
+                            wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
 
-                if has_contact:
-                    # particle
-                    if particle_colors[particle_idx] == current_color:
-                        wp.atomic_add(particle_forces, particle_idx, collision_force_3)
-                        wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
-
-                    # tri_a
-                    if particle_colors[tri_a] == current_color:
-                        wp.atomic_add(particle_forces, tri_a, collision_force_0)
-                        wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
-
-                    # tri_b
-                    if particle_colors[tri_b] == current_color:
-                        wp.atomic_add(particle_forces, tri_b, collision_force_1)
-                        wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
-
-                    # tri_c
-                    if particle_colors[tri_c] == current_color:
-                        wp.atomic_add(particle_forces, tri_c, collision_force_2)
-                        wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
+                        # tri_c
+                        if particle_colors[tri_c] == current_color:
+                            wp.atomic_add(particle_forces, tri_c, collision_force_2)
+                            wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
+            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
     particle_body_contact_count = min(contact_max, contact_count[0])
 
@@ -1736,7 +1651,7 @@ def VBD_accumulate_contact_force_and_hessian(
 
 
 @wp.kernel
-def VBD_accumulate_contact_force_and_hessian_no_self_contact(
+def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
     dt: float,
     current_color: int,
@@ -1752,7 +1667,7 @@ def VBD_accumulate_contact_force_and_hessian_no_self_contact(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1801,7 +1716,7 @@ def VBD_accumulate_contact_force_and_hessian_no_self_contact(
 
 
 @wp.kernel
-def VBD_solve_trimesh_with_self_contact_penetration_free(
+def solve_trimesh_with_self_contact_penetration_free(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
@@ -1823,14 +1738,6 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
     particle_hessians: wp.array(dtype=wp.mat33),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
-    # ground-particle contact
-    has_ground: bool,
-    ground: wp.array(dtype=float),
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    friction_mu: float,
-    friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
     # output
     pos_new: wp.array(dtype=wp.vec3),
 ):
@@ -1911,25 +1818,6 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
             f = f + f_edge
             h = h + h_edge
 
-    if has_ground:
-        ground_normal = wp.vec3(ground[0], ground[1], ground[2])
-        ground_level = ground[3]
-        ground_contact_force, ground_contact_hessian = evaluate_ground_contact_force_hessian(
-            particle_pos,
-            particle_prev_pos,
-            particle_radius[particle_index],
-            ground_normal,
-            ground_level,
-            soft_contact_ke,
-            soft_contact_kd,
-            friction_mu,
-            friction_epsilon,
-            dt,
-        )
-
-        f = f + ground_contact_force
-        h = h + ground_contact_hessian
-
     # fmt: off
     if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
         wp.printf(
@@ -1975,13 +1863,14 @@ class VBDSolver(SolverBase):
         # or you can use your custom coloring
         builder.set_coloring(user_provided_particle_coloring)
 
-        model = modelbuilder.finalize()
+        model = builder.finalize()
 
-        solver = newton.VBDSolver(model)
+        solver = newton.solvers.VBDSolver(model)
 
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
 
     """
 
@@ -1990,11 +1879,14 @@ class VBDSolver(SolverBase):
         model: Model,
         iterations: int = 10,
         handle_self_contact: bool = False,
+        soft_contact_radius: float = 0.2,
+        soft_contact_margin: float = 0.2,
         integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
+        collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
     ):
         """
@@ -2003,6 +1895,10 @@ class VBDSolver(SolverBase):
                 to the `step` function.
             iterations: Number of VBD iterations per step.
             handle_self_contact: whether to self-contact.
+            soft_contact_radius: The radius used for soft contact detection. This is the distance at which particles
+                will start to interact with each other.
+            soft_contact_margin: The margin used for soft contact detection. This is the distance at which particles
+                will be considered in contact generation. It should be larger than `soft_contact_radius` to avoid missing contacts.
             integrate_with_external_rigid_solver: an indicator of coupled rigid body - cloth simulation.  When set to
                 `True`, the solver assumes the rigid body solve is handled  externally.
             penetration_free_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
@@ -2010,7 +1906,10 @@ class VBDSolver(SolverBase):
             vertex_collision_buffer_pre_alloc: Preallocation size for each vertex's vertex-triangle collision buffer.
             edge_collision_buffer_pre_alloc: Preallocation size for edge's edge-edge collision buffer.
             edge_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
-
+            collision_detection_interval: Controls how frequently collision detection is applied during the simulation.
+                If set to a value < 0, collision detection is only performed once before the initialization step.
+                If set to 0, collision detection is applied twice: once before and once immediately after initialization.
+                If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to Ture, the rigid states should be integrated externally, with `state_in`
@@ -2025,6 +1924,7 @@ class VBDSolver(SolverBase):
         super().__init__(model)
         self.iterations = iterations
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
+        self.collision_detection_interval = collision_detection_interval
 
         # add new attributes for VBD solve
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
@@ -2035,12 +1935,15 @@ class VBDSolver(SolverBase):
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
 
         self.handle_self_contact = handle_self_contact
+        self.soft_contact_radius = soft_contact_radius
+        self.soft_contact_margin = soft_contact_margin
 
+        soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
-            if self.model.soft_contact_margin < self.model.soft_contact_radius:
+            if soft_contact_margin < soft_contact_radius:
                 raise ValueError(
-                    "Model.soft_contact_margin is smaller than Model.soft_contact_radius, this will result in missing contacts and cause instability.\n"
-                    "It is advisable to make Model.soft_contact_margin 1.5~2 times larger than Model.soft_contact_radius."
+                    "soft_contact_margin is smaller than soft_contact_radius, this will result in missing contacts and cause instability.\n"
+                    "It is advisable to make soft_contact_margin 1.5-2 times larger than soft_contact_radius."
                 )
 
             self.conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
@@ -2059,14 +1962,15 @@ class VBDSolver(SolverBase):
             )
 
             self.collision_evaluation_kernel_launch_size = max(
-                self.trimesh_collision_detector.vertex_colliding_triangles.shape[0] // 2,
-                self.trimesh_collision_detector.edge_colliding_edges.shape[0] // 2,
-                self.model.soft_contact_max,
+                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+                self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+                soft_contact_max,
             )
         else:
-            self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
+            self.collision_evaluation_kernel_launch_size = soft_contact_max
 
-        # spaces for hessian
+        # spaces for particle force and hessian
+        self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
 
         self.friction_epsilon = friction_epsilon
@@ -2086,96 +1990,90 @@ class VBDSolver(SolverBase):
         adjacency = ForceElementAdjacencyInfo()
         edges_array = model.edge_indices.to("cpu")
 
-        if edges_array.size:
-            # build vertex-edge adjacency data
-            num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
+        with wp.ScopedDevice("cpu"):
+            if edges_array.size:
+                # build vertex-edge adjacency data
+                num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=self.count_num_adjacent_edges,
+                    inputs=[edges_array, num_vertex_adjacent_edges],
+                    dim=1,
+                )
+
+                num_vertex_adjacent_edges = num_vertex_adjacent_edges.numpy()
+                vertex_adjacent_edges_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
+                vertex_adjacent_edges_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_edges)[:]
+                vertex_adjacent_edges_offsets[0] = 0
+                adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32)
+
+                # temporal variables to record how much adjacent edges has been filled to each vertex
+                vertex_adjacent_edges_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+                edge_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
+                # vertex order: o0: 0, o1: 1, v0: 2, v1: 3,
+                adjacency.v_adj_edges = wp.empty(shape=(edge_adjacency_array_size,), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=self.fill_adjacent_edges,
+                    inputs=[
+                        edges_array,
+                        adjacency.v_adj_edges_offsets,
+                        vertex_adjacent_edges_fill_count,
+                        adjacency.v_adj_edges,
+                    ],
+                    dim=1,
+                )
+            else:
+                adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32)
+
+            # compute adjacent triangles
+
+            # count number of adjacent faces for each vertex
+            face_indices = model.tri_indices.to("cpu")
+            num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+            wp.launch(kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
+
+            # preallocate memory based on counting results
+            num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
+            vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
+            vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
+            vertex_adjacent_faces_offsets[0] = 0
+            adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
+
+            vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+            face_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
+            # (face, vertex_order) * num_adj_faces * num_particles
+            # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
+            adjacency.v_adj_faces = wp.empty(shape=(face_adjacency_array_size,), dtype=wp.int32)
 
             wp.launch(
-                kernel=self.count_num_adjacent_edges,
-                inputs=[edges_array, num_vertex_adjacent_edges],
-                dim=1,
-                device="cpu",
-            )
-
-            num_vertex_adjacent_edges = num_vertex_adjacent_edges.numpy()
-            vertex_adjacent_edges_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-            vertex_adjacent_edges_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_edges)[:]
-            vertex_adjacent_edges_offsets[0] = 0
-            adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32, device="cpu")
-
-            # temporal variables to record how much adjacent edges has been filled to each vertex
-            vertex_adjacent_edges_fill_count = wp.zeros(
-                shape=(self.model.particle_count,), dtype=wp.int32, device="cpu"
-            )
-
-            edge_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
-            # vertex order: o0: 0, o1: 1, v0: 2, v1: 3,
-            adjacency.v_adj_edges = wp.empty(shape=(edge_adjacency_array_size,), dtype=wp.int32, device="cpu")
-
-            wp.launch(
-                kernel=self.fill_adjacent_edges,
+                kernel=self.fill_adjacent_faces,
                 inputs=[
-                    edges_array,
-                    adjacency.v_adj_edges_offsets,
-                    vertex_adjacent_edges_fill_count,
-                    adjacency.v_adj_edges,
+                    face_indices,
+                    adjacency.v_adj_faces_offsets,
+                    vertex_adjacent_faces_fill_count,
+                    adjacency.v_adj_faces,
                 ],
                 dim=1,
-                device="cpu",
             )
-        else:
-            adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32, device="cpu")
-            adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32, device="cpu")
-
-        # compute adjacent triangles
-
-        # count number of adjacent faces for each vertex
-        face_indices = model.tri_indices.to("cpu")
-        num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
-        wp.launch(
-            kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1, device="cpu"
-        )
-
-        # preallocate memory based on counting results
-        num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
-        vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-        vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
-        vertex_adjacent_faces_offsets[0] = 0
-        adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32, device="cpu")
-
-        vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
-
-        face_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
-        # (face, vertex_order) * num_adj_faces * num_particles
-        # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
-        adjacency.v_adj_faces = wp.empty(shape=(face_adjacency_array_size,), dtype=wp.int32, device="cpu")
-
-        wp.launch(
-            kernel=self.fill_adjacent_faces,
-            inputs=[
-                face_indices,
-                adjacency.v_adj_faces_offsets,
-                vertex_adjacent_faces_fill_count,
-                adjacency.v_adj_faces,
-            ],
-            dim=1,
-            device="cpu",
-        )
 
         return adjacency
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if model is not self.model:
             raise ValueError("model must be the one used to initialize VBDSolver")
 
         if self.handle_self_contact:
-            self.simulate_one_step_with_collisions_penetration_free(model, state_in, state_out, dt, control)
+            self.simulate_one_step_with_collisions_penetration_free(model, state_in, state_out, control, contacts, dt)
         else:
-            self.simulate_one_step_no_self_contact(model, state_in, state_out, dt, control)
+            self.simulate_one_step_no_self_contact(model, state_in, state_out, control, contacts, dt)
 
     def simulate_one_step_no_self_contact(
-        self, model: Model, state_in: State, state_out: State, dt: float, control: Control | None = None
+        self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
     ):
         wp.launch(
             kernel=forward_step,
@@ -2195,12 +2093,12 @@ class VBDSolver(SolverBase):
         )
 
         for _iter in range(self.iterations):
-            state_in.particle_f.zero_()
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
                 wp.launch(
-                    kernel=VBD_accumulate_contact_force_and_hessian_no_self_contact,
+                    kernel=accumulate_contact_force_and_hessian_no_self_contact,
                     dim=self.collision_evaluation_kernel_launch_size,
                     inputs=[
                         dt,
@@ -2214,26 +2112,26 @@ class VBDSolver(SolverBase):
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
                         self.model.particle_radius,
-                        self.model.soft_contact_particle,
-                        self.model.soft_contact_count,
-                        self.model.soft_contact_max,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
                         self.model.shape_materials,
                         self.model.shape_body,
                         state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
                         state_in.body_q if self.integrate_with_external_rigid_solver else None,
                         self.model.body_qd,
                         self.model.body_com,
-                        self.model.soft_contact_shape,
-                        self.model.soft_contact_body_pos,
-                        self.model.soft_contact_body_vel,
-                        self.model.soft_contact_normal,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
                     ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                 )
 
                 wp.launch(
-                    kernel=VBD_solve_trimesh_no_self_contact,
+                    kernel=solve_trimesh_no_self_contact,
                     inputs=[
                         dt,
                         self.model.particle_color_groups[color],
@@ -2252,16 +2150,8 @@ class VBDSolver(SolverBase):
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.adjacency,
-                        self.model.soft_contact_ke,
-                        self.model.soft_contact_kd,
-                        self.model.soft_contact_mu,
-                        self.friction_epsilon,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
-                        #   ground-particle contact
-                        self.model.ground,
-                        self.model.ground_plane,
-                        self.model.particle_radius,
                     ],
                     outputs=[
                         state_out.particle_q,
@@ -2271,21 +2161,23 @@ class VBDSolver(SolverBase):
                 )
 
                 wp.launch(
-                    kernel=VBD_copy_particle_positions_back,
-                    inputs=[self.model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
+                    kernel=copy_particle_positions_back,
+                    inputs=[self.model.particle_color_groups[color], state_in.particle_q],
+                    outputs=[state_out.particle_q],
                     dim=self.model.particle_color_groups[color].size,
                     device=self.device,
                 )
 
         wp.launch(
             kernel=update_velocity,
-            inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
+            inputs=[dt, self.particle_q_prev, state_out.particle_q],
+            outputs=[state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
         )
 
     def simulate_one_step_with_collisions_penetration_free(
-        self, model: Model, state_in: State, state_out: State, dt: float, control: Control = None
+        self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
     ):
         # collision detection before initialization to compute conservative bounds for initialization
         self.collision_detection_penetration_free(state_in, dt)
@@ -2309,55 +2201,60 @@ class VBDSolver(SolverBase):
             device=self.device,
         )
 
-        # after initialization, we do another collision detection to update the bounds
-        self.collision_detection_penetration_free(state_in, dt)
-
         for _iter in range(self.iterations):
-            state_in.particle_f.zero_()
+            # after initialization, we need new collision detection to update the bounds
+            if (self.collision_detection_interval == 0 and _iter == 0) or (
+                self.collision_detection_interval >= 1 and _iter % self.collision_detection_interval == 0
+            ):
+                self.collision_detection_penetration_free(state_in, dt)
+
+            self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
-                wp.launch(
-                    kernel=VBD_accumulate_contact_force_and_hessian,
-                    dim=self.collision_evaluation_kernel_launch_size,
-                    inputs=[
-                        dt,
-                        color,
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        self.model.particle_colors,
-                        self.model.tri_indices,
-                        self.model.edge_indices,
-                        # self-contact
-                        self.trimesh_collision_info,
-                        self.model.soft_contact_radius,
-                        self.model.soft_contact_ke,
-                        self.model.soft_contact_kd,
-                        self.model.soft_contact_mu,
-                        self.friction_epsilon,
-                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                        # body-particle contact
-                        self.model.particle_radius,
-                        self.model.soft_contact_particle,
-                        self.model.soft_contact_count,
-                        self.model.soft_contact_max,
-                        self.model.shape_materials,
-                        self.model.shape_body,
-                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
-                        self.model.body_qd,
-                        self.model.body_com,
-                        self.model.soft_contact_shape,
-                        self.model.soft_contact_body_pos,
-                        self.model.soft_contact_body_vel,
-                        self.model.soft_contact_normal,
-                    ],
-                    outputs=[state_in.particle_f, self.particle_hessians],
-                    device=self.device,
-                )
+                if contacts is not None:
+                    wp.launch(
+                        kernel=accumulate_contact_force_and_hessian,
+                        dim=self.collision_evaluation_kernel_launch_size,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_colors,
+                            self.model.tri_indices,
+                            self.model.edge_indices,
+                            # self-contact
+                            self.trimesh_collision_info,
+                            self.soft_contact_radius,
+                            self.model.soft_contact_ke,
+                            self.model.soft_contact_kd,
+                            self.model.soft_contact_mu,
+                            self.friction_epsilon,
+                            self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                            # body-particle contact
+                            self.model.particle_radius,
+                            contacts.soft_contact_particle,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self.model.shape_materials,
+                            self.model.shape_body,
+                            state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                            state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                            self.model.body_qd,
+                            self.model.body_com,
+                            contacts.soft_contact_shape,
+                            contacts.soft_contact_body_pos,
+                            contacts.soft_contact_body_vel,
+                            contacts.soft_contact_normal,
+                        ],
+                        outputs=[self.particle_forces, self.particle_hessians],
+                        device=self.device,
+                        max_blocks=self.model.device.sm_count,
+                    )
 
                 wp.launch(
-                    kernel=VBD_solve_trimesh_with_self_contact_penetration_free,
+                    kernel=solve_trimesh_with_self_contact_penetration_free,
                     dim=self.model.particle_color_groups[color].shape[0],
                     inputs=[
                         dt,
@@ -2377,17 +2274,10 @@ class VBDSolver(SolverBase):
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.adjacency,
-                        state_in.particle_f,
+                        self.particle_forces,
                         self.particle_hessians,
                         self.pos_prev_collision_detection,
                         self.particle_conservative_bounds,
-                        self.model.ground,
-                        self.model.ground_plane,
-                        self.model.soft_contact_ke,
-                        self.model.soft_contact_kd,
-                        self.model.soft_contact_mu,
-                        self.friction_epsilon,
-                        self.model.particle_radius,
                     ],
                     outputs=[
                         state_out.particle_q,
@@ -2396,7 +2286,7 @@ class VBDSolver(SolverBase):
                 )
 
                 wp.launch(
-                    kernel=VBD_copy_particle_positions_back,
+                    kernel=copy_particle_positions_back,
                     inputs=[self.model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
                     dim=self.model.particle_color_groups[color].size,
                     device=self.device,
@@ -2411,15 +2301,15 @@ class VBDSolver(SolverBase):
 
     def collision_detection_penetration_free(self, current_state: State, dt: float):
         self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.model.soft_contact_margin)
-        self.trimesh_collision_detector.edge_edge_collision_detection(self.model.soft_contact_margin)
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.soft_contact_margin)
+        self.trimesh_collision_detector.edge_edge_collision_detection(self.soft_contact_margin)
 
         self.pos_prev_collision_detection.assign(current_state.particle_q)
         wp.launch(
             kernel=compute_particle_conservative_bound,
             inputs=[
                 self.conservative_bound_relaxation,
-                self.model.soft_contact_margin,
+                self.soft_contact_margin,
                 self.adjacency,
                 self.trimesh_collision_detector.collision_info,
             ],

@@ -20,7 +20,7 @@ import warp as wp
 from warp.render import OpenGLRenderer
 
 import newton
-from newton.core.inertia import (
+from newton.geometry.inertia import (
     compute_box_inertia,
     compute_mesh_inertia,
     compute_sphere_inertia,

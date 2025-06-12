@@ -15,7 +15,8 @@
 
 import warp as wp
 
-from newton.core import PARTICLE_FLAG_ACTIVE
+from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.sim import Model, State
 
 
 @wp.func
@@ -98,7 +99,7 @@ def eval_particle_forces_kernel(
     particle_f[i] = f
 
 
-def eval_particle_forces(model, state, forces):
+def eval_particle_forces(model: Model, state: State, forces: wp.array(dtype=wp.vec3)):
     if model.particle_count > 1 and model.particle_max_radius > 0.0:
         wp.launch(
             kernel=eval_particle_forces_kernel,

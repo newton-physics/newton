@@ -21,8 +21,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import warp as wp
 
-from newton.core import Axis, AxisType, Mesh, ModelBuilder, quat_between_axes
+from newton.core import Axis, AxisType, quat_between_axes
 from newton.core.types import Transform
+from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def _download_file(dst, url: str) -> None:
@@ -113,13 +115,11 @@ def parse_urdf(
         return wp.transform(xyz, wp.quat_rpy(*rpy))
 
     def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
-        cfg = ModelBuilder.ShapeConfig(
-            density=density,
-            is_visible=visible,
-            has_ground_collision=not just_visual,
-            has_shape_collision=not just_visual,
-            has_particle_collision=not just_visual,
-        )
+        shape_cfg = builder.default_shape_cfg.copy()
+        shape_cfg.density = density
+        shape_cfg.is_visible = visible
+        shape_cfg.has_shape_collision = not just_visual
+        shape_cfg.has_particle_collision = not just_visual
         shapes = []
         # add geometry
         for geom_group in geoms:
@@ -140,7 +140,7 @@ def parse_urdf(
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
-                    cfg=cfg,
+                    cfg=shape_cfg,
                 )
                 shapes.append(s)
 
@@ -149,7 +149,7 @@ def parse_urdf(
                     body=link,
                     xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
-                    cfg=cfg,
+                    cfg=shape_cfg,
                 )
                 shapes.append(s)
 
@@ -160,7 +160,7 @@ def parse_urdf(
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
                     up_axis=up_axis,
-                    cfg=cfg,
+                    cfg=shape_cfg,
                 )
                 shapes.append(s)
 
@@ -171,7 +171,7 @@ def parse_urdf(
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
                     up_axis=up_axis,
-                    cfg=cfg,
+                    cfg=shape_cfg,
                 )
                 shapes.append(s)
 
@@ -220,7 +220,7 @@ def parse_urdf(
                             body=link,
                             xform=tf,
                             mesh=m_mesh,
-                            cfg=cfg,
+                            cfg=shape_cfg,
                         )
                         shapes.append(s)
                 else:
@@ -232,7 +232,7 @@ def parse_urdf(
                         body=link,
                         xform=tf,
                         mesh=m_mesh,
-                        cfg=cfg,
+                        cfg=shape_cfg,
                     )
                     shapes.append(s)
                 if file_tmp is not None:
@@ -311,7 +311,7 @@ def parse_urdf(
             m = static_link_mass
             # cube with side length 0.5
             I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_shape_cfg.density * np.eye(3))
+            I_m += wp.mat33(default_shape_density * np.eye(3))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
