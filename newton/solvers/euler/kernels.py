@@ -22,9 +22,16 @@ from newton.core import (
     quat_decompose,
     quat_twist,
 )
-from newton.geometry import PARTICLE_FLAG_ACTIVE, Contacts
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.geometry.kernels import triangle_closest_point_barycentric
-from newton.sim import Control, Model, ShapeGeometry, ShapeMaterials, State
+from newton.sim import (
+    Contacts,
+    Control,
+    Model,
+    ShapeGeometry,
+    ShapeMaterials,
+    State,
+)
 
 
 @wp.kernel

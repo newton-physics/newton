@@ -19,13 +19,13 @@ from __future__ import annotations
 import warp as wp
 
 from ..core.types import Devicelike
-from ..geometry import Contacts
 from ..geometry.kernels import (
     broadphase_collision_pairs,
     count_contact_points,
     create_soft_contacts,
     handle_contact_pairs,
 )
+from .contacts import Contacts
 from .model import Model
 from .state import State
 

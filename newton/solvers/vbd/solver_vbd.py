@@ -20,9 +20,9 @@ import warp as wp
 from warp.types import float32, matrix
 
 from newton.core.types import override
-from newton.geometry import PARTICLE_FLAG_ACTIVE, Contacts
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.geometry.kernels import triangle_closest_point
-from newton.sim import Control, Model, State
+from newton.sim import Contacts, Control, Model, State
 from newton.sim.model import ShapeMaterials
 
 from ..solver import SolverBase
@@ -1716,7 +1716,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
 
 
 @wp.kernel
-def VBD_solve_trimesh_with_self_contact_penetration_free(
+def solve_trimesh_with_self_contact_penetration_free(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
@@ -1870,6 +1870,7 @@ class VBDSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
 
     """
 
@@ -2253,7 +2254,7 @@ class VBDSolver(SolverBase):
                     )
 
                 wp.launch(
-                    kernel=VBD_solve_trimesh_with_self_contact_penetration_free,
+                    kernel=solve_trimesh_with_self_contact_penetration_free,
                     dim=self.model.particle_color_groups[color].shape[0],
                     inputs=[
                         dt,

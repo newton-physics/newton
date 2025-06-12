@@ -127,7 +127,6 @@
       ~Model.joint_key
       ~Model.articulation_start
       ~Model.articulation_key
-      ~Model.soft_contact_radius
       ~Model.soft_contact_ke
       ~Model.soft_contact_kd
       ~Model.soft_contact_kf

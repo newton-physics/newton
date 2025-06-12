@@ -15,7 +15,18 @@
 
 import numpy as np
 
-from .types import GEO_BOX, GEO_CAPSULE, GEO_CONE, GEO_CYLINDER, GEO_MESH, GEO_PLANE, GEO_SPHERE, SDF, Mesh, Vec3
+from .types import (
+    GEO_BOX,
+    GEO_CAPSULE,
+    GEO_CONE,
+    GEO_CYLINDER,
+    GEO_MESH,
+    GEO_PLANE,
+    GEO_SPHERE,
+    SDF,
+    Mesh,
+    Vec3,
+)
 
 
 def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:

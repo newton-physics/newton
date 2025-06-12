@@ -34,7 +34,7 @@ import newton.examples
 import newton.utils
 from newton.sim import Model, ModelBuilder, State, eval_fk
 from newton.solvers import FeatherstoneSolver, VBDSolver
-from newton.solvers.featherstone.solver_featherstone import transform_twist
+from newton.solvers.featherstone.kernels import transform_twist
 
 
 def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
@@ -300,7 +300,7 @@ class ExampleClothManipulation:
         self.sim_time = 0.0
 
         # initialize robot solver
-        self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_every=self.num_substeps)
+        self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_interval=self.num_substeps)
         self.set_up_control()
 
         if self.add_cloth:

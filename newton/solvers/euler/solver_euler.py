@@ -15,8 +15,8 @@
 
 import warp as wp
 
-from newton.geometry import Contacts
-from newton.sim import Control, Model, State
+from newton.core.types import override
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 from .kernels import (
@@ -55,6 +55,7 @@ class SemiImplicitSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
 
     """
 
@@ -81,6 +82,7 @@ class SemiImplicitSolver(SolverBase):
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
 
+    @override
     def step(
         self,
         model: Model,
