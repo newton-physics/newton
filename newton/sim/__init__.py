@@ -28,7 +28,6 @@ from .flags import (
 )
 from .joints import (
     JOINT_BALL,
-    JOINT_COMPOUND,
     JOINT_D6,
     JOINT_DISTANCE,
     JOINT_FIXED,
@@ -38,7 +37,6 @@ from .joints import (
     JOINT_MODE_TARGET_VELOCITY,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
     get_joint_dof_count,
 )
 from .model import Model
@@ -47,7 +45,6 @@ from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
     "JOINT_BALL",
-    "JOINT_COMPOUND",
     "JOINT_D6",
     "JOINT_DISTANCE",
     "JOINT_FIXED",
@@ -57,7 +54,6 @@ __all__ = [
     "JOINT_MODE_TARGET_VELOCITY",
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
-    "JOINT_UNIVERSAL",
     "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
     "NOTIFY_FLAG_BODY_PROPERTIES",
     "NOTIFY_FLAG_DOF_PROPERTIES",

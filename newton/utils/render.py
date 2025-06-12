@@ -265,8 +265,6 @@ def CreateSimRenderer(renderer):
                         if t not in {
                             newton.JOINT_REVOLUTE,
                             # newton.JOINT_PRISMATIC,
-                            newton.JOINT_UNIVERSAL,
-                            newton.JOINT_COMPOUND,
                             newton.JOINT_D6,
                         }:
                             continue

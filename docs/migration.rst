@@ -68,6 +68,10 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 | ``eval_ik(model, state, joint_q, joint_qd)``           | ``eval_ik(model, state, joint_q, joint_qd, mask=None)``                |
 +--------------------------------------------------------+------------------------------------------------------------------------+
 
+The ``Model.ground`` attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via :meth:`newton.ModelBuilder.add_ground_plane`.
+
+The attributes related to joint axes now have the same dimension as the joint dofs, which is :attr:`newton.Model.joint_dof_count`.
+The ``Model.joint_axis`` attribute has been removed since it now equals :attr:`newton.Model.joint_qd_start`.
 
 ``Control``
 -----------
@@ -122,6 +126,8 @@ apply to all joints and cannot be set individually per joint anymore. So far we 
 per-joint compliance settings and have decided to remove this feature for memory efficiency.
 
 The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the positional dofs of the free joint with the child body's transform (``body_q``).
+
+The universal and compound joints have been removed in favor of the more general D6 joint.
 
 
 Renderers

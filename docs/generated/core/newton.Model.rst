@@ -111,8 +111,6 @@
       ~Model.joint_effort_limit
       ~Model.joint_velocity_limit
       ~Model.joint_friction
-      ~Model.dof_to_axis_map
-      ~Model.joint_axis_start
       ~Model.joint_axis_dim
       ~Model.joint_axis_mode
       ~Model.joint_enabled
@@ -141,7 +139,6 @@
       ~Model.body_count
       ~Model.shape_count
       ~Model.joint_count
-      ~Model.joint_axis_count
       ~Model.tri_count
       ~Model.tet_count
       ~Model.edge_count

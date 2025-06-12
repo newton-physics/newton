@@ -47,7 +47,6 @@ from .geometry import (
 # Simulation functionality
 from .sim import (
     JOINT_BALL,
-    JOINT_COMPOUND,
     JOINT_D6,
     JOINT_DISTANCE,
     JOINT_FIXED,
@@ -57,7 +56,6 @@ from .sim import (
     JOINT_MODE_TARGET_VELOCITY,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
     Contacts,
     Control,
     Model,
@@ -76,11 +74,8 @@ __all__ = [
     "GEO_NONE",
     "GEO_PLANE",
     "GEO_SDF",
-    # Geometry constants
     "GEO_SPHERE",
-    # Joint constants
     "JOINT_BALL",
-    "JOINT_COMPOUND",
     "JOINT_D6",
     "JOINT_DISTANCE",
     "JOINT_FIXED",
@@ -90,20 +85,16 @@ __all__ = [
     "JOINT_MODE_TARGET_VELOCITY",
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
-    "JOINT_UNIVERSAL",
     "SDF",
-    # Core types and classes
     "Axis",
     "AxisType",
     "Contacts",
     "Control",
-    # Geometry types and classes
     "Mesh",
     "Model",
     "ModelBuilder",
     "ShapeMaterials",
     "State",
-    # Version
     "__version__",
     "create_box",
     "create_capsule",
@@ -111,11 +102,8 @@ __all__ = [
     "create_cylinder",
     "create_none",
     "create_plane",
-    # Geometry creation functions (the main new API)
     "create_sphere",
-    # Core functions
     "eval_fk",
     "eval_ik",
-    # Submodules (for those who want to use them directly)
     "solvers",
 ]
