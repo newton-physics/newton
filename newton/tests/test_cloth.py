@@ -694,6 +694,8 @@ class ClothSim:
                 wp.set_module_options({"block_dim": 256}, collide_module)
                 wp.load_module(collide_module, device=self.device)
             elif self.solver_name == "xpbd":
+                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.kernels)
+                wp.load_module(newton.solvers.xpbd.kernels, device=self.device)
                 wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
                 wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
             elif self.solver_name == "semi_implicit":
