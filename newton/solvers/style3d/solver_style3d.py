@@ -13,103 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import warp as wp
 
 from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 
 from ..solver import SolverBase
-from .linear_solver import NonZeroEntry, SparseMatrixELL
+from .builder import PDMatrixBuilder
+from .linear_solver import SparseMatrixELL
 
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
 ########################################################################################################################
-
-
-class PDMatrixBuilder:
-    def __init__(self, num_verts: int, max_neighbor: int = 32):
-        self.num_verts = num_verts
-        self.max_neighbors = max_neighbor
-        self.counts = np.zeros(num_verts, dtype=np.int32)
-        self.diags = np.zeros(num_verts, dtype=np.float32)
-        self.values = np.zeros(shape=(num_verts, max_neighbor), dtype=np.float32)
-        self.neighbors = np.zeros(shape=(num_verts, max_neighbor), dtype=np.int32)
-
-    def add_connection(self, v0: int, v1: int) -> int:
-        if v0 >= self.num_verts:
-            raise ValueError(f"Vertex index{v0} out of range {self.num_verts}")
-        if v1 >= self.num_verts:
-            raise ValueError(f"Vertex index{v1} out of range {self.num_verts}")
-
-        for slot in range(self.counts[v0]):
-            if self.neighbors[v0, slot] == v1:
-                return slot
-
-        if self.counts[v0] >= self.max_neighbors:
-            raise ValueError(f"Exceeds max neighbors limit {self.max_neighbors}")
-
-        slot = self.counts[v0]
-        self.neighbors[v0, slot] = v1
-        self.counts[v0] += 1
-        return slot
-
-    def add_stretch_constraints(
-        self,
-        tri_indices: list[list[int]],
-        tri_poses: list[list[list[float]]],
-        tri_aniso_ke: list[list[int]],
-        tri_areas: list[float],
-    ):
-        for fid in range(len(tri_indices)):
-            area = tri_areas[fid]
-            inv_dm = tri_poses[fid]
-            ku, kv, ks = tri_aniso_ke[fid]
-            face = wp.vec3i(tri_indices[fid])
-            dFu_dx = wp.vec3(-inv_dm[0][0] - inv_dm[1][0], inv_dm[0][0], inv_dm[1][0])
-            dFv_dx = wp.vec3(-inv_dm[0][1] - inv_dm[1][1], inv_dm[0][1], inv_dm[1][1])
-            for i in range(3):
-                for j in range(i, 3):
-                    weight = area * ((ku + ks) * dFu_dx[i] * dFu_dx[j] + (kv + ks) * dFv_dx[i] * dFv_dx[j])
-                    if i != j:
-                        slot_ij = self.add_connection(face[i], face[j])
-                        slot_ji = self.add_connection(face[j], face[i])
-                        self.values[face[i], slot_ij] += weight
-                        self.values[face[j], slot_ji] += weight
-                    else:
-                        self.diags[face[i]] += weight
-
-    @wp.kernel
-    def assemble_nz_ell_kernel(
-        neighbors: wp.array2d(dtype=int),
-        nz_values: wp.array2d(dtype=float),
-        neighbor_counts: wp.array(dtype=int),
-        # outputs
-        nz_ell: wp.array2d(dtype=NonZeroEntry),
-    ):
-        tid = wp.tid()
-        for k in range(neighbor_counts[tid]):
-            nz_entry = NonZeroEntry()
-            nz_entry.value = nz_values[tid, k]
-            nz_entry.column_index = neighbors[tid, k]
-            nz_ell[k, tid] = nz_entry
-
-    def finialize(self, device) -> SparseMatrixELL:
-        pd_matrix = SparseMatrixELL()
-        pd_matrix.diag = wp.array(self.diags, dtype=float, device=device)
-        pd_matrix.num_nz = wp.array(self.counts, dtype=int, device=device)
-        pd_matrix.nz_ell = wp.array2d(shape=(self.num_verts, 32), dtype=NonZeroEntry, device=device)
-
-        nz_values = wp.array2d(self.values, dtype=float, device=device)
-        neighbors = wp.array2d(self.neighbors, dtype=int, device=device)
-
-        wp.launch(
-            self.assemble_nz_ell_kernel,
-            dim=self.num_verts,
-            inputs=[neighbors, nz_values, pd_matrix.num_nz],
-            outputs=[pd_matrix.nz_ell],
-            device=device,
-        )
-        return pd_matrix
 
 
 @wp.func
@@ -177,6 +91,7 @@ def init_step_kernel(
     # outputs
     x_inertia: wp.array(dtype=wp.vec3),
     inv_diags: wp.array(dtype=float),
+    diags: wp.array(dtype=float),
     dx: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -187,9 +102,11 @@ def init_step_kernel(
         x_inertia[tid] = x_prev[tid]
         dx[tid] = wp.vec3(0.0)
         inv_diags[tid] = 0.0
+        diags[tid] = 0.0
     else:
         v_prev = v_curr[tid]
         mass = particle_masses[tid]
+        diags[tid] = pd_diags[tid] + mass / (dt * dt)
         inv_diags[tid] = 1.0 / (pd_diags[tid] + mass / (dt * dt))
         x_inertia[tid] = x_last + v_prev * dt + (gravity + f_ext[tid] / mass) * (dt * dt)
         dx[tid] = v_prev * dt
@@ -277,10 +194,11 @@ class Style3DSolver(SolverBase):
         self.nonlinear_iterations = iterations
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
 
-        self.P = SparseMatrixELL()
+        self.A = SparseMatrixELL()
         self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.rhs = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.x_prev = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.inv_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.x_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
 
@@ -314,13 +232,14 @@ class Style3DSolver(SolverBase):
                 state_in.particle_qd,
                 state_in.particle_q,
                 self.x_prev,
-                self.P.diag,
+                self.pd_diags,
                 self.model.particle_mass,
                 self.model.particle_flags,
             ],
             outputs=[
                 self.x_inertia,
                 self.inv_diags,
+                self.A.diag,
                 self.dx,
             ],
             device=self.device,
@@ -403,4 +322,5 @@ class Style3DSolver(SolverBase):
         tri_areas: list[float],
     ):
         self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-        self.P = self.pd_matrix_builder.finialize(self.device)
+        self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finialize(self.device)
+        self.A.diag = wp.zeros_like(self.pd_diags)
