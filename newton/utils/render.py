@@ -240,7 +240,7 @@ def CreateSimRenderer(renderer):
                 if self.show_joints and model.joint_count:
                     joint_type = model.joint_type.numpy()
                     joint_axis = model.joint_axis.numpy()
-                    joint_axis_start = model.joint_axis_start.numpy()
+                    joint_qd_start = model.joint_qd_start.numpy()
                     joint_axis_dim = model.joint_axis_dim.numpy()
                     joint_parent = model.joint_parent.numpy()
                     joint_child = model.joint_child.numpy()
@@ -292,7 +292,7 @@ def CreateSimRenderer(renderer):
                                 scale *= np.mean(radii) * 2.0
 
                         for a in range(num_linear_axes, num_linear_axes + num_angular_axes):
-                            index = joint_axis_start[i] + a
+                            index = joint_qd_start[i] + a
                             axis = joint_axis[index]
                             if np.linalg.norm(axis) < 1e-6:
                                 continue

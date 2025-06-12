@@ -68,6 +68,7 @@ from .joints import (
     JOINT_DISTANCE,
     JOINT_FIXED,
     JOINT_FREE,
+    JOINT_MODE_NONE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
@@ -243,8 +244,9 @@ class ModelBuilder:
                 target_ke=0.0,
                 target_kd=0.0,
                 armature=0.0,
-                limit_ke= 0.0,
+                limit_ke=0.0,
                 limit_kd=0.0,
+                mode=JOINT_MODE_NONE,
             )
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -1187,7 +1189,8 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[ax,
+            linear_axes=[
+                ax,
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.Z),
             ],

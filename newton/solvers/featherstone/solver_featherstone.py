@@ -369,9 +369,7 @@ class FeatherstoneSolver(SolverBase):
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
-                        model.joint_q_start,
                         model.joint_qd_start,
-                        state_in.joint_q,
                         state_in.joint_qd,
                         model.joint_axis,
                         model.joint_axis_dim,
@@ -379,7 +377,6 @@ class FeatherstoneSolver(SolverBase):
                         state_in.body_q,
                         state_aug.body_q_com,
                         model.joint_X_p,
-                        model.joint_X_c,
                         model.gravity,
                     ],
                     outputs=[

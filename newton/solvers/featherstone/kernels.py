@@ -672,9 +672,7 @@ def compute_link_velocity(
     joint_type: wp.array(dtype=int),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
@@ -682,7 +680,6 @@ def compute_link_velocity(
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
     joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
     gravity: wp.vec3,
     # outputs
     joint_S_s: wp.array(dtype=wp.spatial_vector),
@@ -694,7 +691,6 @@ def compute_link_velocity(
     type = joint_type[i]
     child = joint_child[i]
     parent = joint_parent[i]
-    q_start = joint_q_start[i]
     qd_start = joint_qd_start[i]
 
     X_pj = joint_X_p[i]
@@ -761,9 +757,7 @@ def eval_rigid_id(
     joint_type: wp.array(dtype=int),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
-    joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
-    joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_axis_dim: wp.array(dtype=int, ndim=2),
@@ -771,7 +765,6 @@ def eval_rigid_id(
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
     joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
     gravity: wp.vec3,
     # outputs
     joint_S_s: wp.array(dtype=wp.spatial_vector),
@@ -793,9 +786,7 @@ def eval_rigid_id(
             joint_type,
             joint_parent,
             joint_child,
-            joint_q_start,
             joint_qd_start,
-            joint_q,
             joint_qd,
             joint_axis,
             joint_axis_dim,
@@ -803,7 +794,6 @@ def eval_rigid_id(
             body_q,
             body_q_com,
             joint_X_p,
-            joint_X_c,
             gravity,
             joint_S_s,
             body_I_s,
