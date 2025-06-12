@@ -237,6 +237,7 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
+    axis_mode: wp.array(dtype=wp.int32),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
@@ -244,9 +245,8 @@ def apply_mjc_control_kernel(
 ):
     worldid, axisid = wp.tid()
     actuator_id = axis_to_actuator[axisid]
-    if actuator_id != -1:
+    if actuator_id != -1 and axis_mode[axisid] != newton.JOINT_MODE_FORCE:
         mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
-
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
@@ -801,6 +801,7 @@ class MuJoCoSolver(SolverBase):
             dim=(nworld, axes_per_env),
             inputs=[
                 control.joint_target,
+                model.joint_axis_mode,
                 model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                 axes_per_env,
             ],
@@ -986,7 +987,7 @@ class MuJoCoSolver(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
-    ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
+    ):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
