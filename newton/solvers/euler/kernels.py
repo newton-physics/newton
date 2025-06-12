@@ -13,19 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import warp as wp
 
 import newton
-from newton.collision.collide import triangle_closest_point_barycentric
 from newton.core import (
-    PARTICLE_FLAG_ACTIVE,
-    Control,
-    Model,
-    ModelShapeGeometry,
-    ModelShapeMaterials,
-    State,
     quat_decompose,
     quat_twist,
+)
+from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.geometry.kernels import triangle_closest_point_barycentric
+from newton.sim import (
+    Contacts,
+    Control,
+    Model,
+    ShapeGeometry,
+    ShapeMaterials,
+    State,
 )
 
 
@@ -712,7 +717,7 @@ def eval_particle_contacts(
     particle_flags: wp.array(dtype=wp.uint32),
     body_com: wp.array(dtype=wp.vec3),
     shape_body: wp.array(dtype=int),
-    shape_materials: ModelShapeMaterials,
+    shape_materials: ShapeMaterials,
     particle_ke: float,
     particle_kd: float,
     particle_kf: float,
@@ -824,8 +829,8 @@ def eval_rigid_contacts(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    shape_materials: ModelShapeMaterials,
-    geo: ModelShapeGeometry,
+    shape_materials: ShapeMaterials,
+    geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -1722,7 +1727,7 @@ def eval_triangle_forces(model: Model, state: State, control: Control, particle_
 
 
 def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.enable_tri_collisions:
+    if model.tri_count and model.particle_count:
         wp.launch(
             kernel=eval_triangles_contact,
             dim=model.tri_count * model.particle_count,
@@ -1756,27 +1761,6 @@ def eval_bending_forces(model: Model, state: State, particle_f: wp.array):
         )
 
 
-def eval_particle_ground_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.ground and model.particle_count:
-        wp.launch(
-            kernel=eval_particle_ground_contacts,
-            dim=model.particle_count,
-            inputs=[
-                state.particle_q,
-                state.particle_qd,
-                model.particle_radius,
-                model.particle_flags,
-                model.soft_contact_ke,
-                model.soft_contact_kd,
-                model.soft_contact_kf,
-                model.soft_contact_mu,
-                model.ground_plane,
-            ],
-            outputs=[particle_f],
-            device=model.device,
-        )
-
-
 def eval_tetrahedral_forces(model: Model, state: State, control: Control, particle_f: wp.array):
     if model.tet_count:
         wp.launch(
@@ -1795,13 +1779,11 @@ def eval_tetrahedral_forces(model: Model, state: State, control: Control, partic
         )
 
 
-def eval_body_contact_forces(model: Model, state: State, particle_f: wp.array, friction_smoothing: float = 1.0):
-    if model.rigid_contact_max and (
-        (model.ground and model.shape_ground_contact_pair_count) or model.shape_contact_pair_count
-    ):
+def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | None, friction_smoothing: float = 1.0):
+    if contacts is not None and contacts.rigid_contact_max:
         wp.launch(
             kernel=eval_rigid_contacts,
-            dim=model.rigid_contact_max,
+            dim=contacts.rigid_contact_max,
             inputs=[
                 state.body_q,
                 state.body_qd,
@@ -1809,12 +1791,12 @@ def eval_body_contact_forces(model: Model, state: State, particle_f: wp.array, f
                 model.shape_materials,
                 model.shape_geo,
                 model.shape_body,
-                model.rigid_contact_count,
-                model.rigid_contact_point0,
-                model.rigid_contact_point1,
-                model.rigid_contact_normal,
-                model.rigid_contact_shape0,
-                model.rigid_contact_shape1,
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
                 False,
                 friction_smoothing,
             ],
@@ -1862,12 +1844,17 @@ def eval_body_joint_forces(
 
 
 def eval_particle_body_contact_forces(
-    model: Model, state: State, particle_f: wp.array, body_f: wp.array, body_f_in_world_frame: bool = False
+    model: Model,
+    state: State,
+    contacts: Contacts | None,
+    particle_f: wp.array,
+    body_f: wp.array,
+    body_f_in_world_frame: bool = False,
 ):
-    if model.particle_count and model.shape_count > 1:
+    if contacts is not None and contacts.soft_contact_max:
         wp.launch(
             kernel=eval_particle_contacts,
-            dim=model.soft_contact_max,
+            dim=contacts.soft_contact_max,
             inputs=[
                 state.particle_q,
                 state.particle_qd,
@@ -1883,13 +1870,13 @@ def eval_particle_body_contact_forces(
                 model.soft_contact_kf,
                 model.soft_contact_mu,
                 model.particle_adhesion,
-                model.soft_contact_count,
-                model.soft_contact_particle,
-                model.soft_contact_shape,
-                model.soft_contact_body_pos,
-                model.soft_contact_body_vel,
-                model.soft_contact_normal,
-                model.soft_contact_max,
+                contacts.soft_contact_count,
+                contacts.soft_contact_particle,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_body_vel,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_max,
                 body_f_in_world_frame,
             ],
             # outputs

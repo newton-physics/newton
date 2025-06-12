@@ -21,7 +21,6 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton.core import types
 from newton.solvers import MuJoCoSolver
 
 # Import the kernels for coordinate conversion
@@ -236,7 +235,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contact()
+        self.contacts = self.model.collide(self.state_in)
 
     def test_randomize_body_mass(self):
         """
@@ -273,7 +272,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
         self.model.body_mass.assign(updated_masses)
 
         # Notify solver of mass changes
-        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
 
         # Check that updated masses were transferred correctly
         for env_idx in range(self.model.num_envs):
@@ -333,7 +332,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
         self.model.body_com.assign(updated_coms)
 
         # Notify solver of COM changes
-        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
 
         # Check that updated COM positions were transferred correctly
         for env_idx in range(self.model.num_envs):
@@ -438,7 +437,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolver):
         self.model.body_inertia.assign(updated_inertias)
 
         # Notify solver of inertia changes
-        solver.notify_model_changed(types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
 
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
@@ -581,7 +580,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverMassProperties):
         self.model.joint_armature.assign(updated_armature)
 
         # Step 5: Notify MuJoCo of changes
-        solver.notify_model_changed(types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | types.NOTIFY_FLAG_DOF_PROPERTIES)
+        solver.notify_model_changed(
+            newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
+        )
 
         # Step 6: Verify all changes were applied
 

@@ -17,10 +17,9 @@ from __future__ import annotations
 
 import warp as wp
 
-from .model import Model
-from .spatial import quat_decompose, quat_twist
-from .state import State
-from .types import (
+from newton.core.spatial import quat_decompose, quat_twist
+
+from .joints import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -31,6 +30,8 @@ from .types import (
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
 )
+from .model import Model
+from .state import State
 
 
 @wp.func
@@ -540,6 +541,47 @@ def eval_fk(
         ],
         device=model.device,
     )
+
+
+@wp.kernel
+def compute_shape_world_transforms(
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    # outputs
+    shape_world_transform: wp.array(dtype=wp.transform),
+):
+    """Compute world-space transforms for shapes by concatenating local shape
+    transforms with body transforms.
+
+    Args:
+        shape_transform: Local shape transforms in body frame,
+            shape [shape_count, 7]
+        shape_body: Body index for each shape, shape [shape_count]
+        body_q: Body transforms in world frame, shape [body_count, 7]
+        shape_world_transform: Output world transforms for shapes,
+            shape [shape_count, 7]
+    """
+    shape_idx = wp.tid()
+
+    # Get the local shape transform
+    X_bs = shape_transform[shape_idx]
+
+    # Get the body index for this shape
+    body_idx = shape_body[shape_idx]
+
+    # If shape is attached to a body (body_idx >= 0), concatenate transforms
+    if body_idx >= 0:
+        # Get the body transform in world space
+        X_wb = body_q[body_idx]
+
+        # Concatenate: world_transform = body_transform * shape_transform
+        X_ws = wp.transform_multiply(X_wb, X_bs)
+        shape_world_transform[shape_idx] = X_ws
+    else:
+        # Shape is not attached to a body (static shape), use local
+        # transform as world transform
+        shape_world_transform[shape_idx] = X_bs
 
 
 @wp.func

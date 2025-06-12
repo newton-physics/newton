@@ -13,39 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import solvers
-from ._version import __version__
-
-# Core functionality
-from .core import (
-    Axis,
-    AxisType,
+from .articulation import eval_fk, eval_ik
+from .builder import ModelBuilder
+from .collide import CollisionPipeline, count_rigid_contact_points
+from .contacts import Contacts
+from .control import Control
+from .flags import (
+    NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES,
+    NOTIFY_FLAG_BODY_PROPERTIES,
+    NOTIFY_FLAG_DOF_PROPERTIES,
+    NOTIFY_FLAG_JOINT_AXIS_PROPERTIES,
+    NOTIFY_FLAG_JOINT_PROPERTIES,
+    NOTIFY_FLAG_SHAPE_PROPERTIES,
 )
-
-# Geometry functionality
-from .geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
-    SDF,
-    Mesh,
-    create_box,
-    create_capsule,
-    create_cone,
-    create_cylinder,
-    create_none,
-    create_plane,
-    create_sphere,
-)
-
-# Simulation functionality
-from .sim import (
+from .joints import (
     JOINT_BALL,
     JOINT_COMPOUND,
     JOINT_D6,
@@ -58,27 +39,13 @@ from .sim import (
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
     JOINT_UNIVERSAL,
-    Contacts,
-    Control,
-    Model,
-    ModelBuilder,
-    State,
-    eval_fk,
-    eval_ik,
+    get_joint_dof_count,
 )
+from .model import Model
+from .state import State
+from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
-    "GEO_BOX",
-    "GEO_CAPSULE",
-    "GEO_CONE",
-    "GEO_CYLINDER",
-    "GEO_MESH",
-    "GEO_NONE",
-    "GEO_PLANE",
-    "GEO_SDF",
-    # Geometry constants
-    "GEO_SPHERE",
-    # Joint constants
     "JOINT_BALL",
     "JOINT_COMPOUND",
     "JOINT_D6",
@@ -91,31 +58,22 @@ __all__ = [
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
     "JOINT_UNIVERSAL",
-    "SDF",
-    # Core types and classes
-    "Axis",
-    "AxisType",
+    "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
+    "NOTIFY_FLAG_BODY_PROPERTIES",
+    "NOTIFY_FLAG_DOF_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_PROPERTIES",
+    "NOTIFY_FLAG_SHAPE_PROPERTIES",
+    "CollisionPipeline",
     "Contacts",
     "Control",
-    # Geometry types and classes
-    "Mesh",
     "Model",
     "ModelBuilder",
+    "ShapeGeometry",
     "ShapeMaterials",
     "State",
-    # Version
-    "__version__",
-    "create_box",
-    "create_capsule",
-    "create_cone",
-    "create_cylinder",
-    "create_none",
-    "create_plane",
-    # Geometry creation functions (the main new API)
-    "create_sphere",
-    # Core functions
+    "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
-    # Submodules (for those who want to use them directly)
-    "solvers",
+    "get_joint_dof_count",
 ]

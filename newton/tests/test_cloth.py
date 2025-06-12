@@ -22,14 +22,13 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.collision.collide
 import newton.solvers.euler.kernels
 import newton.solvers.euler.particles
 import newton.solvers.euler.solver_euler
 import newton.solvers.solver
 import newton.solvers.vbd.solver_vbd
 import newton.solvers.xpbd.solver_xpbd
-from newton.core.types import PARTICLE_FLAG_ACTIVE
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -653,10 +652,13 @@ class ClothSim:
         self.finalize(ground=False)
 
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
-        self.builder.color(include_bending=True)
+        builder = newton.ModelBuilder()
+        builder.add_builder(self.builder)
+        if ground:
+            builder.add_ground_plane()
+        builder.color(include_bending=True)
 
-        self.model = self.builder.finalize(device=self.device)
-        self.model.ground = ground
+        self.model = builder.finalize(device=self.device)
         self.model.gravity = wp.vec3(0, -1000.0, 0) if use_gravity else wp.vec3(0, 0, 0)
         self.model.soft_contact_ke = 1.0e4
         self.model.soft_contact_kd = 1.0e-2
@@ -674,6 +676,7 @@ class ClothSim:
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
+        self.model.collide(self.state0)
 
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
@@ -684,13 +687,15 @@ class ClothSim:
                 wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
                 wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
 
-                collide_module = importlib.import_module("newton.collision.collide")
+                collide_module = importlib.import_module("newton.geometry.kernels")
                 # Also for some tile stuff
                 wp.set_module_options({"block_dim": 16}, collide_module)
                 wp.load_module(collide_module, device=self.device)
                 wp.set_module_options({"block_dim": 256}, collide_module)
                 wp.load_module(collide_module, device=self.device)
             elif self.solver_name == "xpbd":
+                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.kernels)
+                wp.load_module(newton.solvers.xpbd.kernels, device=self.device)
                 wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
                 wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
             elif self.solver_name == "semi_implicit":
@@ -710,7 +715,7 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = self.model.contact()
+            contacts = self.model.collide(self.state0)
             control = self.model.control()
             self.solver.step(self.model, self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)

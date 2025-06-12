@@ -21,8 +21,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import warp as wp
 
-from newton.core import Axis, AxisType, Mesh, ModelBuilder, quat_between_axes
+from newton.core import Axis, AxisType, quat_between_axes
 from newton.core.types import Transform
+from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def _download_file(dst, url: str) -> None:
@@ -116,7 +118,6 @@ def parse_urdf(
         shape_cfg = builder.default_shape_cfg.copy()
         shape_cfg.density = density
         shape_cfg.is_visible = visible
-        shape_cfg.has_ground_collision = not just_visual
         shape_cfg.has_shape_collision = not just_visual
         shape_cfg.has_particle_collision = not just_visual
         shapes = []

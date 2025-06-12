@@ -22,8 +22,8 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core import Contact, Control, Model, State, types
 from newton.core.types import override
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 
@@ -663,6 +663,7 @@ class MuJoCoSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
     """
 
     def __init__(
@@ -682,7 +683,7 @@ class MuJoCoSolver(SolverBase):
         register_collision_groups: bool = True,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
-        update_data_every: int = 1,
+        update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
     ):
         """
@@ -701,7 +702,7 @@ class MuJoCoSolver(SolverBase):
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
-            update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
 
         """
@@ -733,25 +734,14 @@ class MuJoCoSolver(SolverBase):
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
             )
-        self.update_data_every = update_data_every
+        self.update_data_interval = update_data_interval
         self._step = 0
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
-        """
-        Simulate the model for a given time step using the given control input.
-
-        Args:
-            model (Model): The model to simulate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
-        """
-
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self.update_mjc_data(self.mj_data, model, state_in)
             self.mj_model.opt.timestep = dt
@@ -759,7 +749,7 @@ class MuJoCoSolver(SolverBase):
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
             with wp.ScopedDevice(self.model.device):
@@ -770,9 +760,9 @@ class MuJoCoSolver(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
+        if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
-        if flags & (types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | types.NOTIFY_FLAG_DOF_PROPERTIES):
+        if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
 
     @staticmethod
@@ -1202,10 +1192,7 @@ class MuJoCoSolver(SolverBase):
             if not shapes:
                 return
             for shape in shapes:
-                if shape == model.shape_count - 1 and not model.ground:
-                    # skip ground plane
-                    continue
-                elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
+                if skip_visual_only_geoms and not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
                 #     # this is a shape in a different environment, skip it
@@ -1514,14 +1501,15 @@ class MuJoCoSolver(SolverBase):
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
             flags = (
-                types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
-                | types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
-                | types.NOTIFY_FLAG_DOF_PROPERTIES
+                newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
-            nconmax = max(model.rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            rigid_contact_max = newton.sim.count_rigid_contact_points(model)
+            nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
