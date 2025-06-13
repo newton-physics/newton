@@ -1014,6 +1014,7 @@ class MuJoCoSolver(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
+        maxhullvert: int = 64,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1248,6 +1249,7 @@ class MuJoCoSolver(SolverBase):
                         name=name,
                         uservert=mesh_src.vertices.flatten(),
                         userface=mesh_src.indices.flatten(),
+                        maxhullvert=maxhullvert,
                     )
                     geom_params["meshname"] = name
                 q = wp.quat(*shape_transform[shape, 3:])
