@@ -24,6 +24,7 @@
       ~SimRendererOpenGL.render_box
       ~SimRendererOpenGL.render_capsule
       ~SimRendererOpenGL.render_cone
+      ~SimRendererOpenGL.render_contacts
       ~SimRendererOpenGL.render_cylinder
       ~SimRendererOpenGL.render_ground
       ~SimRendererOpenGL.render_line_list

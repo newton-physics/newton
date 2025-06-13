@@ -35,7 +35,6 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     builder.add_joint_free(b)
 
     model = builder.finalize(device=device)
-    model.ground = False
 
     solver = solver_fn(model)
 
@@ -53,10 +52,10 @@ devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
     "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(
-        model, use_mujoco=True, update_data_every=0, disable_contacts=True
+        model, use_mujoco=True, update_data_interval=0, disable_contacts=True
     ),
     "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(
-        model, use_mujoco=False, update_data_every=0, disable_contacts=True
+        model, use_mujoco=False, update_data_interval=0, disable_contacts=True
     ),
     "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),

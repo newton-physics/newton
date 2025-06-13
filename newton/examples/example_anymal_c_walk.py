@@ -26,11 +26,9 @@ import torch
 import warp as wp
 
 import newton
-import newton.collision
-import newton.core.articulation
 import newton.examples
 import newton.utils
-from newton.core import Control, State
+from newton.sim import Control, State
 
 
 @wp.kernel
@@ -233,12 +231,10 @@ class Example:
             limit_ke=1.0e3,
             limit_kd=1.0e1,
         )
-        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            ke=2.0e3,
-            kd=5.0e2,
-            kf=1.0e2,
-            mu=0.75,
-        )
+        builder.default_shape_cfg.ke = 5.0e4
+        builder.default_shape_cfg.kd = 5.0e2
+        builder.default_shape_cfg.kf = 1.0e3
+        builder.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("anymal_c_simple_description")
 
@@ -250,6 +246,7 @@ class Example:
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
         )
+        builder.add_ground_plane()
 
         self.sim_time = 0.0
         self.sim_step = 0
@@ -306,15 +303,14 @@ class Example:
         self.model.body_mass = wp.array([27.99286, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505], dtype=wp.float32,)
         # fmt: on
 
-        self.model.ground = True
-
         self.solver = newton.solvers.FeatherstoneSolver(self.model)
         self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
+        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.controller = AnymalController(self.model, self.device)
 
@@ -327,10 +323,10 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            newton.collision.collide(self.model, self.state_0)
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

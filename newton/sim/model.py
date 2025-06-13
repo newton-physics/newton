@@ -20,10 +20,11 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from .contact import Contact
+from ..core.types import Devicelike
+from .contacts import Contacts
 from .control import Control
 from .state import State
-from .types import Devicelike, ModelShapeGeometry, ModelShapeMaterials
+from .types import ShapeGeometry, ShapeMaterials
 
 
 class Model:
@@ -33,9 +34,9 @@ class Model:
     all geometry, constraints, and parameters used to describe the simulation.
 
     Note:
-        It is strongly recommended to use the ModelBuilder to construct a simulation rather
-        than creating your own Model object directly, however it is possible to do so if
-        desired.
+        It is strongly recommended to use the ModelBuilder to construct a
+        simulation rather than creating your own Model object directly,
+        however it is possible to do so if desired.
     """
 
     def __init__(self, device: Devicelike | None = None):
@@ -91,9 +92,9 @@ class Model:
         """Rigid shape flags, shape [shape_count], uint32."""
         self.body_shapes = {}
         """Mapping from body index to list of attached shape indices."""
-        self.shape_materials = ModelShapeMaterials()
+        self.shape_materials = ShapeMaterials()
         """Rigid shape contact materials."""
-        self.shape_geo = ModelShapeGeometry()
+        self.shape_geo = ShapeGeometry()
         """Shape geometry properties (geo type, scale, thickness, etc.)."""
         self.shape_geo_src = []
         """List of source geometry objects (e.g., `wp.Mesh`, `SDF`) used for rendering and broadphase."""
@@ -101,8 +102,6 @@ class Model:
         """List of finalized `wp.Mesh` objects."""
         self.geo_sdfs = []
         """List of finalized `SDF` objects."""
-        self.ground_plane_params = {}
-        """Parameters used to define the ground plane, typically set by `ModelBuilder`."""
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
@@ -114,12 +113,8 @@ class Model:
         """Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
-        self.shape_ground_contact_pairs = None
-        """Pairs of shape, ground indices that may collide, shape [ground_contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
-        """Number of potential shape-shape contact pairs."""
-        self.shape_ground_contact_pair_count = 0
-        """Number of potential shape-ground contact pairs."""
+        """Number of shape contact pairs."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -260,10 +255,6 @@ class Model:
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
 
-        self.soft_contact_radius = 0.2
-        """Contact radius used by :class:`~newton.solvers.VBDSolver` for self-collisions. Default is 0.2."""
-        self.soft_contact_margin = 0.2
-        """Contact margin for generation of soft contacts. Default is 0.2."""
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`). Default is 1.0e3."""
         self.soft_contact_kd = 10.0
@@ -275,73 +266,12 @@ class Model:
         self.soft_contact_restitution = 0.0
         """Restitution coefficient of soft contacts (used by :class:`XPBDSolver`). Default is 0.0."""
 
-        self.soft_contact_count = 0
-        """Number of active particle-shape contacts, shape [1], int. Initialized as an int scalar."""
-        self.soft_contact_particle = None
-        """Index of particle per soft contact point, shape [soft_contact_max], int."""
-        self.soft_contact_shape = None
-        """Index of shape per soft contact point, shape [soft_contact_max], int."""
-        self.soft_contact_body_pos = None
-        """Positional offset of soft contact point in body frame, shape [soft_contact_max], vec3."""
-        self.soft_contact_body_vel = None
-        """Linear velocity of soft contact point in body frame, shape [soft_contact_max], vec3."""
-        self.soft_contact_normal = None
-        """Contact surface normal of soft contact point in world space, shape [soft_contact_max], vec3."""
-        self.soft_contact_tids = None
-        """Thread indices of the soft contact points, shape [soft_contact_max], int."""
-
-        self.rigid_contact_max = 0
-        """Maximum number of potential rigid body contact points to generate ignoring the `rigid_mesh_contact_max` limit."""
-        self.rigid_contact_max_limited = 0
-        """Maximum number of potential rigid body contact points to generate respecting the `rigid_mesh_contact_max` limit."""
-        self.rigid_mesh_contact_max = 0
-        """Maximum number of rigid body contact points to generate per mesh (0 = unlimited, default)."""
-        self.rigid_contact_margin = 0.0
-        """Contact margin for generation of rigid body contacts."""
         self.rigid_contact_torsional_friction = 0.0
         """Torsional friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
-        self.enable_tri_collisions = False
-        """Whether to enable triangle-triangle collisions for meshes."""
 
-        self.rigid_contact_count = None
-        """Number of active shape-shape contacts, shape [1], int."""
-        self.rigid_contact_point0 = None
-        """Contact point relative to frame of body 0, shape [rigid_contact_max], vec3."""
-        self.rigid_contact_point1 = None
-        """Contact point relative to frame of body 1, shape [rigid_contact_max], vec3."""
-        self.rigid_contact_offset0 = None
-        """Contact offset due to contact thickness relative to body 0, shape [rigid_contact_max], vec3."""
-        self.rigid_contact_offset1 = None
-        """Contact offset due to contact thickness relative to body 1, shape [rigid_contact_max], vec3."""
-        self.rigid_contact_normal = None
-        """Contact normal in world space, shape [rigid_contact_max], vec3."""
-        self.rigid_contact_thickness = None
-        """Total contact thickness, shape [rigid_contact_max], float."""
-        self.rigid_contact_shape0 = None
-        """Index of shape 0 per contact, shape [rigid_contact_max], int."""
-        self.rigid_contact_shape1 = None
-        """Index of shape 1 per contact, shape [rigid_contact_max], int."""
-        self.rigid_contact_tids = None
-        """Triangle indices of the contact points, shape [rigid_contact_max], int."""
-        self.rigid_contact_pairwise_counter = None
-        """Pairwise counter for contact generation, shape [rigid_contact_max], int."""
-        self.rigid_contact_broad_shape0 = None
-        """Broadphase shape index of shape 0 per contact, shape [rigid_contact_max], int."""
-        self.rigid_contact_broad_shape1 = None
-        """Broadphase shape index of shape 1 per contact, shape [rigid_contact_max], int."""
-        self.rigid_contact_point_id = None
-        """Contact point ID, shape [rigid_contact_max], int."""
-        self.rigid_contact_point_limit = None
-        """Contact point limit, shape [rigid_contact_max], int."""
-
-        # toggles ground contact for all shapes
-        self.ground = True
-        """Whether the ground plane and ground contacts are enabled."""
-        self.ground_plane = None
-        """Ground plane 3D normal and offset, shape [4], float."""
-        self.up_vector = np.array((0.0, 1.0, 0.0))
+        self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis, 0 for x, 1 for y, 2 for z."""
@@ -454,137 +384,58 @@ class Model:
             c.muscle_activations = self.muscle_activations
         return c
 
-    def contact(self, requires_grad: bool | None = None) -> Contact:
-        return Contact()
-
-    def _allocate_soft_contacts(self, target, count, requires_grad=False):
-        with wp.ScopedDevice(self.device):
-            target.soft_contact_count = wp.zeros(1, dtype=wp.int32)
-            target.soft_contact_particle = wp.zeros(count, dtype=int)
-            target.soft_contact_shape = wp.zeros(count, dtype=int)
-            target.soft_contact_body_pos = wp.zeros(count, dtype=wp.vec3, requires_grad=requires_grad)
-            target.soft_contact_body_vel = wp.zeros(count, dtype=wp.vec3, requires_grad=requires_grad)
-            target.soft_contact_normal = wp.zeros(count, dtype=wp.vec3, requires_grad=requires_grad)
-            target.soft_contact_tids = wp.zeros(self.particle_count * (self.shape_count - 1), dtype=int)
-
-    def allocate_soft_contacts(self, count, requires_grad=False):
-        self._allocate_soft_contacts(self, count, requires_grad)
-
-    def count_contact_points(self):
+    def collide(
+        self: Model,
+        state: State,
+        collision_pipeline: CollisionPipeline | None = None,
+        rigid_contact_max_per_pair: int | None = None,
+        rigid_contact_margin: float = 0.01,
+        soft_contact_max: int | None = None,
+        soft_contact_margin: float = 0.01,
+        edge_sdf_iter: int = 10,
+        iterate_mesh_vertices: bool = True,
+        requires_grad: bool | None = None,
+    ) -> Contacts:
         """
-        Counts the maximum number of rigid contact points that need to be allocated.
-        This function returns two values corresponding to the maximum number of potential contacts
-        excluding the limiting from `Model.rigid_mesh_contact_max` and the maximum number of
-        contact points that may be generated when considering the `Model.rigid_mesh_contact_max` limit.
+        Generates contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.
 
-        :returns:
-            - potential_count (int): Potential number of contact points
-            - actual_count (int): Actual number of contact points
+        Args:
+            state (State): The current state of the model.
+            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation. If not provided, a new one will be created if it hasn't been constructed before for this model.
+            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair. If None, a kernel is launched to count the number of possible contacts.
+            rigid_contact_margin (float, optional): Margin for rigid contact generation. Default is 0.01.
+            soft_contact_max (int, optional): Maximum number of soft contacts. If None, a kernel is launched to count the number of possible contacts.
+            soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
+            edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
+            iterate_mesh_vertices (bool, optional): Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box <> mesh collision). Default is True.
+            requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
+
+        Returns:
+            Contacts: The contact object containing collision information.
         """
-        from newton.collision.collide import count_contact_points
+        from .collide import CollisionPipeline
 
-        # calculate the potential number of shape pair contact points
-        contact_count = wp.zeros(2, dtype=wp.int32, device=self.device)
-        wp.launch(
-            kernel=count_contact_points,
-            dim=self.shape_contact_pair_count,
-            inputs=[
-                self.shape_contact_pairs,
-                self.shape_geo,
-                self.rigid_mesh_contact_max,
-            ],
-            outputs=[contact_count],
-            device=self.device,
-            record_tape=False,
-        )
-        # count ground contacts
-        wp.launch(
-            kernel=count_contact_points,
-            dim=self.shape_ground_contact_pair_count,
-            inputs=[
-                self.shape_ground_contact_pairs,
-                self.shape_geo,
-                self.rigid_mesh_contact_max,
-            ],
-            outputs=[contact_count],
-            device=self.device,
-            record_tape=False,
-        )
-        counts = contact_count.numpy()
-        potential_count = int(counts[0])
-        actual_count = int(counts[1])
-        return potential_count, actual_count
+        if requires_grad is None:
+            requires_grad = self.requires_grad
 
-    def allocate_rigid_contacts(self, target=None, count=None, limited_contact_count=None, requires_grad=False):
-        if count is not None:
-            # potential number of contact points to consider
-            self.rigid_contact_max = count
-        if limited_contact_count is not None:
-            self.rigid_contact_max_limited = limited_contact_count
-        if target is None:
-            target = self
-
-        with wp.ScopedDevice(self.device):
-            # serves as counter of the number of active contact points
-            target.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
-            # contact point ID within the (shape_a, shape_b) contact pair
-            target.rigid_contact_point_id = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
-            # position of contact point in body 0's frame before the integration step
-            target.rigid_contact_point0 = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.vec3, requires_grad=requires_grad
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
+        elif not hasattr(self, "_collision_pipeline"):
+            self._collision_pipeline = CollisionPipeline.from_model(
+                self,
+                rigid_contact_max_per_pair,
+                rigid_contact_margin,
+                soft_contact_max,
+                soft_contact_margin,
+                edge_sdf_iter,
+                iterate_mesh_vertices,
+                requires_grad,
             )
-            # position of contact point in body 1's frame before the integration step
-            target.rigid_contact_point1 = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.vec3, requires_grad=requires_grad
-            )
-            # moment arm before the integration step resulting from thickness displacement added to contact point 0 in body 0's frame (used in XPBD contact friction handling)
-            target.rigid_contact_offset0 = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.vec3, requires_grad=requires_grad
-            )
-            # moment arm before the integration step resulting from thickness displacement added to contact point 1 in body 1's frame (used in XPBD contact friction handling)
-            target.rigid_contact_offset1 = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.vec3, requires_grad=requires_grad
-            )
-            # contact normal in world frame
-            target.rigid_contact_normal = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.vec3, requires_grad=requires_grad
-            )
-            # combined thickness of both shapes
-            target.rigid_contact_thickness = wp.zeros(
-                self.rigid_contact_max_limited, dtype=wp.float32, requires_grad=requires_grad
-            )
-            # ID of the first shape in the contact pair
-            target.rigid_contact_shape0 = wp.zeros(self.rigid_contact_max_limited, dtype=wp.int32)
-            # ID of the second shape in the contact pair
-            target.rigid_contact_shape1 = wp.zeros(self.rigid_contact_max_limited, dtype=wp.int32)
 
-            # shape IDs of potential contact pairs found during broadphase
-            target.rigid_contact_broad_shape0 = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
-            target.rigid_contact_broad_shape1 = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
+        # update any additional parameters
+        self._collision_pipeline.rigid_contact_margin = rigid_contact_margin
+        self._collision_pipeline.soft_contact_margin = soft_contact_margin
+        self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
+        self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
-            if self.rigid_mesh_contact_max > 0:
-                # add additional buffers to track how many contact points are generated per contact pair
-                # (significantly increases memory usage, only enable if mesh contacts need to be pruned)
-                if self.shape_count >= 46340:
-                    # clip the number of potential contacts to avoid signed 32-bit integer overflow
-                    # i.e. when the number of shapes exceeds sqrt(2**31 - 1)
-                    max_pair_count = 2**31 - 1
-                else:
-                    max_pair_count = self.shape_count * self.shape_count
-                # maximum number of contact points per contact pair
-                target.rigid_contact_point_limit = wp.zeros(max_pair_count, dtype=wp.int32)
-                # currently found contacts per contact pair
-                target.rigid_contact_pairwise_counter = wp.zeros(max_pair_count, dtype=wp.int32)
-            else:
-                target.rigid_contact_point_limit = None
-                target.rigid_contact_pairwise_counter = None
-
-            # ID of thread that found the current contact point
-            target.rigid_contact_tids = wp.zeros(self.rigid_contact_max, dtype=wp.int32)
-
-    @property
-    def soft_contact_max(self):
-        """Maximum number of soft contacts that can be registered"""
-        if self.soft_contact_particle is None:
-            return 0
-        return len(self.soft_contact_particle)
+        return self._collision_pipeline.collide(self, state)

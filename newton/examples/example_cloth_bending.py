@@ -74,23 +74,23 @@ class Example:
         )
 
         builder.color(include_bending=True)
+        builder.add_ground_plane()
         self.model = builder.finalize()
-        self.model.ground = True
         self.model.soft_contact_ke = 1.0e2
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
-
-        self.model.soft_contact_radius = 0.2
-        self.model.soft_contact_margin = 0.35
 
         self.solver = newton.solvers.VBDSolver(
             self.model,
             self.iterations,
             handle_self_contact=True,
+            soft_contact_radius=0.2,
+            soft_contact_margin=0.35,
         )
-        self.state0 = self.model.state()
-        self.state1 = self.model.state()
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
         if stage_path is not None:
             self.renderer = newton.utils.SimRendererOpenGL(
@@ -106,9 +106,10 @@ class Example:
             self.cuda_graph = capture.graph
 
     def integrate_frame_substeps(self):
+        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.num_substeps):
-            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
-            (self.state0, self.state1) = (self.state1, self.state0)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.dt)
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def advance_frame(self):
         with wp.ScopedTimer("step", print=False, dict=self.profiler):
@@ -129,7 +130,7 @@ class Example:
             return
 
         self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state0)
+        self.renderer.render(self.state_0)
         self.renderer.end_frame()
 
 

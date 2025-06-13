@@ -27,9 +27,8 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.collision
-import newton.core.articulation
 import newton.examples
+import newton.sim
 import newton.utils
 
 
@@ -50,6 +49,7 @@ class Example:
             articulation_builder,
             xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
+            enable_self_collisions=False,
         )
         articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
         articulation_builder.joint_target[-12:] = articulation_builder.joint_q[-12:]
@@ -69,14 +69,16 @@ class Example:
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 
+        builder.add_ground_plane()
+
         np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
-        self.model.ground = True
 
         self.solver = newton.solvers.XPBDSolver(self.model)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model)
+        # self.solver = newton.solvers.MuJoCoSolver(self.model)
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
@@ -86,8 +88,9 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
-        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
@@ -101,8 +104,8 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            newton.collision.collide(self.model, self.state_0)
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.contacts = self.model.collide(self.state_0)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -120,6 +123,7 @@ class Example:
         with wp.ScopedTimer("render"):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
+            self.renderer.render_contacts(self.state_0, self.contacts, contact_point_radius=1e-2)
             self.renderer.end_frame()
 
 
@@ -134,8 +138,8 @@ if __name__ == "__main__":
         default="example_quadruped.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--num_frames", type=int, default=30000, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 

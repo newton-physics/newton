@@ -21,6 +21,7 @@
       ~SimRendererUsd.render_box
       ~SimRendererUsd.render_capsule
       ~SimRendererUsd.render_cone
+      ~SimRendererUsd.render_contacts
       ~SimRendererUsd.render_cylinder
       ~SimRendererUsd.render_line_list
       ~SimRendererUsd.render_plane

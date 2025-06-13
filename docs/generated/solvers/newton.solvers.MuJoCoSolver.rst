@@ -19,7 +19,7 @@
       ~MuJoCoSolver.convert_to_mjc
       ~MuJoCoSolver.integrate_bodies
       ~MuJoCoSolver.integrate_particles
-      ~MuJoCoSolver.step
+      ~MuJoCoSolver.update_joint_properties
    
    
 

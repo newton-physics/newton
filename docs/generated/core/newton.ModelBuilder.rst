@@ -22,6 +22,7 @@
       ~ModelBuilder.add_cloth_mesh
       ~ModelBuilder.add_edge
       ~ModelBuilder.add_edges
+      ~ModelBuilder.add_ground_plane
       ~ModelBuilder.add_joint
       ~ModelBuilder.add_joint_ball
       ~ModelBuilder.add_joint_compound
@@ -54,7 +55,6 @@
       ~ModelBuilder.finalize
       ~ModelBuilder.plot_articulation
       ~ModelBuilder.set_coloring
-      ~ModelBuilder.set_ground_plane
    
    
 

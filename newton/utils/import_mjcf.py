@@ -24,8 +24,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Mesh, ModelBuilder, quat_between_axes
+from newton.core import quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
+from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def parse_mjcf(
@@ -269,8 +271,8 @@ def parse_mjcf(
 
             shape_cfg = builder.default_shape_cfg.copy()
             shape_cfg.is_visible = visible
-            shape_cfg.has_ground_collision = not just_visual
             shape_cfg.has_shape_collision = not just_visual
+            shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
             shape_kwargs = {

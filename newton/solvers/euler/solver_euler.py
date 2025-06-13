@@ -15,12 +15,8 @@
 
 import warp as wp
 
-from newton.core import (
-    Contact,
-    Control,
-    Model,
-    State,
-)
+from newton.core.types import override
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 from .kernels import (
@@ -29,7 +25,6 @@ from .kernels import (
     eval_body_joint_forces,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
-    eval_particle_ground_contact_forces,
     eval_spring_forces,
     eval_tetrahedral_forces,
     eval_triangle_contact_forces,
@@ -60,6 +55,7 @@ class SemiImplicitSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
 
     """
 
@@ -86,13 +82,14 @@ class SemiImplicitSolver(SolverBase):
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
 
+    @override
     def step(
         self,
         model: Model,
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contact,
+        contacts: Contacts,
         dt: float,
     ):
         with wp.ScopedTimer("simulate", False):
@@ -129,14 +126,13 @@ class SemiImplicitSolver(SolverBase):
             # particle-particle interactions
             eval_particle_forces(model, state_in, particle_f)
 
-            # particle ground contacts
-            eval_particle_ground_contact_forces(model, state_in, particle_f)
-
             # body contacts
-            eval_body_contact_forces(model, state_in, particle_f, friction_smoothing=self.friction_smoothing)
+            eval_body_contact_forces(model, state_in, contacts, friction_smoothing=self.friction_smoothing)
 
             # particle shape contact
-            eval_particle_body_contact_forces(model, state_in, particle_f, body_f, body_f_in_world_frame=False)
+            eval_particle_body_contact_forces(
+                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
+            )
 
             # muscles
             if False:
