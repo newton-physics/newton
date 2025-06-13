@@ -133,7 +133,7 @@ solvers = {
     "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
 }
-for device in ["cpu"]:
+for device in devices:
     for solver_name, solver_fn in solvers.items():
         # add_function_test(TestBodyForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
