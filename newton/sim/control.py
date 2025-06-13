@@ -45,7 +45,7 @@ class Control:
         """
         Array of joint targets with shape ``(joint_dof_count,)`` and type ``float``.
         Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
-        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_axis_mode`.
+        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_dof_mode`.
 
         The joint targets are defined for any joint type, except for free joints.
         """

@@ -241,7 +241,7 @@ def CreateSimRenderer(renderer):
                     joint_type = model.joint_type.numpy()
                     joint_axis = model.joint_axis.numpy()
                     joint_qd_start = model.joint_qd_start.numpy()
-                    joint_axis_dim = model.joint_axis_dim.numpy()
+                    joint_dof_dim = model.joint_dof_dim.numpy()
                     joint_parent = model.joint_parent.numpy()
                     joint_child = model.joint_child.numpy()
                     joint_tf = model.joint_X_p.numpy()
@@ -276,8 +276,8 @@ def CreateSimRenderer(renderer):
                             body = None
                         # if body == -1:
                         #     continue
-                        num_linear_axes = int(joint_axis_dim[i][0])
-                        num_angular_axes = int(joint_axis_dim[i][1])
+                        num_linear_axes = int(joint_dof_dim[i][0])
+                        num_angular_axes = int(joint_dof_dim[i][1])
 
                         # find a good scale for the arrow based on the average radius
                         # of the shapes attached to the joint child body
