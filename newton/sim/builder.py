@@ -2583,8 +2583,7 @@ class ModelBuilder:
         for y in range(0, dim_y + 1):
             for x in range(0, dim_x + 1):
                 local_pos = wp.vec3(x * cell_x, y * cell_y, 0.0)
-                world_pos = wp.quat_rotate(rot, local_pos) + pos
-                vertices.append(world_pos)
+                vertices.append(local_pos)
                 if x > 0 and y > 0:
                     v0 = grid_index(x - 1, y - 1, dim_x + 1)
                     v1 = grid_index(x, y - 1, dim_x + 1)
