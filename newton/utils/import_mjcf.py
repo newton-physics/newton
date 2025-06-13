@@ -367,7 +367,7 @@ def parse_mjcf(
                     geom_up_axis = up_axis
 
                 if geom_type == "cylinder":
-                    s = builder.add_shape_cylinder(
+                    s = builder.add_shape_capsule(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
