@@ -2287,6 +2287,36 @@ class ModelBuilder:
 
         return particle_id
 
+    def add_particles(
+        self,
+        pos: list[Vec3],
+        vel: list[Vec3],
+        mass: list[float],
+        radius: list[float] | None = None,
+        flags: list[wp.uint32] | None = None,
+    ):
+        """Adds a group particles to the model.
+
+        Args:
+            pos: The initial positions of the particle.
+            vel: The initial velocities of the particle.
+            mass: The mass of the particles.
+            radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
+            flags: The flags that control the dynamical behavior of the particles, see PARTICLE_FLAG_* constants.
+
+        Note:
+            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+        """
+        self.particle_q.extend(pos)
+        self.particle_qd.extend(vel)
+        self.particle_mass.extend(mass)
+        if radius is None:
+            radius = [self.default_particle_radius] * len(pos)
+        if flags is None:
+            flags = [PARTICLE_FLAG_ACTIVE] * len(pos)
+        self.particle_radius.extend(radius)
+        self.particle_flags.extend(flags)
+
     def add_spring(self, i: int, j, ke: float, kd: float, control: float):
         """Adds a spring between two particles in the system
 
@@ -2822,16 +2852,22 @@ class ModelBuilder:
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
 
+        num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
 
         start_vertex = len(self.particle_q)
         start_tri = len(self.tri_indices)
 
         # particles
-        for v in vertices:
-            p = wp.quat_rotate(rot, v * scale) + pos
-
-            self.add_particle(p, vel, 0.0, radius=particle_radius)
+        # for v in vertices:
+        #     p = wp.quat_rotate(rot, v * scale) + pos
+        #     self.add_particle(p, vel, 0.0, radius=particle_radius)
+        vertices_np = np.array(vertices) * scale
+        rot_mat_np = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
+        verts_3d_np = np.dot(vertices_np, rot_mat_np.T) + pos
+        self.add_particles(
+            verts_3d_np.tolist(), [vel] * num_verts, mass=[0.0] * num_verts, radius=[particle_radius] * num_verts
+        )
 
         # triangles
         inds = start_vertex + np.array(indices)
