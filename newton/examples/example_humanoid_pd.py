@@ -26,8 +26,6 @@ import math
 
 import torch
 import warp as wp
-import numpy as np
-
 import newton
 import newton.examples
 import newton.utils
@@ -107,21 +105,6 @@ class Example:
         self.next_reset = 0.0
         self.humanoids = ArticulationView(self.model, "/World/envs/*/Robot/torso", include_free_joint=False)
 
-        # ===========================================================
-        # Set up motion parameters
-        # ===========================================================
-        self.motion_frequency = 0.5  # Hz - slow walking frequency
-        self.motion_amplitude = 0.3  # radians - moderate joint motion
-        
-        # Default joint positions (standing pose)
-        self.default_joint_positions = torch.zeros((self.num_envs, self.humanoids.joint_dof_count))
-        
-        # Simple motion pattern - alternating leg motion for "walking"
-        # We'll identify key joints and create a simple walking pattern
-        self.joint_names = []  # We'll populate this from the model
-        self.leg_joint_indices = []  # Indices of leg joints for walking motion
-        
-        # Get default positions from model
         if self.humanoids.include_free_joint:
             # combined root and dof transforms
             self.default_transforms = wp.to_torch(self.humanoids.get_attribute("joint_q", self.model)).clone()
@@ -134,20 +117,13 @@ class Example:
             # combined root and dof velocities
             self.default_velocities = wp.to_torch(self.humanoids.get_attribute("joint_qd", self.model)).clone()
         else:
-            # root transforms - make humanoid float in mid-air
             self.default_root_transforms = wp.to_torch(self.humanoids.get_root_transforms(self.model)).clone()
-            self.default_root_transforms[:, 2] = 2.0  # Float in mid-air
-            # Keep upright (identity quaternion)
-            self.default_root_transforms[:, 3] = 0.0  # qx
-            self.default_root_transforms[:, 4] = 0.0  # qy  
-            self.default_root_transforms[:, 5] = 0.0  # qz
-            self.default_root_transforms[:, 6] = 1.0  # qw
-            # dof transforms
+            self.default_root_transforms[:, 2] = 2.0
+            self.default_root_transforms[:, 3] = 0.0
+            self.default_root_transforms[:, 4] = 0.0 
+            self.default_root_transforms[:, 5] = 0.0 
             self.default_dof_transforms = wp.to_torch(self.humanoids.get_attribute("joint_q", self.model)).clone()
-            self.default_joint_positions = self.default_dof_transforms.clone()
-            # root velocities
             self.default_root_velocities = wp.to_torch(self.humanoids.get_root_velocities(self.model)).clone()
-            # dof velocities
             self.default_dof_velocities = wp.to_torch(self.humanoids.get_attribute("joint_qd", self.model)).clone()
 
 
@@ -222,8 +198,8 @@ class Example:
         # =========================
         joint_forces = 20.0 - 40.0 * torch.rand((self.num_envs, self.humanoids.joint_dof_count))
         if self.humanoids.include_free_joint:
-            # include the leading root joint (pad with zeros)
             joint_forces = torch.cat([torch.zeros((self.num_envs, 6)), joint_forces], axis=1)
+            
         #self.humanoids.set_attribute("joint_f", self.control, joint_forces)   # uncomment to apply force as well
 
         with wp.ScopedTimer("step", active=False):
