@@ -139,6 +139,8 @@ class Model:
         """Triangle element materials, shape [tri_count, 5], float."""
         self.tri_areas = None
         """Triangle element rest areas, shape [tri_count], float."""
+        self.tri_aniso_ke = None
+        """Triangle element aniso stretch stiffness(weft, warp, shear), shape [tri_count, 3], float."""
 
         self.edge_indices = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
@@ -148,6 +150,8 @@ class Model:
         """Bending edge rest length, shape [edge_count], float."""
         self.edge_bending_properties = None
         """Bending edge stiffness and damping parameters, shape [edge_count, 2], float."""
+        self.edge_bending_cot = None
+        """Bending edge cotangents, shape [edge_count, 4], float."""
         self.edge_constraint_lambdas = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
