@@ -789,7 +789,7 @@ class MuJoCoSolver(SolverBase):
             inputs=[
                 control.joint_target,
                 control.joint_f,
-                model.joint_axis_mode,
+                model.joint_dof_mode,
                 model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                 axes_per_env,
             ],
@@ -974,7 +974,8 @@ class MuJoCoSolver(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
-    ):
+        maxhullvert: int = 64,
+    ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
@@ -1372,12 +1373,12 @@ class MuJoCoSolver(SolverBase):
                         else:
                             args = actuator_args
 
-                        if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                        if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                             kp = joint_target_ke[ai]
                             kv = joint_target_kd[ai]
                             args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                        elif joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
                             kv = joint_target_kd[ai]
                             args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -1435,12 +1436,12 @@ class MuJoCoSolver(SolverBase):
                         else:
                             args = actuator_args
 
-                        if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                        if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                             kp = joint_target_ke[ai]
                             kv = joint_target_kd[ai]
                             args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                        elif joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
                             kv = joint_target_kd[ai]
                             args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -1519,9 +1520,9 @@ class MuJoCoSolver(SolverBase):
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
             flags = (
-                types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
-                | types.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
-                | types.NOTIFY_FLAG_DOF_PROPERTIES
+                newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
             self.notify_model_changed(flags)
 
