@@ -1055,7 +1055,7 @@ def broadphase_collision_pairs(
     elif actual_type_a == GEO_PLANE:
         return  # no plane-plane contacts
     else:
-        print("broadphase_collision_pairs: unsupported geometry type")
+        wp.printf("broadphase_collision_pairs: unsupported geometry type %i and %i\n", actual_type_a, actual_type_b)
 
     if num_contacts > 0:
         index = wp.atomic_add(contact_count, 0, num_contacts)
