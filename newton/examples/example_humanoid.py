@@ -64,6 +64,7 @@ class Example:
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
             ).tolist()
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        builder.add_ground_plane()
 
         self.sim_time = 0.0
         fps = 60
@@ -74,7 +75,6 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-        self.model.ground = True
 
         self.control = self.model.control()
 

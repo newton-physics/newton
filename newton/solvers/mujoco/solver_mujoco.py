@@ -22,8 +22,8 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core import Contact, Control, Model, State, types
 from newton.core.types import override
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 
@@ -598,6 +598,49 @@ def repeat_array_kernel(
     dst[tid] = src[src_idx]
 
 
+@wp.kernel
+def update_axis_properties_kernel(
+    joint_effort_limit: wp.array(dtype=float),
+    axis_to_actuator: wp.array(dtype=wp.int32),
+    axes_per_env: int,
+    # outputs
+    actuator_forcerange: wp.array2d(dtype=wp.vec2f),
+):
+    """Update actuator force ranges based on joint effort limits."""
+    tid = wp.tid()
+    worldid = tid // axes_per_env
+    axis_in_env = tid % axes_per_env
+
+    actuator_idx = axis_to_actuator[axis_in_env]
+    if actuator_idx >= 0:  # Valid actuator
+        effort_limit = joint_effort_limit[tid]
+        actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
+
+
+@wp.kernel
+def update_dof_properties_kernel(
+    joint_armature: wp.array(dtype=float),
+    joint_friction: wp.array(dtype=float),
+    dof_to_axis_map: wp.array(dtype=wp.int32),
+    dofs_per_env: int,
+    # outputs
+    dof_armature: wp.array2d(dtype=float),
+    dof_frictionloss: wp.array2d(dtype=float),
+):
+    """Update DOF armature and friction loss values."""
+    tid = wp.tid()
+    worldid = tid // dofs_per_env
+    dof_in_env = tid % dofs_per_env
+
+    # Update armature
+    dof_armature[worldid, dof_in_env] = joint_armature[tid]
+
+    # Update friction loss
+    axis_idx = dof_to_axis_map[tid]
+    if axis_idx >= 0:
+        dof_frictionloss[worldid, dof_in_env] = joint_friction[axis_idx]
+
+
 class MuJoCoSolver(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -620,6 +663,7 @@ class MuJoCoSolver(SolverBase):
         # simulation loop
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
     """
 
     def __init__(
@@ -639,7 +683,7 @@ class MuJoCoSolver(SolverBase):
         register_collision_groups: bool = True,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
-        update_data_every: int = 1,
+        update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
     ):
         """
@@ -658,7 +702,7 @@ class MuJoCoSolver(SolverBase):
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
-            update_data_every (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
 
         """
@@ -690,25 +734,14 @@ class MuJoCoSolver(SolverBase):
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
             )
-        self.update_data_every = update_data_every
+        self.update_data_interval = update_data_interval
         self._step = 0
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
-        """
-        Simulate the model for a given time step using the given control input.
-
-        Args:
-            model (Model): The model to simulate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
-        """
-
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self.update_mjc_data(self.mj_data, model, state_in)
             self.mj_model.opt.timestep = dt
@@ -716,7 +749,7 @@ class MuJoCoSolver(SolverBase):
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
-            if self.update_data_every > 0 and self._step % self.update_data_every == 0:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
             self.mjw_model.opt.timestep = dt
             with wp.ScopedDevice(self.model.device):
@@ -727,8 +760,10 @@ class MuJoCoSolver(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
+        if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
+        if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
+            self.update_joint_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1059,6 +1094,10 @@ class MuJoCoSolver(SolverBase):
         joint_target_ke = model.joint_target_ke.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_armature = model.joint_armature.numpy()
+        joint_effort_limit = model.joint_effort_limit.numpy()
+        # MoJoCo doesn't have velocity limit
+        # joint_velocity_limit = model.joint_velocity_limit.numpy()
+        joint_friction = model.joint_friction.numpy()
         body_q = model.body_q.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
@@ -1153,10 +1192,7 @@ class MuJoCoSolver(SolverBase):
             if not shapes:
                 return
             for shape in shapes:
-                if shape == model.shape_count - 1 and not model.ground:
-                    # skip ground plane
-                    continue
-                elif skip_visual_only_geoms and not (shape_flags[shape] & int(newton.core.SHAPE_FLAG_COLLIDE_SHAPES)):
+                if skip_visual_only_geoms and not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
                 # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
                 #     # this is a shape in a different environment, skip it
@@ -1311,6 +1347,8 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
+                    # Set friction
+                    joint_params["frictionloss"] = joint_friction[ai]
                     if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                         joint_params["stiffness"] = joint_target_ke[ai]
                         joint_params["damping"] = joint_target_kd[ai]
@@ -1340,6 +1378,11 @@ class MuJoCoSolver(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
+
+                        # Add effort limits from Newton model
+                        effort_limit = joint_effort_limit[ai]
+                        args["forcerange"] = [-effort_limit, effort_limit]
+
                         spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai] = actuator_count
                         actuator_count += 1
@@ -1356,6 +1399,8 @@ class MuJoCoSolver(SolverBase):
                         "pos": joint_pos,
                         # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
+                    # Set friction
+                    joint_params["frictionloss"] = joint_friction[ai]
                     if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                         joint_params["stiffness"] = joint_target_ke[ai]
                         joint_params["damping"] = joint_target_kd[ai]
@@ -1385,6 +1430,11 @@ class MuJoCoSolver(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
+
+                        # Add effort limits from Newton model
+                        effort_limit = joint_effort_limit[ai]
+                        args["forcerange"] = [-effort_limit, effort_limit]
+
                         spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai] = actuator_count
                         actuator_count += 1
@@ -1450,11 +1500,16 @@ class MuJoCoSolver(SolverBase):
 
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
-            flags = types.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+            flags = (
+                newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
+                | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
+            )
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
-            nconmax = max(model.rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            rigid_contact_max = newton.sim.count_rigid_contact_points(model)
+            nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
@@ -1485,10 +1540,10 @@ class MuJoCoSolver(SolverBase):
             # "jnt_range",
             # "jnt_actfrcrange",
             # "jnt_margin",
-            # "dof_armature",
+            "dof_armature",
             # "dof_damping",
             # "dof_invweight0",
-            # "dof_frictionloss",
+            "dof_frictionloss",
             # "dof_solimp",
             # "dof_solref",
             # "geom_matid",
@@ -1521,7 +1576,7 @@ class MuJoCoSolver(SolverBase):
             # "actuator_gainprm",
             # "actuator_biasprm",
             # "actuator_ctrlrange",
-            # "actuator_forcerange",
+            "actuator_forcerange",
             # "actuator_actrange",
             # "actuator_gear",
             # "pair_solref",
@@ -1592,3 +1647,50 @@ class MuJoCoSolver(SolverBase):
             outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
             device=self.model.device,
         )
+
+    def update_joint_properties(self):
+        """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        if not hasattr(self, "mjw_model") or self.mjw_model is None:
+            return
+
+        axes_per_env = self.model.joint_axis_count // self.model.num_envs
+        dofs_per_env = self.model.joint_dof_count // self.model.num_envs
+
+        # Update actuator force ranges (effort limits) if actuators exist
+        if (
+            hasattr(self.model, "mjc_axis_to_actuator")
+            and self.model.mjc_axis_to_actuator is not None
+            and hasattr(self.mjw_model, "actuator_forcerange")
+            and len(self.mjw_model.actuator_forcerange.shape) == 2
+        ):
+            wp.launch(
+                update_axis_properties_kernel,
+                dim=self.model.joint_axis_count,
+                inputs=[
+                    self.model.joint_effort_limit,
+                    self.model.mjc_axis_to_actuator,
+                    axes_per_env,
+                ],
+                outputs=[self.mjw_model.actuator_forcerange],
+                device=self.model.device,
+            )
+
+        # Update DOF properties (armature and friction) in a single kernel launch
+        if (
+            hasattr(self.mjw_model, "dof_armature")
+            and len(self.mjw_model.dof_armature.shape) == 2
+            and hasattr(self.mjw_model, "dof_frictionloss")
+            and len(self.mjw_model.dof_frictionloss.shape) == 2
+        ):
+            wp.launch(
+                update_dof_properties_kernel,
+                dim=self.model.joint_dof_count,
+                inputs=[
+                    self.model.joint_armature,
+                    self.model.joint_friction,
+                    self.model.dof_to_axis_map,
+                    dofs_per_env,
+                ],
+                outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+                device=self.model.device,
+            )

@@ -23,23 +23,18 @@
 ###########################################################################
 
 import math
-from os.path import join
 from typing import Optional, Union
 
 import numpy as np
 import warp as wp
-import warp.sim.render
 from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
 import newton.utils
-from newton import core
-from newton.collision.collide import collide
-from newton.core.articulation import eval_fk
-from newton.core.builder import ModelBuilder
+from newton.sim import Model, ModelBuilder, State, eval_fk
 from newton.solvers import FeatherstoneSolver, VBDSolver
-from newton.solvers.featherstone.solver_featherstone import transform_twist
+from newton.solvers.featherstone.kernels import transform_twist
 
 
 def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
@@ -94,7 +89,7 @@ def compute_ee_delta(
 
 
 def compute_body_jacobian(
-    model: wp.sim.Model,
+    model: Model,
     joint_q: wp.array,
     joint_qd: wp.array,
     body_id: Union[int, str],  # Can be either body index or body name
@@ -280,16 +275,9 @@ class ExampleClothManipulation:
         if not self.model.device.is_cuda:
             self.use_graph_capture = False
 
-        self.model.ground = False
-
-        self.model.soft_contact_radius = self.self_contact_radius
-        self.model.soft_contact_margin = self.self_contact_margin
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
-
-        self.model.joint_attach_ke = 32000.0
-        self.model.joint_attach_kd = 50.0
 
         if self.add_robot:
             self.episode_duration = np.sum(self.transition_duration)
@@ -305,13 +293,14 @@ class ExampleClothManipulation:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
+        self.contacts = self.model.collide(self.state_0)
 
         self.control = self.model.control()
 
         self.sim_time = 0.0
 
         # initialize robot solver
-        self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_every=self.num_substeps)
+        self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_interval=self.num_substeps)
         self.set_up_control()
 
         if self.add_cloth:
@@ -322,6 +311,8 @@ class ExampleClothManipulation:
             self.cloth_solver = VBDSolver(
                 self.model,
                 iterations=self.iterations,
+                soft_contact_radius=self.self_contact_radius,
+                soft_contact_margin=self.self_contact_margin,
                 handle_self_contact=True,
                 vertex_collision_buffer_pre_alloc=32,
                 edge_collision_buffer_pre_alloc=64,
@@ -384,9 +375,10 @@ class ExampleClothManipulation:
             self.cuda_graph = capture.graph
 
     def create_articulation(self, builder):
-        franka_panda_path = newton.examples.get_asset(join("franka_description", "robots", "frankaEmikaPanda.urdf"))
+        asset_path = newton.utils.download_asset("franka_description")
+
         newton.utils.parse_urdf(
-            franka_panda_path,
+            str(asset_path / "urdfs" / "fr3_franka_hand.urdf"),
             builder,
             up_axis=self.up_axis,
             xform=wp.transform(
@@ -460,7 +452,7 @@ class ExampleClothManipulation:
 
     def compute_body_jacobian(
         self,
-        model: wp.sim.Model,
+        model: Model,
         joint_q: wp.array,
         joint_qd: wp.array,
         include_rotation: bool = False,
@@ -469,7 +461,6 @@ class ExampleClothManipulation:
         Compute the Jacobian of the end effector's velocity related to joint_q
 
         """
-        # with wp.ScopedTimer("compute_body_jacobian"):
 
         joint_q.requires_grad = True
         joint_qd.requires_grad = True
@@ -495,7 +486,7 @@ class ExampleClothManipulation:
 
     def generate_control_joint_qd(
         self,
-        state_in: core.model.State,
+        state_in: State,
     ):
         t_mod = (
             self.sim_time
@@ -571,7 +562,7 @@ class ExampleClothManipulation:
                 self.renderer.end_frame()
 
     def cloth_sim_substep(self, state_in, state_out):
-        self.cloth_solver.step(self.model, state_in, state_out, self.control, None, self.sim_dt)
+        self.cloth_solver.step(self.model, state_in, state_out, self.control, self.contacts, self.sim_dt)
 
     def advance_frame(self):
         self.generate_control_joint_qd(self.state_0)
@@ -605,8 +596,8 @@ class ExampleClothManipulation:
                 self.model.particle_count = particle_count
                 self.model.gravity = wp.vec3(0, self.gravity, 0)
 
-            # # cloth sim
-            collide(self.model, self.state_0)
+            # cloth sim
+            self.contacts = self.model.collide(self.state_0)
 
             if self.add_cloth:
                 self.cloth_sim_substep(self.state_0, self.state_1)

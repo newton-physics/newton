@@ -18,7 +18,7 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core import PARTICLE_FLAG_ACTIVE
+from newton.geometry import PARTICLE_FLAG_ACTIVE
 
 
 class Example:
@@ -26,8 +26,8 @@ class Example:
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
-        self.num_substeps = 10
-        self.iterations = 100
+        self.num_substeps = 2
+        self.iterations = 50
         self.dt = self.frame_dt / self.num_substeps
         self.num_frames = num_frames
         self.sim_time = 0.0

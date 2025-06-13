@@ -15,7 +15,8 @@
 
 import warp as wp
 
-from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
+from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.sim import Contacts, Control, Model, State
 
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
@@ -219,7 +220,6 @@ class Style3DSolver(SolverBase):
         self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
-        self.collision_evaluation_kernel_launch_size = self.model.soft_contact_max
 
     @staticmethod
     def get_chebyshev_omega(omega: float, iter: int):
@@ -231,7 +231,7 @@ class Style3DSolver(SolverBase):
         else:
             return 4.0 / (4.0 - omega * rho * rho)
 
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
+    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if model is not self.model:
             raise ValueError("model must be the one used to initialize Style3DSolver")
 
