@@ -20,15 +20,22 @@ import warp as wp
 
 @wp.struct
 class NonZeroEntry:
+    """Represents a non-zero entry in a sparse matrix.
+    This structure stores the column index and corresponding value in a packed format, which provides
+    better cache locality for sequential access patterns.
+    """
+
     column_index: int
     value: float
 
 
 @wp.struct
 class SparseMatrixELL:
-    diag: wp.array(dtype=float)
-    num_nz: wp.array(dtype=int)
-    nz_ell: wp.array2d(dtype=NonZeroEntry)
+    """Represents a sparse matrix in ELLPACK (ELL) format."""
+
+    diag: wp.array(dtype=float)  # Matrix diagonal (explicit storage for flexible access patterns)
+    num_nz: wp.array(dtype=int)  # Non-zeros count per column
+    nz_ell: wp.array2d(dtype=NonZeroEntry)  # Padded ELL storage [column-major, fixed-height]
 
 
 @wp.func
@@ -158,36 +165,49 @@ def array_inner(
 
 
 class PcgSolver:
-    def __init__(self, dim: int, maxIter: int = 999):
+    """ """
+
+    def __init__(self, dim: int, device, maxIter: int = 999):
         self.dim = dim  # pre-allocation
-        self.r = wp.array(shape=dim, dtype=wp.vec3)
-        self.z = wp.array(shape=dim, dtype=wp.vec3)
-        self.p = wp.array(shape=dim, dtype=wp.vec3)
-        self.Ap = wp.array(shape=dim, dtype=wp.vec3)
-        self.pTAp = wp.array(shape=maxIter, dtype=float)
-        self.rTz = wp.array(shape=maxIter, dtype=float)
+        self.device = device
+        self.r = wp.array(shape=dim, dtype=wp.vec3, device=device)
+        self.z = wp.array(shape=dim, dtype=wp.vec3, device=device)
+        self.p = wp.array(shape=dim, dtype=wp.vec3, device=device)
+        self.Ap = wp.array(shape=dim, dtype=wp.vec3, device=device)
+        self.pTAp = wp.array(shape=maxIter, dtype=float, device=device)
+        self.rTz = wp.array(shape=maxIter, dtype=float, device=device)
 
     def step1_update_r(self, A: SparseMatrixELL, x: wp.array(dtype=wp.vec3), b: wp.array(dtype=wp.vec3)):
-        wp.launch(eval_residual_kernel, dim=self.dim, inputs=[A, x, b], outputs=[self.r])
+        wp.launch(eval_residual_kernel, dim=self.dim, inputs=[A, x, b], outputs=[self.r], device=self.device)
 
     def step2_update_z(self, inv_M: wp.array(dtype=Any)):
-        wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z])
+        wp.launch(array_mul_kernel, dim=self.dim, inputs=[inv_M, self.r], outputs=[self.z], device=self.device)
 
     def step3_update_rTz(self, iter: int):
         array_inner(self.r, self.z, self.rTz.ptr + iter * self.rTz.strides[0])
 
     def step4_update_p(self, iter: int):
-        wp.launch(update_cg_direnction_kernel, dim=self.dim, inputs=[iter, self.p, self.z], outputs=[self.rTz])
+        wp.launch(
+            update_cg_direnction_kernel,
+            dim=self.dim,
+            inputs=[iter, self.p, self.z],
+            outputs=[self.rTz],
+            device=self.device,
+        )
 
     def step5_update_Ap(self, A: SparseMatrixELL):
-        wp.launch(ell_mat_vel_mul_kernel, dim=self.dim, inputs=[A, self.p], outputs=[self.Ap])
+        wp.launch(ell_mat_vel_mul_kernel, dim=self.dim, inputs=[A, self.p], outputs=[self.Ap], device=self.device)
 
     def step6_update_pTAp(self, iter: int):
         array_inner(self.p, self.Ap, self.pTAp.ptr + iter * self.pTAp.strides[0])
 
     def step7_update_x_r(self, x: wp.array(dtype=wp.vec3), iter: int):
         wp.launch(
-            step_cg_kernel, dim=self.dim, inputs=[iter, self.rTz, self.pTAp, self.p, self.Ap], outputs=[x, self.r]
+            step_cg_kernel,
+            dim=self.dim,
+            inputs=[iter, self.rTz, self.pTAp, self.p, self.Ap],
+            outputs=[x, self.r],
+            device=self.device,
         )
 
     def solve(
@@ -226,7 +246,7 @@ if __name__ == "__main__":
 
     inv_M = wp.array([1.0 / diag_term] * dim, dtype=float)
 
-    solver = PcgSolver(dim)
+    solver = PcgSolver(dim, device="cuda:0")
     solver.solve(A, x0, b, inv_M, x1, iterations=30)
 
     rTr = wp.zeros(1, dtype=float)
