@@ -377,26 +377,27 @@ def jcalc_tau(
         axis_count = lin_axis_count + ang_axis_count
 
         for i in range(axis_count):
-            S_s = joint_S_s[dof_start + i]
+            j = dof_start + i
+            S_s = joint_S_s[j]
 
             q = joint_q[coord_start + i]
-            qd = joint_qd[dof_start + i]
-            act = joint_target[dof_start + i]
+            qd = joint_qd[j]
+            act = joint_target[j]
 
-            lower = joint_limit_lower[dof_start + i]
-            upper = joint_limit_upper[dof_start + i]
-            limit_ke = joint_limit_ke[dof_start + i]
-            limit_kd = joint_limit_kd[dof_start + i]
-            target_ke = joint_target_ke[dof_start + i]
-            target_kd = joint_target_kd[dof_start + i]
-            mode = joint_axis_mode[dof_start + i]
+            lower = joint_limit_lower[j]
+            upper = joint_limit_upper[j]
+            limit_ke = joint_limit_ke[j]
+            limit_kd = joint_limit_kd[j]
+            target_ke = joint_target_ke[j]
+            target_kd = joint_target_kd[j]
+            mode = joint_axis_mode[j]
 
             drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
 
             # total torque / force on the joint
-            t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[dof_start + i]
+            t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
 
-            tau[dof_start + i] = t
+            tau[j] = t
 
         return
 
