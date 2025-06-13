@@ -252,6 +252,7 @@ def apply_mjc_control_kernel(
         else:
             mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
 
+
 @wp.kernel
 def apply_mjc_qfrc_kernel(
     body_q: wp.array(dtype=wp.transform),
@@ -1386,15 +1387,15 @@ class MuJoCoSolver(SolverBase):
                         if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                             kp = joint_target_ke[ai]
                             kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
                             kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         else:
                             # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
                         # Add effort limits from Newton model
@@ -1449,15 +1450,15 @@ class MuJoCoSolver(SolverBase):
                         if joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
                             kp = joint_target_ke[ai]
                             kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         elif joint_axis_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
                             kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         else:
                             # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]  
+                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
                             args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
                         # Add effort limits from Newton model
