@@ -1209,6 +1209,7 @@ class MuJoCoSolver(SolverBase):
                         name=name,
                         uservert=mesh_src.vertices.flatten(),
                         userface=mesh_src.indices.flatten(),
+                        maxhullvert=maxhullvert,
                     )
                     geom_params["meshname"] = name
                 q = wp.quat(*shape_transform[shape, 3:])
