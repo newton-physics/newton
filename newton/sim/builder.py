@@ -379,7 +379,7 @@ class ModelBuilder:
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
-        self.joint_axis_mode = []
+        self.joint_dof_mode = []
         self.joint_limit_lower = []
         self.joint_limit_upper = []
         self.joint_limit_ke = []
@@ -396,7 +396,7 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
-        self.joint_axis_dim = []
+        self.joint_dof_dim = []
 
         self.articulation_start = []
         self.articulation_key = []
@@ -613,8 +613,8 @@ class ModelBuilder:
             "joint_X_c",
             "joint_armature",
             "joint_axis",
-            "joint_axis_dim",
-            "joint_axis_mode",
+            "joint_dof_dim",
+            "joint_dof_mode",
             "joint_key",
             "joint_qd",
             "joint_f",
@@ -797,12 +797,12 @@ class ModelBuilder:
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
         self.joint_key.append(key or f"joint_{self.joint_count}")
-        self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
+        self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_axis_mode.append(dim.mode)
+            self.joint_dof_mode.append(dim.mode)
             self.joint_target.append(dim.target)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
@@ -1430,17 +1430,17 @@ class ModelBuilder:
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
                 "axes": [],
-                "axis_dim": self.joint_axis_dim[i],
+                "axis_dim": self.joint_dof_dim[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
             }
-            num_lin_axes, num_ang_axes = self.joint_axis_dim[i]
+            num_lin_axes, num_ang_axes = self.joint_dof_dim[i]
             for j in range(qd_start, qd_start + num_lin_axes + num_ang_axes):
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-                        "axis_mode": self.joint_axis_mode[j],
+                        "axis_mode": self.joint_dof_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
@@ -1608,14 +1608,14 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-        self.joint_axis_mode.clear()
+        self.joint_dof_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
         self.joint_limit_kd.clear()
-        self.joint_axis_dim.clear()
+        self.joint_dof_dim.clear()
         self.joint_target.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
@@ -1630,10 +1630,10 @@ class ModelBuilder:
             self.joint_enabled.append(joint["enabled"])
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
-            self.joint_axis_dim.append(joint["axis_dim"])
+            self.joint_dof_dim.append(joint["axis_dim"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-                self.joint_axis_mode.append(axis["axis_mode"])
+                self.joint_dof_mode.append(axis["axis_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
@@ -3281,7 +3281,7 @@ class ModelBuilder:
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_axis_dim = wp.array(np.array(self.joint_axis_dim), dtype=wp.int32, ndim=2)
+            m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
@@ -3299,7 +3299,7 @@ class ModelBuilder:
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
+            m.joint_dof_mode = wp.array(self.joint_dof_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)

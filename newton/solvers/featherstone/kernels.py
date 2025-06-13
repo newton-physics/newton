@@ -340,7 +340,7 @@ def jcalc_tau(
     joint_qd: wp.array(dtype=float),
     joint_f: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
-    joint_axis_mode: wp.array(dtype=int),
+    joint_dof_mode: wp.array(dtype=int),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     coord_start: int,
@@ -390,7 +390,7 @@ def jcalc_tau(
             limit_kd = joint_limit_kd[j]
             target_ke = joint_target_ke[j]
             target_kd = joint_target_kd[j]
-            mode = joint_axis_mode[j]
+            mode = joint_dof_mode[j]
 
             drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
 
@@ -550,7 +550,7 @@ def compute_link_transform(
     joint_X_c: wp.array(dtype=wp.transform),
     body_X_com: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
@@ -570,8 +570,8 @@ def compute_link_transform(
 
     type = joint_type[i]
     qd_start = joint_qd_start[i]
-    lin_axis_count = joint_axis_dim[i, 0]
-    ang_axis_count = joint_axis_dim[i, 1]
+    lin_axis_count = joint_dof_dim[i, 0]
+    ang_axis_count = joint_dof_dim[i, 1]
     coord_start = joint_q_start[i]
 
     # compute transform across joint
@@ -604,7 +604,7 @@ def eval_rigid_fk(
     joint_X_c: wp.array(dtype=wp.transform),
     body_X_com: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
@@ -628,7 +628,7 @@ def eval_rigid_fk(
             joint_X_c,
             body_X_com,
             joint_axis,
-            joint_axis_dim,
+            joint_dof_dim,
             body_q,
             body_q_com,
         )
@@ -676,7 +676,7 @@ def compute_link_velocity(
     joint_qd_start: wp.array(dtype=int),
     joint_qd: wp.array(dtype=float),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_I_m: wp.array(dtype=wp.spatial_matrix),
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
@@ -704,8 +704,8 @@ def compute_link_velocity(
         X_wpj = X_wp * X_wpj
 
     # compute motion subspace and velocity across the joint (also stores S_s to global memory)
-    lin_axis_count = joint_axis_dim[i, 0]
-    ang_axis_count = joint_axis_dim[i, 1]
+    lin_axis_count = joint_dof_dim[i, 0]
+    ang_axis_count = joint_dof_dim[i, 1]
     v_j_s = jcalc_motion(
         type,
         joint_axis,
@@ -761,7 +761,7 @@ def eval_rigid_id(
     joint_qd_start: wp.array(dtype=int),
     joint_qd: wp.array(dtype=float),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_I_m: wp.array(dtype=wp.spatial_matrix),
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
@@ -790,7 +790,7 @@ def eval_rigid_id(
             joint_qd_start,
             joint_qd,
             joint_axis,
-            joint_axis_dim,
+            joint_dof_dim,
             body_I_m,
             body_q,
             body_q_com,
@@ -812,8 +812,8 @@ def eval_rigid_tau(
     joint_child: wp.array(dtype=int),
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
-    joint_axis_mode: wp.array(dtype=int),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_mode: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_f: wp.array(dtype=float),
@@ -848,8 +848,8 @@ def eval_rigid_tau(
         child = joint_child[i]
         dof_start = joint_qd_start[i]
         coord_start = joint_q_start[i]
-        lin_axis_count = joint_axis_dim[i, 0]
-        ang_axis_count = joint_axis_dim[i, 1]
+        lin_axis_count = joint_dof_dim[i, 0]
+        ang_axis_count = joint_dof_dim[i, 1]
 
         # total forces on body
         f_b_s = body_fb_s[child]
@@ -869,7 +869,7 @@ def eval_rigid_tau(
             joint_qd,
             joint_f,
             joint_target,
-            joint_axis_mode,
+            joint_dof_mode,
             joint_limit_lower,
             joint_limit_upper,
             coord_start,
@@ -1319,7 +1319,7 @@ def integrate_generalized_joints(
     joint_type: wp.array(dtype=int),
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_qdd: wp.array(dtype=float),
@@ -1334,8 +1334,8 @@ def integrate_generalized_joints(
     type = joint_type[index]
     coord_start = joint_q_start[index]
     dof_start = joint_qd_start[index]
-    lin_axis_count = joint_axis_dim[index, 0]
-    ang_axis_count = joint_axis_dim[index, 1]
+    lin_axis_count = joint_dof_dim[index, 0]
+    ang_axis_count = joint_dof_dim[index, 1]
 
     jcalc_integrate(
         type,
