@@ -488,19 +488,14 @@ def parse_mjcf(
         )
 
         if joint_type is None:
+            joint_type = newton.JOINT_D6
             if len(linear_axes) == 0:
                 if len(angular_axes) == 0:
                     joint_type = newton.JOINT_FIXED
                 elif len(angular_axes) == 1:
                     joint_type = newton.JOINT_REVOLUTE
-                elif len(angular_axes) == 2:
-                    joint_type = newton.JOINT_UNIVERSAL
-                elif len(angular_axes) == 3:
-                    joint_type = newton.JOINT_COMPOUND
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = newton.JOINT_PRISMATIC
-            else:
-                joint_type = newton.JOINT_D6
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
