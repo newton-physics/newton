@@ -19,7 +19,7 @@ from newton.core import PARTICLE_FLAG_ACTIVE, Contact, Control, Model, State
 
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
-from .linear_solver import SparseMatrixELL
+from .linear_solver import PcgSolver, SparseMatrixELL
 
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
@@ -112,7 +112,7 @@ def init_step_kernel(
         dx[tid] = v_prev * dt
 
         # temp
-        x_curr[tid] = x_last + v_prev * dt
+        # x_curr[tid] = x_last + v_prev * dt
 
 
 @wp.kernel
@@ -138,6 +138,18 @@ def PD_jacobi_step_kernel(
 ):
     tid = wp.tid()
     x_out[tid] = x_in[tid] + rhs[tid] * inv_diags[tid]
+
+
+@wp.kernel
+def nonlinear_step_kernel(
+    x_in: wp.array(dtype=wp.vec3),
+    # outputs
+    x_out: wp.array(dtype=wp.vec3),
+    dx: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    x_out[tid] = x_in[tid] + dx[tid]
+    dx[tid] = wp.vec3(0.0)
 
 
 @wp.kernel
@@ -190,9 +202,10 @@ class Style3DSolver(SolverBase):
         iterations=10,
     ):
         super().__init__(model)
-        self.enable_chebyshev = True
+        self._enable_chebyshev = True
         self.nonlinear_iterations = iterations
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
+        self.linear_solver = PcgSolver(model.particle_count, self.device)
 
         self.A = SparseMatrixELL()
         self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
@@ -277,33 +290,47 @@ class Style3DSolver(SolverBase):
                 device=self.device,
             )
 
-            wp.launch(
-                PD_jacobi_step_kernel,
-                dim=self.model.particle_count,
-                inputs=[
-                    self.rhs,
-                    state_in.particle_q,
-                    self.inv_diags,
-                ],
-                outputs=[
-                    self.temp_verts0,
-                ],
-                device=self.device,
-            )
+            if self.linear_solver is None:  # for debug
+                wp.launch(
+                    PD_jacobi_step_kernel,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self.rhs,
+                        state_in.particle_q,
+                        self.inv_diags,
+                    ],
+                    outputs=[
+                        self.temp_verts0,
+                    ],
+                    device=self.device,
+                )
 
-            if self.enable_chebyshev:
-                omega = self.get_chebyshev_omega(omega, _iter)
-                if omega > 1.0:
-                    wp.launch(
-                        apply_chebyshev_kernel,
-                        dim=self.model.particle_count,
-                        inputs=[omega, self.temp_verts1],
-                        outputs=[self.temp_verts0],
-                        device=self.device,
-                    )
-                self.temp_verts1.assign(state_in.particle_q)
+                if self._enable_chebyshev:
+                    omega = self.get_chebyshev_omega(omega, _iter)
+                    if omega > 1.0:
+                        wp.launch(
+                            apply_chebyshev_kernel,
+                            dim=self.model.particle_count,
+                            inputs=[omega, self.temp_verts1],
+                            outputs=[self.temp_verts0],
+                            device=self.device,
+                        )
+                    self.temp_verts1.assign(state_in.particle_q)
 
-            state_out.particle_q.assign(self.temp_verts0)
+                state_out.particle_q.assign(self.temp_verts0)
+            else:
+                self.linear_solver.solve(self.A, self.dx, self.rhs, self.inv_diags, self.dx, 10)
+
+                wp.launch(
+                    nonlinear_step_kernel,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        state_in.particle_q,
+                    ],
+                    outputs=[state_out.particle_q, self.dx],
+                    device=self.device,
+                )
+
             state_in.particle_q.assign(state_out.particle_q)
 
         wp.launch(
@@ -321,6 +348,7 @@ class Style3DSolver(SolverBase):
         tri_aniso_ke: list[list[int]],
         tri_areas: list[float],
     ):
-        self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-        self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finialize(self.device)
-        self.A.diag = wp.zeros_like(self.pd_diags)
+        with wp.ScopedTimer("Style3DSolver::precompute()"):
+            self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+            self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finialize(self.device)
+            self.A.diag = wp.zeros_like(self.pd_diags)
