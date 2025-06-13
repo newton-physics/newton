@@ -110,14 +110,14 @@ Axis-related quantities include the definition of the joint axis in :attr:`newto
 defined via :class:`newton.ModelBuilder.JointDofConfig`. The joint targets in :attr:`newton.Control.joint_target` are also
 stored in the same per-axis order.
 
-The :attr:`newton.Model.joint_axis_dim` array can be used to query the number of linear and angular dofs.
+The :attr:`newton.Model.joint_dof_dim` array can be used to query the number of linear and angular dofs.
 All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
 The indexing of the linear and angular degrees of freedom for a joint at a given ``joint_index`` is as follows:
 
 .. code-block:: python
 
-    num_linear_dofs = Model.joint_axis_dim[joint_index, 0]
-    num_angular_dofs = Model.joint_axis_dim[joint_index, 1]
+    num_linear_dofs = Model.joint_dof_dim[joint_index, 0]
+    num_angular_dofs = Model.joint_dof_dim[joint_index, 1]
     # the joint axes for each joint start at this index:
     axis_start = Model.joint_qd_start[joint_id]
     # the first linear 3D axis

@@ -111,8 +111,8 @@
       ~Model.joint_effort_limit
       ~Model.joint_velocity_limit
       ~Model.joint_friction
-      ~Model.joint_axis_dim
-      ~Model.joint_axis_mode
+      ~Model.joint_dof_dim
+      ~Model.joint_dof_mode
       ~Model.joint_enabled
       ~Model.joint_limit_lower
       ~Model.joint_limit_upper

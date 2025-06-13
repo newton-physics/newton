@@ -200,7 +200,7 @@ def eval_single_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
     body_q: wp.array(dtype=wp.transform),
@@ -232,8 +232,8 @@ def eval_single_articulation_fk(
 
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
-        lin_axis_count = joint_axis_dim[i, 0]
-        ang_axis_count = joint_axis_dim[i, 1]
+        lin_axis_count = joint_dof_dim[i, 0]
+        ang_axis_count = joint_dof_dim[i, 1]
 
         X_j = wp.transform_identity()
         v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
@@ -362,7 +362,7 @@ def eval_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
     body_q: wp.array(dtype=wp.transform),
@@ -391,7 +391,7 @@ def eval_articulation_fk(
         joint_X_p,
         joint_X_c,
         joint_axis,
-        joint_axis_dim,
+        joint_dof_dim,
         body_com,
         # outputs
         body_q,
@@ -432,7 +432,7 @@ def eval_fk(
             model.joint_X_p,
             model.joint_X_c,
             model.joint_axis,
-            model.joint_axis_dim,
+            model.joint_dof_dim,
             model.body_com,
         ],
         outputs=[
@@ -518,7 +518,7 @@ def eval_articulation_ik(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
@@ -572,8 +572,8 @@ def eval_articulation_ik(
 
     q_start = joint_q_start[tid]
     qd_start = joint_qd_start[tid]
-    lin_axis_count = joint_axis_dim[tid, 0]
-    ang_axis_count = joint_axis_dim[tid, 1]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
 
     if type == JOINT_PRISMATIC:
         axis = joint_axis[qd_start]
@@ -718,7 +718,7 @@ def eval_ik(model, state, joint_q, joint_qd):
             model.joint_X_p,
             model.joint_X_c,
             model.joint_axis,
-            model.joint_axis_dim,
+            model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
         ],

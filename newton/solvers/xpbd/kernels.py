@@ -904,7 +904,7 @@ def apply_joint_forces(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_f: wp.array(dtype=float),
     body_f: wp.array(dtype=wp.spatial_vector),
@@ -943,8 +943,8 @@ def apply_joint_forces(
 
     # joint properties (for 1D joints)
     qd_start = joint_qd_start[tid]
-    lin_axis_count = joint_axis_dim[tid, 0]
-    ang_axis_count = joint_axis_dim[tid, 1]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
 
     # total force/torque on the parent
     t_total = wp.vec3()
@@ -1002,7 +1002,7 @@ def apply_joint_forces(
 
 
 @wp.func
-def update_joint_axis_mode(mode: wp.int32, axis: wp.vec3, input_axis_mode: wp.vec3i):
+def update_joint_dof_mode(mode: wp.int32, axis: wp.vec3, input_axis_mode: wp.vec3i):
     # update the 3D axis mode flags given the axis vector and mode of this axis
     mode_x = wp.max(wp.int32(wp.nonzero(axis[0])) * mode, input_axis_mode[0])
     mode_y = wp.max(wp.int32(wp.nonzero(axis[1])) * mode, input_axis_mode[1])
@@ -1155,8 +1155,8 @@ def solve_simple_body_joints(
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
-    joint_axis_mode: wp.array(dtype=int),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_mode: wp.array(dtype=int),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
@@ -1231,7 +1231,7 @@ def solve_simple_body_joints(
     damping = 0.0
 
     axis_start = joint_qd_start[tid]
-    # mode = joint_axis_mode[axis_start]
+    # mode = joint_dof_mode[axis_start]
 
     # local joint rotations
     q_p = wp.transform_get_rotation(X_wp)
@@ -1473,8 +1473,8 @@ def solve_body_joints(
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     joint_qd_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
-    joint_axis_mode: wp.array(dtype=int),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_mode: wp.array(dtype=int),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_act: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
@@ -1556,8 +1556,8 @@ def solve_body_joints(
     angular_compliance = joint_angular_compliance
 
     axis_start = joint_qd_start[tid]
-    lin_axis_count = joint_axis_dim[tid, 0]
-    ang_axis_count = joint_axis_dim[tid, 1]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
 
     world_com_p = wp.transform_point(pose_p, com_p)
     world_com_c = wp.transform_point(pose_c, com_c)
@@ -1637,12 +1637,12 @@ def solve_body_joints(
             lo_temp = axis * joint_limit_lower[axis_start]
             up_temp = axis * joint_limit_upper[axis_start]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
-            mode = joint_axis_mode[axis_start]
+            mode = joint_dof_mode[axis_start]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_start]
                 kd = joint_target_kd[axis_start]
                 target = joint_act[axis_start]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
         if lin_axis_count > 1:
@@ -1651,12 +1651,12 @@ def solve_body_joints(
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
-            mode = joint_axis_mode[axis_idx]
+            mode = joint_dof_mode[axis_idx]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
         if lin_axis_count > 2:
@@ -1665,12 +1665,12 @@ def solve_body_joints(
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
-            mode = joint_axis_mode[axis_idx]
+            mode = joint_dof_mode[axis_idx]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
 
@@ -1838,12 +1838,12 @@ def solve_body_joints(
             lo_temp = axis * joint_limit_lower[axis_idx]
             up_temp = axis * joint_limit_upper[axis_idx]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
-            mode = joint_axis_mode[axis_idx]
+            mode = joint_dof_mode[axis_idx]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
         if ang_axis_count > 1:
@@ -1852,12 +1852,12 @@ def solve_body_joints(
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
-            mode = joint_axis_mode[axis_idx]
+            mode = joint_dof_mode[axis_idx]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
         if ang_axis_count > 2:
@@ -1866,12 +1866,12 @@ def solve_body_joints(
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
-            mode = joint_axis_mode[axis_idx]
+            mode = joint_dof_mode[axis_idx]
             if mode != JOINT_MODE_NONE:  # position or velocity target
                 ke = joint_target_ke[axis_idx]
                 kd = joint_target_kd[axis_idx]
                 target = joint_act[axis_idx]
-                axis_mode = update_joint_axis_mode(mode, axis, axis_mode)
+                axis_mode = update_joint_dof_mode(mode, axis, axis_mode)
                 axis_target_ke_kd = update_joint_axis_target_ke_kd(axis, target, ke, kd, axis_target_ke_kd)
                 ke_sum += ke
 

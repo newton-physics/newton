@@ -1038,8 +1038,8 @@ def eval_body_joints(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
-    joint_axis_mode: wp.array(dtype=int),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_mode: wp.array(dtype=int),
     joint_f: wp.array(dtype=float),
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
@@ -1102,8 +1102,8 @@ def eval_body_joints(
     w_c = wp.spatial_top(twist_c)
     v_c = wp.spatial_bottom(twist_c) + wp.cross(w_c, r_c)
 
-    lin_axis_count = joint_axis_dim[tid, 0]
-    ang_axis_count = joint_axis_dim[tid, 1]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
 
     x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
@@ -1155,7 +1155,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_axis_mode[qd_start],
+                joint_dof_mode[qd_start],
             )
         )
 
@@ -1193,7 +1193,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_axis_mode[qd_start],
+                joint_dof_mode[qd_start],
             )
         )
 
@@ -1232,7 +1232,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 0],
                     joint_limit_ke[qd_start + 0],
                     joint_limit_kd[qd_start + 0],
-                    joint_axis_mode[qd_start + 0],
+                    joint_dof_mode[qd_start + 0],
                 )
             )
 
@@ -1256,7 +1256,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 1],
                     joint_limit_ke[qd_start + 1],
                     joint_limit_kd[qd_start + 1],
-                    joint_axis_mode[qd_start + 1],
+                    joint_dof_mode[qd_start + 1],
                 )
             )
 
@@ -1280,7 +1280,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 2],
                     joint_limit_ke[qd_start + 2],
                     joint_limit_kd[qd_start + 2],
-                    joint_axis_mode[qd_start + 2],
+                    joint_dof_mode[qd_start + 2],
                 )
             )
 
@@ -1324,7 +1324,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_axis_mode[i_0],
+                    joint_dof_mode[i_0],
                 )
             )
 
@@ -1370,7 +1370,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_axis_mode[i_0],
+                    joint_dof_mode[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -1385,7 +1385,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_axis_mode[i_1],
+                    joint_dof_mode[i_1],
                 )
             )
 
@@ -1438,7 +1438,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_axis_mode[i_0],
+                    joint_dof_mode[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -1453,7 +1453,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_axis_mode[i_1],
+                    joint_dof_mode[i_1],
                 )
             )
             t_total += axis_2 * (
@@ -1468,7 +1468,7 @@ def eval_body_joints(
                     joint_limit_upper[i_2],
                     joint_limit_ke[i_2],
                     joint_limit_kd[i_2],
-                    joint_axis_mode[i_2],
+                    joint_dof_mode[i_2],
                 )
             )
 
@@ -1672,8 +1672,8 @@ def eval_body_joint_forces(
                 model.joint_X_p,
                 model.joint_X_c,
                 model.joint_axis,
-                model.joint_axis_dim,
-                model.joint_axis_mode,
+                model.joint_dof_dim,
+                model.joint_dof_mode,
                 control.joint_f,
                 control.joint_target,
                 model.joint_target_ke,
