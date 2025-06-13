@@ -45,7 +45,8 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
 
     state_0, state_1 = model.state(), model.state()
 
-    newton.core.articulation.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
 
     input = np.zeros(model.body_count * 6, dtype=np.float32)
     if test_angular:
@@ -115,7 +116,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn):
 
         if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
             # need to compute joint_qd from body_qd
-            newton.core.articulation.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
+            newton.sim.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
         body_qd = state_0.body_qd.numpy()[0]
         test.assertAlmostEqual(body_qd[control_dim+3], 0.4, delta=1e-4)
