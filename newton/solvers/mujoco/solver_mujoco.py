@@ -774,6 +774,7 @@ class MuJoCoSolver(SolverBase):
             dt (float): The time step (typically in seconds).
             control (Control): The control input. Defaults to `None` which means the control values from the :class:`Model` are used.
         """
+
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_every > 0 and self._step % self.update_data_every == 0:

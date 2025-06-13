@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO:
-# - Fix Featherstone solver for floating body
-# - Fix linear force application to floating body for MuJoCoSolver
-
 import unittest
-import logging
 import numpy as np
 import warp as wp
 
@@ -28,11 +23,11 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 wp.config.quiet = True
 
 
-class TestControlForce(unittest.TestCase):
+class TestBodyForce(unittest.TestCase):
     pass
 
 
-def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=True):
+def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
 
     # easy case: identity transform, zero center of mass
@@ -79,7 +74,7 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
         test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
 
 
-def test_3d_articulation(test: TestControlForce, device, solver_fn):
+def test_3d_articulation(test: TestBodyForce, device, solver_fn):
     # test mechanism with 3 orthogonally aligned prismatic joints
     # which allows to test all 3 dimensions of the control force independently
     builder = newton.ModelBuilder(gravity=0.0)
@@ -144,9 +139,9 @@ solvers = {
 }
 for device in ["cpu"]:
     for solver_name, solver_fn in solvers.items():
-        # add_function_test(TestControlForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
+        # add_function_test(TestBodyForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
-            TestControlForce,
+            TestBodyForce,
             f"test_floating_body_angular_{solver_name}",
             test_floating_body,
             devices=[device],
@@ -154,7 +149,7 @@ for device in ["cpu"]:
             test_angular=True,
         )
         add_function_test(
-            TestControlForce,
+            TestBodyForce,
             f"test_floating_body_linear_{solver_name}",
             test_floating_body,
             devices=[device],
@@ -163,7 +158,7 @@ for device in ["cpu"]:
         )
         # test 3d articulation
         add_function_test(
-            TestControlForce,
+            TestBodyForce,
             f"test_3d_articulation_{solver_name}",
             test_3d_articulation,
             devices=[device],
