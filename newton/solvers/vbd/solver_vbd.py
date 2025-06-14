@@ -356,29 +356,31 @@ def evaluate_stvk_force_hessian(
 
 @wp.func
 def compute_normalized_vector_derivative(
-    unnormalized_vec_length: float, normalized_vec_hat: wp.vec3, unnormalized_vec_deriv: wp.mat33
+    unnormalized_vec_length: float, normalized_vec: wp.vec3, unnormalized_vec_derivative: wp.mat33
 ) -> wp.mat33:
-    projection_matrix = wp.identity(n=3, dtype=normalized_vec_hat.dtype) - wp.outer(
-        normalized_vec_hat, normalized_vec_hat
-    )
-    normalized_vec_derivative = (1.0 / unnormalized_vec_length) * projection_matrix * unnormalized_vec_deriv
-    return normalized_vec_derivative
+    projection_matrix = wp.identity(n=3, dtype=float) - wp.outer(normalized_vec, normalized_vec)
+
+    # d(normalized_vec)/dx = (1/|unnormalized_vec|) * (I - normalized_vec * normalized_vec^T) * d(unnormalized_vec)/dx
+    return (1.0 / unnormalized_vec_length) * projection_matrix * unnormalized_vec_derivative
 
 
 @wp.func
-def compute_dsin_theta_dx(
-    n1_hat: wp.vec3, n2_hat: wp.vec3, e_hat: wp.vec3, dn1hat_dx: wp.mat33, dn2hat_dx: wp.mat33
+def compute_angle_derivative(
+    n1_hat: wp.vec3,
+    n2_hat: wp.vec3,
+    e_hat: wp.vec3,
+    dn1hat_dx: wp.mat33,
+    dn2hat_dx: wp.mat33,
+    sin_theta: float,
+    cos_theta: float,
 ) -> wp.vec3:
-    term1 = wp.skew(n1_hat) * dn2hat_dx
-    term2 = wp.skew(n2_hat) * dn1hat_dx
-    return wp.transpose(term1 - term2) * e_hat
+    skew_n1 = wp.skew(n1_hat)
+    skew_n2 = wp.skew(n2_hat)
+    dsin_dx = wp.transpose(skew_n1 * dn2hat_dx - skew_n2 * dn1hat_dx) * e_hat
+    dcos_dx = wp.transpose(dn1hat_dx) * n2_hat + wp.transpose(dn2hat_dx) * n1_hat
 
-
-@wp.func
-def compute_dcos_theta_dx(n1_hat: wp.vec3, n2_hat: wp.vec3, dn1hat_dx: wp.mat33, dn2hat_dx: wp.mat33) -> wp.vec3:
-    term1 = wp.transpose(dn1hat_dx) * n2_hat
-    term2 = wp.transpose(dn2hat_dx) * n1_hat
-    return term1 + term2
+    # dtheta/dx = dsin/dx * cos - dcos/dx * sin
+    return dsin_dx * cos_theta - dcos_dx * sin_theta
 
 
 @wp.func
@@ -394,36 +396,38 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     damping: float,
     dt: float,
 ):
+    # Skip invalid edges (boundary edges with missing opposite vertices)
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
         return wp.vec3(0.0), wp.mat33(0.0)
 
     eps = 1.0e-6
 
-    x1 = pos[edge_indices[bending_index, 0]]  # opposite 0
-    x2 = pos[edge_indices[bending_index, 2]]  # edge start
-    x3 = pos[edge_indices[bending_index, 3]]  # edge end
-    x4 = pos[edge_indices[bending_index, 1]]  # opposite 1
+    vi0 = edge_indices[bending_index, 0]
+    vi1 = edge_indices[bending_index, 1]
+    vi2 = edge_indices[bending_index, 2]
+    vi3 = edge_indices[bending_index, 3]
 
-    x12 = x2 - x1
+    x0 = pos[vi0]  # opposite 0
+    x1 = pos[vi1]  # opposite 1
+    x2 = pos[vi2]  # edge start
+    x3 = pos[vi3]  # edge end
+
+    x02 = x2 - x0
+    x03 = x3 - x0
     x13 = x3 - x1
-    x43 = x3 - x4
-    x42 = x2 - x4
-
-    n1 = wp.cross(x12, x13)
-    n2 = wp.cross(x43, x42)
+    x12 = x2 - x1
     e = x3 - x2
+
+    n1 = wp.cross(x02, x03)
+    n2 = wp.cross(x13, x12)
 
     n1_norm = wp.length(n1)
     n2_norm = wp.length(n2)
     e_norm = wp.length(e)
 
-    # Check for degenerate cases
+    # Early exit for degenerate cases
     if n1_norm < eps or n2_norm < eps or e_norm < eps:
         return wp.vec3(0.0), wp.mat33(0.0)
-
-    # Compute bending stiffness
-    e_rest_len = edge_rest_length[bending_index]
-    k = stiffness * e_rest_len
 
     n1_hat = n1 / n1_norm
     n2_hat = n2 / n2_norm
@@ -432,60 +436,71 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
     cos_theta = wp.dot(n1_hat, n2_hat)
     theta = wp.atan2(sin_theta, cos_theta)
-    rest_angle = edge_rest_angle[bending_index]
 
-    dE_dtheta = k * (theta - rest_angle)
+    k = stiffness * edge_rest_length[bending_index]
+    dE_dtheta = k * (theta - edge_rest_angle[bending_index])
 
-    bending_force = wp.vec3(0.0)
-    bending_hessian = wp.mat33(0.0)
+    skew_e = wp.skew(e)
+    skew_x03 = wp.skew(x03)
+    skew_x02 = wp.skew(x02)
+    skew_x13 = wp.skew(x13)
+    skew_x12 = wp.skew(x12)
 
-    zero_mat = wp.mat33(0.0)
+    # Compute the derivatives of unit normals with respect to each vertex; required for computing angle derivatives
+    dn1hat_dx0 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_e)
+    dn2hat_dx0 = wp.mat33(0.0)
 
-    # Initialize derivatives of unnormalized normals w.r.t. the current particle's position
-    dn1_dx = zero_mat
-    dn2_dx = zero_mat
+    dn1hat_dx1 = wp.mat33(0.0)
+    dn2hat_dx1 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_e)
 
-    if v_order == 0:  # Particle x1 (edge_indices[bending_index, 0])
-        dn1_dx = wp.skew(e)
-        # dn2_dx remains zero_mat as n2 does not depend on x1
-        current_particle_idx = edge_indices[bending_index, 0]
+    dn1hat_dx2 = compute_normalized_vector_derivative(n1_norm, n1_hat, -skew_x03)
+    dn2hat_dx2 = compute_normalized_vector_derivative(n2_norm, n2_hat, skew_x13)
 
-    elif v_order == 1:  # Particle x4 (edge_indices[bending_index, 1])
-        # dn1_dx remains zero_mat as n1 does not depend on x4
-        dn2_dx = -wp.skew(e)
-        current_particle_idx = edge_indices[bending_index, 1]
+    dn1hat_dx3 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_x02)
+    dn2hat_dx3 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_x12)
 
-    elif v_order == 2:  # Particle x2 (edge_indices[bending_index, 2])
-        dn1_dx = -wp.skew(x13)
-        dn2_dx = wp.skew(x43)
-        current_particle_idx = edge_indices[bending_index, 2]
+    # Compute all angle derivatives; all are required for damping
+    dtheta_dx0 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx0, dn2hat_dx0, sin_theta, cos_theta)
+    dtheta_dx1 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx1, dn2hat_dx1, sin_theta, cos_theta)
+    dtheta_dx2 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx2, dn2hat_dx2, sin_theta, cos_theta)
+    dtheta_dx3 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx3, dn2hat_dx3, sin_theta, cos_theta)
 
-    elif v_order == 3:  # Particle x3 (edge_indices[bending_index, 3])
-        dn1_dx = wp.skew(x12)
-        dn2_dx = -wp.skew(x42)
-        current_particle_idx = edge_indices[bending_index, 3]
+    # Use float masks for branch-free selection
+    mask0 = float(v_order == 0)
+    mask1 = float(v_order == 1)
+    mask2 = float(v_order == 2)
+    mask3 = float(v_order == 3)
 
-    dn1hat_dx = compute_normalized_vector_derivative(n1_norm, n1_hat, dn1_dx)
-    dn2hat_dx = compute_normalized_vector_derivative(n2_norm, n2_hat, dn2_dx)
+    # Select the derivative for the current vertex without branching
+    dtheta_dx = dtheta_dx0 * mask0 + dtheta_dx1 * mask1 + dtheta_dx2 * mask2 + dtheta_dx3 * mask3
 
-    dsin_dx = compute_dsin_theta_dx(n1_hat, n2_hat, e_hat, dn1hat_dx, dn2hat_dx)
-    dcos_dx = compute_dcos_theta_dx(n1_hat, n2_hat, dn1hat_dx, dn2hat_dx)
-
-    dtheta_dx = dsin_dx * cos_theta - dcos_dx * sin_theta
-
+    # Compute elastic force and hessian
     bending_force = -dE_dtheta * dtheta_dx
-    bending_hessian = k * wp.outer(dtheta_dx, dtheta_dx)  # approximation of the hessian
+    bending_hessian = k * wp.outer(dtheta_dx, dtheta_dx)
 
     if damping > 0.0:
-        current_pos = pos[current_particle_idx]
-        previous_pos = pos_prev[current_particle_idx]
-        displacement = previous_pos - current_pos
+        inv_dt = 1.0 / dt
+        x_prev0 = pos_prev[vi0]
+        x_prev1 = pos_prev[vi1]
+        x_prev2 = pos_prev[vi2]
+        x_prev3 = pos_prev[vi3]
 
-        h_d = bending_hessian * (damping / dt)
-        f_d = h_d * displacement
+        dx0 = x0 - x_prev0
+        dx1 = x1 - x_prev1
+        dx2 = x2 - x_prev2
+        dx3 = x3 - x_prev3
 
-        bending_force = bending_force + f_d
-        bending_hessian = bending_hessian + h_d
+        # Compute angular velocity
+        dtheta_dt = (
+            wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
+        ) * inv_dt
+
+        damping_coeff = damping * k  # damping coefficients following the VBD convention
+        damping_force = -damping_coeff * dtheta_dt * dtheta_dx
+        damping_hessian = damping_coeff * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
+
+        bending_force = bending_force + damping_force
+        bending_hessian = bending_hessian + damping_hessian
 
     return bending_force, bending_hessian
 

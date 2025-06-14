@@ -59,18 +59,18 @@ class Example:
 
         builder = newton.ModelBuilder()
         builder.add_cloth_mesh(
-            pos=wp.vec3(0.0, 0.0, 2.0),
+            pos=wp.vec3(0.0, 0.0, 10.0),
             rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 6.0),
             scale=1.0,
             vertices=vertices,
             indices=mesh_indices,
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
-            tri_ke=1.0e1,
+            tri_ke=5.0e1,
             tri_ka=0.0,
-            tri_kd=2.0e-7,
+            tri_kd=2.0e-2,
             edge_ke=1.0e1,
-            edge_kd=1.0e-5,
+            edge_kd=1.0e0,
         )
 
         builder.color(include_bending=True)
