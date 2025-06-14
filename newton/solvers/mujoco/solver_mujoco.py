@@ -237,6 +237,8 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
+    joint_f: wp.array(dtype=wp.float32),
+    axis_mode: wp.array(dtype=wp.int32),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
@@ -245,7 +247,10 @@ def apply_mjc_control_kernel(
     worldid, axisid = wp.tid()
     actuator_id = axis_to_actuator[axisid]
     if actuator_id != -1:
-        mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
+        if axis_mode[axisid] != newton.JOINT_MODE_NONE:
+            mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
+        else:
+            mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
 
 
 @wp.kernel
@@ -783,6 +788,8 @@ class MuJoCoSolver(SolverBase):
             dim=(nworld, axes_per_env),
             inputs=[
                 control.joint_target,
+                control.joint_f,
+                model.joint_dof_mode,
                 model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                 axes_per_env,
             ],
@@ -982,15 +989,16 @@ class MuJoCoSolver(SolverBase):
         mujoco, mujoco_warp = import_mujoco()
 
         actuator_args = {
-            "ctrllimited": True,
-            "ctrlrange": (-1.0, 1.0),
-            "gear": [50.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            # "ctrllimited": True,
+            # "ctrlrange": (-1.0, 1.0),
+            "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             "trntype": mujoco.mjtTrn.mjTRN_JOINT,
             # motor actuation properties (already the default settings in Mujoco)
             "gainprm": [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "biasprm": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             "dyntype": mujoco.mjtDyn.mjDYN_NONE,
             "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
-            "biastype": mujoco.mjtBias.mjBIAS_NONE,
+            "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
         }
         if default_actuator_args is not None:
             actuator_args.update(default_actuator_args)
@@ -1338,9 +1346,6 @@ class MuJoCoSolver(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
-                    if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
-                        joint_params["stiffness"] = joint_target_ke[ai]
-                        joint_params["damping"] = joint_target_kd[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
                         joint_params["limited"] = False
@@ -1368,6 +1373,20 @@ class MuJoCoSolver(SolverBase):
                         else:
                             args = actuator_args
 
+                        if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                            kp = joint_target_ke[ai]
+                            kv = joint_target_kd[ai]
+                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        elif joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                            kv = joint_target_kd[ai]
+                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        else:
+                            # no target position or velocity, just use the default gain
+                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
                         # Add effort limits from Newton model
                         effort_limit = joint_effort_limit[ai]
                         args["forcerange"] = [-effort_limit, effort_limit]
@@ -1390,9 +1409,6 @@ class MuJoCoSolver(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
-                    if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
-                        joint_params["stiffness"] = joint_target_ke[ai]
-                        joint_params["damping"] = joint_target_kd[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
                         joint_params["limited"] = False
@@ -1419,6 +1435,20 @@ class MuJoCoSolver(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
+
+                        if joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_POSITION:
+                            kp = joint_target_ke[ai]
+                            kv = joint_target_kd[ai]
+                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        elif joint_dof_mode[ai] == newton.JOINT_MODE_TARGET_VELOCITY:
+                            kv = joint_target_kd[ai]
+                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        else:
+                            # no target position or velocity, just use the default gain
+                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
                         # Add effort limits from Newton model
                         effort_limit = joint_effort_limit[ai]
