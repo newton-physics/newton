@@ -558,7 +558,7 @@ class ClothSim:
         self.finalize(handle_self_contact=False, ground=False)
 
     def set_up_complex_rest_angle_bending_experiment(
-        self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, use_gravity=True
+        self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=None, use_gravity=True
     ):
         # fmt: off
         vs =[
@@ -612,7 +612,7 @@ class ClothSim:
             spring_kd=0.0,
         )
 
-        self.fixed_particles = [1]
+        self.fixed_particles = fixed_particles if fixed_particles is not None else []
 
         self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
 
@@ -812,7 +812,7 @@ def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
 def test_cloth_bending_consistent_angle_computation(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, use_gravity=False
+        tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, fixed_particles=[1], use_gravity=False
     )
 
     # Store rest angles
@@ -836,7 +836,7 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, use_gravity=True
+        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -848,6 +848,60 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     final_pos = example.state0.particle_q.numpy()
     test.assertTrue((np.abs(final_pos) < 1e5).all())
     test.assertTrue((example.init_pos != final_pos).any())
+
+    # Verify bending angles stay within tolerance of rest angles
+    final_angles = compute_current_angles(example.model, example.state0)
+    max_difference = np.abs(final_angles - rest_angles).max()
+    test.assertTrue(max_difference <= 0.1, f"Maximum angle difference {max_difference:.3f} rad exceeds 0.1 rad")
+
+
+# Bending damping should not affect free-fall behavior.
+def test_cloth_bending_damping_with_free_fall(test, device, solver):
+    example = ClothSim(device, solver, use_cuda_graph=True)
+    example.set_up_complex_rest_angle_bending_experiment(
+        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e0, fixed_particles=[], use_gravity=True
+    )
+
+    # Store initial vertex positions and rest angles for comparison
+    initial_pos = example.state0.particle_q.numpy().copy()
+    rest_angles = example.model.edge_rest_angle.numpy()
+
+    example.run()
+
+    # Get final positions
+    final_pos = example.state0.particle_q.numpy()
+
+    # Verify basic stability
+    test.assertTrue((np.abs(final_pos) < 1e5).all())
+    test.assertTrue((initial_pos != final_pos).any())
+
+    # Check for non-gravitational position changes per vertex
+    # Calculate position differences for each vertex
+    position_diff = final_pos - initial_pos
+
+    # Get gravity direction (normalized)
+    gravity_vector = np.array(example.model.gravity)
+    gravity_direction = gravity_vector / np.linalg.norm(gravity_vector)
+
+    # For each vertex, project its displacement onto gravity direction
+    gravity_displacement_per_vertex = np.dot(position_diff, gravity_direction)
+
+    # Calculate non-gravitational component for each vertex
+    gravity_component_per_vertex = gravity_displacement_per_vertex[:, np.newaxis] * gravity_direction[np.newaxis, :]
+    non_gravity_displacement = position_diff - gravity_component_per_vertex
+
+    # Calculate magnitude of non-gravitational displacement per vertex
+    non_gravity_magnitude = np.linalg.norm(non_gravity_displacement, axis=1)
+
+    # Find vertices with significant non-gravitational movement
+    max_non_gravity_displacement = np.max(non_gravity_magnitude)
+    problematic_vertices = np.where(non_gravity_magnitude > 0.01)[0]
+
+    # Verify that non-gravitational displacement is minimal for all vertices
+    test.assertTrue(
+        max_non_gravity_displacement < 0.01,
+        f"Non-gravitational displacement detected: max {max_non_gravity_displacement:.4f} at vertex indices {problematic_vertices}",
+    )
 
     # Verify bending angles stay within tolerance of rest angles
     final_angles = compute_current_angles(example.model, example.state0)
@@ -921,6 +975,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
+        test_cloth_bending_damping_with_free_fall,
     ],
 }
 
