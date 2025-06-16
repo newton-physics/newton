@@ -27,29 +27,31 @@ class Example:
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
         self.num_substeps = 2
-        self.iterations = 50
+        self.iterations = 20
         self.dt = self.frame_dt / self.num_substeps
         self.num_frames = num_frames
         self.sim_time = 0.0
         self.profiler = {}
-        self.rot_end_time = 10
         self.use_cuda_graph = wp.get_device().is_cuda
 
+        grid_dim = 200
+        grid_width = 1.0
+        cloth_density = 0.3
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.add_cloth_grid(
-            pos=wp.vec3(0.0, 3.0, 0.0),
-            rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=90.0),
-            dim_x=100,
-            dim_y=100,
-            cell_x=0.01,
-            cell_y=0.01,
+            pos=wp.vec3(-0.5, 2.0, 0.0),
+            rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
+            dim_x=grid_dim,
+            dim_y=grid_dim,
+            cell_x=grid_width / grid_dim,
+            cell_y=grid_width / grid_dim,
             vel=wp.vec3(0.0, 0.0, 0.0),
-            mass=0.3 / (100 * 100),
+            mass=cloth_density * (grid_width * grid_width) / (grid_dim * grid_dim),
             tri_ke=1.0e2,
             tri_ka=1.0e2,
             tri_kd=2.0e-6,
             edge_ke=1,
-            tri_aniso_ke=wp.vec3(2.0e2, 1.5e2, 2.0e1),
+            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
             edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
         )
         builder.color()
@@ -61,7 +63,7 @@ class Example:
         self.model.soft_contact_mu = 0.2
 
         # set fixed points
-        fixed_points = [0, 100]
+        fixed_points = [0, grid_dim]
         flags = self.model.particle_flags.numpy()
         for fixed_vertex_id in fixed_points:
             flags[fixed_vertex_id] = wp.uint32(int(flags[fixed_vertex_id]) & ~int(PARTICLE_FLAG_ACTIVE))
@@ -92,7 +94,9 @@ class Example:
             self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, camera_fov=30.0)
             self.renderer.enable_backface_culling = False
             self.renderer.render_wireframe = True
+            self.renderer.show_particles = False
             self.renderer.draw_grid = True
+            self.renderer.paused = True
 
         self.cuda_graph = None
         if self.use_cuda_graph:
@@ -115,6 +119,8 @@ class Example:
 
     def run(self):
         for _ in range(self.num_frames):
+            if self.renderer.has_exit:
+                break
             self.advance_frame()
             self.render()
 
@@ -136,7 +142,7 @@ if __name__ == "__main__":
         default="example_cloth_style3d.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--num_frames", type=int, default=3000, help="Total number of frames.")
 
     args = parser.parse_known_args()[0]
 
