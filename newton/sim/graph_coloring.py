@@ -225,6 +225,7 @@ def color_graph(
         raise ValueError(
             f"graph_edge_indices must be a 2 dimensional array! The provided one is {graph_edge_indices.ndim} dimensional."
         )
+    graph_edge_indices = graph_edge_indices.to("cpu")
 
     num_colors = wp.context.runtime.core.graph_coloring(
         num_nodes,
