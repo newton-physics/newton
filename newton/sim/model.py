@@ -98,10 +98,6 @@ class Model:
         """Shape geometry properties (geo type, scale, thickness, etc.)."""
         self.shape_geo_src = []
         """List of source geometry objects (e.g., `wp.Mesh`, `SDF`) used for rendering and broadphase."""
-        self.geo_meshes = []
-        """List of finalized `wp.Mesh` objects."""
-        self.geo_sdfs = []
-        """List of finalized `SDF` objects."""
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
