@@ -68,7 +68,7 @@ class Example:
             density=0.02,
             tri_ke=5.0e1,
             tri_ka=0.0,
-            tri_kd=2.0e-2,
+            tri_kd=0.0,
             edge_ke=1.0e1,
             edge_kd=1.0e0,
         )
