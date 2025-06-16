@@ -44,7 +44,7 @@ class Example:
             articulation_builder,
             collapse_fixed_joints=True,
             up_axis="Z",
-            enable_self_collisions=True,
+            enable_self_collisions=False,
         )
         simplified_meshes = {}
         try:
@@ -99,12 +99,13 @@ class Example:
         if self.use_mujoco:
             self.solver = newton.solvers.MuJoCoSolver(
                 self.model,
-                use_mujoco=True,
+                use_mujoco=False,
                 solver="newton",
                 integrator="euler",
                 iterations=5,
                 ls_iterations=5,
                 nefc_per_env=1,
+                save_to_mjcf="converted_example_g1.xml",
             )
         else:
             self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
@@ -173,7 +174,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument("--num_envs", type=int, default=2, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
