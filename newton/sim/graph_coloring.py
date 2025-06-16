@@ -253,6 +253,71 @@ def color_graph(
     return color_groups
 
 
+def plot_graph(vertices, edges, edge_labels=None):
+    """
+    Plots a graph using matplotlib and networkx.
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        edges: A numpy array of shape (M, 2) containing the vertex indices of the edges.
+        edge_labels: A list of edge labels.
+    """
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
+    if edge_labels is None:
+        edge_labels = []
+    G = nx.DiGraph()
+    name_to_index = {}
+    for i, name in enumerate(vertices):
+        G.add_node(i)
+        name_to_index[name] = i
+    g_edge_labels = {}
+    for i, (a, b) in enumerate(edges):
+        ai = a if isinstance(a, int) else name_to_index[a]
+        bi = b if isinstance(b, int) else name_to_index[b]
+        label = None
+        if i < len(edge_labels):
+            label = edge_labels[i]
+            g_edge_labels[(ai, bi)] = label
+        G.add_edge(ai, bi, label=label)
+
+    # try:
+    #     pos = nx.nx_agraph.graphviz_layout(
+    #         G, prog='neato', args='-Gnodesep="10" -Granksep="10"')
+    # except:
+    #     print(
+    #         "Warning: could not use graphviz to layout graph. Falling back to spring layout.")
+    #     print("To get better layouts, install graphviz and pygraphviz.")
+    pos = nx.spring_layout(G, k=3.5, iterations=200)
+    #     # pos = nx.kamada_kawai_layout(G, scale=1.5)
+    #     # pos = nx.spectral_layout(G, scale=1.5)
+    # pos = nx.nx_agraph.graphviz_layout(
+    #     G, prog="neato", args='-Gnodesep="20" -Granksep="20"'
+    # )
+
+    default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
+    nx.draw_networkx_nodes(G, pos, **default_draw_args)
+    nx.draw_networkx_labels(
+        G,
+        pos,
+        labels=dict(enumerate(vertices)),
+        font_size=8,
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 0.5},
+    )
+
+    nx.draw_networkx_edges(G, pos, edgelist=G.edges(), arrows=True, edge_color="black", node_size=1000)
+    nx.draw_networkx_edge_labels(
+        G,
+        pos,
+        edge_labels=g_edge_labels,
+        font_color="darkslategray",
+        font_size=8,
+    )
+    plt.axis("off")
+    plt.show()
+
+
 def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list[int]:
     """
     A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
