@@ -638,6 +638,75 @@ def update_dof_properties_kernel(
     dof_frictionloss[worldid, dof_in_env] = joint_friction[tid]
 
 
+@wp.kernel
+def update_geom_properties_kernel(
+    shape_collision_radius: wp.array(dtype=float),
+    shape_mu: wp.array(dtype=float),
+    shape_ke: wp.array(dtype=float),
+    shape_kd: wp.array(dtype=float),
+    shape_size: wp.array(dtype=wp.vec3f),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_to_geom: wp.array(dtype=wp.int32),
+    shapes_per_env: int,
+    up_axis: int,
+    # outputs
+    geom_rbound: wp.array2d(dtype=float),
+    geom_friction: wp.array2d(dtype=wp.vec3f),
+    geom_solref: wp.array2d(dtype=wp.vec2f),
+    geom_size: wp.array2d(dtype=wp.vec3f),
+    geom_pos: wp.array2d(dtype=wp.vec3f),
+    geom_quat: wp.array2d(dtype=wp.quatf),
+):
+    """Update geom properties from Newton shape properties."""
+    tid = wp.tid()
+    worldid = tid // shapes_per_env
+    shape_in_env = tid % shapes_per_env
+
+    geom_idx = shape_to_geom[shape_in_env]
+    if geom_idx < 0:  # Invalid mapping
+        return
+
+    # Update bounding radius
+    geom_rbound[worldid, geom_idx] = shape_collision_radius[tid]
+
+    # Update friction (slide, torsion, roll)
+    mu = shape_mu[tid]
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, 0.05 * mu, 0.05 * mu)  # Use scaled values for torsion/roll
+
+    # Update solref (stiffness, damping as time constants)
+    # MuJoCo uses time constants, Newton uses direct stiffness/damping
+    # Convert using heuristic: time_const = sqrt(mass/stiffness)
+    # For now, use a simplified mapping
+    ke = shape_ke[tid]
+    kd = shape_kd[tid]
+    if ke > 0.0:
+        # Approximate time constant based on typical contact scenarios
+        time_const_stiff = 0.02  # Default 20ms
+        time_const_damp = kd / (2.0 * wp.sqrt(ke)) if kd > 0.0 else 1.0
+    else:
+        time_const_stiff = 0.02
+        time_const_damp = 1.0
+    geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+
+    # Update size
+    geom_size[worldid, geom_idx] = shape_size[tid]
+
+    # Update position and orientation
+    pos = wp.vec3f(shape_transform[tid].p)
+    quat = shape_transform[tid].q
+
+    # Handle up-axis conversion if needed
+    if up_axis == 1:
+        # MuJoCo uses Z-up, Newton Y-up requires conversion
+        pos = wp.vec3f(pos[0], -pos[2], pos[1])
+        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+        quat = rot_y2z * quat
+
+    geom_pos[worldid, geom_idx] = pos
+    # Convert from xyzw to wxyz for MuJoCo
+    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+
+
 class MuJoCoSolver(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -761,6 +830,8 @@ class MuJoCoSolver(SolverBase):
             self.update_model_inertial_properties()
         if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
+        if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
+            self.update_geom_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1122,6 +1193,10 @@ class MuJoCoSolver(SolverBase):
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
 
+        # mapping from Newton shape index to MuJoCo geom index
+        shape_to_geom = np.zeros((model.shape_count,), dtype=np.int32) - 1
+        geom_count = 0
+
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
         rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
@@ -1251,7 +1326,20 @@ class MuJoCoSolver(SolverBase):
                     if cmask <= INT32_MAX:
                         geom_params["contype"] = cmask
                         geom_params["conaffinity"] = cmask
+
+                # Use shape materials instead of defaults if available
+                if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
+                    shape_mu = model.shape_materials.mu.numpy()
+                    if shape < len(shape_mu):
+                        # Set friction from Newton shape materials
+                        geom_params["friction"] = [shape_mu[shape], 0.05 * shape_mu[shape], 0.05 * shape_mu[shape]]
+
                 body.add_geom(**geom_params)
+
+                # Track shape-to-geom mapping
+                nonlocal geom_count
+                shape_to_geom[shape] = geom_count
+                geom_count += 1
 
         # add static geoms attached to the worldbody
         add_geoms(-1, perm_position=model.up_axis == 1)
@@ -1507,6 +1595,8 @@ class MuJoCoSolver(SolverBase):
                 [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))],
                 dtype=wp.int32,
             )
+            # mapping from Newton shape index to MJC geom index
+            model.mjc_shape_to_geom = wp.array(shape_to_geom, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
             if separate_envs_to_worlds:
@@ -1525,6 +1615,11 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
             self.notify_model_changed(flags)
+
+            # Also update shape properties once during initialization
+            if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
+                shape_flags = newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+                self.notify_model_changed(shape_flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             rigid_contact_max = newton.sim.count_rigid_contact_points(model)
@@ -1567,13 +1662,13 @@ class MuJoCoSolver(SolverBase):
             # "dof_solref",
             # "geom_matid",
             # "geom_solmix",
-            # "geom_solref",
+            "geom_solref",
             # "geom_solimp",
-            # "geom_size",
-            # "geom_rbound",
-            # "geom_pos",
-            # "geom_quat",
-            # "geom_friction",
+            "geom_size",
+            "geom_rbound",
+            "geom_pos",
+            "geom_quat",
+            "geom_friction",
             # "geom_margin",
             # "geom_gap",
             # "geom_rgba",
@@ -1709,5 +1804,59 @@ class MuJoCoSolver(SolverBase):
                     dofs_per_env,
                 ],
                 outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+                device=self.model.device,
+            )
+
+    def update_geom_properties(self):
+        """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
+        if not hasattr(self, "mjw_model") or self.mjw_model is None:
+            return
+
+        if not hasattr(self.model, "mjc_shape_to_geom") or self.model.mjc_shape_to_geom is None:
+            return
+
+        # Check if shape materials are available
+        if not hasattr(self.model, "shape_materials") or self.model.shape_materials.mu is None:
+            return
+
+        shapes_per_env = self.model.shape_count // self.model.num_envs
+
+        # Update geom properties if the arrays have the right shape (2D for multi-world)
+        if (
+            hasattr(self.mjw_model, "geom_rbound")
+            and len(self.mjw_model.geom_rbound.shape) == 2
+            and hasattr(self.mjw_model, "geom_friction")
+            and len(self.mjw_model.geom_friction.shape) == 2
+            and hasattr(self.mjw_model, "geom_solref")
+            and len(self.mjw_model.geom_solref.shape) == 2
+            and hasattr(self.mjw_model, "geom_size")
+            and len(self.mjw_model.geom_size.shape) == 2
+            and hasattr(self.mjw_model, "geom_pos")
+            and len(self.mjw_model.geom_pos.shape) == 2
+            and hasattr(self.mjw_model, "geom_quat")
+            and len(self.mjw_model.geom_quat.shape) == 2
+        ):
+            wp.launch(
+                update_geom_properties_kernel,
+                dim=self.model.shape_count,
+                inputs=[
+                    self.model.shape_collision_radius,
+                    self.model.shape_materials.mu,
+                    self.model.shape_materials.ke,
+                    self.model.shape_materials.kd,
+                    self.model.shape_geo.scale,
+                    self.model.shape_transform,
+                    self.model.mjc_shape_to_geom,
+                    shapes_per_env,
+                    self.model.up_axis,
+                ],
+                outputs=[
+                    self.mjw_model.geom_rbound,
+                    self.mjw_model.geom_friction,
+                    self.mjw_model.geom_solref,
+                    self.mjw_model.geom_size,
+                    self.mjw_model.geom_pos,
+                    self.mjw_model.geom_quat,
+                ],
                 device=self.model.device,
             )
