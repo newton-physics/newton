@@ -16,23 +16,7 @@
 
 import numpy as np
 import warp as wp
-import warp.utils
-
-
-@wp.kernel
-def compute_edge_aabbs(
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
-):
-    e_id = wp.tid()
-
-    v1 = pos[edge_indices[e_id, 2]]
-    v2 = pos[edge_indices[e_id, 3]]
-
-    lower_bounds[e_id] = wp.min(v1, v2)
-    upper_bounds[e_id] = wp.max(v1, v2)
+from warp.sim.collide import compute_edge_aabbs
 
 
 @wp.kernel
