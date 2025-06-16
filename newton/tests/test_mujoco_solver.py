@@ -642,7 +642,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         """
         # Create shapes with different material properties for each environment
         shapes_per_env = self.model.shape_count // self.model.num_envs
-        shape_mu = self.model.shape_materials.mu.numpy()
 
         # Set different friction values for each shape
         new_mu_values = np.zeros(self.model.shape_count)
@@ -916,6 +915,13 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                             expected_pos[dim],
                             places=5,
                             msg=f"Position mismatch for shape {shape_idx} in environment {env_idx}, dimension {dim}",
+                        )
+                        # Verify position actually changed from initial
+                        self.assertNotAlmostEqual(
+                            float(updated_geom_pos[env_idx, geom_idx][dim]),
+                            float(initial_geom_pos[env_idx, geom_idx][dim]),
+                            places=5,
+                            msg=f"Position should have changed for shape {shape_idx} in environment {env_idx}, dimension {dim}",
                         )
 
 
