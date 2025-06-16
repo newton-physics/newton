@@ -367,7 +367,7 @@ def parse_mjcf(
                     geom_up_axis = up_axis
 
                 if geom_type == "cylinder":
-                    s = builder.add_shape_cylinder(
+                    s = builder.add_shape_capsule(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
@@ -488,19 +488,14 @@ def parse_mjcf(
         )
 
         if joint_type is None:
+            joint_type = newton.JOINT_D6
             if len(linear_axes) == 0:
                 if len(angular_axes) == 0:
                     joint_type = newton.JOINT_FIXED
                 elif len(angular_axes) == 1:
                     joint_type = newton.JOINT_REVOLUTE
-                elif len(angular_axes) == 2:
-                    joint_type = newton.JOINT_UNIVERSAL
-                elif len(angular_axes) == 3:
-                    joint_type = newton.JOINT_COMPOUND
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = newton.JOINT_PRISMATIC
-            else:
-                joint_type = newton.JOINT_D6
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
@@ -610,6 +605,10 @@ def parse_mjcf(
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
 
+            contype = geom_attrib.get("contype", 1)
+            conaffinity = geom_attrib.get("conaffinity", 1)
+            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
+
             if "class" in geom.attrib:
                 neither_visual_nor_collider = True
                 for pattern in visual_classes:
@@ -623,7 +622,7 @@ def parse_mjcf(
                         neither_visual_nor_collider = False
                         break
                 if neither_visual_nor_collider:
-                    if no_class_as_colliders:
+                    if no_class_as_colliders and collides_with_anything:
                         colliders.append(geom)
                     else:
                         visuals.append(geom)
@@ -631,7 +630,7 @@ def parse_mjcf(
                 no_class_class = "collision" if no_class_as_colliders else "visual"
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
-                if no_class_as_colliders:
+                if no_class_as_colliders and collides_with_anything:
                     colliders.append(geom)
                 else:
                     visuals.append(geom)

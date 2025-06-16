@@ -21,10 +21,8 @@ JOINT_REVOLUTE = wp.constant(1)
 JOINT_BALL = wp.constant(2)
 JOINT_FIXED = wp.constant(3)
 JOINT_FREE = wp.constant(4)
-JOINT_COMPOUND = wp.constant(5)
-JOINT_UNIVERSAL = wp.constant(6)
-JOINT_DISTANCE = wp.constant(7)
-JOINT_D6 = wp.constant(8)
+JOINT_DISTANCE = wp.constant(5)
+JOINT_D6 = wp.constant(6)
 
 
 def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
@@ -44,22 +42,20 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
 
 
 # Joint axis control mode types
-JOINT_MODE_FORCE = wp.constant(0)
+JOINT_MODE_NONE = wp.constant(0)
 JOINT_MODE_TARGET_POSITION = wp.constant(1)
 JOINT_MODE_TARGET_VELOCITY = wp.constant(2)
 
 __all__ = [
     "JOINT_BALL",
-    "JOINT_COMPOUND",
     "JOINT_D6",
     "JOINT_DISTANCE",
     "JOINT_FIXED",
     "JOINT_FREE",
-    "JOINT_MODE_FORCE",
+    "JOINT_MODE_NONE",
     "JOINT_MODE_TARGET_POSITION",
     "JOINT_MODE_TARGET_VELOCITY",
     "JOINT_PRISMATIC",
     "JOINT_REVOLUTE",
-    "JOINT_UNIVERSAL",
     "get_joint_dof_count",
 ]
