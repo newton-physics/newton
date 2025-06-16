@@ -143,7 +143,7 @@ class TestMuJoCoSolver(unittest.TestCase):
 
 class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
     """Base class for MuJoCo solver property tests with common setup."""
-    
+
     def setUp(self):
         """Set up a model with multiple environments, each with a free body and an articulated tree."""
         self.seed = 123
