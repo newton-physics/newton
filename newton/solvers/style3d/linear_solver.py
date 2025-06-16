@@ -165,7 +165,19 @@ def array_inner(
 
 
 class PcgSolver:
-    """ """
+    """A Customized PCG implementation for efficient cloth simulation
+
+    Ref: https://en.wikipedia.org/wiki/Conjugate_gradient_method
+
+    Sparse Matrix Storages:
+        Part-1: (static)
+            1. Non-diagonals: SparseMatrixELL
+            2. Diagonals: wp.array(dtype = float)
+            3. Preconditioner: wp.array(wp.mat3x3)
+        Part-2: (dynamic)
+            1. Matrix-free Ax: wp.array(dtype = wp.vec3)
+            2. Matrix-free diagonals: wp.array(wp.mat3x3)
+    """
 
     def __init__(self, dim: int, device, maxIter: int = 999):
         self.dim = dim  # pre-allocation
