@@ -373,9 +373,9 @@ def compute_angle_derivative(
     dn2hat_dx: wp.mat33,
     sin_theta: float,
     cos_theta: float,
+    skew_n1: wp.mat33,
+    skew_n2: wp.mat33,
 ) -> wp.vec3:
-    skew_n1 = wp.skew(n1_hat)
-    skew_n2 = wp.skew(n2_hat)
     dsin_dx = wp.transpose(skew_n1 * dn2hat_dx - skew_n2 * dn1hat_dx) * e_hat
     dcos_dx = wp.transpose(dn1hat_dx) * n2_hat + wp.transpose(dn2hat_dx) * n1_hat
 
@@ -412,12 +412,14 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     x2 = pos[vi2]  # edge start
     x3 = pos[vi3]  # edge end
 
+    # Compute edge vectors
     x02 = x2 - x0
     x03 = x3 - x0
     x13 = x3 - x1
     x12 = x2 - x1
     e = x3 - x2
 
+    # Compute normals
     n1 = wp.cross(x02, x03)
     n2 = wp.cross(x13, x12)
 
@@ -440,11 +442,14 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     k = stiffness * edge_rest_length[bending_index]
     dE_dtheta = k * (theta - edge_rest_angle[bending_index])
 
+    # Pre-compute skew matrices (shared across all angle derivative computations)
     skew_e = wp.skew(e)
     skew_x03 = wp.skew(x03)
     skew_x02 = wp.skew(x02)
     skew_x13 = wp.skew(x13)
     skew_x12 = wp.skew(x12)
+    skew_n1 = wp.skew(n1_hat)
+    skew_n2 = wp.skew(n2_hat)
 
     # Compute the derivatives of unit normals with respect to each vertex; required for computing angle derivatives
     dn1hat_dx0 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_e)
@@ -459,11 +464,19 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     dn1hat_dx3 = compute_normalized_vector_derivative(n1_norm, n1_hat, skew_x02)
     dn2hat_dx3 = compute_normalized_vector_derivative(n2_norm, n2_hat, -skew_x12)
 
-    # Compute all angle derivatives; all are required for damping
-    dtheta_dx0 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx0, dn2hat_dx0, sin_theta, cos_theta)
-    dtheta_dx1 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx1, dn2hat_dx1, sin_theta, cos_theta)
-    dtheta_dx2 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx2, dn2hat_dx2, sin_theta, cos_theta)
-    dtheta_dx3 = compute_angle_derivative(n1_hat, n2_hat, e_hat, dn1hat_dx3, dn2hat_dx3, sin_theta, cos_theta)
+    # Compute all angle derivatives (required for damping)
+    dtheta_dx0 = compute_angle_derivative(
+        n1_hat, n2_hat, e_hat, dn1hat_dx0, dn2hat_dx0, sin_theta, cos_theta, skew_n1, skew_n2
+    )
+    dtheta_dx1 = compute_angle_derivative(
+        n1_hat, n2_hat, e_hat, dn1hat_dx1, dn2hat_dx1, sin_theta, cos_theta, skew_n1, skew_n2
+    )
+    dtheta_dx2 = compute_angle_derivative(
+        n1_hat, n2_hat, e_hat, dn1hat_dx2, dn2hat_dx2, sin_theta, cos_theta, skew_n1, skew_n2
+    )
+    dtheta_dx3 = compute_angle_derivative(
+        n1_hat, n2_hat, e_hat, dn1hat_dx3, dn2hat_dx3, sin_theta, cos_theta, skew_n1, skew_n2
+    )
 
     # Use float masks for branch-free selection
     mask0 = float(v_order == 0)
@@ -485,12 +498,13 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         x_prev2 = pos_prev[vi2]
         x_prev3 = pos_prev[vi3]
 
+        # Compute displacement vectors
         dx0 = x0 - x_prev0
         dx1 = x1 - x_prev1
         dx2 = x2 - x_prev2
         dx3 = x3 - x_prev3
 
-        # Compute angular velocity
+        # Compute angular velocity using all derivatives
         dtheta_dt = (
             wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
         ) * inv_dt
