@@ -226,6 +226,10 @@ class ContactView:
     def get_contact_force(self):
         """Get the net contact force between entity pairs."""
         return self.contact_reporter.get_force(self.query_idx)
+    
+    def get_contact_normals(self):
+        """Get the net contact normal between entity pairs."""
+        return self.contact_reporter.get_normal(self.query_idx)
 
     def get_contact_idx(self):
         """Get the contact indices between entity pairs."""
