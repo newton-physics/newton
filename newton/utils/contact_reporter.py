@@ -147,7 +147,6 @@ def aggregate_entity_pair_maxdepth(
     entity_pair_dist: wp.array(dtype=wp.float32),
     entity_pair_normal: wp.array(dtype=wp.vec3),
 ):
-    # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
     entity_pair_idx = wp.tid()
     if entity_pair_idx >= n_entity_pairs:
         return
@@ -158,6 +157,7 @@ def aggregate_entity_pair_maxdepth(
     # track deepest contact
     best_dist = wp.float32(wp.inf)
     best_contact = wp.int32(-1)
+    best_flip = wp.int32(0)
 
     for i in range(n_shape_pairs):
         sp_ord = ep_sp_ord[start + i]
@@ -165,14 +165,15 @@ def aggregate_entity_pair_maxdepth(
         contacts_start = bin_start[sp_ord]
 
         for j in range(n_bin_contacts):
-            # FIXME: invert normal/frame when entity pair order doesn't match shape pair order
             contact_idx = bin_contacts[contacts_start, j]  # FIXME: linearize
             dist = bin_dist[contacts_start, j]  # FIXME: linearize
 
             if dist < best_dist:
                 best_dist = dist
                 best_contact = contact_idx
+                best_flip = ep_sp_flip[start + i]
 
+    entity_pair_normal[entity_pair_idx] = wp.where(best_flip, -1.0, 1.0) * contact_frame[best_contact][0]
     entity_pair_contact[entity_pair_idx] = best_contact
     entity_pair_dist[entity_pair_idx] = best_dist
 
@@ -452,6 +453,7 @@ class ContactReporter:
 
             self.query_dist_matrix = []
             self.query_force_matrix = []
+            self.query_normal_matrix = []
             self.query_idx_matrix = []
 
             for query_idx in range(len(self.entity_group_pairs)):
@@ -477,6 +479,7 @@ class ContactReporter:
                 m, n = len(row_indices), len(col_indices)
                 self.query_dist_matrix.append(wp.full((m, n), wp.inf, dtype=wp.float32))
                 self.query_force_matrix.append(wp.full((m, n), 0, dtype=wp.vec3))
+                self.query_normal_matrix.append(wp.full((m, n), 0, dtype=wp.vec3))
                 self.query_idx_matrix.append(wp.full((m, n), -1, dtype=wp.int32))
 
     def reset(self):
@@ -576,6 +579,11 @@ class ContactReporter:
     def get_force(self, query_idx: int):
         matrix = self.query_force_matrix[query_idx]
         self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix)
+        return self.query_entities[query_idx], matrix
+    
+    def get_normal(self, query_idx: int):
+        matrix = self.query_normal_matrix[query_idx]
+        self.fill_contact_matrix(query_idx, self.entity_pair_normal, matrix)
         return self.query_entities[query_idx], matrix
 
     def get_idx(self, query_idx: int):
