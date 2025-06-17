@@ -1211,19 +1211,23 @@ class MuJoCoSolver(SolverBase):
             and (i, j) not in model.shape_collision_filter_pairs
             and (j, i) not in model.shape_collision_filter_pairs
         ]
-        # plot_graph(np.arange(model.shape_count), graph_edges)
-        color_groups = color_graph(
-            num_nodes=model.shape_count,
-            graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
-        )
-        shape_color = np.zeros(model.shape_count, dtype=np.int32)
-        num_colors = 0
-        for group in color_groups:
-            if len(group) > 1:
-                num_colors += 1
-                shape_color[group] = num_colors
-            else:
-                shape_color[group] = 0
+        if len(graph_edges) > 0:
+            # plot_graph(np.arange(model.shape_count), graph_edges)
+            color_groups = color_graph(
+                num_nodes=model.shape_count,
+                graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
+            )
+            shape_color = np.zeros(model.shape_count, dtype=np.int32)
+            num_colors = 0
+            for group in color_groups:
+                if len(group) > 1:
+                    num_colors += 1
+                    shape_color[group] = num_colors
+                else:
+                    shape_color[group] = 0
+        else:
+            # no edges in the graph, all shapes can collide with each other
+            shape_color = np.zeros(model.shape_count, dtype=np.int32)
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
