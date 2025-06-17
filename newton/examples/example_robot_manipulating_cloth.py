@@ -293,7 +293,6 @@ class ExampleClothManipulation:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
-        self.contacts = self.model.collide(self.state_0)
 
         self.control = self.model.control()
 
