@@ -649,6 +649,9 @@ def update_geom_properties_kernel(
     shape_to_geom: wp.array(dtype=wp.int32),
     shapes_per_env: int,
     up_axis: int,
+    torsional_friction: float,
+    rolling_friction: float,
+    contact_stiffness_time_const: float,
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -671,7 +674,7 @@ def update_geom_properties_kernel(
 
     # Update friction (slide, torsion, roll)
     mu = shape_mu[tid]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, 0.05 * mu, 0.05 * mu)  # Use scaled values for torsion/roll
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
     # Update solref (stiffness, damping as time constants)
     # MuJoCo uses time constants, Newton uses direct stiffness/damping
@@ -680,11 +683,11 @@ def update_geom_properties_kernel(
     ke = shape_ke[tid]
     kd = shape_kd[tid]
     if ke > 0.0:
-        # Approximate time constant based on typical contact scenarios
-        time_const_stiff = 0.02  # Default 20ms
+        # Use provided time constant for stiffness
+        time_const_stiff = contact_stiffness_time_const
         time_const_damp = kd / (2.0 * wp.sqrt(ke)) if kd > 0.0 else 1.0
     else:
-        time_const_stiff = 0.02
+        time_const_stiff = contact_stiffness_time_const
         time_const_damp = 1.0
     geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
@@ -751,6 +754,7 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
+        contact_stiffness_time_const: float | None = None,
     ):
         """
         Args:
@@ -770,10 +774,13 @@ class MuJoCoSolver(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
+            contact_stiffness_time_const (float | None): Time constant for contact stiffness in MuJoCo's solver reference model. If None, defaults to 0.02 (20ms).
+                                                        Can be set to match the simulation timestep for tighter coupling.
 
         """
         super().__init__(model)
         self.mujoco, self.mujoco_warp = import_mujoco()
+        self.contact_stiffness_time_const = contact_stiffness_time_const
 
         disableflags = 0
         if disable_contacts:
@@ -799,6 +806,7 @@ class MuJoCoSolver(SolverBase):
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
+                contact_stiffness_time_const=contact_stiffness_time_const,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1034,9 +1042,9 @@ class MuJoCoSolver(SolverBase):
         # these numbers come from the cartpole.xml model
         # joint_solref=(0.08, 1.0),
         # joint_solimp=(0.9, 0.95, 0.001, 0.5, 2.0),
-        geom_solref: tuple[float, float] = (0.02, 1.0),
+        geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
-        geom_friction: tuple[float, float, float] = (1.0, 0.05, 0.05),
+        geom_friction: tuple[float, float, float] | None = None,
         geom_condim: int = 3,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
@@ -1046,6 +1054,7 @@ class MuJoCoSolver(SolverBase):
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
         maxhullvert: int = 64,
+        contact_stiffness_time_const: float | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1114,8 +1123,16 @@ class MuJoCoSolver(SolverBase):
         if callable(defaults):
             defaults = defaults()
         defaults.geom.condim = geom_condim
+        # Use provided or default contact stiffness time constant
+        if geom_solref is None:
+            if contact_stiffness_time_const is None:
+                contact_stiffness_time_const = 0.02  # Default 20ms
+            geom_solref = (contact_stiffness_time_const, 1.0)
         defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
+        # Use model's friction parameters if geom_friction is not provided
+        if geom_friction is None:
+            geom_friction = (1.0, model.rigid_contact_torsional_friction, model.rigid_contact_rolling_friction)
         defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
@@ -1331,8 +1348,13 @@ class MuJoCoSolver(SolverBase):
                 if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
                     shape_mu = model.shape_materials.mu.numpy()
                     if shape < len(shape_mu):
-                        # Set friction from Newton shape materials
-                        geom_params["friction"] = [shape_mu[shape], 0.05 * shape_mu[shape], 0.05 * shape_mu[shape]]
+                        # Set friction from Newton shape materials using model's friction parameters
+                        mu = shape_mu[shape]
+                        geom_params["friction"] = [
+                            mu,
+                            model.rigid_contact_torsional_friction * mu,
+                            model.rigid_contact_rolling_friction * mu,
+                        ]
 
                 body.add_geom(**geom_params)
 
@@ -1617,7 +1639,7 @@ class MuJoCoSolver(SolverBase):
             self.notify_model_changed(flags)
 
             # Also update shape properties once during initialization
-            if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
+            if model.shape_materials.mu is not None:
                 shape_flags = newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
                 self.notify_model_changed(shape_flags)
 
@@ -1836,6 +1858,12 @@ class MuJoCoSolver(SolverBase):
             and hasattr(self.mjw_model, "geom_quat")
             and len(self.mjw_model.geom_quat.shape) == 2
         ):
+            # Get contact stiffness time constant from solver or use default
+            if self.contact_stiffness_time_const is not None:
+                contact_time_const = self.contact_stiffness_time_const
+            else:
+                contact_time_const = 0.02  # Default 20ms
+
             wp.launch(
                 update_geom_properties_kernel,
                 dim=self.model.shape_count,
@@ -1849,6 +1877,9 @@ class MuJoCoSolver(SolverBase):
                     self.model.mjc_shape_to_geom,
                     shapes_per_env,
                     self.model.up_axis,
+                    self.model.rigid_contact_torsional_friction,
+                    self.model.rigid_contact_rolling_friction,
+                    contact_time_const,
                 ],
                 outputs=[
                     self.mjw_model.geom_rbound,

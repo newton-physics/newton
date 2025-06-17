@@ -681,16 +681,16 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         places=5,
                         msg=f"Slide friction mismatch for shape {shape_idx} in environment {env_idx}",
                     )
-                    # Torsion and roll friction should be scaled
+                    # Torsion and roll friction should be scaled by model parameters
                     self.assertAlmostEqual(
                         float(actual_friction[1]),
-                        0.05 * expected_mu,
+                        self.model.rigid_contact_torsional_friction * expected_mu,
                         places=5,
                         msg=f"Torsion friction mismatch for shape {shape_idx} in environment {env_idx}",
                     )
                     self.assertAlmostEqual(
                         float(actual_friction[2]),
-                        0.05 * expected_mu,
+                        self.model.rigid_contact_rolling_friction * expected_mu,
                         places=5,
                         msg=f"Roll friction mismatch for shape {shape_idx} in environment {env_idx}",
                     )
