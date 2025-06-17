@@ -21,14 +21,12 @@ from newton.core.spatial import quat_decompose, quat_twist
 
 from .joints import (
     JOINT_BALL,
-    JOINT_COMPOUND,
     JOINT_D6,
     JOINT_DISTANCE,
     JOINT_FIXED,
     JOINT_FREE,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
 )
 from .model import Model
 from .state import State
@@ -202,8 +200,7 @@ def eval_single_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
     body_q: wp.array(dtype=wp.transform),
@@ -235,15 +232,14 @@ def eval_single_articulation_fk(
 
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
-        axis_start = joint_axis_start[i]
-        lin_axis_count = joint_axis_dim[i, 0]
-        ang_axis_count = joint_axis_dim[i, 1]
+        lin_axis_count = joint_dof_dim[i, 0]
+        ang_axis_count = joint_dof_dim[i, 1]
 
         X_j = wp.transform_identity()
         v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
 
         if type == JOINT_PRISMATIC:
-            axis = joint_axis[axis_start]
+            axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
             qd = joint_qd[qd_start]
@@ -252,7 +248,7 @@ def eval_single_articulation_fk(
             v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
         if type == JOINT_REVOLUTE:
-            axis = joint_axis[axis_start]
+            axis = joint_axis[qd_start]
 
             q = joint_q[q_start]
             qd = joint_qd[qd_start]
@@ -282,41 +278,6 @@ def eval_single_articulation_fk(
             X_j = t
             v_j = v
 
-        if type == JOINT_COMPOUND:
-            rot, vel_w = compute_3d_rotational_dofs(
-                joint_axis[axis_start],
-                joint_axis[axis_start + 1],
-                joint_axis[axis_start + 2],
-                joint_q[q_start + 0],
-                joint_q[q_start + 1],
-                joint_q[q_start + 2],
-                joint_qd[qd_start + 0],
-                joint_qd[qd_start + 1],
-                joint_qd[qd_start + 2],
-            )
-
-            t = wp.transform(wp.vec3(0.0, 0.0, 0.0), rot)
-            v = wp.spatial_vector(vel_w, wp.vec3(0.0, 0.0, 0.0))
-
-            X_j = t
-            v_j = v
-
-        if type == JOINT_UNIVERSAL:
-            rot, vel_w = compute_2d_rotational_dofs(
-                joint_axis[axis_start],
-                joint_axis[axis_start + 1],
-                joint_q[q_start + 0],
-                joint_q[q_start + 1],
-                joint_qd[qd_start + 0],
-                joint_qd[qd_start + 1],
-            )
-
-            t = wp.transform(wp.vec3(0.0, 0.0, 0.0), rot)
-            v = wp.spatial_vector(vel_w, wp.vec3(0.0, 0.0, 0.0))
-
-            X_j = t
-            v_j = v
-
         if type == JOINT_D6:
             pos = wp.vec3(0.0)
             rot = wp.quat_identity()
@@ -327,29 +288,28 @@ def eval_single_articulation_fk(
             # (since differentiating through a for loop that updates a local variable is not supported)
 
             if lin_axis_count > 0:
-                axis = joint_axis[axis_start + 0]
+                axis = joint_axis[qd_start + 0]
                 pos += axis * joint_q[q_start + 0]
                 vel_v += axis * joint_qd[qd_start + 0]
             if lin_axis_count > 1:
-                axis = joint_axis[axis_start + 1]
+                axis = joint_axis[qd_start + 1]
                 pos += axis * joint_q[q_start + 1]
                 vel_v += axis * joint_qd[qd_start + 1]
             if lin_axis_count > 2:
-                axis = joint_axis[axis_start + 2]
+                axis = joint_axis[qd_start + 2]
                 pos += axis * joint_q[q_start + 2]
                 vel_v += axis * joint_qd[qd_start + 2]
 
-            ia = axis_start + lin_axis_count
             iq = q_start + lin_axis_count
             iqd = qd_start + lin_axis_count
             if ang_axis_count == 1:
-                axis = joint_axis[ia]
+                axis = joint_axis[iqd]
                 rot = wp.quat_from_axis_angle(axis, joint_q[iq])
                 vel_w = joint_qd[iqd] * axis
             if ang_axis_count == 2:
                 rot, vel_w = compute_2d_rotational_dofs(
-                    joint_axis[ia + 0],
-                    joint_axis[ia + 1],
+                    joint_axis[iqd + 0],
+                    joint_axis[iqd + 1],
                     joint_q[iq + 0],
                     joint_q[iq + 1],
                     joint_qd[iqd + 0],
@@ -357,9 +317,9 @@ def eval_single_articulation_fk(
                 )
             if ang_axis_count == 3:
                 rot, vel_w = compute_3d_rotational_dofs(
-                    joint_axis[ia + 0],
-                    joint_axis[ia + 1],
-                    joint_axis[ia + 2],
+                    joint_axis[iqd + 0],
+                    joint_axis[iqd + 1],
+                    joint_axis[iqd + 2],
                     joint_q[iq + 0],
                     joint_q[iq + 1],
                     joint_q[iq + 2],
@@ -386,63 +346,6 @@ def eval_single_articulation_fk(
         body_qd[child] = v_wc
 
 
-# implementation where mask is an integer array
-@wp.kernel
-def eval_articulation_fk(
-    articulation_start: wp.array(dtype=int),
-    articulation_mask: wp.array(
-        dtype=int
-    ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=int),
-    joint_qd_start: wp.array(dtype=int),
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
-    body_com: wp.array(dtype=wp.vec3),
-    # outputs
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-):
-    tid = wp.tid()
-
-    # early out if disabling FK for this articulation
-    if articulation_mask:
-        if articulation_mask[tid] == 0:
-            return
-
-    joint_start = articulation_start[tid]
-    joint_end = articulation_start[tid + 1]
-
-    eval_single_articulation_fk(
-        joint_start,
-        joint_end,
-        joint_q,
-        joint_qd,
-        joint_q_start,
-        joint_qd_start,
-        joint_type,
-        joint_parent,
-        joint_child,
-        joint_X_p,
-        joint_X_c,
-        joint_axis,
-        joint_axis_start,
-        joint_axis_dim,
-        body_com,
-        # outputs
-        body_q,
-        body_qd,
-    )
-
-
-# overload where mask is a bool array
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array(dtype=int),
@@ -459,8 +362,7 @@ def eval_articulation_fk(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
     # outputs
     body_q: wp.array(dtype=wp.transform),
@@ -489,8 +391,7 @@ def eval_articulation_fk(
         joint_X_p,
         joint_X_c,
         joint_axis,
-        joint_axis_start,
-        joint_axis_dim,
+        joint_dof_dim,
         body_com,
         # outputs
         body_q,
@@ -531,8 +432,7 @@ def eval_fk(
             model.joint_X_p,
             model.joint_X_c,
             model.joint_axis,
-            model.joint_axis_start,
-            model.joint_axis_dim,
+            model.joint_dof_dim,
             model.body_com,
         ],
         outputs=[
@@ -618,8 +518,7 @@ def eval_articulation_ik(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
-    joint_axis_start: wp.array(dtype=int),
-    joint_axis_dim: wp.array(dtype=int, ndim=2),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
@@ -673,12 +572,11 @@ def eval_articulation_ik(
 
     q_start = joint_q_start[tid]
     qd_start = joint_qd_start[tid]
-    axis_start = joint_axis_start[tid]
-    lin_axis_count = joint_axis_dim[tid, 0]
-    ang_axis_count = joint_axis_dim[tid, 1]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
 
     if type == JOINT_PRISMATIC:
-        axis = joint_axis[axis_start]
+        axis = joint_axis[qd_start]
 
         # world space joint axis
         axis_p = wp.quat_rotate(q_p, axis)
@@ -693,7 +591,7 @@ def eval_articulation_ik(
         return
 
     if type == JOINT_REVOLUTE:
-        axis = joint_axis[axis_start]
+        axis = joint_axis[qd_start]
         q_pc = wp.quat_inverse(q_p) * q_c
 
         q, qd = reconstruct_angular_q_qd(q_pc, w_err, X_wpj, axis)
@@ -747,59 +645,34 @@ def eval_articulation_ik(
 
         return
 
-    if type == JOINT_COMPOUND:
-        axis_0 = joint_axis[axis_start + 0]
-        axis_1 = joint_axis[axis_start + 1]
-        axis_2 = joint_axis[axis_start + 2]
-        qs, qds = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, w_err)
-        joint_q[q_start + 0] = qs[0]
-        joint_q[q_start + 1] = qs[1]
-        joint_q[q_start + 2] = qs[2]
-        joint_qd[qd_start + 0] = qds[0]
-        joint_qd[qd_start + 1] = qds[1]
-        joint_qd[qd_start + 2] = qds[2]
-
-        return
-
-    if type == JOINT_UNIVERSAL:
-        axis_0 = joint_axis[axis_start + 0]
-        axis_1 = joint_axis[axis_start + 1]
-        qs2, qds2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, w_err)
-        joint_q[q_start + 0] = qs2[0]
-        joint_q[q_start + 1] = qs2[1]
-        joint_qd[qd_start + 0] = qds2[0]
-        joint_qd[qd_start + 1] = qds2[1]
-
-        return
-
     if type == JOINT_D6:
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
         v_err_c = wp.quat_rotate_inv(q_p, v_err)
         if lin_axis_count > 0:
-            axis = joint_axis[axis_start + 0]
+            axis = joint_axis[qd_start + 0]
             joint_q[q_start + 0] = wp.dot(x_err_c, axis)
             joint_qd[qd_start + 0] = wp.dot(v_err_c, axis)
 
         if lin_axis_count > 1:
-            axis = joint_axis[axis_start + 1]
+            axis = joint_axis[qd_start + 1]
             joint_q[q_start + 1] = wp.dot(x_err_c, axis)
             joint_qd[qd_start + 1] = wp.dot(v_err_c, axis)
 
         if lin_axis_count > 2:
-            axis = joint_axis[axis_start + 2]
+            axis = joint_axis[qd_start + 2]
             joint_q[q_start + 2] = wp.dot(x_err_c, axis)
             joint_qd[qd_start + 2] = wp.dot(v_err_c, axis)
 
         if ang_axis_count == 1:
-            axis = joint_axis[axis_start]
+            axis = joint_axis[qd_start]
             q_pc = wp.quat_inverse(q_p) * q_c
-            q, qd = reconstruct_angular_q_qd(q_pc, w_err, X_wpj, joint_axis[axis_start + lin_axis_count])
+            q, qd = reconstruct_angular_q_qd(q_pc, w_err, X_wpj, joint_axis[qd_start + lin_axis_count])
             joint_q[q_start + lin_axis_count] = q
             joint_qd[qd_start + lin_axis_count] = qd
 
         if ang_axis_count == 2:
-            axis_0 = joint_axis[axis_start + lin_axis_count + 0]
-            axis_1 = joint_axis[axis_start + lin_axis_count + 1]
+            axis_0 = joint_axis[qd_start + lin_axis_count + 0]
+            axis_1 = joint_axis[qd_start + lin_axis_count + 1]
             qs2, qds2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, w_err)
             joint_q[q_start + lin_axis_count + 0] = qs2[0]
             joint_q[q_start + lin_axis_count + 1] = qs2[1]
@@ -807,9 +680,9 @@ def eval_articulation_ik(
             joint_qd[qd_start + lin_axis_count + 1] = qds2[1]
 
         if ang_axis_count == 3:
-            axis_0 = joint_axis[axis_start + lin_axis_count + 0]
-            axis_1 = joint_axis[axis_start + lin_axis_count + 1]
-            axis_2 = joint_axis[axis_start + lin_axis_count + 2]
+            axis_0 = joint_axis[qd_start + lin_axis_count + 0]
+            axis_1 = joint_axis[qd_start + lin_axis_count + 1]
+            axis_2 = joint_axis[qd_start + lin_axis_count + 2]
             qs3, qds3 = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, w_err)
             joint_q[q_start + lin_axis_count + 0] = qs3[0]
             joint_q[q_start + lin_axis_count + 1] = qs3[1]
@@ -845,8 +718,7 @@ def eval_ik(model, state, joint_q, joint_qd):
             model.joint_X_p,
             model.joint_X_c,
             model.joint_axis,
-            model.joint_axis_start,
-            model.joint_axis_dim,
+            model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
         ],

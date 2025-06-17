@@ -25,14 +25,12 @@
       ~ModelBuilder.add_ground_plane
       ~ModelBuilder.add_joint
       ~ModelBuilder.add_joint_ball
-      ~ModelBuilder.add_joint_compound
       ~ModelBuilder.add_joint_d6
       ~ModelBuilder.add_joint_distance
       ~ModelBuilder.add_joint_fixed
       ~ModelBuilder.add_joint_free
       ~ModelBuilder.add_joint_prismatic
       ~ModelBuilder.add_joint_revolute
-      ~ModelBuilder.add_joint_universal
       ~ModelBuilder.add_muscle
       ~ModelBuilder.add_particle
       ~ModelBuilder.add_shape

@@ -195,7 +195,7 @@ class Model:
         self.joint_f = None
         """Generalized joint forces used for state initialization, shape [joint_dof_count], float."""
         self.joint_target = None
-        """Generalized joint target inputs, shape [joint_axis_count], float."""
+        """Generalized joint target inputs, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_parent = None
@@ -209,37 +209,33 @@ class Model:
         self.joint_X_c = None
         """Joint mass frame in child frame, shape [joint_count, 7], float."""
         self.joint_axis = None
-        """Joint axis in child frame, shape [joint_axis_count, 3], float."""
+        """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
         """Armature for each joint axis (used by :class:`~newton.solvers.MuJoCoSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
         self.joint_target_ke = None
-        """Joint stiffness, shape [joint_axis_count], float."""
+        """Joint stiffness, shape [joint_dof_count], float."""
         self.joint_target_kd = None
-        """Joint damping, shape [joint_axis_count], float."""
+        """Joint damping, shape [joint_dof_count], float."""
         self.joint_effort_limit = None
-        """Joint effort (force/torque) limits, shape [joint_axis_count], float."""
+        """Joint effort (force/torque) limits, shape [joint_dof_count], float."""
         self.joint_velocity_limit = None
-        """Joint velocity limits, shape [joint_axis_count], float."""
+        """Joint velocity limits, shape [joint_dof_count], float."""
         self.joint_friction = None
-        """Joint friction coefficient, shape [joint_axis_count], float."""
-        self.dof_to_axis_map = None
-        """Mapping from DOF index to axis index (-1 for DOFs with no corresponding axis), shape [joint_dof_count], int."""
-        self.joint_axis_start = None
-        """Start index of the first axis per joint, shape [joint_count], int."""
-        self.joint_axis_dim = None
-        """Number of linear and angular axes per joint, shape [joint_count, 2], int."""
-        self.joint_axis_mode = None
-        """Joint axis mode, shape [joint_axis_count], int."""
+        """Joint friction coefficient, shape [joint_dof_count], float."""
+        self.joint_dof_dim = None
+        """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
+        self.joint_dof_mode = None
+        """Control mode for each joint dof, shape [joint_dof_count], int."""
         self.joint_enabled = None
         """Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int."""
         self.joint_limit_lower = None
-        """Joint lower position limits, shape [joint_axis_count], float."""
+        """Joint lower position limits, shape [joint_dof_count], float."""
         self.joint_limit_upper = None
-        """Joint upper position limits, shape [joint_axis_count], float."""
+        """Joint upper position limits, shape [joint_dof_count], float."""
         self.joint_limit_ke = None
-        """Joint position limit stiffness (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_axis_count], float."""
+        """Joint position limit stiffness (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
         self.joint_limit_kd = None
-        """Joint position limit damping (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_axis_count], float."""
+        """Joint position limit damping (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
         self.joint_twist_lower = None
         """Joint lower twist limit, shape [joint_count], float."""
         self.joint_twist_upper = None
@@ -286,8 +282,6 @@ class Model:
         """Total number of shapes in the system."""
         self.joint_count = 0
         """Total number of joints in the system."""
-        self.joint_axis_count = 0
-        """Total number of joint axes in the system."""
         self.tri_count = 0
         """Total number of triangles in the system."""
         self.tet_count = 0
@@ -301,7 +295,7 @@ class Model:
         self.articulation_count = 0
         """Total number of articulations in the system."""
         self.joint_dof_count = 0
-        """Total number of velocity degrees of freedom of all joints in the system."""
+        """Total number of velocity degrees of freedom of all joints in the system. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints in the system."""
 

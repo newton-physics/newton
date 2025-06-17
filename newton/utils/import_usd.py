@@ -443,7 +443,7 @@ def parse_usd(
 
                 def define_joint_mode(dof, joint_desc):
                     target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
-                    mode = newton.JOINT_MODE_FORCE
+                    mode = newton.JOINT_MODE_NONE
                     target_ke = 0.0
                     target_kd = 0.0
                     for drive in joint_desc.jointDrives:

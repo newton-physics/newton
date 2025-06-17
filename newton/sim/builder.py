@@ -64,15 +64,14 @@ from newton.geometry import (
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_BALL,
-    JOINT_COMPOUND,
     JOINT_D6,
     JOINT_DISTANCE,
     JOINT_FIXED,
     JOINT_FREE,
+    JOINT_MODE_NONE,
     JOINT_MODE_TARGET_POSITION,
     JOINT_PRISMATIC,
     JOINT_REVOLUTE,
-    JOINT_UNIVERSAL,
     get_joint_dof_count,
 )
 from .model import Model
@@ -234,6 +233,22 @@ class ModelBuilder:
             ):
                 self.target = 0.5 * (self.limit_lower + self.limit_upper)
 
+        @classmethod
+        def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:
+            """Creates a JointDofConfig with no limits."""
+            return ModelBuilder.JointDofConfig(
+                axis=axis,
+                limit_lower=-1e6,
+                limit_upper=1e6,
+                target=0.0,
+                target_ke=0.0,
+                target_kd=0.0,
+                armature=0.0,
+                limit_ke=0.0,
+                limit_kd=0.0,
+                mode=JOINT_MODE_NONE,
+            )
+
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
         self.num_envs = 0
 
@@ -364,7 +379,7 @@ class ModelBuilder:
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
-        self.joint_axis_mode = []
+        self.joint_dof_mode = []
         self.joint_limit_lower = []
         self.joint_limit_upper = []
         self.joint_limit_ke = []
@@ -381,15 +396,13 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
-        self.joint_axis_start = []
-        self.joint_axis_dim = []
+        self.joint_dof_dim = []
 
         self.articulation_start = []
         self.articulation_key = []
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
-        self.joint_axis_total_count = 0
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
@@ -405,8 +418,6 @@ class ModelBuilder:
         # number of rigid contact points to allocate in the model during self.finalize() per environment
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
-
-        self.dof_to_axis_map = []
 
     @property
     def up_vector(self) -> Vec3:
@@ -431,10 +442,6 @@ class ModelBuilder:
     @property
     def joint_count(self):
         return len(self.joint_type)
-
-    @property
-    def joint_axis_count(self):
-        return len(self.joint_axis)
 
     @property
     def particle_count(self):
@@ -559,8 +566,6 @@ class ModelBuilder:
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
 
-            self.joint_axis_start.extend([a + self.joint_axis_total_count for a in builder.joint_axis_start])
-
         for i in range(builder.body_count):
             if xform is not None:
                 self.body_q.append(xform * wp.transform(*builder.body_q[i]))
@@ -608,8 +613,8 @@ class ModelBuilder:
             "joint_X_c",
             "joint_armature",
             "joint_axis",
-            "joint_axis_dim",
-            "joint_axis_mode",
+            "joint_dof_dim",
+            "joint_dof_mode",
             "joint_key",
             "joint_qd",
             "joint_f",
@@ -660,17 +665,8 @@ class ModelBuilder:
         for attr in more_builder_attrs:
             getattr(self, attr).extend(getattr(builder, attr))
 
-        # Handle dof_to_axis_map specially - need to offset axis indices
-        axis_offset = self.joint_axis_total_count
-        for dof_axis_idx in builder.dof_to_axis_map:
-            if dof_axis_idx >= 0:
-                self.dof_to_axis_map.append(dof_axis_idx + axis_offset)
-            else:
-                self.dof_to_axis_map.append(dof_axis_idx)
-
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
-        self.joint_axis_total_count += builder.joint_axis_total_count
 
         self.up_axis = builder.up_axis
         self.gravity = builder.gravity
@@ -801,14 +797,12 @@ class ModelBuilder:
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
         self.joint_key.append(key or f"joint_{self.joint_count}")
-        self.joint_axis_start.append(len(self.joint_axis))
-        self.joint_axis_dim.append((len(linear_axes), len(angular_axes)))
-        self.joint_axis_total_count += len(linear_axes) + len(angular_axes)
+        self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_axis_mode.append(dim.mode)
+            self.joint_dof_mode.append(dim.mode)
             self.joint_target.append(dim.target)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
@@ -843,21 +837,6 @@ class ModelBuilder:
         if joint_type == JOINT_FREE or joint_type == JOINT_DISTANCE or joint_type == JOINT_BALL:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
-            # ensure we have armature defined for all velocity dofs
-            if joint_type == JOINT_DISTANCE:
-                # distance joint has already 1 armature setting defined from the linear dof
-                for _ in range(dof_count - 1):
-                    self.joint_armature.append(0.0)
-                    self.joint_effort_limit.append(1e6)
-                    self.joint_velocity_limit.append(1e6)
-                    self.joint_friction.append(0.0)
-            else:
-                # free and ball joints need armature defined for all velocity dofs
-                for _ in range(dof_count):
-                    self.joint_armature.append(0.0)
-                    self.joint_effort_limit.append(1e6)
-                    self.joint_velocity_limit.append(1e6)
-                    self.joint_friction.append(0.0)
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -869,27 +848,6 @@ class ModelBuilder:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
                     self.shape_collision_filter_pairs.add((parent_shape, child_shape))
-
-        # Fill dof_to_axis_map
-        axis_start = self.joint_axis_start[-1]  # Get the axis start for this joint
-        num_axes = len(linear_axes) + len(angular_axes)
-
-        if joint_type in [JOINT_PRISMATIC, JOINT_REVOLUTE, JOINT_D6, JOINT_COMPOUND, JOINT_UNIVERSAL]:
-            for i in range(dof_count):
-                if i < num_axes:
-                    self.dof_to_axis_map.append(axis_start + i)
-                else:
-                    self.dof_to_axis_map.append(-1)
-        elif joint_type == JOINT_DISTANCE:
-            # Only first DOF maps to the axis
-            for i in range(dof_count):
-                if i == 0 and num_axes > 0:
-                    self.dof_to_axis_map.append(axis_start)
-                else:
-                    self.dof_to_axis_map.append(-1)
-        else:  # JOINT_FREE, JOINT_BALL, JOINT_FIXED
-            for _ in range(dof_count):
-                self.dof_to_axis_map.append(-1)
 
         return self.joint_count - 1
 
@@ -1173,8 +1131,19 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
+            linear_axes=[
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.X),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Z),
+            ],
+            angular_axes=[
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.X),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Z),
+            ],
         )
         q_start = self.joint_q_start[joint_id]
+        # set the positional dofs to the child body's transform
         self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
@@ -1220,103 +1189,16 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[ax],
-            collision_filter_parent=collision_filter_parent,
-            enabled=enabled,
-        )
-
-    def add_joint_universal(
-        self,
-        parent: int,
-        child: int,
-        axis_0: JointDofConfig,
-        axis_1: JointDofConfig,
-        axis_2: JointDofConfig,
-        parent_xform: Transform | None = None,
-        child_xform: Transform | None = None,
-        key: str | None = None,
-        collision_filter_parent: bool = True,
-        enabled: bool = True,
-    ) -> int:
-        """Adds a universal joint to the model. U-joints have two degrees of freedom, one for each axis.
-
-        Args:
-            parent: The index of the parent body.
-            child: The index of the child body.
-            axis_0 (JointDofConfig): The first axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
-            axis_1 (JointDofConfig): The second axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
-            axis_2 (JointDofConfig): The third axis of the joint, can be a JointDofConfig object whose settings will be used instead of the other arguments.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            key: The key of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
-            enabled: Whether the joint is enabled.
-
-        Returns:
-            The index of the added joint.
-
-        .. note:: This joint type will be deprecated in favor of the :meth:`add_joint_d6` method.
-
-        """
-
-        return self.add_joint(
-            JOINT_UNIVERSAL,
-            parent,
-            child,
-            angular_axes=[axis_0, axis_1, axis_2],
-            parent_xform=parent_xform,
-            child_xform=child_xform,
-            key=key,
-            collision_filter_parent=collision_filter_parent,
-            enabled=enabled,
-        )
-
-    def add_joint_compound(
-        self,
-        parent: int,
-        child: int,
-        axis_0: JointDofConfig,
-        axis_1: JointDofConfig,
-        axis_2: JointDofConfig,
-        parent_xform: Transform | None = None,
-        child_xform: Transform | None = None,
-        key: str | None = None,
-        collision_filter_parent: bool = True,
-        enabled: bool = True,
-    ) -> int:
-        """Adds a compound joint to the model, which has 3 degrees of freedom, one for each axis.
-        Similar to the ball joint (see :meth:`add_ball_joint`), the compound joint allows bodies to move in a 3D rotation relative to each other,
-        except that the rotation is defined by 3 axes instead of a quaternion.
-        Depending on the choice of axes, the orientation can be specified through Euler angles, e.g. `z-x-z` or `x-y-x`, or through a Tait-Bryan angle sequence, e.g. `z-y-x` or `x-y-z`.
-
-        Args:
-            parent: The index of the parent body.
-            child: The index of the child body.
-            axis_0 (3D vector or JointAxis): The first axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
-            axis_1 (3D vector or JointAxis): The second axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
-            axis_2 (3D vector or JointAxis): The third axis of the joint, can be a JointAxis object whose settings will be used instead of the other arguments.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            armature: Artificial inertia added around the joint axes.
-            key: The key of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
-            enabled: Whether the joint is enabled.
-
-        Returns:
-            The index of the added joint.
-
-        .. note:: This joint type will be deprecated in favor of the :meth:`add_joint_d6` method.
-
-        """
-
-        return self.add_joint(
-            JOINT_COMPOUND,
-            parent,
-            child,
-            angular_axes=[axis_0, axis_1, axis_2],
-            parent_xform=parent_xform,
-            child_xform=child_xform,
-            key=key,
+            linear_axes=[
+                ax,
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Z),
+            ],
+            angular_axes=[
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.X),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
+                ModelBuilder.JointDofConfig.create_unlimited(Axis.Z),
+            ],
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -1407,10 +1289,6 @@ class ModelBuilder:
                 return "revolute"
             elif type == JOINT_D6:
                 return "D6"
-            elif type == JOINT_UNIVERSAL:
-                return "universal"
-            elif type == JOINT_COMPOUND:
-                return "compound"
             elif type == JOINT_FIXED:
                 return "fixed"
             elif type == JOINT_DISTANCE:
@@ -1552,18 +1430,17 @@ class ModelBuilder:
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
                 "axes": [],
-                "axis_dim": self.joint_axis_dim[i],
+                "axis_dim": self.joint_dof_dim[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
             }
-            num_lin_axes, num_ang_axes = self.joint_axis_dim[i]
-            start_ax = self.joint_axis_start[i]
-            for j in range(start_ax, start_ax + num_lin_axes + num_ang_axes):
+            num_lin_axes, num_ang_axes = self.joint_dof_dim[i]
+            for j in range(qd_start, qd_start + num_lin_axes + num_ang_axes):
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-                        "axis_mode": self.joint_axis_mode[j],
+                        "axis_mode": self.joint_dof_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
@@ -1731,15 +1608,14 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-        self.joint_axis_mode.clear()
+        self.joint_dof_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
         self.joint_limit_kd.clear()
-        self.joint_axis_dim.clear()
-        self.joint_axis_start.clear()
+        self.joint_dof_dim.clear()
         self.joint_target.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
@@ -1754,11 +1630,10 @@ class ModelBuilder:
             self.joint_enabled.append(joint["enabled"])
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
-            self.joint_axis_dim.append(joint["axis_dim"])
-            self.joint_axis_start.append(len(self.joint_axis))
+            self.joint_dof_dim.append(joint["axis_dim"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-                self.joint_axis_mode.append(axis["axis_mode"])
+                self.joint_dof_mode.append(axis["axis_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
@@ -2287,6 +2162,36 @@ class ModelBuilder:
 
         return particle_id
 
+    def add_particles(
+        self,
+        pos: list[Vec3],
+        vel: list[Vec3],
+        mass: list[float],
+        radius: list[float] | None = None,
+        flags: list[wp.uint32] | None = None,
+    ):
+        """Adds a group particles to the model.
+
+        Args:
+            pos: The initial positions of the particle.
+            vel: The initial velocities of the particle.
+            mass: The mass of the particles.
+            radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
+            flags: The flags that control the dynamical behavior of the particles, see PARTICLE_FLAG_* constants.
+
+        Note:
+            Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+        """
+        self.particle_q.extend(pos)
+        self.particle_qd.extend(vel)
+        self.particle_mass.extend(mass)
+        if radius is None:
+            radius = [self.default_particle_radius] * len(pos)
+        if flags is None:
+            flags = [PARTICLE_FLAG_ACTIVE] * len(pos)
+        self.particle_radius.extend(radius)
+        self.particle_flags.extend(flags)
+
     def add_spring(self, i: int, j, ke: float, kd: float, control: float):
         """Adds a spring between two particles in the system
 
@@ -2708,8 +2613,7 @@ class ModelBuilder:
         for y in range(0, dim_y + 1):
             for x in range(0, dim_x + 1):
                 local_pos = wp.vec3(x * cell_x, y * cell_y, 0.0)
-                world_pos = wp.quat_rotate(rot, local_pos) + pos
-                vertices.append(world_pos)
+                vertices.append(local_pos)
                 if x > 0 and y > 0:
                     v0 = grid_index(x - 1, y - 1, dim_x + 1)
                     v1 = grid_index(x, y - 1, dim_x + 1)
@@ -2823,16 +2727,22 @@ class ModelBuilder:
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
 
+        num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
 
         start_vertex = len(self.particle_q)
         start_tri = len(self.tri_indices)
 
         # particles
-        for v in vertices:
-            p = wp.quat_rotate(rot, v * scale) + pos
-
-            self.add_particle(p, vel, 0.0, radius=particle_radius)
+        # for v in vertices:
+        #     p = wp.quat_rotate(rot, v * scale) + pos
+        #     self.add_particle(p, vel, 0.0, radius=particle_radius)
+        vertices_np = np.array(vertices) * scale
+        rot_mat_np = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
+        verts_3d_np = np.dot(vertices_np, rot_mat_np.T) + pos
+        self.add_particles(
+            verts_3d_np.tolist(), [vel] * num_verts, mass=[0.0] * num_verts, radius=[particle_radius] * num_verts
+        )
 
         # triangles
         inds = start_vertex + np.array(indices)
@@ -3406,8 +3316,7 @@ class ModelBuilder:
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_axis_start = wp.array(self.joint_axis_start, dtype=wp.int32)
-            m.joint_axis_dim = wp.array(np.array(self.joint_axis_dim), dtype=wp.int32, ndim=2)
+            m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
@@ -3425,7 +3334,7 @@ class ModelBuilder:
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_axis_mode = wp.array(self.joint_axis_mode, dtype=wp.int32)
+            m.joint_dof_mode = wp.array(self.joint_dof_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
@@ -3437,8 +3346,6 @@ class ModelBuilder:
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
-
-            m.dof_to_axis_map = wp.array(self.dof_to_axis_map, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
@@ -3455,7 +3362,6 @@ class ModelBuilder:
 
             # counts
             m.joint_count = self.joint_count
-            m.joint_axis_count = self.joint_axis_count
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
             m.particle_count = len(self.particle_q)

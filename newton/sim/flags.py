@@ -23,7 +23,7 @@ NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)
 """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
 
 NOTIFY_FLAG_JOINT_AXIS_PROPERTIES = wp.constant(1 << 1)
-"""Indicates joint axis property updates: joint_target, joint_target_ke, joint_target_kd, joint_axis_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd."""
+"""Indicates joint axis property updates: joint_target, joint_target_ke, joint_target_kd, joint_dof_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd."""
 
 NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 2)
 """Indicates degree-of-freedom property updates: joint_qd, joint_f, joint_armature."""
