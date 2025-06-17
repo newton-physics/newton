@@ -746,7 +746,7 @@ class ClothSim:
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
-        # self.model.collide(self.state0)
+        self.model.collide(self.state0)
 
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
