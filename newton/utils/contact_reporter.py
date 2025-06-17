@@ -323,12 +323,20 @@ class ContactReporter:
 
         # setup data
         self.entity_group_pairs: list[tuple[list[tuple[int, ...]], list[tuple[int, ...]]]] = []
+        self.query_keys: list[tuple[list[str], list[str]]] = []
 
     def add_entity_group_pair(self, entity_group_a: list[tuple[int, ...]], entity_group_b: list[tuple[int, ...]]):
         """Add a pair of entity groups (aka query) to the contact reporter."""
         self.entity_group_pairs.append((entity_group_a, entity_group_b))
 
-    def finalize(self, solver: SolverBase):
+
+    def add_query_keys(self, entity_a_keys: list[str], entity_b_keys: list[str]):
+        """Add entity keys (names) for a contact query.
+        """
+        self.query_keys.append((entity_a_keys, entity_b_keys))
+
+
+    def finalize(self):
         # TODO: speed up entity pair filtering by finding collision groups per entity
         # simplify entity groups
 
@@ -574,3 +582,6 @@ class ContactReporter:
         matrix = self.query_idx_matrix[query_idx]
         self.fill_contact_matrix(query_idx, self.entity_pair_contact, matrix)
         return self.query_entities[query_idx], matrix
+
+    def get_query_keys(self, query_idx: int):
+            return self.query_keys[query_idx]

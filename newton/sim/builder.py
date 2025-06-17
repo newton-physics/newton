@@ -21,7 +21,9 @@ import copy
 import ctypes
 import itertools
 import math
+import re
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from typing import Any
 
 import numpy as np
@@ -280,6 +282,8 @@ class ModelBuilder:
         self.default_body_armature = 0.0
         # endregion
 
+        self.contact_queries = []
+
         # particles
         self.particle_q = []
         self.particle_qd = []
@@ -477,6 +481,11 @@ class ModelBuilder:
         # articulations are automatically 'closed' when calling finalize
         self.articulation_start.append(self.joint_count)
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
+
+    def add_contact_query(self, entity_pattern: str, filter_pattern: str | None = None, match_fun=None) -> int:
+        query_idx = len(self.contact_queries)
+        self.contact_queries.append((entity_pattern, filter_pattern, match_fun))
+        return query_idx
 
     def add_builder(
         self,
@@ -3393,6 +3402,38 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
+            if self.contact_queries:
+                from newton.utils.contact_reporter import ContactReporter
+                m.contact_reporter = ContactReporter(m)
+                for entity_pattern, filter_pattern, match_fun in self.contact_queries:
+
+                    if match_fun is None:
+                        match_fun = fnmatch
+                    elif match_fun == "re":
+
+                        def match_fun(name, pat):
+                            return re.match(pat, name)
+
+                    # Get entities matching the pattern
+                    entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun, m)
+                    if not entity_a_keys:
+                        raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
+
+                    if filter_pattern is not None:
+                        entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun, m)
+                        if not entity_b_keys:
+                            raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
+                    else:
+                        raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
+
+
+                    # Add entity keys and groups to contact reporter
+                    m.contact_reporter.add_query_keys(entity_a_keys, entity_b_keys)
+                    m.contact_reporter.add_entity_group_pair(entity_a, entity_b)
+                m.contact_reporter.finalize()
+            else:
+                m.contact_reporter = None
+
             return m
 
     def find_shape_contact_pairs(self, model: Model):
@@ -3426,3 +3467,24 @@ class ModelBuilder:
                         filters.add((shape_a, shape_b))
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
+
+    def _get_entities(self, pattern: str, match_fn, model: Model):
+        entities = []
+        entity_keys = []
+
+        for body_id, body_key in enumerate(model.body_key):
+            if fnmatch(body_key, pattern):
+                body_shapes = tuple(model.body_shapes[body_id])
+                if not body_shapes:
+                    continue
+                entities.append(body_shapes)
+                entity_keys.append(body_key)
+
+        for shape_id, shape_key in enumerate(model.shape_key):
+            if fnmatch(shape_key, pattern):
+                entities.append((shape_id,))
+                entity_keys.append(shape_key)
+
+        entities, entity_keys = zip(*sorted(zip(entities, entity_keys)))
+
+        return entities, entity_keys
