@@ -146,12 +146,6 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 
     def setUp(self):
         """Set up a model with multiple environments, each with a free body and an articulated tree."""
-        # Skip on CI due to expand_model_fields kernel compilation timeouts with multiple environments
-        import os
-
-        if os.environ.get("CI", "false").lower() == "true":
-            self.skipTest("Skipping multi-environment MuJoCo tests on CI due to kernel compilation timeouts")
-
         self.seed = 123
         self.rng = np.random.default_rng(self.seed)
 
@@ -641,6 +635,15 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
+    def setUp(self):
+        # Skip geom property tests on CI - they trigger additional kernel compilations
+        # that weren't present in mass/joint tests
+        import os
+
+        if os.environ.get("CI", "false").lower() == "true":
+            self.skipTest("Skipping geom property tests on CI due to kernel compilation timeouts")
+        super().setUp()
+
     def test_geom_property_conversion(self):
         """
         Test that Newton shape properties are correctly converted to MuJoCo geom properties.
