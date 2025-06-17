@@ -258,6 +258,8 @@ class Model:
         self.soft_contact_restitution = 0.0
         """Restitution coefficient of soft contacts (used by :class:`XPBDSolver`). Default is 0.0."""
 
+        self.rigid_contact_max = 0
+        """Number of potential contact points between rigid bodies."""
         self.rigid_contact_torsional_friction = 0.0
         """Torsional friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
         self.rigid_contact_rolling_friction = 0.0
