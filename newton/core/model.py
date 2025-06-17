@@ -328,6 +328,9 @@ class Model:
         self.rigid_contact_point_limit = None
         """Contact point limit, shape [rigid_contact_max], int."""
 
+        self.contact_reporter = None
+        """ContactReporter instance for querying contact information between entities."""
+
         # toggles ground contact for all shapes
         self.ground = True
         """Whether the ground plane and ground contacts are enabled."""

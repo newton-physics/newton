@@ -23,7 +23,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.utils.isaaclab import replicate_environment
-from newton.utils.selection import ArticulationView, ContactView, ContactViewManager
+from newton.utils.selection import ArticulationView, ContactView
 
 
 class Example:
@@ -42,6 +42,16 @@ class Example:
         )
 
         up_axis = stage_info.get("up_axis") or newton.Axis.Z
+
+        self.feet_ground_query_idx = builder.add_contact_query(
+            entity_pattern="/World/envs/*/Robot/*_foot",  # all robots' feet
+            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+        )
+
+        self.torso_ground_query_idx = builder.add_contact_query(
+            entity_pattern="/World/envs/*/Robot/torso",  # all robots' torsos
+            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+        )
 
         # finalize model
         self.model = builder.finalize()
@@ -91,21 +101,9 @@ class Example:
         print(f"body_q shape:       {self.ants.get_attribute('body_q', self.model).shape}")
         print(f"body_qd shape:      {self.ants.get_attribute('body_qd', self.model).shape}")
 
-        self.contact_mgr = ContactViewManager(self.model)
+        self.contacts_feet_ground = ContactView(self.model, self.feet_ground_query_idx)
+        self.contacts_torso_ground = ContactView(self.model, self.torso_ground_query_idx)
 
-        self.contacts_feet_ground = ContactView(
-            self.contact_mgr,
-            "/World/envs/*/Robot/*_foot",  # all robots' feet
-            "/World/ground/GroundPlane/CollisionPlane",
-        )
-
-        self.contacts_torso_ground = ContactView(
-            self.contact_mgr,
-            "/World/envs/*/Robot/torso",  # all robots' torsos
-            "/World/ground/GroundPlane/CollisionPlane",
-        )
-
-        self.contact_mgr.finalize(self.solver)
 
         # Precompute foot body indices for efficient color updates
         self.foot_body_indices = []
@@ -196,7 +194,7 @@ class Example:
         contact.worldid = self.solver.mjw_data.contact.worldid
 
         n_contacts = self.solver.mjw_data.ncon
-        self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
+        self.model.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
 
