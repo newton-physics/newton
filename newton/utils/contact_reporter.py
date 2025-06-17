@@ -303,7 +303,7 @@ class ContactReporter:
         """Shape pair flip flags for entity pairs, shape [total_shape_pairs], int"""
 
         # intermediate, variable data
-        # TODO: linearize
+
         self.bin_contacts = None
         """Contact index component of bins (shape pair), shape [n_shape_pairs, n_pair_contact_max], int"""
 
@@ -525,7 +525,7 @@ class ContactReporter:
                 self.ep_sp_start,
                 self.ep_sp_num,
                 self.ep_sp_flip,
-                self.bin_start,
+                self.bin_start_sorted,
                 self.bin_contacts,
                 self.bin_contacts_dist,
                 self.bin_count,
@@ -548,7 +548,7 @@ class ContactReporter:
                     self.ep_sp_start,
                     self.ep_sp_num,
                     self.ep_sp_flip,
-                    self.bin_start,
+                    self.bin_start_sorted,
                     self.bin_contacts,
                     contact.force,
                     self.bin_count,
