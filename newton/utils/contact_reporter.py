@@ -105,9 +105,9 @@ def select_bin_contacts(
     num_contacts: wp.array(dtype=wp.int32),
     bin_start: wp.array(dtype=wp.int32),
     # outputs
-    bin_contacts: wp.array2d(dtype=wp.int32),
+    bin_contacts: wp.array(dtype=wp.int32),
     bin_count: wp.array(dtype=wp.int32),
-    bin_contacts_dist: wp.array2d(dtype=wp.float32),
+    bin_contacts_dist: wp.array(dtype=wp.float32),
 ):
     n_contacts = num_contacts[0]
     n_blocks = (n_contacts + NUM_THREADS - 1) // NUM_THREADS
@@ -124,9 +124,9 @@ def select_bin_contacts(
 
         i = wp.atomic_add(bin_count, bin_idx, 1)
         contact_start = bin_start[bin_idx]
-        # FIXME: linearize
-        bin_contacts[contact_start, i] = contact_idx
-        bin_contacts_dist[contact_start, i] = contact_dist[contact_idx]
+
+        bin_contacts[contact_start + i] = contact_idx
+        bin_contacts_dist[contact_start + i] = contact_dist[contact_idx]
 
 
 @wp.kernel
@@ -139,8 +139,8 @@ def aggregate_entity_pair_maxdepth(
     ep_sp_num: wp.array(dtype=wp.int32),
     ep_sp_flip: wp.array(dtype=wp.int32),
     bin_start: wp.array(dtype=wp.int32),
-    bin_contacts: wp.array2d(dtype=wp.int32),
-    bin_dist: wp.array2d(dtype=wp.float32),
+    bin_contacts: wp.array(dtype=wp.int32),
+    bin_dist: wp.array(dtype=wp.float32),
     bin_count: wp.array(dtype=wp.int32),
     # outputs
     entity_pair_contact: wp.array(dtype=wp.int32),
@@ -165,8 +165,8 @@ def aggregate_entity_pair_maxdepth(
         contacts_start = bin_start[sp_ord]
 
         for j in range(n_bin_contacts):
-            contact_idx = bin_contacts[contacts_start, j]  # FIXME: linearize
-            dist = bin_dist[contacts_start, j]  # FIXME: linearize
+            contact_idx = bin_contacts[contacts_start + j]
+            dist = bin_dist[contacts_start + j]
 
             if dist < best_dist:
                 best_dist = dist
@@ -188,7 +188,7 @@ def aggregate_entity_pair_net_force(
     ep_sp_num: wp.array(dtype=wp.int32),
     ep_sp_flip: wp.array(dtype=wp.int32),
     bin_start: wp.array(dtype=wp.int32),
-    bin_contacts: wp.array2d(dtype=wp.int32),
+    bin_contacts: wp.array(dtype=wp.int32),
     contact_force: wp.array(dtype=wp.float32),
     bin_count: wp.array(dtype=wp.int32),
     # outputs
@@ -211,7 +211,7 @@ def aggregate_entity_pair_net_force(
 
         flip = ep_sp_flip[start + i]
         for j in range(n_bin_contacts):
-            contact_idx = bin_contacts[contacts_start, j]
+            contact_idx = bin_contacts[contacts_start + j]
             force = contact_force[contact_idx]
             net_force += wp.where(flip, -1.0, 1.0) * contact_frame[contact_idx][0] * force
 
@@ -395,11 +395,12 @@ class ContactReporter:
 
         # for each bin(shape pair), allocate the necessary space
         def shape_pair_maxcontacts(shape_pair):
-            # return 24
-            return 1  # FIXME: linearize
+            return 24  #TODO
 
         bin_size = list(map(shape_pair_maxcontacts, shape_pairs))
-        bin_start = np.cumulative_sum(bin_size[:-1], include_initial=True)
+        bin_start = np.cumsum([0] + bin_size[:-1])  # Cumulative sum for start indices
+
+        total_bin_size = sum(bin_size)  # Total size for linearized arrays
 
         self.entity_p_shape_p_map = entity_p_shape_p_map
 
@@ -419,7 +420,7 @@ class ContactReporter:
                 ep_sp_ord.append(shape_pairs_id_to_ord[sp_idx])
                 ep_sp_flip.append(flip)
             ep_sp_num.append(len(sps))
-        ep_sp_start = np.cumulative_sum(ep_sp_num[:-1], include_initial=True)
+        ep_sp_start = np.cumsum([0] + ep_sp_num[:-1])
 
         n_bins = self.n_shape_pairs
 
@@ -435,10 +436,8 @@ class ContactReporter:
             self.ep_sp_ord = wp.array(ep_sp_ord, dtype=wp.int32)
             self.ep_sp_flip = wp.array(ep_sp_flip, dtype=wp.int32)
 
-            # FIXME: linearize
-            bin_array_shape = (n_bins, 24)
-            self.bin_contacts = wp.empty(bin_array_shape, dtype=wp.int32)
-            self.bin_contacts_dist = wp.empty(bin_array_shape, dtype=wp.float32)
+            self.bin_contacts = wp.empty(total_bin_size, dtype=wp.int32)
+            self.bin_contacts_dist = wp.empty(total_bin_size, dtype=wp.float32)
 
             self.entity_pair_contact = wp.empty(self.n_entity_pairs, dtype=wp.int32)
             self.entity_pair_dist = wp.empty(self.n_entity_pairs, dtype=wp.float32)
