@@ -94,7 +94,10 @@ class Example:
 
         if stage_path is not None:
             self.renderer = newton.utils.SimRendererOpenGL(
-                path=stage_path, model=self.model, scaling=self.renderer_scale_factor
+                path=stage_path,
+                model=self.model,
+                scaling=self.renderer_scale_factor,
+                enable_backface_culling=False,
             )
         else:
             self.renderer = None

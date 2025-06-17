@@ -82,7 +82,7 @@ class ModelBuilder:
 
     Use the ModelBuilder to construct a simulation scene. The ModelBuilder
     and builds the scene representation using standard Python data structures (lists),
-    this means it is not differentiable. Once :func:`finalize()`
+    this means it is not differentiable. Once :meth:`finalize`
     has been called the ModelBuilder transfers all data to Warp tensors and returns
     an object that may be used for simulation.
 
@@ -3159,6 +3159,7 @@ class ModelBuilder:
 
             A model object.
         """
+        from .collide import count_rigid_contact_points
 
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
@@ -3375,6 +3376,7 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
 
             self.find_shape_contact_pairs(m)
+            m.rigid_contact_max = count_rigid_contact_points(m)
 
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
