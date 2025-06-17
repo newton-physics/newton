@@ -635,15 +635,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
-    def setUp(self):
-        # Skip geom property tests on CI - they trigger additional kernel compilations
-        # that weren't present in mass/joint tests
-        import os
-
-        if os.environ.get("CI", "false").lower() == "true":
-            self.skipTest("Skipping geom property tests on CI due to kernel compilation timeouts")
-        super().setUp()
-
     def test_geom_property_conversion(self):
         """
         Test that Newton shape properties are correctly converted to MuJoCo geom properties.
