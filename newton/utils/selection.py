@@ -23,7 +23,6 @@ from warp.types import is_array
 import newton.sim
 from newton import Control, Model, State
 from newton.sim import JOINT_DISTANCE, JOINT_FIXED, JOINT_FREE
-from newton.utils.contact_reporter import ContactReporter
 
 
 @wp.kernel
@@ -122,137 +121,46 @@ class Slice:
         return slice(self.start, self.stop)
 
 
-# TODO: Absorb ContactViewManager into model builder
-class ContactViewManager:
-    """Set up ContactReporter for a set of queries.
-    Each query selects for contacts between
-    - a set of entities and all other entities (if one pattern is given), or
-    - two sets of entities (if two patterns are given),
-    where an entity is a set of shapes, e.g. a body or a single shape."""
-
-    def __init__(self, model: Model):
-        self.model = model
-
-        self.entity_a = []
-        self.entity_b = []
-
-        # config & data layout
-        self.n_queries = 0
-        """Number of queries"""
-        self.query_body_a = None
-        """A-bodies for queries, shape [n_queries], int"""
-        self.query_body_b = None
-        """B-bodies for queries, int"""
-        self.query_body_b_start = None
-        """Start index of B-bodies for each query, shape [n_queries], int"""
-        self.query_body_b_count = None
-        """Number of B-bodies for each body pair, shape [n_queries], int"""
-
-    def add_query(self, entity_a: list[tuple[int, ...]], entity_b: list[tuple[int, ...]] | None = None):
-        """Add a contact query.
-        Args:
-            entity_a: list of sets of shape ids
-            entity_b: list of sets of shape ids, or None to match all shapes
-        Returns:
-            query_idx: The index of this query
-        """
-        query_idx = len(self.entity_a)
-        self.entity_a.append(entity_a)
-        if entity_b is None:
-            raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
-        self.entity_b.append(entity_b)
-        return query_idx
-
-    def finalize(self, solver):
-        self.contact_reporter = ContactReporter(self.model)
-        for entity_a, entity_b in zip(self.entity_a, self.entity_b):
-            self.contact_reporter.add_entity_group_pair(entity_a, entity_b)
-        self.contact_reporter.finalize(solver)
 
 
 class ContactView:
-    """Contact view.
-
-    Args:
-        contact_view_manager (ContactViewManager): The contact view manager.
-        entity_pattern (str): Only contacts involving entities matching this pattern are included.
-        filter_pattern (str | None): If provided, restrict contacts to those additionally involving
-            entities matching this pattern.
-
-    Before using, call finalize() on the contact view manager.
-    Before reading contacts, call update() on the contact view manager.
+    """A view for querying contacts between entities in the simulation.
+    
+    This class provides access to contact data that was set up during model building.
+    Contact queries must be registered with the ModelBuilder using add_contact_query()
+    before model finalization.
     """
 
-    def __init__(
-        self,
-        contact_view_manager: ContactViewManager,
-        entity_pattern: str,
-        filter_pattern: str | None = None,
-        match_fun=None,
-    ):
-        self.contact_view_manager = contact_view_manager
-        self.entity_pattern = entity_pattern
-        self.filter_pattern = filter_pattern
+    def __init__(self, model: Model, query_idx: int):
+        """Initialize a ContactView for a specific contact query.
+        
+        Args:
+            model: The simulation model
+            query_idx: Index of the contact query (returned by ModelBuilder.add_contact_query())
+        """
+        if model.contact_reporter is None:
+            raise RuntimeError("No contact queries were registered during model building. "
+                             "Use ModelBuilder.add_contact_query() before calling finalize().")
 
-        if match_fun is None:
-            match_fun = fnmatch
-        elif match_fun == "re":
+        if query_idx >= len(model.contact_reporter.entity_pair_contact):
+            raise IndexError(f"Contact query index {query_idx} is out of range. "
+                           f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered.")
 
-            def match_fun(name, pat):
-                return re.match(pat, name)
+        self.contact_reporter = model.contact_reporter
+        self.query_idx = query_idx
 
-        self.entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun)
-        if not entity_a_keys:
-            raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
-
-        if filter_pattern is not None:
-            self.entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun)
-            if not entity_b_keys:
-                raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
-        else:
-            self.entity_b = None
-            entity_b_keys = None
-
-        # Store query keys
-        self._query_keys = (entity_a_keys, entity_b_keys)
-
-        self.query_idx = self.contact_view_manager.add_query(self.entity_a, self.entity_b)
-
-    def _get_entities(self, pattern: str, match_fn):
-        # consider bodies and shapes
-        entities = []
-        entity_keys = []
-
-        model = self.contact_view_manager.model
-        for body_id, body_key in enumerate(model.body_key):
-            if fnmatch(body_key, pattern):
-                body_shapes = tuple(model.body_shapes[body_id])
-                if not body_shapes:
-                    continue
-                entities.append(body_shapes)
-                entity_keys.append(body_key)
-
-        for shape_id, shape_key in enumerate(model.shape_key):
-            if fnmatch(shape_key, pattern):
-                entities.append((shape_id,))
-                entity_keys.append(shape_key)
-
-        entities, entity_keys = zip(*sorted(zip(entities, entity_keys)))
-
-        return entities, entity_keys
 
     def get_contact_dist(self):
         """Get the deepest contact distance between entity pairs."""
-        return self.contact_view_manager.contact_reporter.get_dist(self.query_idx)
+        return self.contact_reporter.get_dist(self.query_idx)
 
     def get_contact_force(self):
         """Get the net contact force between entity pairs."""
-        return self.contact_view_manager.contact_reporter.get_force(self.query_idx)
+        return self.contact_reporter.get_force(self.query_idx)
 
     def get_contact_idx(self):
         """Get the contact indices between entity pairs."""
-        return self.contact_view_manager.contact_reporter.get_idx(self.query_idx)
-
+        return self.contact_reporter.get_idx(self.query_idx)
     @property
     def query_keys(self):
         """A tuple containing the shape or body keys for the queries.
@@ -261,11 +169,9 @@ class ContactView:
             tuple: A tuple containing two lists - (entity_a_keys, entity_b_keys).
                   Each list contains the shape or body keys for the respective entities.
         """
-        return self._query_keys
-
+        return self.contact_reporter.get_query_keys(self.query_idx)
     # TODO: expose raw contact arrays
     # TODO: record entity names
-
 
 class ArticulationView:
     def __init__(

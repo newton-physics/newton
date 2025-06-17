@@ -23,7 +23,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView, ContactView, ContactViewManager
+from newton.utils.selection import ArticulationView, ContactView
 
 COLLAPSE_FIXED_JOINTS = True
 VERBOSE = True
@@ -52,6 +52,16 @@ class Example:
             builder.add_builder(articulation_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
 
         builder.add_ground_plane()
+
+        self.feet_ground_query_idx = builder.add_contact_query(
+            entity_pattern="/World/envs/*/Robot/*_foot",  # all robots' feet
+            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+        )
+
+        self.torso_ground_query_idx = builder.add_contact_query(
+            entity_pattern="/World/envs/*/Robot/torso",  # all robots' torsos
+            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+        )
 
         # finalize model
         self.model = builder.finalize()
@@ -104,19 +114,9 @@ class Example:
         # set all DOFs to the middle of their range by default
         self.contact_mgr = ContactViewManager(self.model)
 
-        self.contacts_feet_ground = ContactView(
-            self.contact_mgr,
-            "/World/envs/*/Robot/*_foot",  # all robots' feet
-            "/World/ground/GroundPlane/CollisionPlane",
-        )
+        self.contacts_feet_ground = ContactView(self.model, self.feet_ground_query_idx)
+        self.contacts_torso_ground = ContactView(self.model, self.torso_ground_query_idx)
 
-        self.contacts_torso_ground = ContactView(
-            self.contact_mgr,
-            "/World/envs/*/Robot/torso",  # all robots' torsos
-            "/World/ground/GroundPlane/CollisionPlane",
-        )
-
-        self.contact_mgr.finalize(self.solver)
 
         # Precompute foot body indices for efficient color updates
         self.foot_body_indices = []
@@ -187,7 +187,7 @@ class Example:
         contact.worldid = self.solver.mjw_data.contact.worldid
 
         n_contacts = self.solver.mjw_data.ncon
-        self.contact_mgr.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
+        self.model.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
 
