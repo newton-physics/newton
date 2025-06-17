@@ -654,7 +654,7 @@ def create_soft_contacts(
     particle_index, shape_index = tid // shape_count, tid % shape_count
     if (particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE) == 0:
         return
-    if shape_flags[shape_index] & wp.uint32(SHAPE_FLAG_COLLIDE_PARTICLES) == 0:
+    if (shape_flags[shape_index] & wp.uint32(SHAPE_FLAG_COLLIDE_PARTICLES)) == 0:
         return
 
     rigid_index = shape_body[shape_index]
