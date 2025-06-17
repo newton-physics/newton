@@ -322,7 +322,14 @@ class ExampleClothManipulation:
 
         if self.stage_path is not None:
             self.renderer = newton.utils.SimRendererOpenGL(
-                path=self.stage_path, model=self.model, scaling=0.01, show_joints=True, show_particles=False
+                path=self.stage_path,
+                model=self.model,
+                scaling=0.05,
+                show_joints=False,
+                show_particles=False,
+                near_plane=0.01,
+                far_plane=100.0,
+                enable_backface_culling=False,
             )
 
         else:
