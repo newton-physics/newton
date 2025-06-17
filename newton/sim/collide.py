@@ -146,6 +146,8 @@ class CollisionPipeline:
                 requires_grad=self.requires_grad,
                 device=model.device,
             )
+        else:
+            self.contacts.clear()
 
         # output contacts buffer
         contacts = self.contacts
@@ -189,8 +191,6 @@ class CollisionPipeline:
 
         # generate rigid contacts for shapes
         if self.shape_pairs_filtered is not None:
-            # clear old count
-            contacts.rigid_contact_count.zero_()
             self.rigid_pair_shape0.fill_(-1)
             self.rigid_pair_shape1.fill_(-1)
 
@@ -223,7 +223,8 @@ class CollisionPipeline:
                 device=contacts.device,
             )
 
-            contacts.clear()
+            # clear old count
+            contacts.rigid_contact_count.zero_()
             if self.rigid_pair_point_count is not None:
                 self.rigid_pair_point_count.zero_()
 
