@@ -22,36 +22,33 @@
 ###########################################################################
 
 import warp as wp
-import warp.sim
-import warp.sim.render
-
+import newton
 
 class Example:
-    def __init__(self, stage_path="example_rigid_force.usd", use_opengl=False):
+    def __init__(self, stage_path="example_rigid_force.usda", use_opengl=False):
         fps = 60
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis="Y")
 
-        b = builder.add_body(origin=wp.transform((0.0, 10.0, 0.0), wp.quat_identity()))
-        builder.add_shape_box(body=b, hx=1.0, hy=1.0, hz=1.0, density=100.0)
+        b = builder.add_body(xform=wp.transform((0.0, 10.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=b, hx=1.0, hy=1.0, hz=1.0, cfg=newton.ModelBuilder.ShapeConfig(density=100.0))
 
         self.model = builder.finalize()
         self.model.ground = True
 
-        self.integrator = wp.sim.XPBDIntegrator()
+        self.solver = newton.solvers.XPBDSolver(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         if use_opengl:
-            self.renderer = wp.sim.render.SimRendererOpenGL(self.model, stage_path)
+            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
         elif stage_path:
-            print(f"running sim renderer")
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path)
+            self.renderer = newton.utils.SimRendererUsd(self.model, stage_path)
         else:
             self.renderer = None
 
@@ -64,7 +61,7 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            wp.sim.collide(self.model, self.state_0)
+            newton.collision.collide(self.model, self.state_0)
 
             self.state_0.clear_forces()
             self.state_1.clear_forces()
@@ -75,7 +72,7 @@ class Example:
                 ]
             )
 
-            self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+            self.solver.step(self.model, self.state_0, self.state_1, None, None, self.sim_dt)
 
             # swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
@@ -106,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_rigid_force.usd",
+        default="example_rigid_force.usda",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
