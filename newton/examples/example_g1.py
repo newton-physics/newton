@@ -63,9 +63,9 @@ class Example:
                 simplified = newton.geometry.utils.remesh_mesh(
                     m, visualize=False, target_reduction=0.95, recompute_inertia=False
                 )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     m, visualize=False, method="alphashape", alpha=0.01, recompute_inertia=False
-                # )
+                simplified = newton.geometry.utils.remesh_mesh(
+                    simplified, visualize=False, method="alphashape", alpha=0.01, recompute_inertia=False
+                )
                 # simplified = newton.geometry.utils.remesh_mesh(
                 #     m, visualize=False, method="ftetwild", edge_length_fac=0.5, optimize=True, recompute_inertia=False
                 # )
@@ -104,7 +104,7 @@ class Example:
                 integrator="euler",
                 iterations=5,
                 ls_iterations=5,
-                nefc_per_env=1,
+                nefc_per_env=300,
                 save_to_mjcf="converted_example_g1.xml",
             )
         else:
