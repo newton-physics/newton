@@ -313,6 +313,11 @@ class ClothSim:
         self.do_rendering = do_rendering
         self.fixed_particles = []
         self.renderer_scale_factor = 0.01
+        # controls particle-shape contact
+        self.soft_contact_margin = 1.0
+        # controls self-contact of trimesh
+        self.self_contact_radius = 0.1
+        self.self_contact_margin = 0.1
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -485,8 +490,6 @@ class ClothSim:
         self.fixed_particles = range(0, 4)
 
         self.finalize(handle_self_contact=True, ground=False)
-        self.model.soft_contact_radius = 0.1
-        self.model.soft_contact_margin = 0.1
         self.model.soft_contact_ke = 1e4
         self.model.soft_contact_kd = 1e-3
         self.model.soft_contact_mu = 0.2
@@ -718,7 +721,7 @@ class ClothSim:
         self.renderer_scale_factor = 0.1
 
         self.finalize(handle_self_contact=False, ground=False, use_gravity=True)
-        self.model.soft_contact_margin = particle_radius * 1.1
+        self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = stretching_stiffness
 
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
@@ -736,7 +739,13 @@ class ClothSim:
         self.set_points_fixed(self.model, self.fixed_particles)
 
         if self.solver_name == "vbd":
-            self.solver = newton.solvers.VBDSolver(self.model, self.iterations, handle_self_contact=handle_self_contact)
+            self.solver = newton.solvers.VBDSolver(
+                self.model,
+                self.iterations,
+                handle_self_contact=handle_self_contact,
+                self_contact_radius=self.self_contact_radius,
+                self_contact_margin=self.self_contact_margin,
+            )
         elif self.solver_name == "xpbd":
             self.solver = newton.solvers.XPBDSolver(self.iterations)
         elif self.solver_name == "semi_implicit":
@@ -785,7 +794,7 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = self.model.collide(self.state0)
+            contacts = self.model.collide(self.state0, soft_contact_margin=self.soft_contact_margin)
             control = self.model.control()
             self.solver.step(self.model, self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
