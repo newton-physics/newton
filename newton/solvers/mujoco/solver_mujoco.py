@@ -1563,7 +1563,6 @@ class MuJoCoSolver(SolverBase):
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
-            rigid_contact_max = newton.sim.count_rigid_contact_points(model)
             if disable_contacts:
                 nconmax = 0
             else:
