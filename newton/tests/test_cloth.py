@@ -302,14 +302,17 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False):
+    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
-        self.builder = newton.ModelBuilder()
+        self.builder = newton.ModelBuilder(up_axis="Y")
         self.solver_name = solver
+        self.do_rendering = do_rendering
+        self.fixed_particles = []
+        self.renderer_scale_factor = 0.01
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -651,8 +654,75 @@ class ClothSim:
         self.num_test_frames = 30
         self.finalize(ground=False)
 
+    def set_up_body_cloth_contact_experiment(self):
+        vs = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ]
+        fs = [
+            0,
+            1,
+            2,
+            2,
+            3,
+            0,
+        ]
+
+        if self.solver_name != "semi_implicit":
+            stretching_stiffness = 1e4
+            spring_ke = 1e3
+            bending_ke = 10
+        else:
+            stretching_stiffness = 1e2
+            spring_ke = 1e2
+            bending_ke = 10
+        particle_radius = 0.2
+
+        vs = [wp.vec3(v) for v in vs]
+        self.builder.add_cloth_mesh(
+            vertices=vs,
+            indices=fs,
+            scale=1,
+            density=2,
+            pos=wp.vec3(0.0, 0.1, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            edge_ke=bending_ke,
+            edge_kd=0.0,
+            tri_ke=stretching_stiffness,
+            tri_ka=stretching_stiffness,
+            tri_kd=0.0,
+            add_springs=self.solver_name == "xpbd",
+            spring_ke=spring_ke,
+            spring_kd=0.0,
+            particle_radius=particle_radius,
+        )
+
+        self.builder.add_shape_box(
+            -1,
+            wp.transform(
+                wp.vec3(
+                    0,
+                    -2,
+                    0,
+                ),
+                wp.quat_identity(),
+            ),
+            hx=2,
+            hy=2,
+            hz=2,
+        )
+
+        self.renderer_scale_factor = 0.1
+
+        self.finalize(handle_self_contact=False, ground=False, use_gravity=True)
+        self.model.soft_contact_margin = particle_radius * 1.1
+        self.model.soft_contact_ke = stretching_stiffness
+
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis="Y")
         builder.add_builder(self.builder)
         if ground:
             builder.add_ground_plane()
@@ -722,11 +792,28 @@ class ClothSim:
 
     def run(self):
         self.sim_time = 0.0
+
+        if self.do_rendering:
+            self.renderer = newton.utils.SimRendererOpenGL(
+                path="Test Cloth",
+                model=self.model,
+                scaling=self.renderer_scale_factor,
+                show_joints=True,
+                show_particles=False,
+            )
+        else:
+            self.renderer = None
+
         for _frame in range(self.num_test_frames):
             if self.graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
+
+            if self.renderer is not None:
+                self.renderer.begin_frame()
+                self.renderer.render(self.state0)
+                self.renderer.end_frame()
             self.sim_time = self.sim_time + self.frame_dt
 
     def set_points_fixed(self, model, fixed_particles):
@@ -947,6 +1034,20 @@ def test_cloth_free_fall(test, device, solver):
     test.assertTrue((np.abs(horizontal_move) < 1e-1).all())
 
 
+def test_cloth_body_collision(test, device, solver):
+    example = ClothSim(device, solver)
+    example.set_up_body_cloth_contact_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_vel = example.state0.particle_qd.numpy()
+    final_pos = example.state0.particle_q.numpy()
+    test.assertTrue((np.linalg.norm(final_vel, axis=0) < 1.0).all())
+    # examine that the simulation has moved
+    test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -961,6 +1062,7 @@ tests_to_run = {
         test_cloth_bending,
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
+        test_cloth_body_collision,
     ],
     "semi_implicit": [
         test_cloth_free_fall,
@@ -976,6 +1078,7 @@ tests_to_run = {
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
         test_cloth_bending_damping_with_free_fall,
+        test_cloth_body_collision,
     ],
 }
 
