@@ -224,7 +224,8 @@ def fill_contact_matrix(
     q_ep: wp.array(dtype=wp.int32),
     q_ep_mat_idx: wp.array(dtype=wp.vec2i),
     data: wp.array(dtype=Any),
-    # outputs
+    query_flip: wp.array(dtype=wp.int32),
+    flip: bool,
     matrix: wp.array2d(dtype=Any),
 ):
     """Fill a contact matrix with data for a query.
@@ -232,6 +233,8 @@ def fill_contact_matrix(
         q_ep: Entity pair indices for the query.
         q_ep_mat_idx: Matrix indices for the query, shape [n_entity_pairs].
         data: Data to fill the matrix with, shape [n_entity_pairs].
+        query_flip: flatterned array with flags whether the enditites were flipped.
+        flip: for force and normal reporting do the flip if entities were flipped
         matrix: Matrix to fill from data.
     """
     qep_idx = wp.tid()
@@ -241,8 +244,10 @@ def fill_contact_matrix(
 
     mat_idx = q_ep_mat_idx[qep_idx]
     row, col = mat_idx.x, mat_idx.y
-    # TODO: if row > col: flip normal
-    matrix[row, col] = data[ep_idx]
+    if flip and query_flip[qep_idx] == 1:
+        matrix[row, col] = -data[ep_idx]
+    else:
+        matrix[row, col] = data[ep_idx]
 
 
 class ContactReporter:
@@ -454,6 +459,7 @@ class ContactReporter:
             self.query_force_matrix = []
             self.query_normal_matrix = []
             self.query_idx_matrix = []
+            self.query_flip = []
 
             for query_idx in range(len(self.entity_group_pairs)):
                 query_pairs = self.query_to_entity_pair[query_idx]
@@ -472,6 +478,7 @@ class ContactReporter:
                 query_ep_idx, _query_flip = zip(*query_pairs)
 
                 self.query_entity_pairs.append(wp.array(query_ep_idx, dtype=wp.int32))
+                self.query_flip.append(wp.array(_query_flip, dtype=wp.int32))
                 q_ep_mat_idx = [(row_indices[row], col_indices[col]) for row, col in entity_pairs]
 
                 self.query_entity_pair_mat_idx.append(wp.array(q_ep_mat_idx, dtype=wp.vec2i))
@@ -558,7 +565,7 @@ class ContactReporter:
                 ],
             )
 
-    def fill_contact_matrix(self, query_idx: int, data, matrix):
+    def fill_contact_matrix(self, query_idx: int, data, matrix, query_flip, flip):
         wp.launch(
             fill_contact_matrix,
             dim=self.query_entity_pairs[query_idx].shape[0],
@@ -566,28 +573,30 @@ class ContactReporter:
                 self.query_entity_pairs[query_idx],
                 self.query_entity_pair_mat_idx[query_idx],
                 data,
+                query_flip[query_idx],
+                flip
             ],
             outputs=[matrix],
         )
 
     def get_dist(self, query_idx: int):
         matrix = self.query_dist_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_dist, matrix)
+        self.fill_contact_matrix(query_idx, self.entity_pair_dist, matrix, self.query_flip, False)
         return self.query_entities[query_idx], matrix
 
     def get_force(self, query_idx: int):
         matrix = self.query_force_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix)
+        self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix, self.query_flip, True)
         return self.query_entities[query_idx], matrix
     
     def get_normal(self, query_idx: int):
         matrix = self.query_normal_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_normal, matrix)
+        self.fill_contact_matrix(query_idx, self.entity_pair_normal, matrix, self.query_flip, True)
         return self.query_entities[query_idx], matrix
 
     def get_idx(self, query_idx: int):
         matrix = self.query_idx_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_contact, matrix)
+        self.fill_contact_matrix(query_idx, self.entity_pair_contact, matrix, self.query_flip, False)
         return self.query_entities[query_idx], matrix
 
     def get_query_keys(self, query_idx: int):
