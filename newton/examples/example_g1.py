@@ -110,7 +110,7 @@ class Example:
                 iterations=5,
                 ls_iterations=5,
                 nefc_per_env=300,
-                # save_to_mjcf="converted_example_g1.xml",
+                ncon_per_env=150,
             )
         else:
             self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
