@@ -287,7 +287,7 @@ def remesh_alphashape(vertices, alpha=3.0):
     return np.array(alpha_shape.vertices), np.array(alpha_shape.faces, dtype=np.int32)
 
 
-def remesh_quadratic(vertices, faces, target_reduction=0.5, **kwargs):
+def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, **kwargs):
     """
     Remeshes a 3D triangular surface mesh using fast quadratic mesh simplification.
 
@@ -304,7 +304,37 @@ def remesh_quadratic(vertices, faces, target_reduction=0.5, **kwargs):
     """
     from fast_simplification import simplify
 
-    return simplify(vertices, faces, target_reduction=target_reduction, **kwargs)
+    return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
+
+
+def remesh_convex_hull(vertices):
+    """
+    Computes the convex hull of a set of 3D points and returns the vertices and faces of the convex hull mesh.
+    Uses scipy.spatial.ConvexHull to compute the convex hull.
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+
+    Returns:
+        A tuple (verts, faces) where:
+        - verts: A numpy array of shape (M, 3) containing the vertex positions of the convex hull.
+        - faces: A numpy array of shape (K, 3) containing the vertex indices of the triangular faces of the convex hull.
+    """
+    from scipy.spatial import ConvexHull
+
+    hull = ConvexHull(vertices)
+    verts = hull.points.copy().astype(np.float32)
+    faces = hull.simplices.astype(np.int32)
+
+    # fix winding order of faces
+    centre = verts.mean(0)
+    for i, tri in enumerate(faces):
+        a, b, c = verts[tri]
+        normal = np.cross(b - a, c - a)
+        if np.dot(normal, a - centre) < 0:
+            faces[i] = tri[[0, 2, 1]]
+
+    return verts, faces
 
 
 def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwargs):
@@ -314,7 +344,7 @@ def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwa
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
         faces: A numpy array of shape (M, 3) containing the vertex indices of the faces.
-        method: The remeshing method to use. One of "ftetwild", "quadratic", or "alphashape".
+        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
         visualize: Whether to render the input and output meshes using matplotlib.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -327,6 +357,8 @@ def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwa
         new_vertices, new_faces = remesh_alphashape(vertices, **remeshing_kwargs)
     elif method == "quadratic":
         new_vertices, new_faces = remesh_quadratic(vertices, faces, **remeshing_kwargs)
+    elif method == "convex_hull":
+        new_vertices, new_faces = remesh_convex_hull(vertices)
     else:
         raise ValueError(f"Unknown remeshing method: {method}")
 
