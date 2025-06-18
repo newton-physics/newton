@@ -46,39 +46,38 @@ class Example:
             up_axis="Z",
             enable_self_collisions=False,
         )
-        simplified_meshes = {}
-        try:
-            import tqdm
+        # simplified_meshes = {}
+        # try:
+        #     import tqdm
 
-            meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
-        except ImportError:
-            meshes = articulation_builder.shape_geo_src
-        for i, m in enumerate(meshes):
-            if m is None:
-                continue
-            hash_m = hash(m)
-            if hash_m in simplified_meshes:
-                articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
-            else:
-                simplified = newton.geometry.utils.remesh_mesh(
-                    m, visualize=False, target_reduction=0.95, recompute_inertia=False
-                )
-                simplified = newton.geometry.utils.remesh_mesh(
-                    simplified, visualize=False, method="alphashape", alpha=0.01, recompute_inertia=False
-                )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     m, visualize=False, method="ftetwild", edge_length_fac=0.5, optimize=True, recompute_inertia=False
-                # )
-                articulation_builder.shape_geo_src[i] = simplified
-                simplified_meshes[hash_m] = simplified
-        articulation_builder.joint_q[2] = 1.0
+        #     meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
+        # except ImportError:
+        #     meshes = articulation_builder.shape_geo_src
+        # for i, m in enumerate(meshes):
+        #     if m is None:
+        #         continue
+        #     hash_m = hash(m)
+        #     if hash_m in simplified_meshes:
+        #         articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
+        #     else:
+        #         simplified = newton.geometry.utils.remesh_mesh(
+        #             m, visualize=False, target_reduction=0.95, recompute_inertia=False
+        #         )
+        #         simplified = newton.geometry.utils.remesh_mesh(
+        #             simplified, visualize=False, method="alphashape", alpha=0.01, recompute_inertia=False
+        #         )
+        #         # simplified = newton.geometry.utils.remesh_mesh(
+        #         #     m, visualize=False, method="ftetwild", edge_length_fac=0.5, optimize=True, recompute_inertia=False
+        #         # )
+        #         articulation_builder.shape_geo_src[i] = simplified
+        #         simplified_meshes[hash_m] = simplified
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
         builder = newton.ModelBuilder()
         for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, 2, (i // sqn) * spacing)
+            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 2)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
@@ -105,7 +104,7 @@ class Example:
                 iterations=5,
                 ls_iterations=5,
                 nefc_per_env=300,
-                save_to_mjcf="converted_example_g1.xml",
+                # save_to_mjcf="converted_example_g1.xml",
             )
         else:
             self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
@@ -174,7 +173,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=2, help="Total number of simulated environments.")
+    parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
