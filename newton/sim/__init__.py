@@ -26,6 +26,7 @@ from .flags import (
     NOTIFY_FLAG_JOINT_PROPERTIES,
     NOTIFY_FLAG_SHAPE_PROPERTIES,
 )
+from .graph_coloring import color_graph
 from .joints import (
     JOINT_BALL,
     JOINT_D6,
@@ -68,6 +69,7 @@ __all__ = [
     "ShapeGeometry",
     "ShapeMaterials",
     "State",
+    "color_graph",
     "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
