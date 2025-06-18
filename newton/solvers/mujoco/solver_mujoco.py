@@ -721,6 +721,7 @@ class MuJoCoSolver(SolverBase):
             self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
+                disable_contacts=disable_contacts,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
                 iterations=iterations,
@@ -952,6 +953,7 @@ class MuJoCoSolver(SolverBase):
         solver: int | str = "cg",
         integrator: int | str = "euler",
         disableflags: int = 0,
+        disable_contacts: bool = False,
         impratio: float = 1.0,
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
@@ -1547,7 +1549,10 @@ class MuJoCoSolver(SolverBase):
 
             # TODO find better heuristics to determine nconmax and njmax
             rigid_contact_max = newton.sim.count_rigid_contact_points(model)
-            nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            if disable_contacts:
+                nconmax = 0
+            else:
+                nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
