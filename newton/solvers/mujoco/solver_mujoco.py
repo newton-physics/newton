@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -23,7 +24,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.core.types import override
-from newton.sim import Contacts, Control, Model, State
+from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
 
@@ -677,7 +678,6 @@ class MuJoCoSolver(SolverBase):
         integrator: int | str = "euler",
         use_mujoco: bool = False,
         disable_contacts: bool = False,
-        register_collision_groups: bool = True,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
@@ -720,13 +720,13 @@ class MuJoCoSolver(SolverBase):
             self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
+                disable_contacts=disable_contacts,
                 separate_envs_to_worlds=separate_envs_to_worlds,
                 nefc_per_env=nefc_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
                 solver=solver,
                 integrator=integrator,
-                register_collision_groups=register_collision_groups,
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
@@ -940,6 +940,41 @@ class MuJoCoSolver(SolverBase):
                 device=model.device,
             )
 
+    @staticmethod
+    def color_collision_shapes(model: Model, visualize_graph: bool = False) -> np.ndarray:
+        """
+        Find a graph coloring of the collision filter pairs in the model.
+        Shapes within the same color cannot collide with each other.
+        Shapes can only collide with shapes of different colors.
+        """
+        # find graph coloring of collision filter pairs
+        graph_edges = [
+            (i, j)
+            for i, j in product(range(model.shape_count), range(model.shape_count))
+            if i != j
+            and (i, j) not in model.shape_collision_filter_pairs
+            and (j, i) not in model.shape_collision_filter_pairs
+        ]
+        if len(graph_edges) > 0:
+            if visualize_graph:
+                plot_graph(np.arange(model.shape_count), graph_edges)
+            color_groups = color_graph(
+                num_nodes=model.shape_count,
+                graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
+            )
+            shape_color = np.zeros(model.shape_count, dtype=np.int32)
+            num_colors = 0
+            for group in color_groups:
+                if len(group) > 1:
+                    num_colors += 1
+                    shape_color[group] = num_colors
+                else:
+                    shape_color[group] = 0
+        else:
+            # no edges in the graph, all shapes can collide with each other
+            shape_color = np.zeros(model.shape_count, dtype=np.int32)
+        return shape_color
+
     def convert_to_mjc(
         self,
         model: Model,
@@ -952,12 +987,12 @@ class MuJoCoSolver(SolverBase):
         solver: int | str = "cg",
         integrator: int | str = "euler",
         disableflags: int = 0,
+        disable_contacts: bool = False,
         impratio: float = 1.0,
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
         timestep: float = 0.01,
         cone: int = 0,
-        register_collision_groups: bool = True,
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
         # these numbers come from the cartpole.xml model
@@ -1104,19 +1139,9 @@ class MuJoCoSolver(SolverBase):
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_geo.type.numpy()
         shape_size = model.shape_geo.scale.numpy()
-        shape_collision_group = model.shape_collision_group
-        num_collision_groups = int(np.max(shape_collision_group) + 1)
 
-        # collision bitmask that corresponds to collision group -1 which collides with everything
-        collision_mask_everything = 0
-        for i in range(num_collision_groups + 1):
-            collision_mask_everything |= 1 << i
         INT32_MAX = np.iinfo(np.int32).max
-        if collision_mask_everything > INT32_MAX:
-            wp.utils.warn(
-                "Collision mask exceeds INT32_MAX while converting Newton model to MuJoCo, some collision groups will be ignored when using MuJoCo C."
-            )
-            collision_mask_everything = INT32_MAX
+        collision_mask_everything = INT32_MAX
 
         # mapping from joint axis to actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
@@ -1182,6 +1207,9 @@ class MuJoCoSolver(SolverBase):
         # i.e. its inverse child transform
         body_child_tf = {}
 
+        # find graph coloring of collision filter pairs
+        shape_color = self.color_collision_shapes(model)
+
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
@@ -1241,16 +1269,20 @@ class MuJoCoSolver(SolverBase):
                 else:
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
-                if register_collision_groups:
-                    # add contype, conaffinity for collision groups
-                    if shape_collision_group[shape] == -1:
-                        # this shape collides with everything
-                        cmask = collision_mask_everything
-                    else:
-                        cmask = 1 << (shape_collision_group[shape] + 1)
-                    if cmask <= INT32_MAX:
-                        geom_params["contype"] = cmask
-                        geom_params["conaffinity"] = cmask
+
+                # encode collision filtering information
+                if not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
+                    # this shape is not colliding with anything
+                    geom_params["contype"] = 0
+                    geom_params["conaffinity"] = 0
+                else:
+                    color = shape_color[shape]
+                    if color < 32:
+                        contype = 1 << color
+                        geom_params["contype"] = contype
+                        # collide with anything except shapes from the same color
+                        geom_params["conaffinity"] = collision_mask_everything & ~contype
+
                 body.add_geom(**geom_params)
 
         # add static geoms attached to the worldbody
@@ -1528,7 +1560,10 @@ class MuJoCoSolver(SolverBase):
 
             # TODO find better heuristics to determine nconmax and njmax
             rigid_contact_max = newton.sim.count_rigid_contact_points(model)
-            nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
+            if disable_contacts:
+                nconmax = 0
+            else:
+                nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
