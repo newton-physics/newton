@@ -20,210 +20,15 @@
 #
 ###########################################################################
 
-import math
-
 import numpy as np
-import torch
 import warp as wp
 
 import newton
 import newton.collision
-import newton.core.articulation
 import newton.examples
 import newton.utils
-from newton.core import Control, State
-from newton.solvers.solver_implicit_mpm import ImplicitMPMSolver
-
-
-@wp.kernel
-def compute_observations_anymal(
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
-    basis_vec0: wp.vec3,
-    basis_vec1: wp.vec3,
-    dof_q: int,
-    dof_qd: int,
-    # outputs
-    obs: wp.array(dtype=float, ndim=2),
-):
-    env_id = wp.tid()
-
-    torso_pos = wp.vec3(
-        joint_q[dof_q * env_id + 0],
-        joint_q[dof_q * env_id + 1],
-        joint_q[dof_q * env_id + 2],
-    )
-    torso_quat = wp.quat(
-        joint_q[dof_q * env_id + 3],
-        joint_q[dof_q * env_id + 4],
-        joint_q[dof_q * env_id + 5],
-        joint_q[dof_q * env_id + 6],
-    )
-    lin_vel = wp.vec3(
-        joint_qd[dof_qd * env_id + 3],
-        joint_qd[dof_qd * env_id + 4],
-        joint_qd[dof_qd * env_id + 5],
-    )
-    ang_vel = wp.vec3(
-        joint_qd[dof_qd * env_id + 0],
-        joint_qd[dof_qd * env_id + 1],
-        joint_qd[dof_qd * env_id + 2],
-    )
-
-    # convert the linear velocity of the torso from twist representation to the velocity of the center of mass in world frame
-    lin_vel = lin_vel - wp.cross(torso_pos, ang_vel)
-
-    up_vec = wp.quat_rotate(torso_quat, basis_vec1)
-    heading_vec = wp.quat_rotate(torso_quat, basis_vec0)
-
-    obs[env_id, 0] = torso_pos[1]  # 0
-    for i in range(4):  # 1:5
-        obs[env_id, 1 + i] = torso_quat[i]
-    for i in range(3):  # 5:8
-        obs[env_id, 5 + i] = lin_vel[i]
-    for i in range(3):  # 8:11
-        obs[env_id, 8 + i] = ang_vel[i]
-    for i in range(12):  # 11:23
-        obs[env_id, 11 + i] = joint_q[dof_q * env_id + 7 + i]
-    for i in range(12):  # 23:35
-        obs[env_id, 23 + i] = joint_qd[dof_qd * env_id + 6 + i]
-    obs[env_id, 35] = up_vec[1]  # 35
-    obs[env_id, 36] = heading_vec[0]  # 36
-
-
-@wp.kernel
-def apply_joint_position_pd_control(
-    actions: wp.array(dtype=wp.float32, ndim=1),
-    action_scale: wp.float32,
-    default_joint_q: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
-    Kp: wp.float32,
-    Kd: wp.float32,
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_axis_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_axis_start: wp.array(dtype=wp.int32),
-    # outputs
-    joint_f: wp.array(dtype=wp.float32),
-):
-    joint_id = wp.tid()
-    ai = joint_axis_start[joint_id]
-    qi = joint_q_start[joint_id]
-    qdi = joint_qd_start[joint_id]
-    dim = joint_axis_dim[joint_id, 0] + joint_axis_dim[joint_id, 1]
-    for j in range(dim):
-        qj = qi + j
-        qdj = qdi + j
-        aj = ai + j
-        q = joint_q[qj]
-        qd = joint_qd[qdj]
-
-        tq = wp.clamp(actions[aj], -1.0, 1.0) * action_scale + default_joint_q[qj]
-        tq = Kp * (tq - q) - Kd * qd
-
-        # skip the 6 dofs of the free joint
-        joint_f[6 + aj] = tq
-
-
-class AnymalController:
-    """Controller for Anymal with pretrained policy."""
-
-    def __init__(self, model, device):
-        self.model = model
-        self.device = device
-        self.control_dim = 12
-        action_strength = 150.0
-        self.control_gains_wp = wp.array(
-            np.array(
-                [
-                    50.0,  # LF_HAA
-                    40.0,  # LF_HFE
-                    8.0,  # LF_KFE
-                    50.0,  # RF_HAA
-                    40.0,  # RF_HFE
-                    8.0,  # RF_KFE
-                    50.0,  # LH_HAA
-                    40.0,  # LH_HFE
-                    8.0,  # LH_KFE
-                    50.0,  # RH_HAA
-                    40.0,  # RH_HFE
-                    8.0,  # RH_KFE
-                ]
-            )
-            * action_strength
-            / 100.0,
-            dtype=float,
-        )
-        self.action_scale = 0.5
-        self.Kp = 140.0
-        self.Kd = 2.0
-        self.joint_torque_limit = self.control_gains_wp
-        self.default_joint_q = self.model.joint_q
-
-        self.basis_vec0 = wp.vec3(1.0, 0.0, 0.0)
-        self.basis_vec1 = wp.vec3(0.0, 0.0, 1.0)
-
-        self.policy_model = torch.jit.load(newton.examples.get_asset("anymal_walking_policy.pt")).cuda()
-
-        self.dof_q_per_env = model.joint_coord_count
-        self.dof_qd_per_env = model.joint_dof_count
-        self.num_envs = 1
-        obs_dim = 37
-        self.obs_buf = wp.empty(
-            (self.num_envs, obs_dim),
-            dtype=wp.float32,
-            device=self.device,
-        )
-
-    def compute_observations(
-        self,
-        state: State,
-        observations: wp.array,
-    ):
-        wp.launch(
-            compute_observations_anymal,
-            dim=self.num_envs,
-            inputs=[
-                state.joint_q,
-                state.joint_qd,
-                self.basis_vec0,
-                self.basis_vec1,
-                self.dof_q_per_env,
-                self.dof_qd_per_env,
-            ],
-            outputs=[observations],
-            device=self.device,
-        )
-
-    def assign_control(self, actions: wp.array, control: Control, state: State):
-        wp.launch(
-            kernel=apply_joint_position_pd_control,
-            dim=self.model.joint_count,
-            inputs=[
-                wp.from_torch(wp.to_torch(actions).reshape(-1)),
-                self.action_scale,
-                self.default_joint_q,
-                state.joint_q,
-                state.joint_qd,
-                self.Kp,
-                self.Kd,
-                self.model.joint_q_start,
-                self.model.joint_qd_start,
-                self.model.joint_axis_dim,
-                self.model.joint_axis_start,
-            ],
-            outputs=[
-                control.joint_f,
-            ],
-            device=self.model.device,
-        )
-
-    def get_control(self, state: State, control: Control):
-        self.compute_observations(state, self.obs_buf)
-        obs_torch = wp.to_torch(self.obs_buf).detach()
-        ctrl = wp.array(torch.clamp(self.policy_model(obs_torch).detach(), -1, 1), dtype=float)
-        self.assign_control(ctrl, control, state)
+from newton.examples.example_anymal_c_walk import AnymalController
+from newton.solvers.implicit_mpm import ImplicitMPMSolver
 
 
 @wp.kernel
@@ -251,7 +56,15 @@ def update_collider_mesh(
 
 
 class Example:
-    def __init__(self, urdf_path: str, voxel_size=0.05, particles_per_cell=3, tolerance=1.0e-5, headless=False):
+    def __init__(
+        self,
+        stage_path="example_anymal_c_walk_in_sand.usd",
+        voxel_size=0.05,
+        particles_per_cell=3,
+        tolerance=1.0e-5,
+        headless=False,
+        sand_friction=0.48,
+    ):
         self.device = wp.get_device()
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -259,39 +72,34 @@ class Example:
             limit_ke=1.0e3,
             limit_kd=1.0e1,
         )
-        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-            ke=2.0e3,
-            kd=5.0e2,
-            kf=1.0e2,
-            mu=0.75,
-        )
+        builder.default_shape_cfg.ke = 5.0e4
+        builder.default_shape_cfg.kd = 5.0e2
+        builder.default_shape_cfg.kf = 1.0e3
+        builder.default_shape_cfg.mu = 0.75
 
+        asset_path = newton.utils.download_asset("anymal_c_simple_description")
         newton.utils.parse_urdf(
-            # newton.examples.get_asset("../../assets/anymal_c_simple_description/urdf/anymal.urdf"),
-            urdf_path,
+            str(asset_path / "urdf" / "anymal.urdf"),
             builder,
-            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
         )
+        builder.add_ground_plane()
 
         self.sim_time = 0.0
         self.sim_step = 0
         fps = 60
         self.frame_dt = 1.0e0 / fps
 
-        self.sim_substeps = 4
+        self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.start_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)
-
-        builder.joint_q[:7] = [
+        builder.joint_q[:3] = [
             0.0,
             0.7,
             0.0,
-            *self.start_rot,
         ]
 
         builder.joint_q[7:] = [
@@ -321,8 +129,6 @@ class Example:
 
         _spawn_particles(builder, particle_res, particle_lo, particle_hi, max_fraction)
 
-        builder.set_ground_plane(offset=np.min(builder.particle_q[:, 1]))
-
         # finalize model
         self.model = builder.finalize()
 
@@ -349,15 +155,7 @@ class Example:
         self.model.body_mass = wp.array([27.99286, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505], dtype=wp.float32,)
         # fmt: on
 
-        self.model.particle_mu = 0.48
-
-        # lower the ground slightly for the sand and the renderer.
-        # this makes the robot "float" a little bit, preventing impossible kinematic boundary conditions when the feet intersect the ground
-        # proper solution will be to have full two-way coupling between the sand and the robot
-        self.model.ground_plane_params = (
-            *self.model.ground_plane_params[:-1],
-            self.model.ground_plane_params[-1] - 0.025,
-        )
+        self.model.particle_mu = sand_friction
 
         ## Grab meshes for collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
@@ -391,7 +189,7 @@ class Example:
         self.mpm_solver = ImplicitMPMSolver(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, urdf_path)
+        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -399,7 +197,7 @@ class Example:
         self.mpm_solver.enrich_state(self.state_0)
         self.mpm_solver.enrich_state(self.state_1)
 
-        newton.core.articulation.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
         self.control = self.model.control()
@@ -414,10 +212,10 @@ class Example:
             self.robot_graph = None
 
     def simulate_robot(self):
+        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            newton.collision.collide(self.model, self.state_0)
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def simulate_sand(self):
@@ -521,15 +319,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        "urdf_path",
-        type=lambda x: None if x == "None" else str(x),
-        help="Path to the Anymal C URDF file from newton-assets.",
-    )
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument("--num_frames", type=int, default=10000, help="Total number of frames.")
     parser.add_argument("--voxel_size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3.0)
+    parser.add_argument("--sand_friction", "-mu", type=float, default=0.48)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
@@ -537,11 +331,11 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(
-            urdf_path=args.urdf_path,
             voxel_size=args.voxel_size,
             particles_per_cell=args.particles_per_cell,
             tolerance=args.tolerance,
             headless=args.headless,
+            sand_friction=args.sand_friction,
         )
 
         for _ in range(args.num_frames):

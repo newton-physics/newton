@@ -22,10 +22,13 @@ import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.sim import Model, State
 
-from .implicit_mpm.solve_rheology import solve_coulomb_isotropic, solve_rheology
-from .solver import Contact, Control, SolverBase
+from newton import Contacts, Control, Model, State
+from newton.solvers import SolverBase
+
+from .solve_rheology import solve_coulomb_isotropic, solve_rheology
+
+__all__ = ["ImplicitMPMSolver"]
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
@@ -1052,10 +1055,15 @@ class ImplicitMPMSolver(SolverBase):
         model: Model,
         options: ImplicitMPMOptions,
     ):
+        # Compute density from particle mass and radius
         # TODO support for varying properties
-        self.density = model.particle_mass[:1].numpy()[0] / (
-            4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
-        )
+        if len(model.particle_mass) > 0:
+            self.density = model.particle_mass[:1].numpy()[0] / (
+                4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
+            )
+        else:
+            self.density = 1.0
+
         self.friction_coeff = model.particle_mu
         self.yield_stresses = options.yield_stresses
         self.unilateral = options.unilateral
@@ -1071,11 +1079,11 @@ class ImplicitMPMSolver(SolverBase):
         self.dynamic_grid = options.dynamic_grid
         self.coloring = options.gauss_seidel
 
+        # Elastic stress-strain matrix from Poisson's ratio and compliance
         poisson_ratio = options.poisson_ratio
         lame = 1.0 / (1.0 + poisson_ratio) * np.array([poisson_ratio / (1.0 - 2.0 * poisson_ratio), 0.5])
         K = options.compliance
         self.stress_strain_mat = mat66(K / (2.0 * lame[1]) * np.eye(6))
-        # self.stress_strain_mat = mat66(K * np.zeros((6, 6)))
         self.stress_strain_mat[0, 0] = K / (2.0 * lame[1] + 3.0 * lame[0])
 
         self._elastic = K != 0.0
@@ -1146,7 +1154,7 @@ class ImplicitMPMSolver(SolverBase):
             else wp.array(collider_friction, dtype=float)
         )
         collider.masses = (
-            wp.full(len(collider.meshes), INFINITE_MASS*2.0, dtype=float)
+            wp.full(len(collider.meshes), INFINITE_MASS * 2.0, dtype=float)
             if collider_masses is None
             else wp.array(collider_masses, dtype=float)
         )
@@ -1156,14 +1164,170 @@ class ImplicitMPMSolver(SolverBase):
             else wp.array(collider_projection_threshold, dtype=float)
         )
         collider.query_max_dist = self.voxel_size
-        collider.ground_height = model.ground_plane_params[3] if model.ground else -1.0e8
-        collider.ground_normal = wp.vec3(model.ground_plane_params[:3])
+
+        collider.ground_height = 0.0
+        collider.ground_normal = wp.vec3(0.0)
+        collider.ground_normal[model.up_axis] = 1.0
 
         self._has_compliant_bodies = len(collider.masses) > 0 and np.min(collider.masses.numpy()) < INFINITE_MASS
         self.collider_coms = wp.zeros(len(collider.meshes), dtype=wp.vec3)
         self.collider_inv_inertia = wp.zeros(len(collider.meshes), dtype=wp.mat33)
 
         self.collider = collider
+
+    def step(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        control: Control,
+        contacts: Contacts,
+        dt: float,
+    ):
+        if self.dynamic_grid:
+            scratch = self._rebuild_scratchpad(state_in)
+        else:
+            if self._fixed_scratchpad is None:
+                self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
+            scratch = self._fixed_scratchpad
+
+        fem.set_default_temporary_store(self.temporary_store)
+        self._step_impl(model, state_in, state_out, dt, scratch)
+
+    def project_outside(self, state_in: State, state_out: State, dt: float):
+        """Projects particles outside of the colliders"""
+        wp.launch(
+            project_outside_collider,
+            dim=state_in.particle_count,
+            inputs=[
+                state_in.particle_q,
+                state_in.particle_qd,
+                state_in.particle_qd_grad,
+                self.collider,
+                self.voxel_size,
+                dt,
+            ],
+            outputs=[
+                state_out.particle_q,
+                state_out.particle_qd,
+                state_out.particle_qd_grad,
+            ],
+        )
+
+    def collect_collider_impulses(self, state: State):
+        """Returns the list of collider impulses and the positions at which they are applied.
+
+        Note: the identifier of the collider is not included in the returned values but can be retrieved from the state
+        as `state.collider_ids`.
+        """
+        x = state.velocity_field.space.node_positions()
+
+        collider_impulse = wp.zeros_like(state.impulse_field.dof_values)
+        cell_volume = self.voxel_size**3
+        fem.utils.array_axpy(
+            y=collider_impulse,
+            x=state.impulse_field.dof_values,
+            alpha=-self.density * cell_volume,
+            beta=0.0,
+        )
+
+        return collider_impulse, x
+
+    def update_particle_frames(
+        self,
+        state_prev: State,
+        state: State,
+        dt: float,
+        min_stretch: float = 0.25,
+        max_stretch: float = 2.0,
+    ):
+        """Updates the particle frames to account for the deformation of the particles"""
+
+        wp.launch(
+            update_particle_frames,
+            dim=state.particle_count,
+            inputs=[
+                dt,
+                min_stretch,
+                max_stretch,
+                state.particle_qd_grad,
+                state_prev.particle_transform,
+                state.particle_transform,
+            ],
+        )
+
+    def sample_render_grains(self, state: State, particle_radius: float, grains_per_particle: int):
+        """
+        Create point samples for rendering at higher resolution than the simulation particles.
+        Point samples are advected passievely with the continuum velocity field while being constrained
+        to lie within the affinely deformed simulation particles.
+        """
+
+        grains = wp.empty((state.particle_count, grains_per_particle), dtype=wp.vec3)
+
+        wp.launch(
+            sample_grains,
+            dim=grains.shape,
+            inputs=[
+                state.particle_q,
+                particle_radius,
+                grains,
+            ],
+        )
+
+        return grains
+
+    def update_render_grains(
+        self,
+        state_prev: State,
+        state: State,
+        grains: wp.array,
+        particle_radius: float,
+        dt: float,
+    ):
+        """Advect the render grains at the current time step"""
+
+        if self.velocity_field is None:
+            return
+
+        grain_pos = grains.flatten()
+        domain = fem.Cells(state.velocity_field.space.geometry)
+        grain_pic = fem.PicQuadrature(domain, positions=grain_pos)
+
+        wp.launch(
+            advect_grains_from_particles,
+            dim=grains.shape,
+            inputs=[
+                dt,
+                state_prev.particle_q,
+                state.particle_q,
+                state.particle_qd_grad,
+                grains,
+            ],
+        )
+
+        fem.interpolate(
+            advect_grains,
+            quadrature=grain_pic,
+            values={
+                "dt": dt,
+                "positions": grain_pos,
+            },
+            fields={
+                "grid_vel": state.velocity_field,
+            },
+        )
+
+        wp.launch(
+            project_grains,
+            dim=grains.shape,
+            inputs=[
+                particle_radius,
+                state.particle_q,
+                state.particle_transform,
+                grains,
+            ],
+        )
 
     def _allocate_grid(self, positions: wp.array, voxel_size, padding_voxels: int = 0):
         with wp.ScopedTimer(
@@ -1213,25 +1377,6 @@ class ImplicitMPMSolver(SolverBase):
                 scratch.compute_coloring(self.temporary_store)
 
         return scratch
-
-    def step(
-        self,
-        model: Model,
-        state_in: State,
-        state_out: State,
-        control: Control,
-        contacts: Contact,
-        dt: float,
-    ):
-        if self.dynamic_grid:
-            scratch = self._rebuild_scratchpad(state_in)
-        else:
-            if self._fixed_scratchpad is None:
-                self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
-            scratch = self._fixed_scratchpad
-
-        fem.set_default_temporary_store(self.temporary_store)
-        self._step_impl(model, state_in, state_out, dt, scratch)
 
     def _step_impl(
         self,
@@ -1613,141 +1758,6 @@ class ImplicitMPMSolver(SolverBase):
                         "grid_strain_delta": scratch.elastic_strain_delta_field,
                     },
                 )
-
-    def project_outside(self, state_in: State, state_out: State, dt: float):
-        """Projects particles outside of the colliders"""
-        wp.launch(
-            project_outside_collider,
-            dim=state_in.particle_count,
-            inputs=[
-                state_in.particle_q,
-                state_in.particle_qd,
-                state_in.particle_qd_grad,
-                self.collider,
-                self.voxel_size,
-                dt,
-            ],
-            outputs=[
-                state_out.particle_q,
-                state_out.particle_qd,
-                state_out.particle_qd_grad,
-            ],
-        )
-
-    def collect_collider_impulses(self, state: State):
-        """Returns the list of collider impulses and the positions at which they are applied.
-
-        Note: the identifier of the collider is not included in the returned values but can be retrieved from the state
-        as `state.collider_ids`.
-        """
-        x = state.velocity_field.space.node_positions()
-
-        collider_impulse = wp.zeros_like(state.impulse_field.dof_values)
-        cell_volume = self.voxel_size**3
-        fem.utils.array_axpy(
-            y=collider_impulse,
-            x=state.impulse_field.dof_values,
-            alpha=-self.density * cell_volume,
-            beta=0.0,
-        )
-
-        return collider_impulse, x
-
-    def update_particle_frames(
-        self,
-        state_prev: State,
-        state: State,
-        dt: float,
-        min_stretch: float = 0.25,
-        max_stretch: float = 2.0,
-    ):
-        """Updates the particle frames to account for the deformation of the particles"""
-
-        wp.launch(
-            update_particle_frames,
-            dim=state.particle_count,
-            inputs=[
-                dt,
-                min_stretch,
-                max_stretch,
-                state.particle_qd_grad,
-                state_prev.particle_transform,
-                state.particle_transform,
-            ],
-        )
-
-    def sample_render_grains(self, state: State, particle_radius: float, grains_per_particle: int):
-        """
-        Create point samples for rendering at higher resolution than the simulation particles.
-        Point samples are advected passievely with the continuum velocity field while being constrained
-        to lie within the affinely deformed simulation particles.
-        """
-
-        grains = wp.empty((state.particle_count, grains_per_particle), dtype=wp.vec3)
-
-        wp.launch(
-            sample_grains,
-            dim=grains.shape,
-            inputs=[
-                state.particle_q,
-                particle_radius,
-                grains,
-            ],
-        )
-
-        return grains
-
-    def update_render_grains(
-        self,
-        state_prev: State,
-        state: State,
-        grains: wp.array,
-        particle_radius: float,
-        dt: float,
-    ):
-        """Advect the render grains at the current time step"""
-
-        if self.velocity_field is None:
-            return
-
-        grain_pos = grains.flatten()
-        domain = fem.Cells(state.velocity_field.space.geometry)
-        grain_pic = fem.PicQuadrature(domain, positions=grain_pos)
-
-        wp.launch(
-            advect_grains_from_particles,
-            dim=grains.shape,
-            inputs=[
-                dt,
-                state_prev.particle_q,
-                state.particle_q,
-                state.particle_qd_grad,
-                grains,
-            ],
-        )
-
-        fem.interpolate(
-            advect_grains,
-            quadrature=grain_pic,
-            values={
-                "dt": dt,
-                "positions": grain_pos,
-            },
-            fields={
-                "grid_vel": state.velocity_field,
-            },
-        )
-
-        wp.launch(
-            project_grains,
-            dim=grains.shape,
-            inputs=[
-                particle_radius,
-                state.particle_q,
-                state.particle_transform,
-                grains,
-            ],
-        )
 
     def _build_rigidity_matrix(self, collider_volumes, node_volumes, collider_ids):
         """Assembles the rigidity matrix for the current time step

@@ -21,7 +21,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers.solver_implicit_mpm import ImplicitMPMSolver
+from newton.solvers.implicit_mpm import ImplicitMPMSolver
 
 
 class Example:
@@ -31,11 +31,14 @@ class Example:
 
         if options.collider is not None:
             collider = _create_collider_mesh(options.collider)
-            builder.set_ground_plane(offset=np.min(collider.points.numpy()[:, 1]))
+            builder.add_shape_mesh(
+                body=-1, mesh=newton.geometry.Mesh(collider.points.numpy(), collider.indices.numpy())
+            )
             colliders = [collider]
         else:
-            builder.set_ground_plane(offset=np.min(builder.particle_q[:, 1]))
             colliders = []
+
+        builder.add_ground_plane()
 
         builder.gravity = wp.vec3(options.gravity)
 
@@ -63,8 +66,6 @@ class Example:
 
         self.solver.enrich_state(self.state_0)
         self.solver.enrich_state(self.state_1)
-
-        self.particle_radius = self.solver.voxel_size / 6
 
         if options.headless:
             self.renderer = None
@@ -157,6 +158,8 @@ def _fill_triangle_indices(
 
 
 def mesh_triangle_indices(face_index_counts, face_indices):
+    """Zero-vertex triangulates a polynomial mesh"""
+
     face_count = len(face_index_counts)
 
     face_offsets = np.cumsum(face_index_counts)
@@ -180,6 +183,8 @@ def mesh_triangle_indices(face_index_counts, face_indices):
 
 
 def _create_collider_mesh(collider: str):
+    """Create a collider mesh from a string; either load from a file or create a simple predefined shape."""
+
     if collider == "wedge":
         cube_faces = np.array(
             [
@@ -212,7 +217,7 @@ def _create_collider_mesh(collider: str):
                 [0, 0, 1],
             ]
         )
-        cube_points = cube_points + np.array([-0.9, 0, -1.2])
+        cube_points = cube_points + np.array([-0.9, 1, -1.2])
         cube_indices = mesh_triangle_indices(np.full(6, 4), cube_faces.flatten())
 
         return wp.Mesh(wp.array(cube_points, dtype=wp.vec3), wp.array(cube_indices, dtype=int))
