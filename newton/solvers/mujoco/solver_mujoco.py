@@ -774,7 +774,7 @@ class MuJoCoSolver(SolverBase):
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, model, state_in)
-            self.mjw_model.opt.timestep = dt
+            self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 self.mujoco_warp.step(self.mjw_model, self.mjw_data)
             self.update_newton_state(self.model, state_out, self.mjw_data)
