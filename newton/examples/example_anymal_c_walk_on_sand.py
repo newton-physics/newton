@@ -64,6 +64,7 @@ class Example:
         tolerance=1.0e-5,
         headless=False,
         sand_friction=0.48,
+        dynamic_grid=True,
     ):
         self.device = wp.get_device()
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
@@ -183,8 +184,9 @@ class Example:
         options.unilateral = False
         options.max_iterations = 50
         # options.gauss_seidel = False
-        # options.dynamic_grid = False
-        # options.grid_padding = 3
+        options.dynamic_grid = dynamic_grid
+        if not dynamic_grid:
+            options.grid_padding = 5
 
         self.mpm_solver = ImplicitMPMSolver(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
@@ -326,6 +328,7 @@ if __name__ == "__main__":
     parser.add_argument("--sand_friction", "-mu", type=float, default=0.48)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--dynamic_grid", action=argparse.BooleanOptionalAction, default=True)
 
     args = parser.parse_known_args()[0]
 
@@ -336,6 +339,7 @@ if __name__ == "__main__":
             tolerance=args.tolerance,
             headless=args.headless,
             sand_friction=args.sand_friction,
+            dynamic_grid=args.dynamic_grid,
         )
 
         for _ in range(args.num_frames):

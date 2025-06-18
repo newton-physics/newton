@@ -1025,6 +1025,14 @@ class _ImplicitMPMScratchpad:
         return color_offsets, color_indices
 
 
+@wp.kernel
+def clamp_coordinates(
+    coords: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+    coords[i] = wp.min(wp.max(coords[i], wp.vec3(0.0)), wp.vec3(1.0))
+
+
 def _get_array(temp):
     return None if temp is None else temp.array
 
@@ -1409,6 +1417,13 @@ class ImplicitMPMSolver(SolverBase):
                 positions=state_in.particle_q,
                 measures=model.particle_mass,
             )
+
+            if not self.dynamic_grid:
+                wp.launch(
+                    clamp_coordinates,
+                    dim=pic.particle_coords.shape,
+                    inputs=[pic.particle_coords],
+                )
 
         vel_node_count = state_out.velocity_field.space.node_count()
         strain_node_count = state_out.stress_field.space.node_count()
