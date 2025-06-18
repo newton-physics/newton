@@ -685,7 +685,10 @@ def update_geom_properties_kernel(
     if ke > 0.0:
         # Use provided time constant for stiffness
         time_const_stiff = contact_stiffness_time_const
-        time_const_damp = kd / (2.0 * wp.sqrt(ke)) if kd > 0.0 else 1.0
+        if kd > 0.0:
+            time_const_damp = kd / (2.0 * wp.sqrt(ke))
+        else:
+            time_const_damp = 1.0
     else:
         time_const_stiff = contact_stiffness_time_const
         time_const_damp = 1.0
