@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from newton.sim import Contacts, Control, Model, State
+from newton.sim import Contacts, Control, State, Style3DModel
 
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
@@ -60,10 +60,11 @@ class Style3DSolver(SolverBase):
 
     def __init__(
         self,
-        model: Model,
+        model: Style3DModel,
         iterations=10,
     ):
         super().__init__(model)
+        self.style3d_model = model
         self._enable_chebyshev = True
         self.nonlinear_iterations = iterations
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
@@ -92,7 +93,9 @@ class Style3DSolver(SolverBase):
         else:
             return 4.0 / (4.0 - omega * rho * rho)
 
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(
+        self, model: Style3DModel, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
+    ):
         if model is not self.model:
             raise ValueError("model must be the one used to initialize Style3DSolver")
 
@@ -145,7 +148,7 @@ class Style3DSolver(SolverBase):
                     self.model.tri_areas,
                     self.model.tri_poses,
                     self.model.tri_indices,
-                    self.model.tri_aniso_ke,
+                    self.style3d_model.tri_aniso_ke,
                 ],
                 outputs=[self.rhs],
                 device=self.device,

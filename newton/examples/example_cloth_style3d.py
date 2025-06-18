@@ -37,8 +37,8 @@ class Example:
         grid_dim = 200
         grid_width = 1.0
         cloth_density = 0.3
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-        builder.add_cloth_grid(
+        builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
+        builder.add_aniso_cloth_grid(
             pos=wp.vec3(-0.5, 2.0, 0.0),
             rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
             dim_x=grid_dim,
@@ -47,15 +47,13 @@ class Example:
             cell_y=grid_width / grid_dim,
             vel=wp.vec3(0.0, 0.0, 0.0),
             mass=cloth_density * (grid_width * grid_width) / (grid_dim * grid_dim),
-            tri_ke=1.0e2,
+            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
             tri_ka=1.0e2,
             tri_kd=2.0e-6,
-            edge_ke=1,
-            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
             edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
         )
         builder.color()
-        builder.sew()
+        builder.sew_close_vertices()
         self.model = builder.finalize()
         self.model.ground = False
         self.model.soft_contact_ke = 1.0e5
