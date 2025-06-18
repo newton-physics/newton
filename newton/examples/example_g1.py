@@ -90,6 +90,8 @@ class Example:
                 iterations=5,
                 ls_iterations=5,
                 nefc_per_env=1,
+                nefc_per_env=300,
+                ncon_per_env=150
             )
         else:
             self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
