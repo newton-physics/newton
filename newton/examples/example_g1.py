@@ -89,7 +89,6 @@ class Example:
                 integrator="euler",
                 iterations=5,
                 ls_iterations=5,
-                nefc_per_env=1,
                 nefc_per_env=300,
                 ncon_per_env=150
             )
