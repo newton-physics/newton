@@ -188,9 +188,9 @@ def color_trimesh(
 
 def color_graph(
     num_nodes,
-    graph_edge_indices,
-    balance_colors=True,
-    target_max_min_color_ratio=1.1,
+    graph_edge_indices: wp.array(dtype=int, ndim=2),
+    balance_colors: bool = True,
+    target_max_min_color_ratio: float = 1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
 ) -> list[int]:
     """
@@ -225,11 +225,14 @@ def color_graph(
         raise ValueError(
             f"graph_edge_indices must be a 2 dimensional array! The provided one is {graph_edge_indices.ndim} dimensional."
         )
-    graph_edge_indices = graph_edge_indices.to("cpu")
+    if graph_edge_indices.device.is_cpu:
+        indices = graph_edge_indices
+    else:
+        indices = wp.clone(graph_edge_indices, device="cpu")
 
     num_colors = wp.context.runtime.core.graph_coloring(
         num_nodes,
-        graph_edge_indices.__ctype__(),
+        indices.__ctype__(),
         algorithm.value,
         particle_colors.__ctype__(),
     )
@@ -237,7 +240,7 @@ def color_graph(
     if balance_colors:
         max_min_ratio = wp.context.runtime.core.balance_coloring(
             num_nodes,
-            graph_edge_indices.__ctype__(),
+            indices.__ctype__(),
             num_colors,
             target_max_min_color_ratio,
             particle_colors.__ctype__(),
@@ -282,19 +285,7 @@ def plot_graph(vertices, edges, edge_labels=None):
             g_edge_labels[(ai, bi)] = label
         G.add_edge(ai, bi, label=label)
 
-    # try:
-    #     pos = nx.nx_agraph.graphviz_layout(
-    #         G, prog='neato', args='-Gnodesep="10" -Granksep="10"')
-    # except:
-    #     print(
-    #         "Warning: could not use graphviz to layout graph. Falling back to spring layout.")
-    #     print("To get better layouts, install graphviz and pygraphviz.")
     pos = nx.spring_layout(G, k=3.5, iterations=200)
-    #     # pos = nx.kamada_kawai_layout(G, scale=1.5)
-    #     # pos = nx.spectral_layout(G, scale=1.5)
-    # pos = nx.nx_agraph.graphviz_layout(
-    #     G, prog="neato", args='-Gnodesep="20" -Granksep="20"'
-    # )
 
     default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
     nx.draw_networkx_nodes(G, pos, **default_draw_args)
