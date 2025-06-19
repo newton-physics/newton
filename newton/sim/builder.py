@@ -1497,6 +1497,9 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
+                        if -1 not in self.body_shapes:
+                            self.body_shapes[-1] = []
+                        self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
