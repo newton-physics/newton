@@ -742,7 +742,12 @@ def parse_usd(
             if first_joint_parent != -1:
                 # the mechanism is floating since there is no joint connecting it to the world
                 # we explicitly add a free joint to make sure Featherstone and MuJoCo can simulate it
-                builder.add_joint_free(child=art_bodies[first_joint_parent])
+                if bodies_follow_joint_ordering:
+                    child_body = body_data[first_joint_parent]
+                    child_body_id = path_body_map[child_body["key"]]
+                else:
+                    child_body_id = art_bodies[first_joint_parent]
+                builder.add_joint_free(child=child_body_id)
                 builder.joint_q[-7:] = articulation_xform
             for joint_id, i in enumerate(sorted_joints):
                 if joint_id == 0 and first_joint_parent == -1:
@@ -999,9 +1004,13 @@ def parse_usd(
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
                 new_id = body_remap[body_id]
-            else:
+            elif body_id in body_merged_parent:
+                # this body has been merged with another body
                 new_id = body_remap[body_merged_parent[body_id]]
                 path_body_relative_transform[path] = body_merged_transform[body_id]
+            else:
+                # this body has not been merged
+                new_id = body_id
 
             path_body_map[path] = new_id
         merged_body_data = collapse_results["merged_body_data"]
