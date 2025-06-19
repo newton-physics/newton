@@ -1256,6 +1256,9 @@ class MuJoCoSolver(SolverBase):
                 if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
                     q = q * rot_y2z
+                if model.up_axis == 2 and warp_body_id == -1:
+                    # reverse rotation that aligned the z-axis with the y-axis
+                    q = q * wp.quat_inverse(rot_y2z)
                 if perm_position:
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
                     p = wp.vec3(p[0], -p[2], p[1])
