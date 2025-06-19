@@ -36,14 +36,6 @@ class Example:
         self.num_envs = num_envs
         self.use_mujoco = True
         articulation_builder = newton.ModelBuilder()
-        # stage_info = newton.utils.parse_usd(
-        #     newton.examples.get_asset("envs/example_g1.usd"),
-        #     articulation_builder,
-        #     root_path="/g1_29dof_with_hand_rev_1_0",
-        #     collapse_fixed_joints=False,
-        #     enable_self_collisions=False,
-        # )
-        # up_axis = stage_info.get("up_axis") or newton.Axis.Z
 
         asset_path = newton.utils.download_asset("g1_description")
 
@@ -51,19 +43,47 @@ class Example:
             str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
             articulation_builder,
             collapse_fixed_joints=True,
-            # ignore_names=["floor", "ground"],
             up_axis="Z",
+            enable_self_collisions=False,
         )
-        start_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 0, 0)), -wp.pi * 0.0)
-        articulation_builder.joint_q[2] = 1.0  # base x]
-        articulation_builder.joint_q[3:7] = [*start_rot]
+        simplified_meshes = {}
+        try:
+            import tqdm
+
+            meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
+        except ImportError:
+            meshes = articulation_builder.shape_geo_src
+        for i, m in enumerate(meshes):
+            if m is None:
+                continue
+            hash_m = hash(m)
+            if hash_m in simplified_meshes:
+                articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
+            else:
+                simplified = newton.geometry.utils.remesh_mesh(
+                    m, visualize=False, method="convex_hull", recompute_inertia=False
+                )
+                # simplified = newton.geometry.utils.remesh_mesh(
+                #     simplified, visualize=False, target_reduction=None, target_count=32, recompute_inertia=False
+                # )
+                # simplified = newton.geometry.utils.remesh_mesh(
+                #     simplified, visualize=False, method="convex_hull", recompute_inertia=False
+                # )
+                # simplified = newton.geometry.utils.remesh_mesh(
+                #     simplified, visualize=False, method="convex_hull", alpha=0.01, recompute_inertia=False
+                # )
+                # simplified = newton.geometry.utils.remesh_mesh(
+                #     m, visualize=False, method="ftetwild", edge_length_fac=0.5, optimize=True, recompute_inertia=False
+                # )
+                articulation_builder.shape_geo_src[i] = simplified
+                simplified_meshes[hash_m] = simplified
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
         builder = newton.ModelBuilder()
         for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, 2, (i // sqn) * spacing)
+            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 2)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
@@ -89,7 +109,8 @@ class Example:
                 integrator="euler",
                 iterations=5,
                 ls_iterations=5,
-                nefc_per_env=1,
+                nefc_per_env=300,
+                ncon_per_env=150,
             )
         else:
             self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
@@ -167,7 +188,7 @@ if __name__ == "__main__":
 
         for _ in range(args.num_frames):
             example.step()
-            # example.render()
+            example.render()
 
         if example.renderer:
             example.renderer.save()

@@ -188,9 +188,9 @@ def color_trimesh(
 
 def color_graph(
     num_nodes,
-    graph_edge_indices,
-    balance_colors=True,
-    target_max_min_color_ratio=1.1,
+    graph_edge_indices: wp.array(dtype=int, ndim=2),
+    balance_colors: bool = True,
+    target_max_min_color_ratio: float = 1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
 ) -> list[int]:
     """
@@ -225,10 +225,14 @@ def color_graph(
         raise ValueError(
             f"graph_edge_indices must be a 2 dimensional array! The provided one is {graph_edge_indices.ndim} dimensional."
         )
+    if graph_edge_indices.device.is_cpu:
+        indices = graph_edge_indices
+    else:
+        indices = wp.clone(graph_edge_indices, device="cpu")
 
     num_colors = wp.context.runtime.core.graph_coloring(
         num_nodes,
-        graph_edge_indices.__ctype__(),
+        indices.__ctype__(),
         algorithm.value,
         particle_colors.__ctype__(),
     )
@@ -236,7 +240,7 @@ def color_graph(
     if balance_colors:
         max_min_ratio = wp.context.runtime.core.balance_coloring(
             num_nodes,
-            graph_edge_indices.__ctype__(),
+            indices.__ctype__(),
             num_colors,
             target_max_min_color_ratio,
             particle_colors.__ctype__(),
@@ -250,6 +254,59 @@ def color_graph(
     color_groups = convert_to_color_groups(num_colors, particle_colors, return_wp_array=False)
 
     return color_groups
+
+
+def plot_graph(vertices, edges, edge_labels=None):
+    """
+    Plots a graph using matplotlib and networkx.
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        edges: A numpy array of shape (M, 2) containing the vertex indices of the edges.
+        edge_labels: A list of edge labels.
+    """
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
+    if edge_labels is None:
+        edge_labels = []
+    G = nx.DiGraph()
+    name_to_index = {}
+    for i, name in enumerate(vertices):
+        G.add_node(i)
+        name_to_index[name] = i
+    g_edge_labels = {}
+    for i, (a, b) in enumerate(edges):
+        ai = a if isinstance(a, int) else name_to_index[a]
+        bi = b if isinstance(b, int) else name_to_index[b]
+        label = None
+        if i < len(edge_labels):
+            label = edge_labels[i]
+            g_edge_labels[(ai, bi)] = label
+        G.add_edge(ai, bi, label=label)
+
+    pos = nx.spring_layout(G, k=3.5, iterations=200)
+
+    default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
+    nx.draw_networkx_nodes(G, pos, **default_draw_args)
+    nx.draw_networkx_labels(
+        G,
+        pos,
+        labels=dict(enumerate(vertices)),
+        font_size=8,
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 0.5},
+    )
+
+    nx.draw_networkx_edges(G, pos, edgelist=G.edges(), arrows=True, edge_color="black", node_size=1000)
+    nx.draw_networkx_edge_labels(
+        G,
+        pos,
+        edge_labels=g_edge_labels,
+        font_color="darkslategray",
+        font_size=8,
+    )
+    plt.axis("off")
+    plt.show()
 
 
 def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list[int]:

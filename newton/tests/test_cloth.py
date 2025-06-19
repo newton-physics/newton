@@ -302,14 +302,17 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False):
+    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
-        self.builder = newton.ModelBuilder()
+        self.builder = newton.ModelBuilder(up_axis="Y")
         self.solver_name = solver
+        self.do_rendering = do_rendering
+        self.fixed_particles = []
+        self.renderer_scale_factor = 0.01
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -558,7 +561,7 @@ class ClothSim:
         self.finalize(handle_self_contact=False, ground=False)
 
     def set_up_complex_rest_angle_bending_experiment(
-        self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, use_gravity=True
+        self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=None, use_gravity=True
     ):
         # fmt: off
         vs =[
@@ -612,7 +615,7 @@ class ClothSim:
             spring_kd=0.0,
         )
 
-        self.fixed_particles = [1]
+        self.fixed_particles = fixed_particles if fixed_particles is not None else []
 
         self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
 
@@ -651,8 +654,75 @@ class ClothSim:
         self.num_test_frames = 30
         self.finalize(ground=False)
 
+    def set_up_body_cloth_contact_experiment(self):
+        vs = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ]
+        fs = [
+            0,
+            1,
+            2,
+            2,
+            3,
+            0,
+        ]
+
+        if self.solver_name != "semi_implicit":
+            stretching_stiffness = 1e4
+            spring_ke = 1e3
+            bending_ke = 10
+        else:
+            stretching_stiffness = 1e2
+            spring_ke = 1e2
+            bending_ke = 10
+        particle_radius = 0.2
+
+        vs = [wp.vec3(v) for v in vs]
+        self.builder.add_cloth_mesh(
+            vertices=vs,
+            indices=fs,
+            scale=1,
+            density=2,
+            pos=wp.vec3(0.0, 0.1, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            edge_ke=bending_ke,
+            edge_kd=0.0,
+            tri_ke=stretching_stiffness,
+            tri_ka=stretching_stiffness,
+            tri_kd=0.0,
+            add_springs=self.solver_name == "xpbd",
+            spring_ke=spring_ke,
+            spring_kd=0.0,
+            particle_radius=particle_radius,
+        )
+
+        self.builder.add_shape_box(
+            -1,
+            wp.transform(
+                wp.vec3(
+                    0,
+                    -2,
+                    0,
+                ),
+                wp.quat_identity(),
+            ),
+            hx=2,
+            hy=2,
+            hz=2,
+        )
+
+        self.renderer_scale_factor = 0.1
+
+        self.finalize(handle_self_contact=False, ground=False, use_gravity=True)
+        self.model.soft_contact_margin = particle_radius * 1.1
+        self.model.soft_contact_ke = stretching_stiffness
+
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis="Y")
         builder.add_builder(self.builder)
         if ground:
             builder.add_ground_plane()
@@ -722,11 +792,28 @@ class ClothSim:
 
     def run(self):
         self.sim_time = 0.0
+
+        if self.do_rendering:
+            self.renderer = newton.utils.SimRendererOpenGL(
+                path="Test Cloth",
+                model=self.model,
+                scaling=self.renderer_scale_factor,
+                show_joints=True,
+                show_particles=False,
+            )
+        else:
+            self.renderer = None
+
         for _frame in range(self.num_test_frames):
             if self.graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
+
+            if self.renderer is not None:
+                self.renderer.begin_frame()
+                self.renderer.render(self.state0)
+                self.renderer.end_frame()
             self.sim_time = self.sim_time + self.frame_dt
 
     def set_points_fixed(self, model, fixed_particles):
@@ -812,7 +899,7 @@ def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
 def test_cloth_bending_consistent_angle_computation(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, use_gravity=False
+        tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, fixed_particles=[1], use_gravity=False
     )
 
     # Store rest angles
@@ -836,7 +923,7 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, use_gravity=True
+        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -848,6 +935,60 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     final_pos = example.state0.particle_q.numpy()
     test.assertTrue((np.abs(final_pos) < 1e5).all())
     test.assertTrue((example.init_pos != final_pos).any())
+
+    # Verify bending angles stay within tolerance of rest angles
+    final_angles = compute_current_angles(example.model, example.state0)
+    max_difference = np.abs(final_angles - rest_angles).max()
+    test.assertTrue(max_difference <= 0.1, f"Maximum angle difference {max_difference:.3f} rad exceeds 0.1 rad")
+
+
+# Bending damping should not affect free-fall behavior.
+def test_cloth_bending_damping_with_free_fall(test, device, solver):
+    example = ClothSim(device, solver, use_cuda_graph=True)
+    example.set_up_complex_rest_angle_bending_experiment(
+        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e0, fixed_particles=None, use_gravity=True
+    )
+
+    # Store initial vertex positions and rest angles for comparison
+    initial_pos = example.state0.particle_q.numpy().copy()
+    rest_angles = example.model.edge_rest_angle.numpy()
+
+    example.run()
+
+    # Get final positions
+    final_pos = example.state0.particle_q.numpy()
+
+    # Verify basic stability
+    test.assertTrue((np.abs(final_pos) < 1e5).all())
+    test.assertTrue((initial_pos != final_pos).any())
+
+    # Check for non-gravitational position changes per vertex
+    # Calculate position differences for each vertex
+    position_diff = final_pos - initial_pos
+
+    # Get gravity direction (normalized)
+    gravity_vector = np.array(example.model.gravity)
+    gravity_direction = gravity_vector / np.linalg.norm(gravity_vector)
+
+    # For each vertex, project its displacement onto gravity direction
+    gravity_displacement_per_vertex = np.dot(position_diff, gravity_direction)
+
+    # Calculate non-gravitational component for each vertex
+    gravity_component_per_vertex = gravity_displacement_per_vertex[:, np.newaxis] * gravity_direction[np.newaxis, :]
+    non_gravity_displacement = position_diff - gravity_component_per_vertex
+
+    # Calculate magnitude of non-gravitational displacement per vertex
+    non_gravity_magnitude = np.linalg.norm(non_gravity_displacement, axis=1)
+
+    # Find vertices with significant non-gravitational movement
+    max_non_gravity_displacement = np.max(non_gravity_magnitude)
+    problematic_vertices = np.where(non_gravity_magnitude > 0.01)[0]
+
+    # Verify that non-gravitational displacement is minimal for all vertices
+    test.assertTrue(
+        max_non_gravity_displacement < 0.01,
+        f"Non-gravitational displacement detected: max {max_non_gravity_displacement:.4f} at vertex indices {problematic_vertices}",
+    )
 
     # Verify bending angles stay within tolerance of rest angles
     final_angles = compute_current_angles(example.model, example.state0)
@@ -893,6 +1034,20 @@ def test_cloth_free_fall(test, device, solver):
     test.assertTrue((np.abs(horizontal_move) < 1e-1).all())
 
 
+def test_cloth_body_collision(test, device, solver):
+    example = ClothSim(device, solver)
+    example.set_up_body_cloth_contact_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_vel = example.state0.particle_qd.numpy()
+    final_pos = example.state0.particle_q.numpy()
+    test.assertTrue((np.linalg.norm(final_vel, axis=0) < 1.0).all())
+    # examine that the simulation has moved
+    test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -907,6 +1062,7 @@ tests_to_run = {
         test_cloth_bending,
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
+        test_cloth_body_collision,
     ],
     "semi_implicit": [
         test_cloth_free_fall,
@@ -921,6 +1077,8 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
+        test_cloth_bending_damping_with_free_fall,
+        test_cloth_body_collision,
     ],
 }
 
