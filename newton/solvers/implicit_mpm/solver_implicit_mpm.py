@@ -1063,9 +1063,11 @@ class ImplicitMPMSolver(SolverBase):
         model: Model,
         options: ImplicitMPMOptions,
     ):
+        super().__init__(model)
+
         # Compute density from particle mass and radius
         # TODO support for varying properties
-        if len(model.particle_mass) > 0:
+        if len(model.particle_mass) > 0 and len(model.particle_radius) > 0:
             self.density = model.particle_mass[:1].numpy()[0] / (
                 4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
             )
@@ -1100,7 +1102,6 @@ class ImplicitMPMSolver(SolverBase):
         self.setup_collider(model)
 
         self.temporary_store = fem.TemporaryStore()
-        fem.set_default_temporary_store(self.temporary_store)
 
         self._enable_timers = False
         self._timers_use_nvtx = False
@@ -1111,10 +1112,12 @@ class ImplicitMPMSolver(SolverBase):
     def enrich_state(state: State):
         """Enrich the state with additional fields for tracking particle strain and deformation."""
 
-        state.particle_qd_grad = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33)
-        state.particle_elastic_strain = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33)
-        state.particle_transform = wp.empty(state.particle_qd.shape[0], dtype=wp.mat33)
-        state.particle_transform.fill_(wp.mat33(np.eye(3)))
+        device = state.particle_qd.device
+        state.particle_qd_grad = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33, device=device)
+        state.particle_elastic_strain = wp.zeros(state.particle_qd.shape[0], dtype=wp.mat33, device=device)
+        state.particle_transform = wp.full(
+            state.particle_qd.shape[0], value=wp.mat33(np.eye(3)), dtype=wp.mat33, device=device
+        )
 
         state.velocity_field = None
         state.impulse_field = None
@@ -1150,29 +1153,30 @@ class ImplicitMPMSolver(SolverBase):
 
         collider = Collider()
 
-        collider.meshes = wp.array([collider.id for collider in colliders], dtype=wp.uint64)
-        collider.thicknesses = (
-            wp.full(len(collider.meshes), _DEFAULT_THICKNESS * self.voxel_size, dtype=float)
-            if collider_thicknesses is None
-            else wp.array(collider_thicknesses, dtype=float)
-        )
-        collider.friction = (
-            wp.full(len(collider.meshes), _DEFAULT_FRICTION, dtype=float)
-            if collider_friction is None
-            else wp.array(collider_friction, dtype=float)
-        )
-        collider.masses = (
-            wp.full(len(collider.meshes), INFINITE_MASS * 2.0, dtype=float)
-            if collider_masses is None
-            else wp.array(collider_masses, dtype=float)
-        )
-        collider.projection_threshold = (
-            wp.full(len(collider.meshes), DEFAULT_PROJECTION_THRESHOLD, dtype=float)
-            if collider_projection_threshold is None
-            else wp.array(collider_projection_threshold, dtype=float)
-        )
-        collider.query_max_dist = self.voxel_size
+        with wp.ScopedDevice(model.device):
+            collider.meshes = wp.array([collider.id for collider in colliders], dtype=wp.uint64)
+            collider.thicknesses = (
+                wp.full(len(collider.meshes), _DEFAULT_THICKNESS * self.voxel_size, dtype=float)
+                if collider_thicknesses is None
+                else wp.array(collider_thicknesses, dtype=float)
+            )
+            collider.friction = (
+                wp.full(len(collider.meshes), _DEFAULT_FRICTION, dtype=float)
+                if collider_friction is None
+                else wp.array(collider_friction, dtype=float)
+            )
+            collider.masses = (
+                wp.full(len(collider.meshes), INFINITE_MASS * 2.0, dtype=float)
+                if collider_masses is None
+                else wp.array(collider_masses, dtype=float)
+            )
+            collider.projection_threshold = (
+                wp.full(len(collider.meshes), DEFAULT_PROJECTION_THRESHOLD, dtype=float)
+                if collider_projection_threshold is None
+                else wp.array(collider_projection_threshold, dtype=float)
+            )
 
+        collider.query_max_dist = self.voxel_size
         collider.ground_height = 0.0
         collider.ground_normal = wp.vec3(0.0)
         collider.ground_normal[model.up_axis] = 1.0
@@ -1192,15 +1196,15 @@ class ImplicitMPMSolver(SolverBase):
         contacts: Contacts,
         dt: float,
     ):
-        if self.dynamic_grid:
-            scratch = self._rebuild_scratchpad(state_in)
-        else:
-            if self._fixed_scratchpad is None:
-                self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
-            scratch = self._fixed_scratchpad
+        with wp.ScopedDevice(model.device):
+            if self.dynamic_grid:
+                scratch = self._rebuild_scratchpad(state_in)
+            else:
+                if self._fixed_scratchpad is None:
+                    self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
+                scratch = self._fixed_scratchpad
 
-        fem.set_default_temporary_store(self.temporary_store)
-        self._step_impl(model, state_in, state_out, dt, scratch)
+            self._step_impl(model, state_in, state_out, dt, scratch)
 
     def project_outside(self, state_in: State, state_out: State, dt: float):
         """Projects particles outside of the colliders"""
@@ -1220,6 +1224,7 @@ class ImplicitMPMSolver(SolverBase):
                 state_out.particle_qd,
                 state_out.particle_qd_grad,
             ],
+            device=state_in.particle_q.device,
         )
 
     def collect_collider_impulses(self, state: State):
@@ -1262,6 +1267,7 @@ class ImplicitMPMSolver(SolverBase):
                 state_prev.particle_transform,
                 state.particle_transform,
             ],
+            device=state.particle_qd_grad.device,
         )
 
     def sample_render_grains(self, state: State, particle_radius: float, grains_per_particle: int):
@@ -1271,7 +1277,7 @@ class ImplicitMPMSolver(SolverBase):
         to lie within the affinely deformed simulation particles.
         """
 
-        grains = wp.empty((state.particle_count, grains_per_particle), dtype=wp.vec3)
+        grains = wp.empty((state.particle_count, grains_per_particle), dtype=wp.vec3, device=state.particle_q.device)
 
         wp.launch(
             sample_grains,
@@ -1281,6 +1287,7 @@ class ImplicitMPMSolver(SolverBase):
                 particle_radius,
                 grains,
             ],
+            device=state.particle_q.device,
         )
 
         return grains
@@ -1312,6 +1319,7 @@ class ImplicitMPMSolver(SolverBase):
                 state.particle_qd_grad,
                 grains,
             ],
+            device=grains.device,
         )
 
         fem.interpolate(
@@ -1324,6 +1332,7 @@ class ImplicitMPMSolver(SolverBase):
             fields={
                 "grid_vel": state.velocity_field,
             },
+            device=grains.device,
         )
 
         wp.launch(
@@ -1335,6 +1344,7 @@ class ImplicitMPMSolver(SolverBase):
                 state.particle_transform,
                 grains,
             ],
+            device=grains.device,
         )
 
     def _allocate_grid(self, positions: wp.array, voxel_size, padding_voxels: int = 0):
@@ -1695,6 +1705,7 @@ class ImplicitMPMSolver(SolverBase):
                 color_indices=_get_array(scratch.color_indices),
                 rigidity_mat=rigidity_matrix,
                 temporary_store=self.temporary_store,
+                use_graph=self.model.device.is_cuda,
             )
 
         # (A)PIC advection
