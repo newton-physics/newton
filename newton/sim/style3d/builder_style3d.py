@@ -137,6 +137,9 @@ class Style3DModelBuilder(ModelBuilder):
         i: list[int],
         j: list[int],
         k: list[int],
+        density: float,
+        panel_verts: list[Vec2],
+        panel_indices: list[int],
         tri_aniso_ke: list[Vec3] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -152,20 +155,23 @@ class Style3DModelBuilder(ModelBuilder):
             i: The indices of the first particle
             j: The indices of the second particle
             k: The indices of the third particle
+            density: The density per-area of the mesh
+            panel_indices: A list of triangle indices, 3 entries per-face
+            panel_verts: A list of vertex 2D positions for panel-based cloth simulation.
             tri_aniso_ke: anisotropic stretch stiffness (weft, warp, shear) for pattern-based cloth simulation.
-
-        Return:
-            The areas of the triangles
 
         Note:
             A triangle is created with a rest-length based on the distance
             between the particles in their initial configuration.
 
         """
+
+        indices = np.array(panel_indices).reshape(-1, 3)
+
         # compute basis for 2D rest pose
-        p = np.array(self.particle_q)[i]
-        q = np.array(self.particle_q)[j]
-        r = np.array(self.particle_q)[k]
+        p = np.array(panel_verts)[indices[:, 0]]
+        q = np.array(panel_verts)[indices[:, 1]]
+        r = np.array(panel_verts)[indices[:, 2]]
 
         qp = q - p
         rp = r - p
@@ -175,21 +181,7 @@ class Style3DModelBuilder(ModelBuilder):
             l[l == 0] = 1.0
             return a / l
 
-        # use panel xy dir when tri is on xy plane
-        on_panel = np.sum(np.abs(qp[:, 2]).flatten() + np.abs(rp[:, 2]).flatten()) > 1.0e-3
-
-        if on_panel:
-            e1 = np.full((len(qp), 3), [1.0, 0.0, 0.0])
-            e2 = np.full((len(qp), 3), [0.0, 1.0, 0.0])
-        else:
-            n = normalized(np.cross(qp, rp))
-            e1 = normalized(qp)
-            e2 = normalized(np.cross(n, e1))
-
-        R = np.concatenate((e1[..., None], e2[..., None]), axis=-1)
-        M = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
-
-        D = np.matmul(R.transpose(0, 2, 1), M)
+        D = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
 
         areas = np.linalg.det(D) / 2.0
         areas[areas < 0.0] = 0.0
@@ -230,7 +222,12 @@ class Style3DModelBuilder(ModelBuilder):
         self.tri_aniso_ke.extend(np.array(tri_aniso_ke)[valid_inds])
         areas = areas.tolist()
         self.tri_areas.extend(areas)
-        return areas
+
+        for t in range(len(inds)):
+            area = areas[t]
+            self.particle_mass[inds[t, 0]] += density * area / 3.0
+            self.particle_mass[inds[t, 1]] += density * area / 3.0
+            self.particle_mass[inds[t, 2]] += density * area / 3.0
 
     def add_aniso_edges(
         self,
@@ -421,8 +418,6 @@ class Style3DModelBuilder(ModelBuilder):
             vertices=vertices,
             indices=indices,
             density=density,
-            edge_callback=None,
-            face_callback=None,
             tri_aniso_ke=tri_aniso_ke,
             tri_ka=tri_ka,
             tri_kd=tri_kd,
@@ -460,25 +455,24 @@ class Style3DModelBuilder(ModelBuilder):
         self,
         pos: Vec3,
         rot: Quat,
-        scale: float,
         vel: Vec3,
-        vertices: list[Vec3],
-        indices: list[int],
+        scale: float,
         density: float,
-        edge_callback=None,
-        face_callback=None,
+        indices: list[int],
+        vertices: list[Vec3],
+        panel_verts: list[Vec2],
+        panel_indices: list[int] | None = None,
         tri_aniso_ke: Vec3 | None = None,
+        edge_aniso_ke: Vec3 | None = None,
         tri_ka: float | None = None,
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
-        edge_aniso_ke: Vec3 | None = None,
         edge_kd: float | None = None,
         add_springs: bool = False,
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
-        panel_verts: list[Vec2] | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh with anisotropic attributes
 
@@ -492,10 +486,9 @@ class Style3DModelBuilder(ModelBuilder):
             vertices: A list of vertex positions
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
-            edge_callback: A user callback when an edge is created
-            face_callback: A user callback when a face is created
-            particle_radius: The particle_radius which controls particle based collisions.
+            panel_indices: A list of triangle indices, 3 entries per-face, passes None will use indices as panel_indices
             panel_verts: A list of vertex 2D positions for panel-based cloth simulation.
+            particle_radius: The particle_radius which controls particle based collisions.
             tri_aniso_ke: anisotropic stretch stiffness (weft, warp, shear) for panel-based cloth simulation.
             edge_aniso_ke: anisotropic bend stiffness (weft, warp, shear) for panel-based cloth simulation.
         Note:
@@ -513,6 +506,9 @@ class Style3DModelBuilder(ModelBuilder):
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
         panel_verts = panel_verts if panel_verts is not None else []
+
+        if panel_indices is None:
+            panel_indices = indices
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -543,23 +539,19 @@ class Style3DModelBuilder(ModelBuilder):
         inds = start_vertex + np.array(indices)
         inds = inds.reshape(-1, 3)
         tri_aniso_kes = [tri_aniso_ke] * num_tris if tri_aniso_ke is not None else None
-        areas = self.add_aniso_triangles(
+        self.add_aniso_triangles(
             inds[:, 0],
             inds[:, 1],
             inds[:, 2],
+            density,
+            panel_verts,
+            panel_indices,
             tri_aniso_kes,
             [tri_ka] * num_tris,
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
         )
-
-        for t in range(num_tris):
-            area = areas[t]
-
-            self.particle_mass[inds[t, 0]] += density * area / 3.0
-            self.particle_mass[inds[t, 1]] += density * area / 3.0
-            self.particle_mass[inds[t, 2]] += density * area / 3.0
 
         end_tri = len(self.tri_indices)
 
