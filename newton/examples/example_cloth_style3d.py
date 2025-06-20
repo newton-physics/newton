@@ -13,12 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 
+import numpy as np
 import warp as wp
+from pxr import Usd, UsdGeom
 
 import newton
+import newton.examples
 import newton.utils
-from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
 
 class Example:
@@ -34,34 +38,43 @@ class Example:
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
 
-        grid_dim = 200
-        grid_width = 1.0
-        cloth_density = 0.3
+        usd_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "women_skirt.usda"))
+
+        # Grament
+        usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_Garment"))
+        garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
+        garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
+        garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
+        garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+        garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
+
+        # Avatar
+        usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_SkinnedMesh_Avatar_0_Sub_0"))
+        avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
+        avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
+
         builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
-        builder.add_aniso_cloth_grid(
-            pos=wp.vec3(-0.5, 2.0, 0.0),
-            rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
-            dim_x=grid_dim,
-            dim_y=grid_dim,
-            cell_x=grid_width / grid_dim,
-            cell_y=grid_width / grid_dim,
+        builder.add_aniso_cloth_mesh(
+            pos=wp.vec3(0, 0, 0),
+            rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            mass=cloth_density * (grid_width * grid_width) / (grid_dim * grid_dim),
             tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
-            tri_ka=1.0e2,
-            tri_kd=2.0e-6,
             edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
+            panel_verts=garment_mesh_uv.tolist(),
+            panel_indices=garment_mesh_uv_indices.tolist(),
+            vertices=garment_mesh_points.tolist(),
+            indices=garment_mesh_indices.tolist(),
+            density=0.3,
+            scale=1.0,
         )
-        builder.color()
-        builder.sew_close_vertices()
+        builder.add_shape_mesh(
+            body=builder.add_body(),
+            mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
+        )
         self.model = builder.finalize()
-        self.model.ground = False
-        self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 1.0e-6
-        self.model.soft_contact_mu = 0.2
 
         # set fixed points
-        fixed_points = [0, grid_dim]
+        fixed_points = [0]
         flags = self.model.particle_flags.numpy()
         for fixed_vertex_id in fixed_points:
             flags[fixed_vertex_id] = wp.uint32(int(flags[fixed_vertex_id]) & ~int(PARTICLE_FLAG_ACTIVE))
@@ -84,8 +97,6 @@ class Example:
         self.state0 = self.model.state()
         self.state1 = self.model.state()
         self.control = self.model.control()
-        self.model.particle_radius = wp.array([0.002] * self.model.particle_count, dtype=float)
-        self.t = wp.zeros((1,), dtype=float)
 
         self.renderer = None
         if stage_path:
