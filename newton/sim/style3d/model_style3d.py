@@ -40,6 +40,8 @@ class Style3DModel(Model):
         super().__init__(device=device)
         self.tri_aniso_ke = None
         """Triangle element aniso stretch stiffness(weft, warp, shear), shape [tri_count, 3], float."""
+        self.edge_rest_area = None
+        """Bending edge area, sum area of adjacent two triangles, shape [edge_count], float."""
         self.edge_bending_cot = None
         """Bending edge cotangents, shape [edge_count, 4], float."""
 
@@ -48,5 +50,6 @@ class Style3DModel(Model):
         style3d_model = cls.__new__(cls)
         style3d_model.__dict__.update(model.__dict__)
         style3d_model.tri_aniso_ke = None
+        style3d_model.edge_rest_area = None
         style3d_model.edge_bending_cot = None
         return style3d_model

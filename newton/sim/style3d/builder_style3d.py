@@ -99,6 +99,7 @@ class Style3DModelBuilder(ModelBuilder):
         # triangles
         self.tri_aniso_ke = []
         # edges (bending)
+        self.edge_rest_area = []
         self.edge_bending_cot = []
 
     def add_builder(
@@ -126,6 +127,7 @@ class Style3DModelBuilder(ModelBuilder):
 
         style3d_builder_attrs = [
             "tri_aniso_ke",
+            "edge_rest_area",
             "edge_bending_cot",
         ]
 
@@ -235,6 +237,12 @@ class Style3DModelBuilder(ModelBuilder):
         j,
         k,
         l,
+        f0,
+        f1,
+        v0_order,
+        v1_order,
+        panel_verts: list[Vec2],
+        panel_indices: list[int],
         rest: list[float] | None = None,
         edge_aniso_ke: list[Vec3] | None = None,
         edge_kd: list[float] | None = None,
@@ -260,14 +268,37 @@ class Style3DModelBuilder(ModelBuilder):
 
         """
 
-        x1 = np.array(self.particle_q)[i]
-        x2 = np.array(self.particle_q)[j]
-        x3 = np.array(self.particle_q)[k]
-        x4 = np.array(self.particle_q)[l]
+        # prepare panel edge data
+        panel_tris = np.array(panel_indices).reshape(-1, 3)
+        panel_pos2d = np.array(panel_verts).reshape(-1, 2)
+        panel_tris_f0 = panel_tris[f0]
+        panel_tris_f1 = panel_tris[f1]
+
+        panel_x1_f0 = panel_pos2d[panel_tris_f0[np.arange(panel_tris_f0.shape[0]), v0_order]]
+        panel_x3_f0 = panel_pos2d[panel_tris_f0[np.arange(panel_tris_f0.shape[0]), (v0_order + 1) % 3]]
+        panel_x4_f0 = panel_pos2d[panel_tris_f0[np.arange(panel_tris_f0.shape[0]), (v0_order + 2) % 3]]
+
+        panel_x2_f1 = panel_pos2d[panel_tris_f1[np.arange(panel_tris_f1.shape[0]), v1_order]]
+        panel_x4_f1 = panel_pos2d[panel_tris_f1[np.arange(panel_tris_f1.shape[0]), (v1_order + 1) % 3]]
+        panel_x3_f1 = panel_pos2d[panel_tris_f1[np.arange(panel_tris_f1.shape[0]), (v1_order + 2) % 3]]
+
+        panel_x43_f0 = panel_x4_f0 - panel_x3_f0
+        panel_x43_f1 = panel_x4_f1 - panel_x3_f1
+
+        # x1 = np.array(self.particle_q)[i]
+        # x2 = np.array(self.particle_q)[j]
+        # x3 = np.array(self.particle_q)[k]
+        # x4 = np.array(self.particle_q)[l]
+        # x43 = x4 - x3
+
+        inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
+        self.edge_indices.extend(inds.tolist())
 
         def dot(a, b):
             return (a * b).sum(axis=-1)
 
+        # we still compute rest angle without panel, maybe used for folding edge in the future
+        # Actually rest angle is always 0 on panel
         if rest is None:
             rest = np.zeros_like(i, dtype=float)
             valid_mask = (i != -1) & (j != -1)
@@ -291,12 +322,12 @@ class Style3DModelBuilder(ModelBuilder):
             sin_theta = dot(np.cross(n1, n2), e)
             rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
 
-        inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
-
-        self.edge_indices.extend(inds.tolist())
         self.edge_rest_angle.extend(rest.tolist())
-        x43 = x4 - x3
-        self.edge_rest_length.extend(np.linalg.norm(x43, axis=1).tolist())
+
+        # compute rest length
+        mean_edge_length = (np.linalg.norm(panel_x43_f0, axis=1) + np.linalg.norm(panel_x43_f1, axis=1)) * 0.5
+        # self.edge_rest_length.extend(np.linalg.norm(x43, axis=1).tolist())
+        self.edge_rest_length.extend(mean_edge_length.tolist())
 
         def init_if_none(arr, defaultValue):
             if arr is None:
@@ -306,9 +337,10 @@ class Style3DModelBuilder(ModelBuilder):
         edge_ke = [self.default_edge_ke] * len(i)
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
         # compute final edge_ke based on edge_aniso_ke, ref Feng:2022:LBB
-        # on_panel = np.sum(np.abs(x43[:, 2]).flatten()) > 1.0e-3
         if edge_aniso_ke is not None:
-            angle = np.atan2(x43[:, 1], x43[:, 0])
+            angle_f0 = np.atan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
+            angle_f1 = np.atan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
+            angle = (angle_f0 + angle_f1) * 0.5
             sin = np.sin(angle)
             cos = np.cos(angle)
             sin2 = np.pow(sin, 2)
@@ -320,19 +352,27 @@ class Style3DModelBuilder(ModelBuilder):
 
         self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
 
+        # compute edge area
+        edge_area = (
+            np.abs(np.cross(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
+            + np.abs(np.cross(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
+            + 1.0e-8
+        ) / 3.0
+        self.edge_rest_area.extend(edge_area)
+
         # compute bending cotangents
-        def cot(a, b, c):
+        def cot2d(a, b, c):
             # compute cotangent of a
             ba = b - a
             ca = c - a
             dot_a = dot(ba, ca)
-            cross_a = np.linalg.norm(np.cross(ba, ca), axis=-1) + 1.0e-6
+            cross_a = np.abs(np.cross(ba, ca)) + 1.0e-8
             return dot_a / cross_a
 
-        cot1 = cot(x3, x4, x1)
-        cot2 = cot(x3, x4, x2)
-        cot3 = cot(x4, x3, x1)
-        cot4 = cot(x4, x3, x2)
+        cot1 = cot2d(panel_x3_f0, panel_x4_f0, panel_x1_f0)
+        cot2 = cot2d(panel_x3_f1, panel_x4_f1, panel_x2_f1)
+        cot3 = cot2d(panel_x4_f0, panel_x3_f0, panel_x1_f0)
+        cot4 = cot2d(panel_x4_f1, panel_x3_f1, panel_x2_f1)
         self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4))
 
     def add_aniso_cloth_grid(
@@ -558,15 +598,25 @@ class Style3DModelBuilder(ModelBuilder):
         adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
 
         edge_indices = np.fromiter(
-            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1, e.f0, e.f1)),
             int,
-        ).reshape(-1, 4)
+        ).reshape(-1, 6)
+        # compute v0 and v1 order in each face
+        edge_v0_order = np.argmax(inds[edge_indices[:, 4]][:, :3] == edge_indices[:, 0][:, None], axis=1)
+        edge_v1_order = np.argmax(inds[edge_indices[:, 5]][:, :3] == edge_indices[:, 1][:, None], axis=1)
+
         edge_aniso_kes = [edge_aniso_ke] * len(edge_indices) if edge_aniso_ke is not None else None
         self.add_aniso_edges(
             edge_indices[:, 0],
             edge_indices[:, 1],
             edge_indices[:, 2],
             edge_indices[:, 3],
+            edge_indices[:, 4],
+            edge_indices[:, 5],
+            edge_v0_order,
+            edge_v1_order,
+            panel_verts,
+            panel_indices,
             edge_aniso_ke=edge_aniso_kes,
             edge_kd=[edge_kd] * len(edge_indices),
         )
@@ -636,8 +686,7 @@ class Style3DModelBuilder(ModelBuilder):
 
         with wp.ScopedDevice(device):
             style3d_model.tri_aniso_ke = wp.array(self.tri_aniso_ke, dtype=wp.vec3, requires_grad=requires_grad)
-            style3d_model.edge_bending_cot = wp.array(
-                self.edge_bending_cot, dtype=wp.float32, requires_grad=requires_grad
-            )
+            style3d_model.edge_rest_area = wp.array(self.edge_rest_area, dtype=wp.float32, requires_grad=requires_grad)
+            style3d_model.edge_bending_cot = wp.array(self.edge_bending_cot, dtype=wp.vec4, requires_grad=requires_grad)
 
         return style3d_model

@@ -54,27 +54,49 @@ class Example:
         avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
 
         builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
-        builder.add_aniso_cloth_mesh(
-            pos=wp.vec3(0, 0, 0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
-            edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
-            panel_verts=garment_mesh_uv.tolist(),
-            panel_indices=garment_mesh_uv_indices.tolist(),
-            vertices=garment_mesh_points.tolist(),
-            indices=garment_mesh_indices.tolist(),
-            density=0.3,
-            scale=1.0,
-        )
-        builder.add_shape_mesh(
-            body=builder.add_body(),
-            mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
-        )
+        use_cloth_mesh = True
+        if use_cloth_mesh:
+            builder.add_aniso_cloth_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
+                panel_verts=garment_mesh_uv.tolist(),
+                panel_indices=garment_mesh_uv_indices.tolist(),
+                vertices=garment_mesh_points.tolist(),
+                indices=garment_mesh_indices.tolist(),
+                density=0.3,
+                scale=1.0,
+            )
+            builder.add_shape_mesh(
+                body=builder.add_body(),
+                mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
+            )
+            fixed_points = [0]
+        else:
+            grid_dim = 100
+            grid_width = 1.0
+            cloth_density = 0.3
+            builder.add_aniso_cloth_grid(
+                pos=wp.vec3(-0.5, 2.0, 0.0),
+                rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
+                dim_x=grid_dim,
+                dim_y=grid_dim,
+                cell_x=grid_width / grid_dim,
+                cell_y=grid_width / grid_dim,
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                mass=cloth_density * (grid_width * grid_width) / (grid_dim * grid_dim),
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                tri_ka=1.0e2,
+                tri_kd=2.0e-6,
+                edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
+            )
+            fixed_points = [0, grid_dim]
+
         self.model = builder.finalize()
 
         # set fixed points
-        fixed_points = [0]
         flags = self.model.particle_flags.numpy()
         for fixed_vertex_id in fixed_points:
             flags[fixed_vertex_id] = wp.uint32(int(flags[fixed_vertex_id]) & ~int(PARTICLE_FLAG_ACTIVE))
@@ -89,10 +111,7 @@ class Example:
             self.iterations,
         )
         self.solver.precompute(
-            builder.tri_indices,
-            builder.tri_poses,
-            builder.tri_aniso_ke,
-            builder.tri_areas,
+            builder,
         )
         self.state0 = self.model.state()
         self.state1 = self.model.state()

@@ -15,13 +15,14 @@
 
 import warp as wp
 
-from newton.sim import Contacts, Control, State, Style3DModel
+from newton.sim import Contacts, Control, State, Style3DModel, Style3DModelBuilder
 
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .kernels import (
     PD_jacobi_step_kernel,
     apply_chebyshev_kernel,
+    eval_bend_kernel,
     eval_stretch_kernel,
     init_rhs_kernel,
     init_step_kernel,
@@ -154,6 +155,20 @@ class Style3DSolver(SolverBase):
                 device=self.device,
             )
 
+            wp.launch(
+                eval_bend_kernel,
+                dim=len(self.style3d_model.edge_rest_area),
+                inputs=[
+                    state_in.particle_q,
+                    self.style3d_model.edge_rest_area,
+                    self.style3d_model.edge_bending_cot,
+                    self.style3d_model.edge_indices,
+                    self.style3d_model.edge_bending_properties,
+                ],
+                outputs=[self.rhs],
+                device=self.device,
+            )
+
             if self.linear_solver is None:  # for debug
                 wp.launch(
                     PD_jacobi_step_kernel,
@@ -207,12 +222,19 @@ class Style3DSolver(SolverBase):
 
     def precompute(
         self,
-        tri_indices: list[list[int]],
-        tri_poses: list[list[list[float]]],
-        tri_aniso_ke: list[list[int]],
-        tri_areas: list[float],
+        builder: Style3DModelBuilder,
     ):
         with wp.ScopedTimer("Style3DSolver::precompute()"):
-            self.pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+            self.pd_matrix_builder.add_stretch_constraints(
+                builder.tri_indices, builder.tri_poses, builder.tri_aniso_ke, builder.tri_areas
+            )
+            self.pd_matrix_builder.add_bend_constraints(
+                builder.edge_indices,
+                builder.edge_rest_angle,
+                builder.edge_rest_length,
+                builder.edge_bending_properties,
+                builder.edge_rest_area,
+                builder.edge_bending_cot,
+            )
             self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finialize(self.device)
             self.A.diag = wp.zeros_like(self.pd_diags)

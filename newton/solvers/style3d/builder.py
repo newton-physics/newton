@@ -56,7 +56,7 @@ class PDMatrixBuilder:
         self,
         tri_indices: list[list[int]],
         tri_poses: list[list[list[float]]],
-        tri_aniso_ke: list[list[int]],
+        tri_aniso_ke: list[list[float]],
         tri_areas: list[float],
     ):
         for fid in range(len(tri_indices)):
@@ -76,6 +76,37 @@ class PDMatrixBuilder:
                         self.values[face[j], slot_ji] += weight
                     else:
                         self.diags[face[i]] += weight
+
+    def add_bend_constraints(
+        self,
+        edge_indices: list[list[int]],
+        edge_rest_angle: list[float],
+        edge_rest_length: list[float],
+        edge_bending_properties: list[list[float]],
+        edge_rest_area: list[float],
+        edge_bending_cot: list[list[float]],
+    ):
+        for eid in range(len(edge_indices)):
+            if edge_indices[eid][0] < 0 or edge_indices[eid][1] < 0:
+                continue
+            # reorder as qbend order
+            edge = wp.vec4i(edge_indices[eid][2], edge_indices[eid][3], edge_indices[eid][0], edge_indices[eid][1])
+            bend_weight = wp.vec4(0.0)
+            bend_weight[0] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
+            bend_weight[1] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
+            bend_weight[2] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
+            bend_weight[3] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
+            bend_weight = (edge_bending_properties[eid][0] / wp.sqrt(edge_rest_area[eid])) * bend_weight
+            for i in range(4):
+                for j in range(i, 4):
+                    weight = bend_weight[i] * bend_weight[j]
+                    if i != j:
+                        slot_ij = self.add_connection(edge[i], edge[j])
+                        slot_ji = self.add_connection(edge[j], edge[i])
+                        self.values[edge[i], slot_ij] += weight
+                        self.values[edge[j], slot_ji] += weight
+                    else:
+                        self.diags[edge[i]] += weight
 
     @wp.kernel
     def assemble_nz_ell_kernel(
