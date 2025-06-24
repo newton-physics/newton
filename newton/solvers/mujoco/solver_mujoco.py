@@ -1200,7 +1200,11 @@ class MuJoCoSolver(SolverBase):
             # based on the collision group: we pick shapes from the first collision group and groups
             # that collide with it and add the bodies and joints that are associated with these shapes
             shape_collision_group = np.array(model.shape_collision_group)
-            first_collision_group = np.min([i for i in shape_collision_group if i >= 0])
+            non_negatives = shape_collision_group[shape_collision_group >= 0]
+            if len(non_negatives) > 0:
+                first_collision_group = np.min(non_negatives)
+            else:
+                first_collision_group = -1
             selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
                 0
             ]
