@@ -103,6 +103,10 @@ class Axis(IntEnum):
             return self.value == int(other)
         return NotImplemented
 
+    @override
+    def __hash__(self):
+        return hash(self.name)
+
     def to_vector(self) -> tuple[float, float, float]:
         if self == Axis.X:
             return (1.0, 0.0, 0.0)
