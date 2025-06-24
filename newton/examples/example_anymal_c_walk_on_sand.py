@@ -24,8 +24,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.collision
-import newton.examples
 import newton.utils
 from newton.examples.example_anymal_c_walk import AnymalController
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
