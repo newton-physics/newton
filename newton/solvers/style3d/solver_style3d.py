@@ -236,5 +236,5 @@ class Style3DSolver(SolverBase):
                 builder.edge_rest_area,
                 builder.edge_bending_cot,
             )
-            self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finialize(self.device)
+            self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finalize(self.device)
             self.A.diag = wp.zeros_like(self.pd_diags)

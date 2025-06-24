@@ -408,7 +408,7 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True):
 
 
 def get_data():
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom  # noqa: PLC0415
 
     usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bunny.usd"))
     usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))

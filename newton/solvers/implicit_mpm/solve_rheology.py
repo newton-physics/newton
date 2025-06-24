@@ -330,9 +330,9 @@ def solve_local_stress(
     nor = delassus_normal[tau_i]
     cur_stress = local_stress[tau_i]
 
-    # substract elastic strain
-    # this is the one thing that spearates elasticity from simple modification
-    # of the the Delassus operator
+    # subtract elastic strain
+    # this is the one thing that separates elasticity from simple modification
+    # of the Delassus operator
     if local_stress_strain_matrices:
         tau += local_stress_strain_matrices[tau_i] * cur_stress
 
@@ -759,7 +759,7 @@ def solve_rheology(
     split_mass = not gs
 
     # Build transposed matrix
-    # Do it now as we need ofsets to build the Delassus operator
+    # Do it now as we need offsets to build the Delassus operator
     if not gs:
         sp.bsr_set_transpose(dest=transposed_strain_mat, src=strain_mat)
 

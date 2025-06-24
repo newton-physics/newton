@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 from itertools import product
 from typing import TYPE_CHECKING, Any
 
@@ -42,8 +43,8 @@ else:
 def import_mujoco():
     """Import the MuJoCo Warp dependencies."""
     try:
-        import mujoco
-        import mujoco_warp
+        import mujoco  # noqa: PLC0415
+        import mujoco_warp  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
             "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
@@ -1506,8 +1507,6 @@ class MuJoCoSolver(SolverBase):
         self.mj_model = spec.compile()
 
         if target_filename:
-            import os
-
             with open(target_filename, "w") as f:
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
