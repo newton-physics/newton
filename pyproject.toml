@@ -62,16 +62,9 @@ path = "newton/_version.py"
 include = ["/newton", "/newton/licenses"]
 
 [[tool.uv.index]]
-url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
-default = true
-
-[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 explicit = true
-
-[[tool.uv.index]]
-url = "https://pypi.org/simple"
 
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
