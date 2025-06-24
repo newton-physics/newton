@@ -1908,8 +1908,8 @@ class VBDSolver(SolverBase):
         model: Model,
         iterations: int = 10,
         handle_self_contact: bool = False,
-        soft_contact_radius: float = 0.2,
-        soft_contact_margin: float = 0.2,
+        self_contact_radius: float = 0.2,
+        self_contact_margin: float = 0.2,
         integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
@@ -1924,10 +1924,11 @@ class VBDSolver(SolverBase):
                 to the `step` function.
             iterations: Number of VBD iterations per step.
             handle_self_contact: whether to self-contact.
-            soft_contact_radius: The radius used for soft contact detection. This is the distance at which particles
-                will start to interact with each other.
-            soft_contact_margin: The margin used for soft contact detection. This is the distance at which particles
-                will be considered in contact generation. It should be larger than `soft_contact_radius` to avoid missing contacts.
+            self_contact_radius: The radius used for self-contact detection. This is the distance at which vertex-triangle
+                pairs and edge-edge pairs will start to interact with each other.
+            self_contact_margin: The margin used for self-contact detection. This is the distance at which vertex-triangle
+                pairs and edge-edge will be considered in contact generation. It should be larger than `self_contact_radius`
+                to avoid missing contacts.
             integrate_with_external_rigid_solver: an indicator of coupled rigid body - cloth simulation.  When set to
                 `True`, the solver assumes the rigid body solve is handled  externally.
             penetration_free_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
@@ -1964,15 +1965,15 @@ class VBDSolver(SolverBase):
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
 
         self.handle_self_contact = handle_self_contact
-        self.soft_contact_radius = soft_contact_radius
-        self.soft_contact_margin = soft_contact_margin
+        self.self_contact_radius = self_contact_radius
+        self.self_contact_margin = self_contact_margin
 
         soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
-            if soft_contact_margin < soft_contact_radius:
+            if self_contact_margin < self_contact_radius:
                 raise ValueError(
-                    "soft_contact_margin is smaller than soft_contact_radius, this will result in missing contacts and cause instability.\n"
-                    "It is advisable to make soft_contact_margin 1.5-2 times larger than soft_contact_radius."
+                    "self_contact_margin is smaller than self_contact_radius, this will result in missing contacts and cause instability.\n"
+                    "It is advisable to make self_contact_margin 1.5-2 times larger than self_contact_radius."
                 )
 
             self.conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
@@ -2255,7 +2256,7 @@ class VBDSolver(SolverBase):
                             self.model.edge_indices,
                             # self-contact
                             self.trimesh_collision_info,
-                            self.soft_contact_radius,
+                            self.self_contact_radius,
                             self.model.soft_contact_ke,
                             self.model.soft_contact_kd,
                             self.model.soft_contact_mu,
@@ -2330,15 +2331,15 @@ class VBDSolver(SolverBase):
 
     def collision_detection_penetration_free(self, current_state: State, dt: float):
         self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.soft_contact_margin)
-        self.trimesh_collision_detector.edge_edge_collision_detection(self.soft_contact_margin)
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
+        self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
 
         self.pos_prev_collision_detection.assign(current_state.particle_q)
         wp.launch(
             kernel=compute_particle_conservative_bound,
             inputs=[
                 self.conservative_bound_relaxation,
-                self.soft_contact_margin,
+                self.self_contact_margin,
                 self.adjacency,
                 self.trimesh_collision_detector.collision_info,
             ],

@@ -44,7 +44,8 @@ def parse_usd(
     enable_self_collisions: bool = True,
     apply_up_axis_from_stage: bool = False,
     root_path: str = "/",
-    joint_ordering: Literal["bfs", "dfs"] = "dfs",
+    joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
+    bodies_follow_joint_ordering: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -68,7 +69,8 @@ def parse_usd(
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
-        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search. Default is "dfs".
+        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -302,7 +304,7 @@ def parse_usd(
                 return is_warp_scene(physics_scene)
         return False
 
-    def parse_body(rigid_body_desc, prim, incoming_xform=None):
+    def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
@@ -325,13 +327,20 @@ def parse_usd(
             (prim, physics_scene_prim), "warp:armature", builder.default_body_armature
         )
 
-        b = builder.add_body(
-            xform=origin,
-            key=path,
-            armature=body_armature,
-        )
-        path_body_map[path] = b
-        return b
+        if add_body_to_builder:
+            b = builder.add_body(
+                xform=origin,
+                key=path,
+                armature=body_armature,
+            )
+            path_body_map[path] = b
+            return b
+        else:
+            return {
+                "xform": origin,
+                "key": path,
+                "armature": body_armature,
+            }
 
     def parse_scale(prim):
         xform = UsdGeom.Xform(prim)
@@ -650,6 +659,7 @@ def parse_usd(
         articulation_has_self_collision = {}
 
         articulation_id = builder.articulation_count
+        body_data = {}
         for path, desc in zip(paths, articulation_descs):
             prim = stage.GetPrimAtPath(path)
             builder.add_articulation(str(path))
@@ -671,18 +681,28 @@ def parse_usd(
                         )
                         articulation_roots.append(key)
 
-                body_ids[key] = current_body_id
-                current_body_id += 1
                 if key in body_specs:
-                    # look up description and add body to builder
-                    body_id = parse_body(
-                        body_specs[key],
-                        stage.GetPrimAtPath(p),
-                    )
-                    if body_id >= 0:
-                        art_bodies.append(body_id)
+                    if bodies_follow_joint_ordering:
+                        # we just parse the body information without yet adding it to the builder
+                        body_data[current_body_id] = parse_body(
+                            body_specs[key],
+                            stage.GetPrimAtPath(p),
+                            add_body_to_builder=False,
+                        )
+                    else:
+                        # look up description and add body to builder
+                        body_id = parse_body(
+                            body_specs[key],
+                            stage.GetPrimAtPath(p),
+                            add_body_to_builder=True,
+                        )
+                        if body_id >= 0:
+                            art_bodies.append(body_id)
                     # remove body spec once we inserted it
                     del body_specs[key]
+
+                body_ids[key] = current_body_id
+                current_body_id += 1
 
             joint_names = []
             joint_edges: list[tuple[int, int]] = []
@@ -692,14 +712,42 @@ def parse_usd(
                 joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
 
             # add joints in topological order
-            sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
-            # sorted_joints = np.arange(len(joint_names))
+            if joint_ordering is not None:
+                if verbose:
+                    print(f"Sorting joints using {joint_ordering} ordering...")
+                sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
+                if verbose:
+                    print("Joint ordering:", sorted_joints)
+            else:
+                sorted_joints = np.arange(len(joint_names))
+
+            # insert the bodies in the order of the joints
+            if bodies_follow_joint_ordering:
+                inserted_bodies = set()
+                for jid in sorted_joints:
+                    parent, child = joint_edges[jid]
+                    if parent >= 0 and parent not in inserted_bodies:
+                        b = builder.add_body(**body_data[parent])
+                        inserted_bodies.add(parent)
+                        art_bodies.append(b)
+                        path_body_map[body_data[parent]["key"]] = b
+                    if child >= 0 and child not in inserted_bodies:
+                        b = builder.add_body(**body_data[child])
+                        inserted_bodies.add(child)
+                        art_bodies.append(b)
+                        path_body_map[body_data[child]["key"]] = b
+
             articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
             first_joint_parent = joint_edges[sorted_joints[0]][0]
             if first_joint_parent != -1:
                 # the mechanism is floating since there is no joint connecting it to the world
                 # we explicitly add a free joint to make sure Featherstone and MuJoCo can simulate it
-                builder.add_joint_free(child=art_bodies[first_joint_parent])
+                if bodies_follow_joint_ordering:
+                    child_body = body_data[first_joint_parent]
+                    child_body_id = path_body_map[child_body["key"]]
+                else:
+                    child_body_id = art_bodies[first_joint_parent]
+                builder.add_joint_free(child=child_body_id)
                 builder.joint_q[-7:] = articulation_xform
             for joint_id, i in enumerate(sorted_joints):
                 if joint_id == 0 and first_joint_parent == -1:
@@ -956,9 +1004,13 @@ def parse_usd(
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
                 new_id = body_remap[body_id]
-            else:
+            elif body_id in body_merged_parent:
+                # this body has been merged with another body
                 new_id = body_remap[body_merged_parent[body_id]]
                 path_body_relative_transform[path] = body_merged_transform[body_id]
+            else:
+                # this body has not been merged
+                new_id = body_id
 
             path_body_map[path] = new_id
         merged_body_data = collapse_results["merged_body_data"]
