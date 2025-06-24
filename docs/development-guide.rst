@@ -9,11 +9,6 @@ Environment setup
 Clone the repository
 ^^^^^^^^^^^^^^^^^^^^
 
-Newton currently uses `Git LFS <https://git-lfs.com/>`__ to manage large files
-(e.g. model assets) used in some examples and tests. Please set up Git LFS on
-your system if you plan to run something that needs these files
-(`GitHub Docs <https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage>`__).
-
 .. code-block:: console
 
     git clone git@github.com:newton-physics/newton.git
@@ -129,9 +124,13 @@ Run basic examples:
 Running the tests
 -----------------
 
-The Newton test suite supports both `uv` and standard `venv` workflows, and by default runs in up to eight parallel processes.  
+The Newton test suite supports both ``uv`` and standard ``venv`` workflows,
+and by default runs in up to eight parallel processes. On some systems, the
+tests must be run in a serial manner with ``--serial-fallback`` due to an
+outstanding bug.
+
 Some tests rely on optional dependencies (like `usd-core <https://pypi.org/project/usd-core/>`__) and will be skipped if not installed.  
-Pass `--help` to either runner to see all available flags.
+Pass ``--help`` to either runner to see all available flags.
 
 .. tab-set::
     :sync-group: env
@@ -252,7 +251,7 @@ The built documentation will be available in ``docs/_build/html``.
 Testing documentation code snippets
 -----------------------------------
 
-The ``doctest`` Sphinx builder is used to ensure that code snippets in the documentation remains up-to-date.
+The ``doctest`` Sphinx builder is used to ensure that code snippets in the documentation remain up-to-date.
 
 The doctests can be run with:
 

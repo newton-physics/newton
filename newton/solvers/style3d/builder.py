@@ -123,7 +123,7 @@ class PDMatrixBuilder:
             nz_entry.column_index = neighbors[tid, k]
             nz_ell[k, tid] = nz_entry
 
-    def finialize(self, device):
+    def finalize(self, device):
         diag = wp.array(self.diags, dtype=float, device=device)
         num_nz = wp.array(self.counts, dtype=int, device=device)
         nz_ell = wp.array2d(shape=(32, self.num_verts), dtype=NonZeroEntry, device=device)
