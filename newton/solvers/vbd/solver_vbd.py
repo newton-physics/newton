@@ -1880,12 +1880,10 @@ class VBDSolver(SolverBase):
         You may call :meth:`newton.ModelBuilder.color` to color particles or use :meth:`newton.ModelBuilder.set_coloring`
         to provide you own particle coloring.
 
-
     Example
     -------
 
     .. code-block:: python
-
 
         # color particles
         builder.color()
@@ -1900,7 +1898,6 @@ class VBDSolver(SolverBase):
         for i in range(100):
             solver.step(model, state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
-
     """
 
     def __init__(
@@ -1942,7 +1939,7 @@ class VBDSolver(SolverBase):
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
-              and soft body solvers. If set to Ture, the rigid states should be integrated externally, with `state_in`
+              and soft body solvers. If set to True, the rigid states should be integrated externally, with `state_in`
               passed to `step` function representing the previous rigid state and `state_out` representing the current one. Frictional forces are
               computed accordingly.
             - vertex_collision_buffer_pre_alloc` and `edge_collision_buffer_pre_alloc` are fixed and will not be
