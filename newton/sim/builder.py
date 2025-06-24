@@ -315,10 +315,6 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs = set()
 
-        # geometry
-        self.geo_meshes = []
-        self.geo_sdfs = []
-
         # springs
         self.spring_indices = []
         self.spring_rest_length = []
@@ -1501,6 +1497,9 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
+                        if -1 not in self.body_shapes:
+                            self.body_shapes[-1] = []
+                        self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
@@ -3232,10 +3231,6 @@ class ModelBuilder:
             )
 
             m.shape_geo_src = self.shape_geo_src  # used for rendering
-
-            # store refs to geometry
-            m.geo_meshes = self.geo_meshes
-            m.geo_sdfs = self.geo_sdfs
 
             m.shape_materials.ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_materials.kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
