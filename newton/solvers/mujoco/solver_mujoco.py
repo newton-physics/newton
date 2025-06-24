@@ -1555,6 +1555,7 @@ class MuJoCoSolver(SolverBase):
                 [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))],
                 dtype=wp.int32,
             )
+            model.to_mjc_geom_index = shape_mapping  # pyright: ignore[reportAttributeAccessIssue]
             reverse_shape_mapping = {v: k for k, v in shape_mapping.items()}
             # mapping from MJC geom index to Newton shape index
             model.to_newton_shape_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
