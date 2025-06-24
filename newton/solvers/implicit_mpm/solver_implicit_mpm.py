@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
+from warp.context import assert_conditional_graph_support
 
 from newton import Contacts, Control, Model, State
 from newton.solvers import SolverBase
@@ -1103,6 +1104,14 @@ class ImplicitMPMSolver(SolverBase):
 
         self.temporary_store = fem.TemporaryStore()
 
+        self._use_cuda_graph = False
+        if self.model.device.is_cuda:
+            try:
+                assert_conditional_graph_support()
+                self._use_cuda_graph = True
+            except Exception:
+                pass
+
         self._enable_timers = False
         self._timers_use_nvtx = False
 
@@ -1705,7 +1714,7 @@ class ImplicitMPMSolver(SolverBase):
                 color_indices=_get_array(scratch.color_indices),
                 rigidity_mat=rigidity_matrix,
                 temporary_store=self.temporary_store,
-                use_graph=self.model.device.is_cuda,
+                use_graph=self._use_cuda_graph,
             )
 
         # (A)PIC advection
