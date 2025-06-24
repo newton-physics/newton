@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -1271,8 +1272,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt
-        import networkx as nx
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+        import networkx as nx  # noqa: PLC0415
 
         def joint_type_str(type):
             if type == JOINT_FREE:
@@ -3158,7 +3159,7 @@ class ModelBuilder:
 
             A model object.
         """
-        from .collide import count_rigid_contact_points
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
@@ -3385,9 +3386,6 @@ class ModelBuilder:
 
     def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
-        import copy
-        import itertools
-
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
         # iterate over collision groups (islands)
