@@ -230,8 +230,6 @@ class Style3DSolver(SolverBase):
             )
             self.pd_matrix_builder.add_bend_constraints(
                 builder.edge_indices,
-                builder.edge_rest_angle,
-                builder.edge_rest_length,
                 builder.edge_bending_properties,
                 builder.edge_rest_area,
                 builder.edge_bending_cot,
