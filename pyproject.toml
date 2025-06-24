@@ -61,9 +61,6 @@ path = "newton/_version.py"
 include = ["/newton", "/newton/licenses"]
 
 [[tool.uv.index]]
-url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
-
-[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 explicit = true
