@@ -70,7 +70,7 @@ def test_sand_cube_on_plane(test, device):
         solver.step(model, state_0, state_1, control=None, contacts=None, dt=dt)
         state_0, state_1 = state_1, state_0
 
-    # Checks the final bounding box correspons to the expected collapse
+    # Checks the final bounding box corresponds to the expected collapse
     end_pos = state_0.particle_q.numpy()
     bb_min, bb_max = np.min(end_pos, axis=0), np.max(end_pos, axis=0)
     assert bb_min[model.up_axis] > -voxel_size

@@ -86,7 +86,7 @@ def ell_mat_vel_mul_kernel(
 
 
 @wp.kernel
-def update_cg_direnction_kernel(
+def update_cg_direction_kernel(
     iter: int,
     p: wp.array(dtype=wp.vec3),
     z: wp.array(dtype=wp.vec3),
@@ -200,7 +200,7 @@ class PcgSolver:
 
     def step4_update_p(self, iter: int):
         wp.launch(
-            update_cg_direnction_kernel,
+            update_cg_direction_kernel,
             dim=self.dim,
             inputs=[iter, self.p, self.z],
             outputs=[self.rTz],
