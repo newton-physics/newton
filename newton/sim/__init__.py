@@ -42,6 +42,7 @@ from .joints import (
 )
 from .model import Model
 from .state import State
+from .style3d import Style3DModel, Style3DModelBuilder
 from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
@@ -69,6 +70,8 @@ __all__ = [
     "ShapeGeometry",
     "ShapeMaterials",
     "State",
+    "Style3DModel",
+    "Style3DModelBuilder",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",
