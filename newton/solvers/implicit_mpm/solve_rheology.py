@@ -745,6 +745,7 @@ def solve_rheology(
     rigidity_mat: Optional[sp.BsrMatrix] = None,
     temporary_store: Optional[fem.TemporaryStore] = None,
     use_graph=True,
+    verbose=wp.config.verbose,
 ):
     delta_stress = fem.borrow_temporary_like(stress, temporary_store)
 
@@ -994,9 +995,10 @@ def solve_rheology(
         wp.capture_launch(solve_graph)
 
         res = math.sqrt(residual.numpy()[0]) / residual_scale
-        print(
-            f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after {iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
-        )
+        if verbose:
+            print(
+                f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after {iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
+            )
     else:
         solve_granularity = 25 if gs else 50
 
@@ -1007,9 +1009,10 @@ def solve_rheology(
             residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
             res = math.sqrt(residual.numpy()[0]) / residual_scale
 
-            print(
-                f"{'Gauss-Seidel' if gs else 'Jacobi'} iterations #{(batch + 1) * solve_granularity} \t res(l2)={res}"
-            )
+            if verbose:
+                print(
+                    f"{'Gauss-Seidel' if gs else 'Jacobi'} iterations #{(batch + 1) * solve_granularity} \t res(l2)={res}"
+                )
             if res < tolerance:
                 break
 
