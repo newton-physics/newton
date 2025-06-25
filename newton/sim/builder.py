@@ -496,7 +496,7 @@ class ModelBuilder:
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.builtin_mul_transformf_transformf
+        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
