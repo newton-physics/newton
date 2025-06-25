@@ -24,7 +24,7 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core.types import override
+from newton.core.types import nparray, override
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
@@ -589,7 +589,7 @@ def update_body_inertia_kernel(
     # body_iquat_out[worldid, mjc_idx] = q
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def repeat_array_kernel(
     src: wp.array(dtype=Any),
     nelems_per_world: int,
@@ -945,7 +945,7 @@ class MuJoCoSolver(SolverBase):
             )
 
     @staticmethod
-    def color_collision_shapes(model: Model, visualize_graph: bool = False) -> np.ndarray:
+    def color_collision_shapes(model: Model, selected_shapes: nparray, visualize_graph: bool = False) -> np.ndarray:
         """
         Find a graph coloring of the collision filter pairs in the model.
         Shapes within the same color cannot collide with each other.
@@ -954,14 +954,14 @@ class MuJoCoSolver(SolverBase):
         # find graph coloring of collision filter pairs
         graph_edges = [
             (i, j)
-            for i, j in product(range(model.shape_count), range(model.shape_count))
+            for i, j in product(selected_shapes, selected_shapes)
             if i != j
             and (i, j) not in model.shape_collision_filter_pairs
             and (j, i) not in model.shape_collision_filter_pairs
         ]
         if len(graph_edges) > 0:
             if visualize_graph:
-                plot_graph(np.arange(model.shape_count), graph_edges)
+                plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
                 num_nodes=model.shape_count,
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
@@ -1119,8 +1119,8 @@ class MuJoCoSolver(SolverBase):
                 conaffinity=0,
             )
 
-        joint_parent = model.joint_parent.numpy().tolist()
-        joint_child = model.joint_child.numpy().tolist()
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
@@ -1144,6 +1144,7 @@ class MuJoCoSolver(SolverBase):
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_geo.type.numpy()
         shape_size = model.shape_geo.scale.numpy()
+        shape_body = model.shape_body.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1183,27 +1184,41 @@ class MuJoCoSolver(SolverBase):
         }
 
         mj_bodies = [spec.worldbody]
-        # mapping from warp body id to mujoco body id
+        # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
+        # mapping from Newton shape id to MuJoCo geom id
+        shape_mapping = {}
 
         # ensure unique names
         body_names = {}
         joint_names = {}
 
         # only generate the first environment, replicate state of multiple worlds in MjData
-        bodies_per_env = model.body_count
-        shapes_per_env = model.shape_count
-        joints_per_env = model.joint_count
-        if separate_envs_to_worlds and model.num_envs > 0:
-            bodies_per_env //= model.num_envs
-            shapes_per_env //= model.num_envs
-            joints_per_env //= model.num_envs
+        selected_joints = np.arange(model.joint_count)
+        if separate_envs_to_worlds:
+            # determine which shapes, bodies and joints belong to the first environment
+            # based on the collision group: we pick shapes from the first collision group and groups
+            # that collide with it and add the bodies and joints that are associated with these shapes
+            shape_collision_group = np.array(model.shape_collision_group)
+            non_negatives = shape_collision_group[shape_collision_group >= 0]
+            if len(non_negatives) > 0:
+                first_collision_group = np.min(non_negatives)
+            else:
+                first_collision_group = -1
+            selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
+                0
+            ]
+            selected_bodies = np.unique(shape_body[selected_shapes])
+            selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
+        else:
+            # if we are not separating environments to worlds, we use all shapes, bodies, joints
+            selected_shapes = np.arange(model.shape_count)
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
-        joints_simple = list(zip(joint_parent, joint_child))
-        joint_order = newton.utils.topological_sort(joints_simple[:joints_per_env], use_dfs=True)
-        if any(joint_order != np.arange(joints_per_env)):
+        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints]))
+        joint_order = newton.utils.topological_sort(joints_simple, use_dfs=True)
+        if any(joint_order != np.arange(len(joints_simple))):
             wp.utils.warn(
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
             )
@@ -1213,7 +1228,7 @@ class MuJoCoSolver(SolverBase):
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
-        shape_color = self.color_collision_shapes(model)
+        shape_color = self.color_collision_shapes(model, selected_shapes)
 
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
@@ -1289,6 +1304,7 @@ class MuJoCoSolver(SolverBase):
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
                 body.add_geom(**geom_params)
+                shape_mapping[shape] = len(shape_mapping)
 
         # add static geoms attached to the worldbody
         add_geoms(-1, perm_position=model.up_axis == 1)
@@ -1298,9 +1314,6 @@ class MuJoCoSolver(SolverBase):
             parent, child = joints_simple[ji]
             if child in body_mapping:
                 raise ValueError(f"Body {child} already exists in the mapping")
-            if child >= bodies_per_env:
-                # this is a body in a different environment, skip it
-                continue
 
             # add body
             body_mapping[child] = len(mj_bodies)
@@ -1542,6 +1555,13 @@ class MuJoCoSolver(SolverBase):
                 [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))],
                 dtype=wp.int32,
             )
+            model.to_mjc_geom_index = shape_mapping  # pyright: ignore[reportAttributeAccessIssue]
+            reverse_shape_mapping = {v: k for k, v in shape_mapping.items()}
+            # mapping from MJC geom index to Newton shape index
+            model.to_newton_shape_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
+                [reverse_shape_mapping[i] for i in range(len(shape_mapping))],
+                dtype=wp.int32,
+            )
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
             if separate_envs_to_worlds:
@@ -1668,7 +1688,11 @@ class MuJoCoSolver(SolverBase):
             # Launch kernel to repeat data - one thread per destination element
             n_elems_per_world = dst_flat.shape[0] // nworld
             wp.launch(
-                repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, n_elems_per_world], outputs=[dst_flat]
+                repeat_array_kernel,
+                dim=dst_flat.shape[0],
+                inputs=[src_flat, n_elems_per_world],
+                outputs=[dst_flat],
+                device=x.device,
             )
             return dst
 
