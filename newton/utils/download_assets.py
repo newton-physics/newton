@@ -62,8 +62,8 @@ def download_git_folder(
         >>> print(f"Downloaded to: {folder_path}")
     """
     try:
-        import git
-        from git.exc import GitCommandError
+        import git  # noqa: PLC0415
+        from git.exc import GitCommandError  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
             "GitPython package is required for downloading git folders. Install it with: pip install GitPython"

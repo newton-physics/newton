@@ -15,6 +15,7 @@
 
 import contextlib
 import os
+from collections import defaultdict
 
 import numpy as np
 import warp as wp
@@ -69,31 +70,29 @@ def load_mesh(filename: str, method: str | None = None):
         Tuple of (mesh_points, mesh_indices), where mesh_points is a Nx3 numpy array of vertex positions (float32),
         and mesh_indices is a Mx3 numpy array of vertex indices (int32) for the triangular faces.
     """
-    import os
-
     if not os.path.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
 
     def load_mesh_with_method(method):
         if method == "meshio":
-            import meshio
+            import meshio  # noqa: PLC0415
 
             m = meshio.read(filename)
             mesh_points = np.array(m.points)
             mesh_indices = np.array(m.cells[0].data, dtype=np.int32)
         elif method == "openmesh":
-            import openmesh
+            import openmesh  # noqa: PLC0415
 
             m = openmesh.read_trimesh(filename)
             mesh_points = np.array(m.points())
             mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32)
         elif method == "pcu":
-            import point_cloud_utils as pcu
+            import point_cloud_utils as pcu  # noqa: PLC0415
 
             mesh_points, mesh_indices = pcu.load_mesh_vf(filename)
             mesh_indices = mesh_indices.flatten()
         else:
-            import trimesh
+            import trimesh  # noqa: PLC0415
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
@@ -135,8 +134,9 @@ def load_mesh(filename: str, method: str | None = None):
 def visualize_meshes(
     meshes: list[tuple[list, list]], num_cols=0, num_rows=0, titles=None, scale_axes=True, show_plot=True
 ):
-    # render meshes in a grid with matplotlib
-    import matplotlib.pyplot as plt
+    """Render meshes in a grid with matplotlib."""
+
+    import matplotlib.pyplot as plt  # noqa: PLC0415
 
     if titles is None:
         titles = []
@@ -203,8 +203,8 @@ def silence_stdio():
 
 
 def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbose=False):
-    """
-    Remeshes a 3D triangular surface mesh using "Fast Tetrahedral Meshing in the Wild" (fTetWild).
+    """Remesh a 3D triangular surface mesh using "Fast Tetrahedral Meshing in the Wild" (fTetWild).
+
     This is useful for improving the quality of the mesh, and for ensuring that the mesh is
     watertight. This function first tetrahedralizes the mesh, then extracts the surface mesh.
     The resulting mesh is guaranteed to be watertight and may have a different topology than the
@@ -223,9 +223,8 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
         A tuple (vertices, faces) containing the remeshed mesh. Returns the original vertices and faces
         if the remeshing fails.
     """
-    from collections import defaultdict
 
-    from pytetwild import tetrahedralize
+    from pytetwild import tetrahedralize  # noqa: PLC0415
 
     def tet_fn(v, f):
         return tetrahedralize(v, f, optimize=optimize, edge_length_fac=edge_length_fac)
@@ -269,8 +268,7 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
 
 
 def remesh_alphashape(vertices, alpha=3.0):
-    """
-    Remeshes a 3D triangular surface mesh using the alpha shape algorithm.
+    """Remesh a 3D triangular surface mesh using the alpha shape algorithm.
 
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
@@ -280,7 +278,7 @@ def remesh_alphashape(vertices, alpha=3.0):
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh.
     """
-    import alphashape
+    import alphashape  # noqa: PLC0415
 
     with silence_stdio():
         alpha_shape = alphashape.alphashape(vertices, alpha)
@@ -288,8 +286,7 @@ def remesh_alphashape(vertices, alpha=3.0):
 
 
 def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, **kwargs):
-    """
-    Remeshes a 3D triangular surface mesh using fast quadratic mesh simplification.
+    """Remesh a 3D triangular surface mesh using fast quadratic mesh simplification.
 
     https://github.com/pyvista/fast-simplification
 
@@ -302,15 +299,15 @@ def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, *
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh.
     """
-    from fast_simplification import simplify
+    from fast_simplification import simplify  # noqa: PLC0415
 
     return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
 
 
 def remesh_convex_hull(vertices):
-    """
-    Computes the convex hull of a set of 3D points and returns the vertices and faces of the convex hull mesh.
-    Uses scipy.spatial.ConvexHull to compute the convex hull.
+    """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
+
+    Uses ``scipy.spatial.ConvexHull`` to compute the convex hull.
 
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
@@ -320,7 +317,8 @@ def remesh_convex_hull(vertices):
         - verts: A numpy array of shape (M, 3) containing the vertex positions of the convex hull.
         - faces: A numpy array of shape (K, 3) containing the vertex indices of the triangular faces of the convex hull.
     """
-    from scipy.spatial import ConvexHull
+
+    from scipy.spatial import ConvexHull  # noqa: PLC0415
 
     hull = ConvexHull(vertices)
     verts = hull.points.copy().astype(np.float32)

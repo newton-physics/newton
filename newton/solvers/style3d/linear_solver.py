@@ -86,7 +86,7 @@ def ell_mat_vel_mul_kernel(
 
 
 @wp.kernel
-def update_cg_direnction_kernel(
+def update_cg_direction_kernel(
     iter: int,
     p: wp.array(dtype=wp.vec3),
     z: wp.array(dtype=wp.vec3),
@@ -151,7 +151,7 @@ def array_inner(
     b: wp.array(dtype=wp.vec3),
     out_ptr: wp.uint64,
 ):
-    from warp.context import runtime
+    from warp.context import runtime  # noqa: PLC0415
 
     runtime.core.array_inner_float_device(
         a.ptr,
@@ -200,7 +200,7 @@ class PcgSolver:
 
     def step4_update_p(self, iter: int):
         wp.launch(
-            update_cg_direnction_kernel,
+            update_cg_direction_kernel,
             dim=self.dim,
             inputs=[iter, self.p, self.z],
             outputs=[self.rTz],

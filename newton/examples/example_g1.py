@@ -48,7 +48,7 @@ class Example:
         )
         simplified_meshes = {}
         try:
-            import tqdm
+            import tqdm  # noqa: PLC0415
 
             meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
         except ImportError:
