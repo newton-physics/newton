@@ -134,15 +134,14 @@ class Example:
             self.solver = newton.solvers.SemiImplicitSolver(model=self.model)
         elif self.integrator_type == IntegratorType.XPBD:
             self.solver = newton.solvers.XPBDSolver(
-                model=self.model, iterations=self.iterations, soft_contact_relaxation=0.001
+                model=self.model,
+                iterations=self.iterations,
             )
         else:  # self.integrator_type == IntegratorType.VBD
             self.solver = newton.solvers.VBDSolver(model=self.model, iterations=self.iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
 
         if stage_path is not None:
             self.renderer = newton.utils.SimRendererOpenGL(
@@ -161,10 +160,10 @@ class Example:
             self.cuda_graph = capture.graph
 
     def simulate_substeps(self):
-        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.num_substeps):
+            contacts = self.model.collide(self.state_0)
             self.state_0.clear_forces()
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.dt)
+            self.solver.step(self.model, self.state_0, self.state_1, None, contacts, self.dt)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
