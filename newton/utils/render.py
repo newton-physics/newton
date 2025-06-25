@@ -231,7 +231,7 @@ def CreateSimRenderer(renderer):
 
                         self.geo_shape[geo_hash] = shape
 
-                    if add_shape_instance and shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
+                    if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
                         self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
@@ -544,9 +544,6 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             self.builder_results = builder_results
             self._prepare_output_stage()
             self._precompute_parents_xform_inverses()
-
-    def render(self, state: newton.State):
-        super().render(state)
 
     def render_update_stage(self, state: newton.State):
         if not self.source_stage:
