@@ -17,6 +17,9 @@
 import warp as wp
 
 from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.sim.model import ShapeMaterials
+
+from ..vbd.solver_vbd import evaluate_body_particle_contact
 
 
 @wp.func
@@ -83,7 +86,6 @@ def eval_bend_kernel(
     eid = wp.tid()
     if edges[eid][0] < 0 or edges[eid][1] < 0:
         return
-    # reorder as qbend order
     edge = edges[eid]
     edge_stiff = edge_bending_properties[eid][0] / edge_rest_area[eid]
     bend_weight = wp.vec4(0.0)
@@ -97,6 +99,67 @@ def eval_bend_kernel(
         for j in range(4):
             force = force - bend_weight[i] * bend_weight[j] * pos[edge[j]]
         wp.atomic_add(forces, edge[i], force)
+
+
+@wp.kernel
+def eval_body_contact_kernel(
+    # inputs
+    dt: float,
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    # body-particle contact
+    soft_contact_ke: float,
+    soft_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    particle_radius: wp.array(dtype=float),
+    soft_contact_particle: wp.array(dtype=int),
+    contact_count: wp.array(dtype=int),
+    contact_max: int,
+    shape_materials: ShapeMaterials,
+    shape_body: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_com: wp.array(dtype=wp.vec3),
+    contact_shape: wp.array(dtype=int),
+    contact_body_pos: wp.array(dtype=wp.vec3),
+    contact_body_vel: wp.array(dtype=wp.vec3),
+    contact_normal: wp.array(dtype=wp.vec3),
+    # outputs: particle force and hessian
+    forces: wp.array(dtype=wp.vec3),
+    hessians: wp.array(dtype=wp.mat33),
+):
+    t_id = wp.tid()
+
+    particle_body_contact_count = min(contact_max, contact_count[0])
+
+    if t_id < particle_body_contact_count:
+        particle_idx = soft_contact_particle[t_id]
+        body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            particle_idx,
+            pos[particle_idx],
+            pos_prev[particle_idx],
+            t_id,
+            soft_contact_ke,
+            soft_contact_kd,
+            friction_mu,
+            friction_epsilon,
+            particle_radius,
+            shape_materials,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            dt,
+        )
+        wp.atomic_add(forces, particle_idx, body_contact_force)
+        wp.atomic_add(hessians, particle_idx, body_contact_hessian)
 
 
 @wp.kernel

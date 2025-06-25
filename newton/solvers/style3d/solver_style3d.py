@@ -23,6 +23,7 @@ from .kernels import (
     PD_jacobi_step_kernel,
     apply_chebyshev_kernel,
     eval_bend_kernel,
+    eval_body_contact_kernel,
     eval_stretch_kernel,
     init_rhs_kernel,
     init_step_kernel,
@@ -63,6 +64,8 @@ class Style3DSolver(SolverBase):
         self,
         model: Style3DModel,
         iterations=10,
+        integrate_with_external_rigid_solver: bool = False,
+        friction_epsilon: float = 1e-2,
     ):
         super().__init__(model)
         self.style3d_model = model
@@ -82,7 +85,13 @@ class Style3DSolver(SolverBase):
         # add new attributes for Style3D solve
         self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+
+        # contact
+        self.contact_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
+        self.body_contact_max = model.shape_count * model.particle_count
+        self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
+        self.friction_epsilon = friction_epsilon
 
     @staticmethod
     def get_chebyshev_omega(omega: float, iter: int):
@@ -138,6 +147,39 @@ class Style3DSolver(SolverBase):
                 outputs=[
                     self.rhs,
                 ],
+                device=self.device,
+            )
+
+            # contact
+            self.contact_hessians.zero_()
+            wp.launch(
+                kernel=eval_body_contact_kernel,
+                dim=self.body_contact_max,
+                inputs=[
+                    dt,
+                    self.x_prev,
+                    state_in.particle_q,
+                    # body-particle contact
+                    self.model.soft_contact_ke,
+                    self.model.soft_contact_kd,
+                    self.model.soft_contact_mu,
+                    self.friction_epsilon,
+                    self.model.particle_radius,
+                    contacts.soft_contact_particle,
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_max,
+                    self.model.shape_materials,
+                    self.model.shape_body,
+                    state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                    state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                    self.model.body_qd,
+                    self.model.body_com,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                ],
+                outputs=[self.rhs, self.contact_hessians],
                 device=self.device,
             )
 
