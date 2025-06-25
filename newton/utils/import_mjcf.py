@@ -303,7 +303,7 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                import trimesh
+                import trimesh  # noqa: PLC0415
 
                 # use force='mesh' to load the mesh as a trimesh object
                 # with baked in transforms, e.g. from COLLADA files
