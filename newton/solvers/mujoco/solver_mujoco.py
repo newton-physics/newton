@@ -589,7 +589,7 @@ def update_body_inertia_kernel(
     # body_iquat_out[worldid, mjc_idx] = q
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def repeat_array_kernel(
     src: wp.array(dtype=Any),
     nelems_per_world: int,
@@ -1688,7 +1688,11 @@ class MuJoCoSolver(SolverBase):
             # Launch kernel to repeat data - one thread per destination element
             n_elems_per_world = dst_flat.shape[0] // nworld
             wp.launch(
-                repeat_array_kernel, dim=dst_flat.shape[0], inputs=[src_flat, n_elems_per_world], outputs=[dst_flat]
+                repeat_array_kernel,
+                dim=dst_flat.shape[0],
+                inputs=[src_flat, n_elems_per_world],
+                outputs=[dst_flat],
+                device=x.device,
             )
             return dst
 
