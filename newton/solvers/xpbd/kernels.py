@@ -430,10 +430,10 @@ def bending_constraint(
 
     c = theta - rest_angle
 
-    grad_x1 = n1 * e_length
-    grad_x2 = n2 * e_length
-    grad_x3 = n1 * wp.dot(x1 - x4, e_hat) + n2 * wp.dot(x2 - x4, e_hat)
-    grad_x4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
+    grad_x1 = -n1 * e_length
+    grad_x2 = -n2 * e_length
+    grad_x3 = -n1 * wp.dot(x1 - x4, e_hat) - n2 * wp.dot(x2 - x4, e_hat)
+    grad_x4 = -n1 * wp.dot(x3 - x1, e_hat) - n2 * wp.dot(x3 - x2, e_hat)
 
     denominator = (
         w1 * wp.length_sq(grad_x1)
