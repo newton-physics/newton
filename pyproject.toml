@@ -33,14 +33,25 @@ dev = [
     "coverage[toml]>=7.8.0",
     "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
+    "GitPython>=3.1.44",
+    "matplotlib>=3.9.4",
+    "mujoco>=3.3.3.dev769049331",
+    "tqdm>=4.67.1",
+    "scipy",
+    "fast-simplification>=0.1.11",
+    "alphashape>=1.3.1",
 ]
 docs = [
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
     "pydata_sphinx_theme>=0.16.1",
     "sphinxcontrib-mermaid>=1.0.0",
+    "sphinx-copybutton>=0.5.0",
+    "sphinx-design<=0.6.1",
+    "sphinx-tabs>=3.3.0",
 ]
 
 [tool.hatch.version]
@@ -50,28 +61,30 @@ path = "newton/_version.py"
 include = ["/newton", "/newton/licenses"]
 
 [[tool.uv.index]]
-url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
-default = true
-
-[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 explicit = true
 
-[[tool.uv.index]]
-url = "https://pypi.org/simple"
-
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+mujoco = { index = "mujoco" }
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org"
+explicit = true
 
 [dependency-groups]
 dev = [
     "coverage[toml]>=7.8.0",
     "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "pycollada>=0.9",
     "pyglet>=2.1.6",
     "trimesh>=4.6.8",
+    "matplotlib>=3.9.4",
+    "gitpython>=3.1.44",
 ]
 
 [tool.ruff]
@@ -135,3 +148,14 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 omit = ["*/newton/examples/*", "*/newton/tests/*", "*/newton/thirdparty/*"]
+
+[tool.basedpyright]
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportAny = false
+reportExplicitAny = false
+reportUnannotatedClassAttribute = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportOptionalOperand = false
+reportUnusedCallResult = false

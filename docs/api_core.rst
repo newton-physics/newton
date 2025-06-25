@@ -3,6 +3,26 @@ Core
 
 This section documents the core data structures and simulation objects in Newton Physics.
 
+Classes
+-------
+
+.. autosummary::
+   :toctree: generated/core
+   :template: class.rst
+
+   newton.Model
+   newton.State
+   newton.Control
+   newton.ModelBuilder
+   newton.Mesh
+   newton.SDF
+
+.. autoclass:: newton.Axis
+   :noindex:
+
+.. autoclass:: newton.AxisType
+   :noindex:
+
 .. _geometry-types:
 
 Geometry Types
@@ -78,19 +98,23 @@ Constant                       Description
 ``SHAPE_FLAG_COLLIDE_GROUND``  Enables collision with ground planes or static terrain.
 =============================  ===============================================================
 
-Classes
--------
+.. _model-update-flags:
 
+Update Flags
+------------------
 
-.. autosummary::
-   :toctree: generated/core
-   :template: class.rst
+These bitmask flags are used with :py:meth:`newton.solvers.SolverBase.notify_model_changed` to inform a solver which parts
+of a :class:`newton.Model` were modified after the solver was created. Individual solver implementations
+are responsible for interpreting these flags and updating any internal data structures from the model as required.
 
-   newton.Model
-   newton.State
-   newton.Control
-   newton.ModelBuilder
-   newton.Mesh
-   newton.SDF
-   newton.Axis
-   newton.AxisType 
+==========================================  =============================================================
+Constant                                    Description
+==========================================  =============================================================
+``NOTIFY_FLAG_JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
+``NOTIFY_FLAG_JOINT_AXIS_PROPERTIES``       Joint axis limits, targets, or modes have changed.
+``NOTIFY_FLAG_DOF_PROPERTIES``              Joint DOF state or force buffers have changed.
+``NOTIFY_FLAG_BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
+``NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
+``NOTIFY_FLAG_SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
+==========================================  =============================================================
+

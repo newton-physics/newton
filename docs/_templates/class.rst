@@ -3,7 +3,10 @@
 .. currentmodule:: {{ module }}
 
 .. autoclass:: {{ objname }}
-
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
    {% block methods %}
 
    {% if methods %}

@@ -13,21 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from __future__ import annotations
 
 import math
@@ -39,8 +24,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.core import Mesh, ModelBuilder, quat_between_axes
+from newton.core import quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
+from newton.geometry import Mesh
+from newton.sim import ModelBuilder
 
 
 def parse_mjcf(
@@ -282,12 +269,11 @@ def parse_mjcf(
 
             geom_density = parse_float(geom_attrib, "density", density)
 
-            shape_cfg = ModelBuilder.ShapeConfig(
-                is_visible=visible,
-                has_ground_collision=not just_visual,
-                has_shape_collision=not just_visual,
-                density=geom_density,
-            )
+            shape_cfg = builder.default_shape_cfg.copy()
+            shape_cfg.is_visible = visible
+            shape_cfg.has_shape_collision = not just_visual
+            shape_cfg.has_particle_collision = not just_visual
+            shape_cfg.density = geom_density
 
             shape_kwargs = {
                 "key": geom_name,
@@ -317,7 +303,7 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                import trimesh
+                import trimesh  # noqa: PLC0415
 
                 # use force='mesh' to load the mesh as a trimesh object
                 # with baked in transforms, e.g. from COLLADA files
@@ -381,7 +367,7 @@ def parse_mjcf(
                     geom_up_axis = up_axis
 
                 if geom_type == "cylinder":
-                    s = builder.add_shape_cylinder(
+                    s = builder.add_shape_capsule(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
@@ -489,6 +475,7 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
+                    armature=joint_armature[-1],
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -497,24 +484,18 @@ def parse_mjcf(
 
         link = builder.add_body(
             xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
-            armature=joint_armature[0] if len(joint_armature) > 0 else default_joint_armature,
             key=body_name,
         )
 
         if joint_type is None:
+            joint_type = newton.JOINT_D6
             if len(linear_axes) == 0:
                 if len(angular_axes) == 0:
                     joint_type = newton.JOINT_FIXED
                 elif len(angular_axes) == 1:
                     joint_type = newton.JOINT_REVOLUTE
-                elif len(angular_axes) == 2:
-                    joint_type = newton.JOINT_UNIVERSAL
-                elif len(angular_axes) == 3:
-                    joint_type = newton.JOINT_COMPOUND
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = newton.JOINT_PRISMATIC
-            else:
-                joint_type = newton.JOINT_D6
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
@@ -624,6 +605,10 @@ def parse_mjcf(
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
 
+            contype = geom_attrib.get("contype", 1)
+            conaffinity = geom_attrib.get("conaffinity", 1)
+            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
+
             if "class" in geom.attrib:
                 neither_visual_nor_collider = True
                 for pattern in visual_classes:
@@ -637,7 +622,7 @@ def parse_mjcf(
                         neither_visual_nor_collider = False
                         break
                 if neither_visual_nor_collider:
-                    if no_class_as_colliders:
+                    if no_class_as_colliders and collides_with_anything:
                         colliders.append(geom)
                     else:
                         visuals.append(geom)
@@ -645,7 +630,7 @@ def parse_mjcf(
                 no_class_class = "collision" if no_class_as_colliders else "visual"
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
-                if no_class_as_colliders:
+                if no_class_as_colliders and collides_with_anything:
                     colliders.append(geom)
                 else:
                     visuals.append(geom)

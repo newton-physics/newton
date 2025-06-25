@@ -21,15 +21,14 @@ import warp as wp
 import warp.examples
 
 import newton
-from newton.collision.collide import (
-    TriMeshCollisionDetector,
-    collide,
+from newton.geometry import Mesh
+from newton.geometry.kernels import (
     init_triangle_collision_data_kernel,
     triangle_closest_point,
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton.core import Mesh
+from newton.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
 
@@ -386,7 +385,7 @@ def validate_edge_collisions(
 def init_model(vs, fs, device, record_triangle_contacting_vertices=True):
     vertices = [wp.vec3(v) for v in vs]
 
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 200.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -401,13 +400,15 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True):
     )
     model = builder.finalize(device=device)
 
-    collision_detector = TriMeshCollisionDetector(model=model, record_triangle_contacting_vertices=True)
+    collision_detector = TriMeshCollisionDetector(
+        model=model, record_triangle_contacting_vertices=record_triangle_contacting_vertices
+    )
 
     return model, collision_detector
 
 
 def get_data():
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom  # noqa: PLC0415
 
     usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bunny.usd"))
     usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -423,7 +424,7 @@ def test_vertex_triangle_collision(test, device):
     vertices, faces = get_data()
 
     # record triangle contacting vertices
-    model, collision_detector = init_model(vertices, faces, device, True)
+    model, collision_detector = init_model(vertices, faces, device)
 
     rs = [1e-2, 2e-2, 5e-2, 1e-1]
 
@@ -517,8 +518,7 @@ def test_vertex_triangle_collision(test, device):
         assert_np_equal(triangle_colliding_vertices_count_2, triangle_colliding_vertices_count_1)
         assert_np_equal(vertex_min_dis_2, vertex_min_dis_1)
 
-        # do not record triangle contacting vertices
-        model, collision_detector = init_model(vertices, faces, device, False)
+        model, collision_detector = init_model(vertices, faces, device)
 
         rs = [1e-2, 2e-2, 5e-2, 1e-1]
 
@@ -641,7 +641,7 @@ def test_edge_edge_collision(test, device):
 def test_particle_collision(test, device):
     with wp.ScopedDevice(device):
         contact_radius = 1.23
-        builder1 = newton.ModelBuilder()
+        builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder1.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
@@ -669,7 +669,7 @@ def test_particle_collision(test, device):
     vertices = [wp.vec3(v) for v in vertices]
     faces = [0, 1, 2, 3, 4, 5]
 
-    builder2 = newton.ModelBuilder()
+    builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder2.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -706,7 +706,7 @@ def test_particle_collision(test, device):
     )
     test.assertTrue((np.linalg.norm(particle_f.numpy(), axis=1) != 0).all())
 
-    builder3 = newton.ModelBuilder()
+    builder3 = newton.ModelBuilder(up_axis=newton.Axis.Y)
     builder3.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
@@ -754,41 +754,36 @@ def test_mesh_ground_collision_index(test, device):
         ]
     )
     mesh = Mesh(vertices=vertices, indices=[0, 1, 2])
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
     b = builder.add_body(mass=1.0)
-    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
     builder.add_shape_mesh(
         body=b,
         mesh=mesh,
-        cfg=cfg,
     )
     # add another mesh that is not in contact
-    b2 = builder.add_body(mass=1.0, xform=wp.transform((0.0, 3.0, 0.0), wp.quat_identity()))
+    b2 = builder.add_body(mass=1.0, xform=wp.transform((0.0, 10.0, 0.0), wp.quat_identity()))
     builder.add_shape_mesh(
         body=b2,
         mesh=mesh,
-        cfg=cfg,
     )
+    builder.add_ground_plane()
     model = builder.finalize(device=device)
-    test.assertEqual(model.rigid_contact_max, 6)
-    test.assertEqual(model.shape_contact_pair_count, 0)
-    test.assertEqual(model.shape_ground_contact_pair_count, 2)
-    model.ground = True
-    # ensure all the mesh vertices will be within the contact margin
-    model.rigid_contact_margin = 2.0
+    test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    collide(model, state)
-    test.assertEqual(model.rigid_contact_count.numpy()[0], 3)
-    tids = model.rigid_contact_tids.list()
-    test.assertEqual(sorted(tids), [-1, -1, -1, 0, 1, 2])
+    # ensure all the mesh vertices will be within the contact margin
+    contacts = model.collide(state, rigid_contact_margin=2.0)
+    test.assertEqual(contacts.rigid_contact_max, 12)
+    test.assertEqual(contacts.rigid_contact_count.numpy()[0], 3)
+    tids = contacts.rigid_contact_tids.list()
+    test.assertEqual(sorted(tids), [-1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2])
     tids = [t for t in tids if t != -1]
     # retrieve the mesh vertices from the contact thread indices
-    assert_np_equal(model.rigid_contact_point0.numpy()[:3], vertices[tids])
-    assert_np_equal(model.rigid_contact_point1.numpy()[:3, 0], vertices[tids, 0])
-    assert_np_equal(model.rigid_contact_point1.numpy()[:3, 1:], np.zeros((3, 2)))
-    assert_np_equal(model.rigid_contact_normal.numpy()[:3], np.tile([0.0, 1.0, 0.0], (3, 1)))
+    assert_np_equal(contacts.rigid_contact_point0.numpy()[:3], vertices[tids])
+    assert_np_equal(contacts.rigid_contact_point1.numpy()[:3, 0], vertices[tids, 0])
+    assert_np_equal(contacts.rigid_contact_point1.numpy()[:3, 1:], np.zeros((3, 2)))
+    assert_np_equal(contacts.rigid_contact_normal.numpy()[:3], np.tile([0.0, 1.0, 0.0], (3, 1)))
 
 
 devices = get_test_devices(mode="basic")

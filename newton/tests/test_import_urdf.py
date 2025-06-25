@@ -22,19 +22,20 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
 from newton.utils.import_urdf import parse_urdf
 
 MESH_URDF = """
 <robot name="mesh_test">
-  <link name="base_link">
-    <visual>
-      <geometry>
-        <mesh filename="{filename}" scale="1.0 1.0 1.0"/>
-      </geometry>
-      <origin xyz="1.0 2.0 3.0" rpy="0 0 0"/>
-    </visual>
-  </link>
+    <link name="base_link">
+        <visual>
+            <geometry>
+                <mesh filename="{filename}" scale="1.0 1.0 1.0"/>
+            </geometry>
+            <origin xyz="1.0 2.0 3.0" rpy="0 0 0"/>
+        </visual>
+    </link>
 </robot>
 """
 
@@ -70,51 +71,51 @@ f 1 6 2
 
 INERTIAL_URDF = """
 <robot name="inertial_test">
-  <link name="base_link">
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="1.0"/>
-      <inertia ixx="1.0" ixy="0.0" ixz="0.0"
-               iyy="1.0" iyz="0.0"
-               izz="1.0"/>
-    </inertial>
-    <visual>
-      <geometry>
-        <capsule radius="0.5" length="1.0"/>
-      </geometry>
-      <origin xyz="1.0 2.0 3.0" rpy="1.5707963 0 0"/>
-    </visual>
-  </link>
+    <link name="base_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="1.0"/>
+            <inertia ixx="1.0" ixy="0.0" ixz="0.0"
+                     iyy="1.0" iyz="0.0"
+                     izz="1.0"/>
+        </inertial>
+        <visual>
+            <geometry>
+                <capsule radius="0.5" length="1.0"/>
+            </geometry>
+            <origin xyz="1.0 2.0 3.0" rpy="1.5707963 0 0"/>
+        </visual>
+    </link>
 </robot>
 """
 
 SPHERE_URDF = """
 <robot name="sphere_test">
-  <link name="base_link">
-    <visual>
-      <geometry>
-        <sphere radius="0.5"/>
-      </geometry>
-      <origin xyz="1.0 2.0 3.0" rpy="0 0 0"/>
-    </visual>
-  </link>
+    <link name="base_link">
+        <visual>
+            <geometry>
+                <sphere radius="0.5"/>
+            </geometry>
+            <origin xyz="1.0 2.0 3.0" rpy="0 0 0"/>
+        </visual>
+    </link>
 </robot>
 """
 
 SELF_COLLISION_URDF = """
 <robot name="self_collision_test">
-  <link name="base_link">
-    <collision>
-      <geometry><sphere radius="0.5"/></geometry>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-    </collision>
-  </link>
-  <link name="far_link">
-    <collision>
-      <geometry><sphere radius="0.5"/></geometry>
-      <origin xyz="1.0 0 0" rpy="0 0 0"/>
-    </collision>
-  </link>
+    <link name="base_link">
+        <collision>
+            <geometry><sphere radius="0.5"/></geometry>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </collision>
+    </link>
+    <link name="far_link">
+        <collision>
+            <geometry><sphere radius="0.5"/></geometry>
+            <origin xyz="1.0 0 0" rpy="0 0 0"/>
+        </collision>
+    </link>
 </robot>
 """
 
@@ -229,6 +230,24 @@ class TestImportUrdf(unittest.TestCase):
         assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
+
+    def test_cartpole_urdf(self):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 123.0
+        builder.default_shape_cfg.kd = 456.0
+        builder.default_shape_cfg.mu = 789.0
+        builder.default_joint_cfg.armature = 42.0
+        urdf_filename = newton.examples.get_asset("cartpole.urdf")
+        newton.utils.parse_urdf(
+            urdf_filename,
+            builder,
+            floating=False,
+        )
+        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
+        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
+        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
+        self.assertTrue(all(np.array(builder.joint_armature) == 42.0))
+        assert builder.body_count == 4
 
 
 if __name__ == "__main__":

@@ -14,9 +14,15 @@ Newton Physics
    Overview <guide/overview>
    guide/quickstart
    guide/key-concepts
-   development-guide
    guide/tutorials
    Conventions <conventions>
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Concepts
+   
+   Articulations <concepts/articulations>
 
 .. toctree::
    :maxdepth: 0

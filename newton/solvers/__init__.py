@@ -13,18 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .euler import SemiImplicitSolver
+from .featherstone import FeatherstoneSolver
+from .mujoco import MuJoCoSolver
 from .solver import SolverBase
-from .solver_euler import SemiImplicitSolver
-from .solver_featherstone import FeatherstoneSolver
-from .solver_mujoco import MuJoCoSolver
-from .solver_vbd import VBDSolver
-from .solver_xpbd import XPBDSolver
+from .style3d import Style3DSolver
+from .vbd import VBDSolver
+from .xpbd import XPBDSolver
 
 __all__ = [
     "FeatherstoneSolver",
     "MuJoCoSolver",
     "SemiImplicitSolver",
     "SolverBase",
+    "Style3DSolver",
     "VBDSolver",
     "XPBDSolver",
 ]

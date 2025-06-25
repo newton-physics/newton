@@ -75,9 +75,8 @@ def CreateSimRenderer(renderer):
             scaling: float = 1.0,
             fps: int = 60,
             up_axis: newton.AxisType | None = None,
-            show_rigid_contact_points: bool = False,
-            contact_points_radius: float = 1e-3,
             show_joints: bool = False,
+            show_particles: bool = True,
             **render_kwargs,
         ):
             if up_axis is None:
@@ -86,10 +85,13 @@ def CreateSimRenderer(renderer):
             super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
             self.scaling = scaling
             self.cam_axis = up_axis.value
-            self.show_rigid_contact_points = show_rigid_contact_points
             self.show_joints = show_joints
-            self.contact_points_radius = contact_points_radius
+            self.show_particles = show_particles
+            self._instance_key_count = {}
             self.populate(model)
+
+            self._contact_points0 = None
+            self._contact_points1 = None
 
         def populate(self, model: newton.Model):
             self.skip_rendering = False
@@ -97,17 +99,6 @@ def CreateSimRenderer(renderer):
             self.model = model
             self.num_envs = model.num_envs
             self.body_names = []
-
-            if self.show_rigid_contact_points and model.rigid_contact_max:
-                self.contact_points0 = wp.array(
-                    np.zeros((model.rigid_contact_max, 3)), dtype=wp.vec3, device=model.device
-                )
-                self.contact_points1 = wp.array(
-                    np.zeros((model.rigid_contact_max, 3)), dtype=wp.vec3, device=model.device
-                )
-
-                self.contact_points0_colors = [(1.0, 0.5, 0.0)] * model.rigid_contact_max
-                self.contact_points1_colors = [(0.0, 0.5, 1.0)] * model.rigid_contact_max
 
             self.body_env = []  # mapping from body index to its environment index
             env_id = 0
@@ -145,13 +136,21 @@ def CreateSimRenderer(renderer):
                 scale = np.ones(3)
                 color = (1.0, 1.0, 1.0)
                 # loop over shapes excluding the ground plane
-                for s in range(model.shape_count - 1):
+                for s in range(model.shape_count):
                     geo_type = shape_geo_type[s]
                     geo_scale = [float(v) for v in shape_geo_scale[s]]
                     geo_thickness = float(shape_geo_thickness[s])
                     geo_is_solid = bool(shape_geo_is_solid[s])
                     geo_src = shape_geo_src[s]
-                    name = f"shape_{s}"
+                    name = model.shape_key[s]
+                    count = self._instance_key_count.get(name, 0)
+                    if count > 0:
+                        self._instance_key_count[name] += 1
+                        # ensure unique name for the shape instance
+                        name = f"{name}_{count + 1}"
+                    else:
+                        self._instance_key_count[name] = 1
+                    add_shape_instance = True
 
                     # shape transform in body frame
                     body = int(shape_body[s])
@@ -171,16 +170,19 @@ def CreateSimRenderer(renderer):
                         shape = self.geo_shape[geo_hash]
                     else:
                         if geo_type == newton.GEO_PLANE:
-                            if s == model.shape_count - 1 and not model.ground:
-                                continue  # hide ground plane
-
                             # plane mesh
                             width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
                             length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
 
-                            shape = self.render_plane(
-                                name, p, q, width, length, color, parent_body=body, is_template=True
-                            )
+                            if name == "ground_plane":
+                                normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 1.0, 0.0))
+                                offset = wp.dot(normal, X_bs.p)
+                                shape = self.render_ground(plane=[*normal, offset])
+                                add_shape_instance = False
+                            else:
+                                shape = self.render_plane(
+                                    name, p, q, width, length, color, parent_body=body, is_template=True
+                                )
 
                         elif geo_type == newton.GEO_SPHERE:
                             shape = self.render_sphere(
@@ -230,7 +232,7 @@ def CreateSimRenderer(renderer):
 
                         self.geo_shape[geo_hash] = shape
 
-                    if shape_flags[s] & int(newton.core.SHAPE_FLAG_VISIBLE):
+                    if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
                         self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1
@@ -238,8 +240,8 @@ def CreateSimRenderer(renderer):
                 if self.show_joints and model.joint_count:
                     joint_type = model.joint_type.numpy()
                     joint_axis = model.joint_axis.numpy()
-                    joint_axis_start = model.joint_axis_start.numpy()
-                    joint_axis_dim = model.joint_axis_dim.numpy()
+                    joint_qd_start = model.joint_qd_start.numpy()
+                    joint_dof_dim = model.joint_dof_dim.numpy()
                     joint_parent = model.joint_parent.numpy()
                     joint_child = model.joint_child.numpy()
                     joint_tf = model.joint_X_p.numpy()
@@ -263,8 +265,6 @@ def CreateSimRenderer(renderer):
                         if t not in {
                             newton.JOINT_REVOLUTE,
                             # newton.JOINT_PRISMATIC,
-                            newton.JOINT_UNIVERSAL,
-                            newton.JOINT_COMPOUND,
                             newton.JOINT_D6,
                         }:
                             continue
@@ -276,8 +276,8 @@ def CreateSimRenderer(renderer):
                             body = None
                         # if body == -1:
                         #     continue
-                        num_linear_axes = int(joint_axis_dim[i][0])
-                        num_angular_axes = int(joint_axis_dim[i][1])
+                        num_linear_axes = int(joint_dof_dim[i][0])
+                        num_angular_axes = int(joint_dof_dim[i][1])
 
                         # find a good scale for the arrow based on the average radius
                         # of the shapes attached to the joint child body
@@ -292,7 +292,7 @@ def CreateSimRenderer(renderer):
                                 scale *= np.mean(radii) * 2.0
 
                         for a in range(num_linear_axes, num_linear_axes + num_angular_axes):
-                            index = joint_axis_start[i] + a
+                            index = joint_qd_start[i] + a
                             axis = joint_axis[index]
                             if np.linalg.norm(axis) < 1e-6:
                                 continue
@@ -304,9 +304,6 @@ def CreateSimRenderer(renderer):
                             name = f"joint_{i}_{a}"
                             self.add_shape_instance(name, shape, body, p, q, scale, color1=color, color2=color)
                             self.instance_count += 1
-
-            if model.ground:
-                self.render_ground(plane=model.ground_plane_params)
 
             if hasattr(self, "complete_setup"):
                 self.complete_setup()
@@ -328,9 +325,10 @@ def CreateSimRenderer(renderer):
                 particle_q = state.particle_q.numpy()
 
                 # render particles
-                self.render_points(
-                    "particles", particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
-                )
+                if self.show_particles:
+                    self.render_points(
+                        "particles", particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
+                    )
 
                 # render tris
                 if self.model.tri_count:
@@ -388,42 +386,155 @@ def CreateSimRenderer(renderer):
             if self.model.body_count:
                 self.update_body_transforms(state.body_q)
 
-                if self.show_rigid_contact_points and self.model.rigid_contact_max:
-                    wp.launch(
-                        kernel=compute_contact_points,
-                        dim=self.model.rigid_contact_max,
-                        inputs=[
-                            state.body_q,
-                            self.model.shape_body,
-                            self.model.rigid_contact_count,
-                            self.model.rigid_contact_shape0,
-                            self.model.rigid_contact_shape1,
-                            self.model.rigid_contact_point0,
-                            self.model.rigid_contact_point1,
-                        ],
-                        outputs=[
-                            self.contact_points0,
-                            self.contact_points1,
-                        ],
-                        device=self.model.device,
-                    )
+        def render_contacts(
+            self,
+            state: newton.State,
+            contacts: newton.Contacts,
+            contact_point_radius: float = 1e-3,
+        ):
+            """
+            Render contact points between rigid bodies.
 
-                    self.render_points(
-                        "contact_points0",
-                        self.contact_points0.numpy(),
-                        radius=self.contact_points_radius * self.scaling,
-                        colors=self.contact_points0_colors,
-                    )
-                    self.render_points(
-                        "contact_points1",
-                        self.contact_points1.numpy(),
-                        radius=self.contact_points_radius * self.scaling,
-                        colors=self.contact_points1_colors,
-                    )
+            Args:
+                state (newton.State): The simulation state.
+                contacts (newton.Contacts): The contacts to render.
+                contact_point_radius (float, optional): The radius of the contact points.
+            """
+            if self._contact_points0 is None or len(self._contact_points0) < contacts.rigid_contact_max:
+                self._contact_points0 = wp.array(
+                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                )
+                self._contact_points1 = wp.array(
+                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                )
+
+            wp.launch(
+                kernel=compute_contact_points,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    state.body_q,
+                    self.model.shape_body,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                ],
+                outputs=[
+                    self._contact_points0,
+                    self._contact_points1,
+                ],
+                device=self.model.device,
+            )
+
+            self.render_points(
+                "contact_points0",
+                self._contact_points0,
+                radius=contact_point_radius * self.scaling,
+                colors=(1.0, 0.5, 0.0),
+            )
+            self.render_points(
+                "contact_points1",
+                self._contact_points1,
+                radius=contact_point_radius * self.scaling,
+                colors=(0.0, 0.5, 1.0),
+            )
 
     return SimRenderer
 
 
-SimRendererUsd = CreateSimRenderer(renderer=UsdRenderer)
-SimRendererOpenGL = CreateSimRenderer(renderer=OpenGLRenderer)
+class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
+    """
+    USD renderer for Newton Physics simulations.
+
+    This renderer exports simulation data to USD (Universal Scene Description)
+    format, which can be visualized in Omniverse or other USD-compatible viewers.
+
+    Args:
+        model (newton.Model): The Newton physics model to render.
+        path (str): Output path for the USD file.
+        scaling (float, optional): Scaling factor for the rendered objects.
+            Defaults to 1.0.
+        fps (int, optional): Frames per second for the animation. Defaults to 60.
+        up_axis (newton.AxisType, optional): Up axis for the scene. If None,
+            uses model's up axis.
+        show_rigid_contact_points (bool, optional): Whether to show contact
+            points. Defaults to False.
+        contact_points_radius (float, optional): Radius of contact point
+            spheres. Defaults to 1e-3.
+        show_joints (bool, optional): Whether to show joint visualizations.
+            Defaults to False.
+        **render_kwargs: Additional arguments passed to the underlying
+            UsdRenderer.
+
+    Example:
+        .. code-block:: python
+
+            import newton
+
+            model = newton.Model()  # your model setup
+            renderer = newton.utils.SimRendererUsd(model, "output.usd", scaling=2.0)
+            # In your simulation loop:
+            renderer.begin_frame(time)
+            renderer.render(state)
+            renderer.end_frame()
+            renderer.save()  # Save the USD file
+    """
+
+    pass
+
+
+class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
+    """
+    Real-time OpenGL renderer for Newton Physics simulations.
+
+    This renderer provides real-time visualization of physics simulations using
+    OpenGL, with interactive camera controls and various rendering options.
+
+    Args:
+        model (newton.Model): The Newton physics model to render.
+        path (str): Window title for the OpenGL window.
+        scaling (float, optional): Scaling factor for the rendered objects.
+            Defaults to 1.0.
+        fps (int, optional): Target frames per second. Defaults to 60.
+        up_axis (newton.AxisType, optional): Up axis for the scene. If None,
+            uses model's up axis.
+        show_rigid_contact_points (bool, optional): Whether to show contact
+            points. Defaults to False.
+        contact_points_radius (float, optional): Radius of contact point
+            spheres. Defaults to 1e-3.
+        show_joints (bool, optional): Whether to show joint visualizations.
+            Defaults to False.
+        **render_kwargs: Additional arguments passed to the underlying
+            OpenGLRenderer.
+
+    Example:
+        .. code-block:: python
+
+            import newton
+
+            model = newton.Model()  # your model setup
+            renderer = newton.utils.SimRendererOpenGL(model, "Newton Simulator")
+            # In your simulation loop:
+            renderer.begin_frame(time)
+            renderer.render(state)
+            renderer.end_frame()
+
+    Note:
+        Keyboard shortcuts available during rendering:
+
+        - W, A, S, D (or arrow keys) + mouse: FPS-style camera movement
+        - X: Toggle wireframe rendering
+        - B: Toggle backface culling
+        - C: Toggle coordinate system axes
+        - G: Toggle ground grid
+        - T: Toggle depth rendering
+        - I: Toggle info text
+        - SPACE: Pause/continue simulation
+        - TAB: Skip rendering (background simulation)
+    """
+
+    pass
+
+
 SimRenderer = SimRendererUsd

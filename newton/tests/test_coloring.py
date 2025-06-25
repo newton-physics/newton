@@ -21,7 +21,7 @@ import warp as wp
 import warp.examples
 
 from newton import ModelBuilder
-from newton.core.graph_coloring import (
+from newton.sim.graph_coloring import (
     ColoringAlgorithm,
     construct_trimesh_graph_edges,
     convert_to_color_groups,
@@ -53,7 +53,7 @@ def color_lattice_grid(num_x, num_y):
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_coloring_trimesh(test, device):
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom  # noqa: PLC0415
 
     with wp.ScopedDevice(device):
         usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bunny.usd"))
@@ -157,7 +157,7 @@ def test_coloring_trimesh(test, device):
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_combine_coloring(test, device):
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom  # noqa: PLC0415
 
     with wp.ScopedDevice(device):
         builder1 = ModelBuilder()

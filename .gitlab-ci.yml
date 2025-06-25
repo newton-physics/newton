@@ -118,6 +118,7 @@ windows-x86_64 test:
     - powershell -ExecutionPolicy ByPass -c {$env:UV_INSTALL_DIR = "${env:CI_PROJECT_DIR}\uv-install";irm https://astral.sh/uv/install.ps1 | iex}
     - $env:Path = "${env:CI_PROJECT_DIR}\uv-install;$env:Path"
     - uv venv --managed-python
+  allow_failure: true # TODO: mujoco load dll often fails on Windows
 
 # --- Stage: Build ---
 build_package:
