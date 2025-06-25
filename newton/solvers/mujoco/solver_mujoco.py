@@ -24,7 +24,7 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.core.types import override
+from newton.core.types import nparray, override
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
@@ -945,7 +945,7 @@ class MuJoCoSolver(SolverBase):
             )
 
     @staticmethod
-    def color_collision_shapes(model: Model, visualize_graph: bool = False) -> np.ndarray:
+    def color_collision_shapes(model: Model, selected_shapes: nparray, visualize_graph: bool = False) -> np.ndarray:
         """
         Find a graph coloring of the collision filter pairs in the model.
         Shapes within the same color cannot collide with each other.
@@ -954,14 +954,14 @@ class MuJoCoSolver(SolverBase):
         # find graph coloring of collision filter pairs
         graph_edges = [
             (i, j)
-            for i, j in product(range(model.shape_count), range(model.shape_count))
+            for i, j in product(selected_shapes, selected_shapes)
             if i != j
             and (i, j) not in model.shape_collision_filter_pairs
             and (j, i) not in model.shape_collision_filter_pairs
         ]
         if len(graph_edges) > 0:
             if visualize_graph:
-                plot_graph(np.arange(model.shape_count), graph_edges)
+                plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
                 num_nodes=model.shape_count,
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
@@ -1228,7 +1228,7 @@ class MuJoCoSolver(SolverBase):
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
-        shape_color = self.color_collision_shapes(model)
+        shape_color = self.color_collision_shapes(model, selected_shapes)
 
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
