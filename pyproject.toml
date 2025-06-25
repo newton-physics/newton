@@ -120,6 +120,9 @@ ignore = [
     "F821",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"asv/benchmarks/**/*" = ["RUF012"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
