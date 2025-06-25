@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote, urlsplit
 
 import numpy as np
 import warp as wp
@@ -28,7 +30,7 @@ from newton.sim import ModelBuilder
 
 
 def _download_file(dst, url: str) -> None:
-    import requests
+    import requests  # noqa: PLC0415
 
     with requests.get(url, stream=True, timeout=10) as response:
         response.raise_for_status()
@@ -39,9 +41,6 @@ def _download_file(dst, url: str) -> None:
 def download_asset_tmpfile(url: str):
     """Download a file into a NamedTemporaryFile.
     A closed NamedTemporaryFile is returned. It must be deleted by the caller."""
-    import tempfile
-    from urllib.parse import unquote, urlsplit
-
     urlpath = unquote(urlsplit(url).path)
     file_od = tempfile.NamedTemporaryFile("wb", suffix=os.path.splitext(urlpath)[1], delete=False)
     _download_file(file_od, url)
@@ -203,7 +202,7 @@ def parse_urdf(
                     wp.utils.warn(f"Warning: mesh file {filename} does not exist")
                     continue
 
-                import trimesh
+                import trimesh  # noqa: PLC0415
 
                 # use force='mesh' to load the mesh as a trimesh object
                 # with baked in transforms, e.g. from COLLADA files

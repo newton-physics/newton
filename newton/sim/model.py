@@ -98,10 +98,6 @@ class Model:
         """Shape geometry properties (geo type, scale, thickness, etc.)."""
         self.shape_geo_src = []
         """List of source geometry objects (e.g., `wp.Mesh`, `SDF`) used for rendering and broadphase."""
-        self.geo_meshes = []
-        """List of finalized `wp.Mesh` objects."""
-        self.geo_sdfs = []
-        """List of finalized `SDF` objects."""
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
@@ -262,6 +258,8 @@ class Model:
         self.soft_contact_restitution = 0.0
         """Restitution coefficient of soft contacts (used by :class:`XPBDSolver`). Default is 0.0."""
 
+        self.rigid_contact_max = 0
+        """Number of potential contact points between rigid bodies."""
         self.rigid_contact_torsional_friction = 0.0
         """Torsional friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
         self.rigid_contact_rolling_friction = 0.0
@@ -407,7 +405,7 @@ class Model:
         Returns:
             Contacts: The contact object containing collision information.
         """
-        from .collide import CollisionPipeline
+        from .collide import CollisionPipeline  # noqa: PLC0415
 
         if requires_grad is None:
             requires_grad = self.requires_grad

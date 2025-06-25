@@ -44,6 +44,8 @@ def flag_to_int(flag):
     return int(flag)
 
 
+Vec2 = list[float] | tuple[float, float] | wp.vec2
+"""A 2D vector represented as a list or tuple of 2 floats."""
 Vec3 = list[float] | tuple[float, float, float] | wp.vec3
 """A 3D vector represented as a list or tuple of 3 floats."""
 Vec4 = list[float] | tuple[float, float, float, float] | wp.vec4
@@ -103,6 +105,10 @@ class Axis(IntEnum):
             return self.value == int(other)
         return NotImplemented
 
+    @override
+    def __hash__(self):
+        return hash(self.name)
+
     def to_vector(self) -> tuple[float, float, float]:
         if self == Axis.X:
             return (1.0, 0.0, 0.0)
@@ -137,6 +143,7 @@ __all__ = [
     "Quat",
     "Sequence",
     "Transform",
+    "Vec2",
     "Vec3",
     "Vec4",
     "flag_to_int",

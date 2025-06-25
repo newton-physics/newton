@@ -53,8 +53,6 @@
       ~Model.shape_materials
       ~Model.shape_geo
       ~Model.shape_geo_src
-      ~Model.geo_meshes
-      ~Model.geo_sdfs
       ~Model.shape_collision_group
       ~Model.shape_collision_group_map
       ~Model.shape_collision_filter_pairs

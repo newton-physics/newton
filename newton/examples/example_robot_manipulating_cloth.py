@@ -191,6 +191,7 @@ class ExampleClothManipulation:
         #   contact
         #       body-cloth contact
         self.cloth_particle_radius = 0.8
+        self.cloth_body_contact_margin = 1.0
         #       self-contact
         self.self_contact_radius = 0.2
         self.self_contact_margin = 0.2
@@ -293,9 +294,9 @@ class ExampleClothManipulation:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
-        self.contacts = self.model.collide(self.state_0)
 
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
         self.sim_time = 0.0
 
@@ -311,8 +312,8 @@ class ExampleClothManipulation:
             self.cloth_solver = VBDSolver(
                 self.model,
                 iterations=self.iterations,
-                soft_contact_radius=self.self_contact_radius,
-                soft_contact_margin=self.self_contact_margin,
+                self_contact_radius=self.self_contact_radius,
+                self_contact_margin=self.self_contact_margin,
                 handle_self_contact=True,
                 vertex_collision_buffer_pre_alloc=32,
                 edge_collision_buffer_pre_alloc=64,
@@ -322,7 +323,14 @@ class ExampleClothManipulation:
 
         if self.stage_path is not None:
             self.renderer = newton.utils.SimRendererOpenGL(
-                path=self.stage_path, model=self.model, scaling=0.01, show_joints=True, show_particles=False
+                path=self.stage_path,
+                model=self.model,
+                scaling=0.05,
+                show_joints=False,
+                show_particles=False,
+                near_plane=0.01,
+                far_plane=100.0,
+                enable_backface_culling=False,
             )
 
         else:
@@ -597,7 +605,7 @@ class ExampleClothManipulation:
                 self.model.gravity = wp.vec3(0, self.gravity, 0)
 
             # cloth sim
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
 
             if self.add_cloth:
                 self.cloth_sim_substep(self.state_0, self.state_1)

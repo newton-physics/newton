@@ -18,6 +18,8 @@
 from __future__ import annotations
 
 import copy
+import ctypes
+import itertools
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -82,7 +84,7 @@ class ModelBuilder:
 
     Use the ModelBuilder to construct a simulation scene. The ModelBuilder
     and builds the scene representation using standard Python data structures (lists),
-    this means it is not differentiable. Once :func:`finalize()`
+    this means it is not differentiable. Once :meth:`finalize`
     has been called the ModelBuilder transfers all data to Warp tensors and returns
     an object that may be used for simulation.
 
@@ -315,10 +317,6 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs = set()
 
-        # geometry
-        self.geo_meshes = []
-        self.geo_sdfs = []
-
         # springs
         self.spring_indices = []
         self.spring_rest_length = []
@@ -496,6 +494,16 @@ class ModelBuilder:
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
         """
 
+        # explicitly resolve the transform multiplication function to avoid
+        # repeatedly resolving builtin overloads during shape transformation
+        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
+
+        # dispatches two transform multiplies to the native implementation
+        def transform_mul(a, b):
+            out = wp.transformf()
+            transform_mul_cfunc(a, b, ctypes.byref(out))
+            return out
+
         start_particle_idx = self.particle_count
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -535,7 +543,7 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(xform * wp.transform(*builder.shape_transform[s]))
+                    self.shape_transform.append(transform_mul(xform, wp.transform(*builder.shape_transform[s])))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
@@ -550,11 +558,11 @@ class ModelBuilder:
                     if builder.joint_type[i] == JOINT_FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
-                        tf = xform * xform_prev
+                        tf = transform_mul(xform, xform_prev)
                         joint_q[qi : qi + 3] = tf.p
                         joint_q[qi + 3 : qi + 7] = tf.q
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = xform * wp.transform(*joint_X_p[i])
+                        joint_X_p[i] = transform_mul(xform, wp.transform(*joint_X_p[i]))
             self.joint_X_p.extend(joint_X_p)
             self.joint_q.extend(joint_q)
 
@@ -568,7 +576,7 @@ class ModelBuilder:
 
         for i in range(builder.body_count):
             if xform is not None:
-                self.body_q.append(xform * wp.transform(*builder.body_q[i]))
+                self.body_q.append(transform_mul(xform, wp.transform(*builder.body_q[i])))
             else:
                 self.body_q.append(builder.body_q[i])
 
@@ -1275,8 +1283,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt
-        import networkx as nx
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+        import networkx as nx  # noqa: PLC0415
 
         def joint_type_str(type):
             if type == JOINT_FREE:
@@ -1501,6 +1509,9 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
+                        if -1 not in self.body_shapes:
+                            self.body_shapes[-1] = []
+                        self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
@@ -3159,6 +3170,7 @@ class ModelBuilder:
 
             A model object.
         """
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
@@ -3231,10 +3243,6 @@ class ModelBuilder:
             )
 
             m.shape_geo_src = self.shape_geo_src  # used for rendering
-
-            # store refs to geometry
-            m.geo_meshes = self.geo_meshes
-            m.geo_sdfs = self.geo_sdfs
 
             m.shape_materials.ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_materials.kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
@@ -3375,6 +3383,7 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
 
             self.find_shape_contact_pairs(m)
+            m.rigid_contact_max = count_rigid_contact_points(m)
 
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
@@ -3388,9 +3397,6 @@ class ModelBuilder:
 
     def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
-        import copy
-        import itertools
-
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
         # iterate over collision groups (islands)

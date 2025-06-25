@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
+
 
 def topological_sort(joints: list[tuple[int, int]], use_dfs: bool = True) -> list[int]:
     """
@@ -28,8 +30,6 @@ def topological_sort(joints: list[tuple[int, int]], use_dfs: bool = True) -> lis
     Returns:
         List[int]: A list of joint indices in topological order.
     """
-    from collections import defaultdict, deque
-
     incoming = defaultdict(set)
     outgoing = defaultdict(set)
     nodes = set()

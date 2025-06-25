@@ -118,7 +118,7 @@ class CollisionPipeline:
         rigid_contact_max = None
         if rigid_contact_max_per_pair is None:
             # count the number of contacts
-            rigid_contact_max = count_rigid_contact_points(model)
+            rigid_contact_max = model.rigid_contact_max
             rigid_contact_max_per_pair = 0
         if requires_grad is None:
             requires_grad = model.requires_grad
@@ -146,6 +146,8 @@ class CollisionPipeline:
                 requires_grad=self.requires_grad,
                 device=model.device,
             )
+        else:
+            self.contacts.clear()
 
         # output contacts buffer
         contacts = self.contacts
@@ -155,8 +157,6 @@ class CollisionPipeline:
 
         # generate soft contacts for particles and shapes
         if state.particle_q and shape_count > 0:
-            # clear old count
-            contacts.soft_contact_count.zero_()
             wp.launch(
                 kernel=create_soft_contacts,
                 dim=particle_count * shape_count,
@@ -189,8 +189,6 @@ class CollisionPipeline:
 
         # generate rigid contacts for shapes
         if self.shape_pairs_filtered is not None:
-            # clear old count
-            contacts.rigid_contact_count.zero_()
             self.rigid_pair_shape0.fill_(-1)
             self.rigid_pair_shape1.fill_(-1)
 
@@ -223,7 +221,8 @@ class CollisionPipeline:
                 device=contacts.device,
             )
 
-            contacts.clear()
+            # clear old count
+            contacts.rigid_contact_count.zero_()
             if self.rigid_pair_point_count is not None:
                 self.rigid_pair_point_count.zero_()
 

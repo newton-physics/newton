@@ -103,7 +103,7 @@ class Mesh:
             compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
             is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
         """
-        from .inertia import compute_mesh_inertia
+        from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
         self.vertices = np.array(vertices).reshape(-1, 3)
         self.indices = np.array(indices, dtype=np.int32).flatten()
