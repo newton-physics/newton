@@ -26,7 +26,7 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["warp-lang>=1.7.0.dev20250326"]
+dependencies = ["warp-lang>=1.7.0.dev20250625"]
 
 [project.optional-dependencies]
 dev = [
