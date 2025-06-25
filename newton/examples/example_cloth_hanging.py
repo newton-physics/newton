@@ -29,7 +29,7 @@ import newton
 import newton.utils
 
 
-class IntegratorType(Enum):
+class SolverType(Enum):
     EULER = "euler"
     XPBD = "xpbd"
     VBD = "vbd"
@@ -42,12 +42,12 @@ class Example:
     def __init__(
         self,
         stage_path="example_cloth_hanging.usd",
-        integrator: IntegratorType = IntegratorType.VBD,
+        solver_type: SolverType = SolverType.VBD,
         height=32,
         width=64,
         num_frames=300,
     ):
-        self.integrator_type = integrator
+        self.solver_type = solver_type
 
         self.sim_height = height
         self.sim_width = width
@@ -68,76 +68,63 @@ class Example:
 
         builder = newton.ModelBuilder()
 
-        if self.integrator_type == IntegratorType.EULER:
-            builder.add_cloth_grid(
-                pos=wp.vec3(0.0, 0.0, 4.0),
-                rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
-                vel=wp.vec3(0.0, 0.0, 0.0),
-                dim_x=self.sim_width,
-                dim_y=self.sim_height,
-                cell_x=0.1,
-                cell_y=0.1,
-                mass=0.1,
-                fix_left=True,
-                tri_ke=1.0e3,
-                tri_ka=1.0e3,
-                tri_kd=1.0e1,
-                edge_ke=1.0e1,
-                edge_kd=0.0,
-            )
-
-        elif self.integrator_type == IntegratorType.XPBD:
-            builder.add_cloth_grid(
-                pos=wp.vec3(0.0, 0.0, 4.0),
-                rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
-                vel=wp.vec3(0.0, 0.0, 0.0),
-                dim_x=self.sim_width,
-                dim_y=self.sim_height,
-                cell_x=0.1,
-                cell_y=0.1,
-                mass=0.1,
-                fix_left=True,
-                add_springs=True,
-                spring_ke=1.0e3,
-                spring_kd=1.0e1,
-                edge_ke=1.0e1,
-                edge_kd=0.0,
-            )
-
-        else:  # self.integrator_type == IntegratorType.VBD
-            builder.add_cloth_grid(
-                pos=wp.vec3(0.0, 0.0, 4.0),
-                rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
-                vel=wp.vec3(0.0, 0.0, 0.0),
-                dim_x=self.sim_width,
-                dim_y=self.sim_height,
-                cell_x=0.1,
-                cell_y=0.1,
-                mass=0.1,
-                fix_left=True,
-                tri_ke=1.0e3,
-                tri_ka=1.0e3,
-                tri_kd=1.0e-5,
-                edge_ke=1.0e1,
-                edge_kd=0.0,
-            )
-            builder.color(include_bending=True)
-
         builder.add_ground_plane()
+
+        # common cloth properties
+        common_params = {
+            "pos": wp.vec3(0.0, 0.0, 4.0),
+            "rot": wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+            "vel": wp.vec3(0.0, 0.0, 0.0),
+            "dim_x": self.sim_width,
+            "dim_y": self.sim_height,
+            "cell_x": 0.1,
+            "cell_y": 0.1,
+            "mass": 0.1,
+            "fix_left": True,
+            "edge_ke": 1.0e1,
+            "edge_kd": 0.0,
+        }
+
+        solver_params = {}
+        if self.solver_type == SolverType.EULER:
+            solver_params = {
+                "tri_ke": 1.0e3,
+                "tri_ka": 1.0e3,
+                "tri_kd": 1.0e1,
+            }
+
+        elif self.solver_type == SolverType.XPBD:
+            solver_params = {
+                "add_springs": True,
+                "spring_ke": 1.0e3,
+                "spring_kd": 1.0e1,
+            }
+
+        else:  # self.solver_type == SolverType.VBD
+            solver_params = {
+                "tri_ke": 1.0e3,
+                "tri_ka": 1.0e3,
+                "tri_kd": 1.0e-5,
+            }
+
+        builder.add_cloth_grid(**common_params, **solver_params)
+
+        if self.solver_type == SolverType.VBD:
+            builder.color(include_bending=True)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        if self.integrator_type == IntegratorType.EULER:
+        if self.solver_type == SolverType.EULER:
             self.solver = newton.solvers.SemiImplicitSolver(model=self.model)
-        elif self.integrator_type == IntegratorType.XPBD:
+        elif self.solver_type == SolverType.XPBD:
             self.solver = newton.solvers.XPBDSolver(
                 model=self.model,
                 iterations=self.iterations,
             )
-        else:  # self.integrator_type == IntegratorType.VBD
+        else:  # self.solver_type == SolverType.VBD
             self.solver = newton.solvers.VBDSolver(model=self.model, iterations=self.iterations)
 
         self.state_0 = self.model.state()
@@ -202,11 +189,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument(
-        "--integrator",
-        help="Type of integrator",
-        type=IntegratorType,
-        choices=list(IntegratorType),
-        default=IntegratorType.VBD,
+        "--solver",
+        help="Type of solver",
+        type=SolverType,
+        choices=list(SolverType),
+        default=SolverType.VBD,
     )
     parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
     parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
@@ -216,7 +203,7 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(
             stage_path=args.stage_path,
-            integrator=args.integrator,
+            solver_type=args.solver,
             height=args.height,
             width=args.width,
             num_frames=args.num_frames,
