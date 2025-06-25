@@ -32,3 +32,8 @@ rspec.xml
 docs/_build/
 
 .idea/
+
+# Airspeed Velocity
+asv/env
+asv/results
+asv/html
