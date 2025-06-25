@@ -62,7 +62,7 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            newton.collision.collide(self.model, self.state_0)
+            self.contacts = self.model.collide(self.state_0)
 
             self.state_0.clear_forces()
             self.state_1.clear_forces()
@@ -73,7 +73,7 @@ class Example:
                 ]
             )
 
-            self.solver.step(self.model, self.state_0, self.state_1, None, None, self.sim_dt)
+            self.solver.step(self.model, self.state_0, self.state_1, None, self.contacts, self.sim_dt)
 
             # swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
