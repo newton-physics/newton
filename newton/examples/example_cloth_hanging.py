@@ -14,26 +14,44 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Cloth Bending
+# Example Sim Cloth Hanging
 #
-# This simulation demonstrates cloth bending behavior using the Vertex Block
-# Descent (VBD) integrator. A cloth mesh, initially curved, is dropped on
-# the ground. The cloth maintains its curved shape due to bending stiffness,
-# controlled by edge_ke and edge_kd parameters.
+# This simulation demonstrates a simple cloth hanging behavior. A planar cloth mesh is fixed on one
+# side and hangs under gravity, colliding with the ground.
 #
 ###########################################################################
 
-import numpy as np
+from enum import Enum
+
 import warp as wp
-from pxr import Usd, UsdGeom
 
 import newton
-import newton.examples
 import newton.utils
 
 
+class SolverType(Enum):
+    EULER = "euler"
+    XPBD = "xpbd"
+    VBD = "vbd"
+
+    def __str__(self):
+        return self.value
+
+
 class Example:
-    def __init__(self, stage_path="example_cloth_bending.usd", num_frames=300):
+    def __init__(
+        self,
+        stage_path="example_cloth_hanging.usd",
+        solver_type: SolverType = SolverType.VBD,
+        height=32,
+        width=64,
+        num_frames=300,
+    ):
+        self.solver_type = solver_type
+
+        self.sim_height = height
+        self.sim_width = width
+
         fps = 60
         self.frame_dt = 1.0 / fps
 
@@ -46,48 +64,68 @@ class Example:
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
 
-        usd_stage = Usd.Stage.Open(newton.examples.get_asset("curvedSurface.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth"))
-
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-
-        self.input_scale_factor = 1.0
         self.renderer_scale_factor = 1.0
-        vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
-        self.faces = mesh_indices.reshape(-1, 3)
 
         builder = newton.ModelBuilder()
-        builder.add_cloth_mesh(
-            pos=wp.vec3(0.0, 0.0, 10.0),
-            rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 6.0),
-            scale=1.0,
-            vertices=vertices,
-            indices=mesh_indices,
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.02,
-            tri_ke=5.0e1,
-            tri_ka=0.0,
-            tri_kd=0.0,
-            edge_ke=1.0e1,
-            edge_kd=1.0e0,
-        )
 
-        builder.color(include_bending=True)
         builder.add_ground_plane()
+
+        # common cloth properties
+        common_params = {
+            "pos": wp.vec3(0.0, 0.0, 4.0),
+            "rot": wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+            "vel": wp.vec3(0.0, 0.0, 0.0),
+            "dim_x": self.sim_width,
+            "dim_y": self.sim_height,
+            "cell_x": 0.1,
+            "cell_y": 0.1,
+            "mass": 0.1,
+            "fix_left": True,
+            "edge_ke": 1.0e1,
+            "edge_kd": 0.0,
+        }
+
+        solver_params = {}
+        if self.solver_type == SolverType.EULER:
+            solver_params = {
+                "tri_ke": 1.0e3,
+                "tri_ka": 1.0e3,
+                "tri_kd": 1.0e1,
+            }
+
+        elif self.solver_type == SolverType.XPBD:
+            solver_params = {
+                "add_springs": True,
+                "spring_ke": 1.0e3,
+                "spring_kd": 1.0e1,
+            }
+
+        else:  # self.solver_type == SolverType.VBD
+            solver_params = {
+                "tri_ke": 1.0e3,
+                "tri_ka": 1.0e3,
+                "tri_kd": 1.0e-5,
+            }
+
+        builder.add_cloth_grid(**common_params, **solver_params)
+
+        if self.solver_type == SolverType.VBD:
+            builder.color(include_bending=True)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        self.solver = newton.solvers.VBDSolver(
-            self.model,
-            self.iterations,
-            handle_self_contact=True,
-            self_contact_radius=0.2,
-            self_contact_margin=0.35,
-        )
+        if self.solver_type == SolverType.EULER:
+            self.solver = newton.solvers.SemiImplicitSolver(model=self.model)
+        elif self.solver_type == SolverType.XPBD:
+            self.solver = newton.solvers.XPBDSolver(
+                model=self.model,
+                iterations=self.iterations,
+            )
+        else:  # self.solver_type == SolverType.VBD
+            self.solver = newton.solvers.VBDSolver(model=self.model, iterations=self.iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -146,15 +184,30 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_bending.usd",
+        default="example_cloth_hanging.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument(
+        "--solver",
+        help="Type of solver",
+        type=SolverType,
+        choices=list(SolverType),
+        default=SolverType.VBD,
+    )
+    parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
+    parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
+        example = Example(
+            stage_path=args.stage_path,
+            solver_type=args.solver,
+            height=args.height,
+            width=args.width,
+            num_frames=args.num_frames,
+        )
         example.run()
 
         frame_times = example.profiler["step"]

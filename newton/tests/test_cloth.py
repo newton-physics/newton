@@ -740,14 +740,17 @@ class ClothSim:
 
         if self.solver_name == "vbd":
             self.solver = newton.solvers.VBDSolver(
-                self.model,
-                self.iterations,
+                model=self.model,
+                iterations=self.iterations,
                 handle_self_contact=handle_self_contact,
                 self_contact_radius=self.self_contact_radius,
                 self_contact_margin=self.self_contact_margin,
             )
         elif self.solver_name == "xpbd":
-            self.solver = newton.solvers.XPBDSolver(self.iterations)
+            self.solver = newton.solvers.XPBDSolver(
+                model=self.model,
+                iterations=self.iterations,
+            )
         elif self.solver_name == "semi_implicit":
             self.solver = newton.solvers.SemiImplicitSolver(self.model)
         else:
@@ -928,7 +931,6 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
     )
 
 
-# Test limited to VBD solver pending XPBD improvements
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
@@ -1071,6 +1073,8 @@ tests_to_run = {
         test_cloth_bending,
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
+        test_cloth_bending_with_complex_rest_angles,
+        test_cloth_bending_damping_with_free_fall,
         test_cloth_body_collision,
     ],
     "semi_implicit": [
