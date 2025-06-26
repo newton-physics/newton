@@ -799,7 +799,7 @@ class ClothSim:
             self.state0.clear_forces()
             contacts = self.model.collide(self.state0, soft_contact_margin=self.soft_contact_margin)
             control = self.model.control()
-            self.solver.step(self.model, self.state0, self.state1, control, contacts, self.dt)
+            self.solver.step(self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def run(self):

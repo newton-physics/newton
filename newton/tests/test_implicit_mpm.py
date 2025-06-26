@@ -67,7 +67,7 @@ def test_sand_cube_on_plane(test, device):
 
     # Run a few steps
     for _k in range(25):
-        solver.step(model, state_0, state_1, control=None, contacts=None, dt=dt)
+        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
         state_0, state_1 = state_1, state_0
 
     # Checks the final bounding box corresponds to the expected collapse
