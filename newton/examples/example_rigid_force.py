@@ -37,6 +37,7 @@ class Example:
 
         b = builder.add_body(xform=wp.transform((0.0, 10.0, 0.0), wp.quat_identity()))
         builder.add_shape_box(body=b, hx=1.0, hy=1.0, hz=1.0, cfg=newton.ModelBuilder.ShapeConfig(density=100.0))
+        builder.add_ground_plane()
 
         self.model = builder.finalize()
         self.model.ground = True
@@ -62,7 +63,7 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0,rigid_contact_margin=0.1)
 
             self.state_0.clear_forces()
             self.state_1.clear_forces()
