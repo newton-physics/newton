@@ -570,7 +570,7 @@ class ExampleClothManipulation:
                 self.renderer.end_frame()
 
     def cloth_sim_substep(self, state_in, state_out):
-        self.cloth_solver.step(self.model, state_in, state_out, self.control, self.contacts, self.sim_dt)
+        self.cloth_solver.step(state_in, state_out, self.control, self.contacts, self.sim_dt)
 
     def advance_frame(self):
         self.generate_control_joint_qd(self.state_0)
@@ -597,7 +597,7 @@ class ExampleClothManipulation:
 
                 self.state_0.joint_qd.assign(self.target_joint_qd)
                 # Just update the forward kinematics to get body positions from joint coordinates
-                self.robot_solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+                self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
                 self.state_0.particle_f.zero_()
 

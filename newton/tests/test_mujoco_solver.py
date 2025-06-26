@@ -35,7 +35,7 @@ class TestMuJoCoSolver(unittest.TestCase):
     def _run_substeps_for_frame(self, sim_dt, sim_substeps):
         """Helper method to run simulation substeps for one rendered frame."""
         for _ in range(sim_substeps):
-            self.solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, sim_dt)
+            self.solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
             self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
 
     def test_setup_completes(self):
@@ -268,7 +268,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     )
 
         # Run a simulation step
-        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        solver.step(self.state_in, self.state_out, self.control, self.contacts, 0.01)
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update masses again
@@ -328,7 +328,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         )
 
         # Run a simulation step
-        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        solver.step(self.state_in, self.state_out, self.control, self.contacts, 0.01)
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update COM positions again
@@ -421,7 +421,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         check_inertias(new_inertias, "Initial ")
 
         # Run a simulation step
-        solver.step(self.model, self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        solver.step(self.state_in, self.state_out, self.control, self.contacts, 0.01)
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update inertia tensors again with new random values

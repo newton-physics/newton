@@ -134,7 +134,7 @@ class Example:
 
     def integrate_frame_substeps(self):
         for _ in range(self.num_substeps):
-            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
+            self.solver.step(self.state0, self.state1, self.control, None, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def advance_frame(self):

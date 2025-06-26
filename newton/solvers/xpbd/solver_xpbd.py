@@ -57,7 +57,7 @@ class XPBDSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
     """
@@ -204,10 +204,12 @@ class XPBDSolver(SolverBase):
         return new_body_q, new_body_qd
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
+
+        model = self.model
 
         particle_q = None
         particle_qd = None

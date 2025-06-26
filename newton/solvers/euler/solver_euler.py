@@ -54,7 +54,7 @@ class SemiImplicitSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
     """
@@ -85,7 +85,6 @@ class SemiImplicitSolver(SolverBase):
     @override
     def step(
         self,
-        model: Model,
         state_in: State,
         state_out: State,
         control: Control,
@@ -101,6 +100,8 @@ class SemiImplicitSolver(SolverBase):
 
             if state_in.body_count:
                 body_f = state_in.body_f
+
+            model = self.model
 
             if control is None:
                 control = model.control(clone_variables=False)

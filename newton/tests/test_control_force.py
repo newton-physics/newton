@@ -60,7 +60,7 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
     sim_dt = 1.0 / 10.0
 
     for _ in range(4):
-        solver.step(model, state_0, state_1, control, None, sim_dt)
+        solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
 
     body_qd = state_0.body_qd.numpy()[0]
@@ -108,7 +108,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
         sim_dt = 1.0 / 10.0
 
         for _ in range(4):
-            solver.step(model, state_0, state_1, control, None, sim_dt)
+            solver.step(state_0, state_1, control, None, sim_dt)
             state_0, state_1 = state_1, state_0
 
         if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
