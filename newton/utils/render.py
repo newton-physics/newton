@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -491,9 +492,9 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         fps: int = 60,
         up_axis: newton.AxisType | None = None,
         show_joints: bool = False,
-        path_body_map: dict = None,
-        path_body_relative_transform: dict = None,
-        builder_results: dict = None,
+        path_body_map: Optional[dict] = None,
+        path_body_relative_transform: Optional[dict] = None,
+        builder_results: Optional[dict] = None,
         **render_kwargs,
     ):
         """
@@ -512,8 +513,6 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             builder_results (dict, optional): A dictionary containing builder results.
             **render_kwargs: Additional arguments passed to the underlying UsdRenderer.
         """
-        from pxr import Usd
-
         if source_stage:
             if path_body_map is None:
                 raise ValueError("path_body_map must be set if you are providing a source_stage")
