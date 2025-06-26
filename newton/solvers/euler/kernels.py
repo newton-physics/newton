@@ -140,43 +140,14 @@ def eval_triangles(
     P2 = F2 * k_mu + dFdt2 * k_damp
 
     # -----------------------------
-    # St. Venant-Kirchoff
-
-    # # Green strain, F'*F-I
-    # e00 = dot(f1, f1) - 1.0
-    # e10 = dot(f2, f1)
-    # e01 = dot(f1, f2)
-    # e11 = dot(f2, f2) - 1.0
-
-    # E = wp.mat22(e00, e01,
-    #              e10, e11)
-
-    # # local forces (deviatoric part)
-    # T = wp.mul(E, wp.transpose(Dm))
-
-    # # spatial forces, F*T
-    # fq = (f1*T[0,0] + f2*T[1,0])*k_mu*2.0
-    # fr = (f1*T[0,1] + f2*T[1,1])*k_mu*2.0
-    # alpha = 1.0
-
-    # -----------------------------
-    # Baraff & Witkin, note this model is not isotropic
-
-    # c1 = length(f1) - 1.0
-    # c2 = length(f2) - 1.0
-    # f1 = normalize(f1)*c1*k1
-    # f2 = normalize(f2)*c2*k1
-
-    # fq = f1*Dm[0,0] + f2*Dm[0,1]
-    # fr = f1*Dm[1,0] + f2*Dm[1,1]
-
-    # -----------------------------
     # Neo-Hookean (with rest stability)
 
     # force = P*Dm'
     f1 = P1 * Dm[0, 0] + P2 * Dm[0, 1]
     f2 = P1 * Dm[1, 0] + P2 * Dm[1, 1]
-    alpha = 1.0 + k_mu / k_lambda
+
+    # safe division: when k_lambda=0, use zero area preservation.
+    alpha = 1.0 + k_mu / (k_lambda + 1e-12)
 
     # -----------------------------
     # Area Preservation
@@ -241,12 +212,6 @@ def eval_triangles_contact(
     face_no = tid // num_particles  # which face
     particle_no = tid % num_particles  # which particle
 
-    # k_mu = materials[face_no, 0]
-    # k_lambda = materials[face_no, 1]
-    # k_damp = materials[face_no, 2]
-    # k_drag = materials[face_no, 3]
-    # k_lift = materials[face_no, 4]
-
     # at the moment, just one particle
     pos = x[particle_no]
 
@@ -261,29 +226,32 @@ def eval_triangles_contact(
     q = x[j]  # point one
     r = x[k]  # point two
 
-    # vp = v[i] # vel zero
-    # vq = v[j] # vel one
-    # vr = v[k] # vel two
-
-    # qp = q-p # barycentric coordinates (centered at p)
-    # rp = r-p
-
     bary = triangle_closest_point_barycentric(p, q, r, pos)
     closest = p * bary[0] + q * bary[1] + r * bary[2]
 
     diff = pos - closest
-    dist = wp.dot(diff, diff)
-    n = wp.normalize(diff)
-    c = wp.min(dist - particle_radius[particle_no], 0.0)  # 0 unless within particle's contact radius
-    # c = wp.leaky_min(dot(n, x0)-0.01, 0.0, 0.0)
-    fn = n * c * 1e5
+    dist = wp.length(diff)
 
-    wp.atomic_sub(f, particle_no, fn)
+    # early exit if no contact or degenerate case
+    particle_rad = particle_radius[particle_no]
+    if dist >= particle_rad or dist < 1e-6:
+        return
 
-    # # apply forces (could do - f / 3 here)
-    wp.atomic_add(f, i, fn * bary[0])
-    wp.atomic_add(f, j, fn * bary[1])
-    wp.atomic_add(f, k, fn * bary[2])
+    # contact normal (points from triangle to particle)
+    n = diff / dist
+
+    # penetration depth (negative when in contact)
+    penetration = dist - particle_rad
+
+    # contact force
+    contact_stiffness = 1e5
+    force_magnitude = -contact_stiffness * penetration  # positive when penetrating
+    fn = force_magnitude * n
+
+    wp.atomic_add(f, particle_no, fn)
+    wp.atomic_add(f, i, -fn * bary[0])
+    wp.atomic_add(f, j, -fn * bary[1])
+    wp.atomic_add(f, k, -fn * bary[2])
 
 
 @wp.kernel
@@ -458,10 +426,10 @@ def eval_bending(
     sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
-    d1 = n1 * e_length
-    d2 = n2 * e_length
-    d3 = n1 * wp.dot(x1 - x4, e_hat) + n2 * wp.dot(x2 - x4, e_hat)
-    d4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
+    d1 = -n1 * e_length
+    d2 = -n2 * e_length
+    d3 = -n1 * wp.dot(x1 - x4, e_hat) - n2 * wp.dot(x2 - x4, e_hat)
+    d4 = -n1 * wp.dot(x3 - x1, e_hat) - n2 * wp.dot(x3 - x2, e_hat)
 
     # elastic
     f_elastic = ke * (theta - rest_angle)
