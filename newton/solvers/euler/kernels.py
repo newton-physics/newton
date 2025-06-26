@@ -233,20 +233,19 @@ def eval_triangles_contact(
     dist = wp.length(diff)
 
     # early exit if no contact or degenerate case
-    particle_rad = particle_radius[particle_no]
-    if dist >= particle_rad or dist < 1e-6:
+    collision_radius = particle_radius[particle_no]
+    if dist >= collision_radius or dist < 1e-6:
         return
 
     # contact normal (points from triangle to particle)
     n = diff / dist
 
-    # penetration depth (negative when in contact)
-    penetration = dist - particle_rad
+    # penetration depth
+    penetration_depth = collision_radius - dist
 
     # contact force
     contact_stiffness = 1e5
-    force_magnitude = -contact_stiffness * penetration  # positive when penetrating
-    fn = force_magnitude * n
+    fn = contact_stiffness * penetration_depth * n
 
     wp.atomic_add(f, particle_no, fn)
     wp.atomic_add(f, i, -fn * bary[0])
@@ -418,18 +417,18 @@ def eval_bending(
     if n1_length < eps or n2_length < eps or e_length < eps:
         return
 
-    n1 = n1 / n1_length
-    n2 = n2 / n2_length
+    n1_hat = n1 / n1_length
+    n2_hat = n2 / n2_length
     e_hat = e / e_length
 
-    cos_theta = wp.dot(n1, n2)
-    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    cos_theta = wp.dot(n1_hat, n2_hat)
+    sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
-    d1 = -n1 * e_length
-    d2 = -n2 * e_length
-    d3 = -n1 * wp.dot(x1 - x4, e_hat) - n2 * wp.dot(x2 - x4, e_hat)
-    d4 = -n1 * wp.dot(x3 - x1, e_hat) - n2 * wp.dot(x3 - x2, e_hat)
+    d1 = -n1_hat * e_length
+    d2 = -n2_hat * e_length
+    d3 = -n1_hat * wp.dot(x1 - x4, e_hat) - n2_hat * wp.dot(x2 - x4, e_hat)
+    d4 = -n1_hat * wp.dot(x3 - x1, e_hat) - n2_hat * wp.dot(x3 - x2, e_hat)
 
     # elastic
     f_elastic = ke * (theta - rest_angle)
