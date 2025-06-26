@@ -871,8 +871,8 @@ class MuJoCoSolver(SolverBase):
             self.update_model_inertial_properties()
         if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
-        if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
-            self.update_geom_properties()
+        # if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
+        #     self.update_geom_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
