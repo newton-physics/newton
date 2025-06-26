@@ -74,7 +74,8 @@ class Style3DSolver(SolverBase):
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
         self.linear_solver = PcgSolver(model.particle_count, self.device)
 
-        self.A = SparseMatrixELL()
+        self.A_non_diag = SparseMatrixELL()
+        self.A_diag = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.rhs = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.x_prev = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
@@ -126,7 +127,7 @@ class Style3DSolver(SolverBase):
             outputs=[
                 self.x_inertia,
                 self.inv_diags,
-                self.A.diag,
+                self.A_diag,
                 self.dx,
             ],
             device=self.device,
@@ -240,7 +241,7 @@ class Style3DSolver(SolverBase):
 
                 state_out.particle_q.assign(self.temp_verts0)
             else:
-                self.linear_solver.solve(self.A, self.dx, self.rhs, self.inv_diags, self.dx, 10)
+                self.linear_solver.solve(self.A_non_diag, self.A_diag, self.dx, self.rhs, self.inv_diags, self.dx, 10)
 
                 wp.launch(
                     nonlinear_step_kernel,
@@ -276,5 +277,5 @@ class Style3DSolver(SolverBase):
                 builder.edge_rest_area,
                 builder.edge_bending_cot,
             )
-            self.pd_diags, self.A.num_nz, self.A.nz_ell = self.pd_matrix_builder.finalize(self.device)
-            self.A.diag = wp.zeros_like(self.pd_diags)
+            self.pd_diags, self.A_non_diag.num_nz, self.A_non_diag.nz_ell = self.pd_matrix_builder.finalize(self.device)
+            self.A_diag = wp.zeros_like(self.pd_diags)
