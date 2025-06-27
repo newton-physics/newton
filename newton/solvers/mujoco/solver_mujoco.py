@@ -904,6 +904,8 @@ class MuJoCoSolver(SolverBase):
                 dim=(nworld, axes_per_env),
                 inputs=[
                     control.joint_target,
+                    control.joint_f,
+                    model.joint_dof_mode,
                     model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                     axes_per_env,
                 ],
@@ -923,7 +925,7 @@ class MuJoCoSolver(SolverBase):
                     model.joint_child,
                     model.joint_q_start,
                     model.joint_qd_start,
-                    model.joint_axis_dim,
+                    model.joint_dof_dim,
                     joints_per_env,
                     bodies_per_env,
                 ],
@@ -1295,7 +1297,7 @@ class MuJoCoSolver(SolverBase):
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
+        # rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -1507,7 +1509,9 @@ class MuJoCoSolver(SolverBase):
 
             inertia = body_inertia[child]
             if model.up_axis == 1:
-                inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
+                # TODO: what frame is the fullinertia in Mujoco?
+                mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
+                inertia = mat @ inertia @ mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
                 pos=tf_p,
