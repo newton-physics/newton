@@ -58,6 +58,9 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
     solver = solver_fn(model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
+    # ensure collision data is allocated before graph capture
+    # in case of an earlier CUDA version
+    model.collide(state_0)
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
     substeps = 2
