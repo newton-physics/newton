@@ -28,6 +28,7 @@ from .kernels import (
     init_rhs_kernel,
     init_step_kernel,
     nonlinear_step_kernel,
+    prepare_jacobi_preconditioner_kernel,
     update_velocity,
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
@@ -74,21 +75,27 @@ class Style3DSolver(SolverBase):
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
         self.linear_solver = PcgSolver(model.particle_count, self.device)
 
-        self.A_non_diag = SparseMatrixELL()
-        self.A_diag = wp.zeros(model.particle_count, dtype=float, device=self.device)
+        # Fixed PD matrix
+        self.pd_non_diags = SparseMatrixELL()
+        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
+
+        # Non-linear equation variables
         self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.rhs = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.x_prev = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
-        self.inv_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
         self.x_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
 
-        # add new attributes for Style3D solve
+        # Static part of A_diag, full A_diag, and inverse of A_diag
+        self.static_A_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
+        self.inv_A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
+        self.A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
+
+        # For chebyshev-accel
         self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
 
         # contact
-        self.contact_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
+        self.contact_hessian_diags = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
         self.body_contact_max = model.shape_count * model.particle_count
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
@@ -126,8 +133,7 @@ class Style3DSolver(SolverBase):
             ],
             outputs=[
                 self.x_inertia,
-                self.inv_diags,
-                self.A_diag,
+                self.static_A_diags,
                 self.dx,
             ],
             device=self.device,
@@ -152,7 +158,7 @@ class Style3DSolver(SolverBase):
             )
 
             # contact
-            self.contact_hessians.zero_()
+            self.contact_hessian_diags.zero_()
             wp.launch(
                 kernel=eval_body_contact_kernel,
                 dim=self.body_contact_max,
@@ -180,7 +186,7 @@ class Style3DSolver(SolverBase):
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                 ],
-                outputs=[self.rhs, self.contact_hessians],
+                outputs=[self.rhs, self.contact_hessian_diags],
                 device=self.device,
             )
 
@@ -212,6 +218,17 @@ class Style3DSolver(SolverBase):
                 device=self.device,
             )
 
+            wp.launch(
+                prepare_jacobi_preconditioner_kernel,
+                dim=self.model.particle_count,
+                inputs=[
+                    self.static_A_diags,
+                    self.contact_hessian_diags,
+                ],
+                outputs=[self.inv_A_diags, self.A_diags],
+                device=self.device,
+            )
+
             if self.linear_solver is None:  # for debug
                 wp.launch(
                     PD_jacobi_step_kernel,
@@ -219,7 +236,7 @@ class Style3DSolver(SolverBase):
                     inputs=[
                         self.rhs,
                         state_in.particle_q,
-                        self.inv_diags,
+                        self.inv_A_diags,
                     ],
                     outputs=[
                         self.temp_verts0,
@@ -241,7 +258,9 @@ class Style3DSolver(SolverBase):
 
                 state_out.particle_q.assign(self.temp_verts0)
             else:
-                self.linear_solver.solve(self.A_non_diag, self.A_diag, self.dx, self.rhs, self.inv_diags, self.dx, 10)
+                self.linear_solver.solve(
+                    self.pd_non_diags, self.A_diags, self.dx, self.rhs, self.inv_A_diags, self.dx, 10
+                )
 
                 wp.launch(
                     nonlinear_step_kernel,
@@ -277,5 +296,7 @@ class Style3DSolver(SolverBase):
                 builder.edge_rest_area,
                 builder.edge_bending_cot,
             )
-            self.pd_diags, self.A_non_diag.num_nz, self.A_non_diag.nz_ell = self.pd_matrix_builder.finalize(self.device)
-            self.A_diag = wp.zeros_like(self.pd_diags)
+            self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = self.pd_matrix_builder.finalize(
+                self.device
+            )
+            self.static_A_diags = wp.zeros_like(self.pd_diags)

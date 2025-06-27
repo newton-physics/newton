@@ -175,8 +175,7 @@ def init_step_kernel(
     particle_flags: wp.array(dtype=wp.uint32),
     # outputs
     x_inertia: wp.array(dtype=wp.vec3),
-    inv_diags: wp.array(dtype=float),
-    diags: wp.array(dtype=float),
+    static_A_diags: wp.array(dtype=float),
     dx: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -185,14 +184,12 @@ def init_step_kernel(
 
     if not particle_flags[tid] & PARTICLE_FLAG_ACTIVE:
         x_inertia[tid] = x_prev[tid]
+        static_A_diags[tid] = 0.0
         dx[tid] = wp.vec3(0.0)
-        inv_diags[tid] = 0.0
-        diags[tid] = 0.0
     else:
         v_prev = v_curr[tid]
         mass = particle_masses[tid]
-        diags[tid] = pd_diags[tid] + mass / (dt * dt)
-        inv_diags[tid] = 1.0 / (pd_diags[tid] + mass / (dt * dt))
+        static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
         x_inertia[tid] = x_last + v_prev * dt + (gravity + f_ext[tid] / mass) * (dt * dt)
         dx[tid] = v_prev * dt
 
@@ -214,15 +211,30 @@ def init_rhs_kernel(
 
 
 @wp.kernel
+def prepare_jacobi_preconditioner_kernel(
+    static_A_diags: wp.array(dtype=float),
+    contact_hessian_diags: wp.array(dtype=wp.mat33),
+    # outputs
+    inv_A_diags: wp.array(dtype=wp.mat33),
+    A_diags: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    diag = wp.identity(3, float) * static_A_diags[tid]
+    diag += contact_hessian_diags[tid]
+    inv_A_diags[tid] = wp.inverse(diag)
+    A_diags[tid] = diag
+
+
+@wp.kernel
 def PD_jacobi_step_kernel(
     rhs: wp.array(dtype=wp.vec3),
     x_in: wp.array(dtype=wp.vec3),
-    inv_diags: wp.array(dtype=float),
+    inv_diags: wp.array(dtype=wp.mat33),
     # outputs
     x_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
-    x_out[tid] = x_in[tid] + rhs[tid] * inv_diags[tid]
+    x_out[tid] = x_in[tid] + inv_diags[tid] * rhs[tid]
 
 
 @wp.kernel
