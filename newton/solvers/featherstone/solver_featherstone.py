@@ -20,7 +20,6 @@ from newton.sim import Contacts, Control, Model, State, eval_fk
 
 from ..euler.kernels import (
     eval_bending_forces,
-    eval_body_contact_forces,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
     eval_rigid_contacts,
