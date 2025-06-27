@@ -1988,8 +1988,8 @@ def accumulate_spring_force_and_hessian(
             spring_damping,
         )
 
-        wp.atomic_add(particle_forces, particle_index, spring_force)
-        wp.atomic_add(particle_hessians, particle_index, spring_hessian)
+        particle_forces[particle_index] = particle_forces[particle_index] + spring_force
+        particle_hessians[particle_index] = particle_hessians[particle_index] + spring_hessian
 
 
 @wp.kernel
