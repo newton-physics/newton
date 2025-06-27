@@ -16,7 +16,8 @@
 
 import numpy as np
 import warp as wp
-from warp.sim.collide import compute_edge_aabbs
+
+from newton.geometry.kernels import compute_edge_aabbs
 
 
 @wp.kernel
