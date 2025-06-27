@@ -843,7 +843,7 @@ def parse_usd(
                         ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
-                        density=material.density,
+                        density=body_density[body_path],
                         collision_group=collision_group,
                     ),
                     "key": path,

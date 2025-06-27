@@ -17,6 +17,7 @@ import os
 import unittest
 
 import warp as wp
+import numpy as np
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
@@ -124,6 +125,23 @@ class TestImportUsd(unittest.TestCase):
         joint_key_cloning = [k for k in builder_cloning.joint_key if k.startswith("/World")]
         joint_key_no_cloning = [k for k in builder_no_cloning.joint_key if k.startswith("/World")]
         self.assertEqual(joint_key_cloning, joint_key_no_cloning)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mass_calculations(self):
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder,
+            collapse_fixed_joints=True,
+        )
+
+        np.testing.assert_allclose(
+            np.array(builder.body_mass),
+            np.array([0.09677605, 0.00783155, 0.01351844, 0.00783155, 0.01351844, 0.00783155, 0.01351844, 0.00783155, 0.01351844]),
+            rtol=1e-5,
+            atol=1e-7,
+        )
 
 
 if __name__ == "__main__":
