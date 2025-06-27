@@ -16,8 +16,8 @@
 import os
 import unittest
 
-import warp as wp
 import numpy as np
+import warp as wp
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
@@ -130,7 +130,7 @@ class TestImportUsd(unittest.TestCase):
     def test_mass_calculations(self):
         builder = newton.ModelBuilder()
 
-        results = parse_usd(
+        _ = parse_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
             builder,
             collapse_fixed_joints=True,
@@ -138,7 +138,19 @@ class TestImportUsd(unittest.TestCase):
 
         np.testing.assert_allclose(
             np.array(builder.body_mass),
-            np.array([0.09677605, 0.00783155, 0.01351844, 0.00783155, 0.01351844, 0.00783155, 0.01351844, 0.00783155, 0.01351844]),
+            np.array(
+                [
+                    0.09677605,
+                    0.00783155,
+                    0.01351844,
+                    0.00783155,
+                    0.01351844,
+                    0.00783155,
+                    0.01351844,
+                    0.00783155,
+                    0.01351844,
+                ]
+            ),
             rtol=1e-5,
             atol=1e-7,
         )
