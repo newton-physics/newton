@@ -84,13 +84,14 @@ def eval_bend_kernel(
     if edges[eid][0] < 0 or edges[eid][1] < 0:
         return
     # reorder as qbend order
-    edge = wp.vec4i(edges[eid][2], edges[eid][3], edges[eid][0], edges[eid][1])
+    edge = edges[eid]
+    edge_stiff = edge_bending_properties[eid][0] / edge_rest_area[eid]
     bend_weight = wp.vec4(0.0)
-    bend_weight[0] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
-    bend_weight[1] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
-    bend_weight[2] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
-    bend_weight[3] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
-    bend_weight = bend_weight * (edge_bending_properties[eid][0] / wp.sqrt(edge_rest_area[eid]))
+    bend_weight[2] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
+    bend_weight[3] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
+    bend_weight[0] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
+    bend_weight[1] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
+    bend_weight = bend_weight * edge_stiff
     for i in range(4):
         force = wp.vec3(0.0)
         for j in range(4):
