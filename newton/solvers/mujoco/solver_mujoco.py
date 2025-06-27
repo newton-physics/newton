@@ -1038,28 +1038,29 @@ class MuJoCoSolver(SolverBase):
         Shapes can only collide with shapes of different colors.
         """
         # find graph coloring of collision filter pairs
+        collision_group = model.shape_collision_group
+        # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
             for i, j in product(selected_shapes, selected_shapes)
             if i != j
-            and (i, j) not in model.shape_collision_filter_pairs
-            and (j, i) not in model.shape_collision_filter_pairs
+            and (
+                ((i, j) not in model.shape_collision_filter_pairs and (j, i) not in model.shape_collision_filter_pairs)
+                or collision_group[i] != collision_group[j]
+            )
         ]
         if len(graph_edges) > 0:
             if visualize_graph:
                 plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
-                num_nodes=model.shape_count,
+                num_nodes=int(selected_shapes.max() + 1),
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
             )
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
             num_colors = 0
             for group in color_groups:
-                if len(group) > 1:
-                    num_colors += 1
-                    shape_color[group] = num_colors
-                else:
-                    shape_color[group] = 0
+                num_colors += 1
+                shape_color[group] = num_colors
         else:
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
@@ -1240,6 +1241,7 @@ class MuJoCoSolver(SolverBase):
         shape_type = model.shape_geo.type.numpy()
         shape_size = model.shape_geo.scale.numpy()
         shape_body = model.shape_body.numpy()
+        shape_flags = model.shape_flags.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1311,7 +1313,7 @@ class MuJoCoSolver(SolverBase):
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
-            selected_shapes = np.arange(model.shape_count)
+            selected_shapes = np.where(shape_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))[0]
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
@@ -1327,12 +1329,15 @@ class MuJoCoSolver(SolverBase):
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
-        shape_color = self.color_collision_shapes(model, selected_shapes)
+        # filter out shapes that are not colliding with anything
+        colliding_shapes = selected_shapes[
+            shape_flags[selected_shapes] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES) != 0
+        ]
+        shape_color = self.color_collision_shapes(model, colliding_shapes)
 
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
-            shape_flags = model.shape_flags.numpy()
             if not shapes:
                 return
             for shape in shapes:

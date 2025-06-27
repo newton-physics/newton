@@ -398,7 +398,6 @@ class FeatherstoneSolver(SolverBase):
                             state_aug.body_v_s,
                             model.body_com,
                             model.shape_materials,
-                            model.shape_geo,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_point0,
@@ -406,15 +405,14 @@ class FeatherstoneSolver(SolverBase):
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
+                            contacts.rigid_contact_thickness0,
+                            contacts.rigid_contact_thickness1,
                             True,
                             self.friction_smoothing,
                         ],
                         outputs=[body_f],
                         device=model.device,
                     )
-
-                    # if model.rigid_contact_count.numpy()[0] > 0:
-                    #     print(body_f.numpy())
 
                 if model.articulation_count:
                     # evaluate joint torques
