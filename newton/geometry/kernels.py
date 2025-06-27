@@ -1100,7 +1100,8 @@ def handle_contact_pairs(
     contact_offset0: wp.array(dtype=wp.vec3),
     contact_offset1: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
-    contact_thickness: wp.array(dtype=float),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     contact_pairwise_counter: wp.array(dtype=int),
     contact_tids: wp.array(dtype=int),
 ):
@@ -1201,7 +1202,10 @@ def handle_contact_pairs(
             print(geo_type_b)
             return
         diff = p_a_world - p_b_world
-        normal = wp.normalize(diff)
+        if geo_type_b == GEO_PLANE:
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+        else:
+            normal = wp.normalize(diff)
         distance = wp.dot(diff, normal)
 
     elif geo_type_a == GEO_BOX and geo_type_b == GEO_BOX:
@@ -1412,8 +1416,8 @@ def handle_contact_pairs(
             p1_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, -half_height_a, 0.0))
             p_a_world = closest_point_line_segment(p0_a_world, p1_a_world, p_b_world)
             diff = p_a_world - p_b_world
-            # normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
-            normal = wp.normalize(diff)
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+            # normal = wp.normalize(diff)
             distance = wp.dot(diff, normal)
 
     elif geo_type_a == GEO_MESH and geo_type_b == GEO_BOX:
@@ -1544,9 +1548,8 @@ def handle_contact_pairs(
         contact_offset0[index] = wp.transform_vector(X_bw_a, -offset_magnitude_a * normal)
         contact_offset1[index] = wp.transform_vector(X_bw_b, offset_magnitude_b * normal)
         contact_normal[index] = normal
-        contact_thickness[index] = (
-            thickness + radius_a_eff + radius_b_eff
-        )  # This 'thickness' is sum of additional margins, might need renaming if confusing
+        contact_thickness0[index] = offset_magnitude_a
+        contact_thickness1[index] = offset_magnitude_b
 
 
 # endregion
