@@ -2284,7 +2284,7 @@ class VBDSolver(SolverBase):
                 )
 
                 wp.launch(
-                    kernel=solve_trimesh_no_self_contact,
+                    kernel=VBD_solve_trimesh_no_self_contact_tile,
                     inputs=[
                         dt,
                         self.model.particle_color_groups[color],
@@ -2309,7 +2309,7 @@ class VBDSolver(SolverBase):
                     outputs=[
                         state_out.particle_q,
                     ],
-                    dim=self.model.particle_color_groups[color].size,
+                    dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                     device=self.device,
                 )
 
