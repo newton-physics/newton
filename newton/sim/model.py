@@ -307,6 +307,48 @@ class Model:
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
+        self.attribute_frequency = {}
+        """Classify each attribute as per body, per joint, per DOF, etc."""
+
+        # attributes per body
+        self.attribute_frequency["body_q"] = "body"
+        self.attribute_frequency["body_qd"] = "body"
+        self.attribute_frequency["body_com"] = "body"
+        self.attribute_frequency["body_inertia"] = "body"
+        self.attribute_frequency["body_inv_inertia"] = "body"
+        self.attribute_frequency["body_mass"] = "body"
+        self.attribute_frequency["body_inv_mass"] = "body"
+        self.attribute_frequency["body_f"] = "body"
+
+        # attributes per joint
+        self.attribute_frequency["joint_type"] = "joint"
+        self.attribute_frequency["joint_parent"] = "joint"
+        self.attribute_frequency["joint_child"] = "joint"
+        self.attribute_frequency["joint_ancestor"] = "joint"
+        self.attribute_frequency["joint_X_p"] = "joint"
+        self.attribute_frequency["joint_X_c"] = "joint"
+        self.attribute_frequency["joint_dof_dim"] = "joint"
+        self.attribute_frequency["joint_enabled"] = "joint"
+        self.attribute_frequency["joint_twist_lower"] = "joint"
+        self.attribute_frequency["joint_twist_upper"] = "joint"
+
+        # attributes per joint coord
+        self.attribute_frequency["joint_q"] = "joint_coord"
+
+        # attributes per joint dof
+        self.attribute_frequency["joint_qd"] = "joint_dof"
+        self.attribute_frequency["joint_f"] = "joint_dof"
+        self.attribute_frequency["joint_armature"] = "joint_dof"
+        self.attribute_frequency["joint_target"] = "joint_dof"
+        self.attribute_frequency["joint_axis"] = "joint_dof"
+        self.attribute_frequency["joint_target_ke"] = "joint_dof"
+        self.attribute_frequency["joint_target_kd"] = "joint_dof"
+        self.attribute_frequency["joint_dof_mode"] = "joint_dof"
+        self.attribute_frequency["joint_limit_lower"] = "joint_dof"
+        self.attribute_frequency["joint_limit_upper"] = "joint_dof"
+        self.attribute_frequency["joint_limit_ke"] = "joint_dof"
+        self.attribute_frequency["joint_limit_kd"] = "joint_dof"
+
     def state(self, requires_grad: bool | None = None) -> State:
         """Returns a state object for the model
 
@@ -431,3 +473,26 @@ class Model:
         self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
         return self._collision_pipeline.collide(self, state)
+
+    def add_attribute(self, name: str, attrib: wp.array, frequency: str):
+        """Add a custom attribute to the model"""
+        if hasattr(self, name):
+            raise AttributeError(f"Attribute '{name}' already exists")
+
+        if not isinstance(attrib, wp.array):
+            raise AttributeError(f"Attribute '{name}' must be an array, got {type(attrib)}")
+        if attrib.device != self.device:
+            raise AttributeError(
+                f"Attribute '{name}' must be on the same device as the Model, expected {self.device}, got {attrib.device}"
+            )
+
+        setattr(self, name, attrib)
+
+        self.attribute_frequency[name] = frequency
+
+    def get_attribute_frequency(self, name):
+        """Get the frequency of an attribute, e.g., "body", "joint", etc."""
+        frequency = self.attribute_frequency.get(name)
+        if frequency is None:
+            raise AttributeError(f"Attribute frequency of '{name}' is not known")
+        return frequency
