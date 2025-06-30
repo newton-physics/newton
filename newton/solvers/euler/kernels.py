@@ -156,7 +156,7 @@ def eval_triangles(
     act = activation[tid]
 
     # Apply area preservation only when k_lambda > 0
-    if k_lambda != 0.0:
+    if k_lambda > 0.0:
         alpha = 1.0 + k_mu / k_lambda
 
         # J-alpha
