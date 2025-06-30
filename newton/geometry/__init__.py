@@ -35,7 +35,7 @@ from .types import (
     SDF,
     Mesh,
 )
-from .utils import compute_and_store_convex_hull, compute_shape_radius
+from .utils import compute_shape_radius
 
 
 @wp.func
@@ -92,7 +92,6 @@ __all__ = [
     "SHAPE_FLAG_COLLIDE_SHAPES",
     "SHAPE_FLAG_VISIBLE",
     "Mesh",
-    "compute_and_store_convex_hull",
     "compute_shape_inertia",
     "compute_shape_radius",
     "create_box",

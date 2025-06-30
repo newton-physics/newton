@@ -335,24 +335,6 @@ def remesh_convex_hull(vertices):
     return verts, faces
 
 
-def compute_and_store_convex_hull(mesh: "Mesh") -> "Mesh":
-    """
-    Computes the convex hull of a mesh and stores it as a pre-computed convex hull.
-
-    This function is useful for optimizing collision detection in solvers like MuJoCo,
-    which can use pre-computed convex hulls instead of computing them at runtime.
-
-    Args:
-        mesh: The mesh to compute the convex hull for
-
-    Returns:
-        The same mesh object with the convex hull stored
-    """
-    if mesh.convex_hull is None:
-        mesh.convex_hull = mesh.compute_convex_hull()
-    return mesh
-
-
 def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwargs):
     """
     Remeshes a 3D triangular surface mesh using the specified method.
