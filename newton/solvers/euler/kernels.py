@@ -145,36 +145,38 @@ def eval_triangles(
     f1 = P1 * Dm[0, 0] + P2 * Dm[0, 1]
     f2 = P1 * Dm[1, 0] + P2 * Dm[1, 1]
 
-    # safe division: when k_lambda=0, use zero area preservation.
-    alpha = 1.0 + k_mu / (k_lambda + 1e-12)
-
     # -----------------------------
     # Area Preservation
 
     n = wp.cross(x10, x20)
     area = wp.length(n) * 0.5
+    n = wp.normalize(n)
 
     # actuation
     act = activation[tid]
 
-    # J-alpha
-    c = area * inv_rest_area - alpha + act
+    # Apply area preservation only when k_lambda > 0
+    if k_lambda != 0.0:
+        alpha = 1.0 + k_mu / k_lambda
 
-    # dJdx
-    n = wp.normalize(n)
-    dcdq = wp.cross(x20, n) * inv_rest_area * 0.5
-    dcdr = wp.cross(n, x10) * inv_rest_area * 0.5
+        # J-alpha
+        c = area * inv_rest_area - alpha + act
 
-    f_area = k_lambda * c
+        # dJdx
+        dcdq = wp.cross(x20, n) * inv_rest_area * 0.5
+        dcdr = wp.cross(n, x10) * inv_rest_area * 0.5
 
-    # -----------------------------
-    # Area Damping
+        f_area = k_lambda * c
 
-    dcdt = wp.dot(dcdq, v1) + wp.dot(dcdr, v2) - wp.dot(dcdq + dcdr, v0)
-    f_damp = k_damp * dcdt
+        # -----------------------------
+        # Area Damping
 
-    f1 = f1 + dcdq * (f_area + f_damp)
-    f2 = f2 + dcdr * (f_area + f_damp)
+        dcdt = wp.dot(dcdq, v1) + wp.dot(dcdr, v2) - wp.dot(dcdq + dcdr, v0)
+        f_damp = k_damp * dcdt
+
+        f1 = f1 + dcdq * (f_area + f_damp)
+        f2 = f2 + dcdr * (f_area + f_damp)
+
     f0 = f1 + f2
 
     # -----------------------------
@@ -205,6 +207,7 @@ def eval_triangles_contact(
     indices: wp.array2d(dtype=int),
     materials: wp.array2d(dtype=float),
     particle_radius: wp.array(dtype=float),
+    contact_stiffness: float,
     f: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -243,7 +246,6 @@ def eval_triangles_contact(
     penetration_depth = collision_radius - dist
 
     # contact force
-    contact_stiffness = 1e5
     fn = contact_stiffness * penetration_depth * n
 
     wp.atomic_add(f, particle_no, fn)
@@ -1551,6 +1553,7 @@ def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.arra
                 model.tri_indices,
                 model.tri_materials,
                 model.particle_radius,
+                model.soft_contact_ke,
             ],
             outputs=[particle_f],
             device=model.device,
