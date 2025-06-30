@@ -190,11 +190,9 @@ def get_articulation_root_velocities_kernel(
     root_vels[tid] = body_qd[root_body]
 
 
-
-
 class ContactView:
     """A view for querying contacts between entities in the simulation.
-    
+
     This class provides access to contact data that was set up during model building.
     Contact queries must be registered with the ModelBuilder using add_contact_query()
     before model finalization.
@@ -202,22 +200,25 @@ class ContactView:
 
     def __init__(self, model: Model, query_idx: int):
         """Initialize a ContactView for a specific contact query.
-        
+
         Args:
             model: The simulation model
             query_idx: Index of the contact query (returned by ModelBuilder.add_contact_query())
         """
         if model.contact_reporter is None:
-            raise RuntimeError("No contact queries were registered during model building. "
-                             "Use ModelBuilder.add_contact_query() before calling finalize().")
+            raise RuntimeError(
+                "No contact queries were registered during model building. "
+                "Use ModelBuilder.add_contact_query() before calling finalize()."
+            )
 
         if query_idx >= len(model.contact_reporter.entity_pair_contact):
-            raise IndexError(f"Contact query index {query_idx} is out of range. "
-                           f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered.")
+            raise IndexError(
+                f"Contact query index {query_idx} is out of range. "
+                f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered."
+            )
 
         self.contact_reporter = model.contact_reporter
         self.query_idx = query_idx
-
 
     def get_contact_dist(self):
         """Get the deepest contact distance between entity pairs."""
@@ -226,7 +227,7 @@ class ContactView:
     def get_contact_force(self):
         """Get the net contact force between entity pairs."""
         return self.contact_reporter.get_force(self.query_idx)
-    
+
     def get_contact_normals(self):
         """Get the net contact normal between entity pairs."""
         return self.contact_reporter.get_normal(self.query_idx)
@@ -234,6 +235,7 @@ class ContactView:
     def get_contact_idx(self):
         """Get the contact indices between entity pairs."""
         return self.contact_reporter.get_idx(self.query_idx)
+
     @property
     def query_keys(self):
         """A tuple containing the shape or body keys for the queries.
@@ -243,8 +245,10 @@ class ContactView:
                   Each list contains the shape or body keys for the respective entities.
         """
         return self.contact_reporter.get_query_keys(self.query_idx)
+
     # TODO: expose raw contact arrays
     # TODO: record entity names
+
 
 class ArticulationView:
     def __init__(self, model: Model, pattern: str, include_free_joint: bool = False, verbose: bool | None = None):
