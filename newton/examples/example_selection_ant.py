@@ -117,7 +117,6 @@ class Example:
         self.contacts_feet_ground = ContactView(self.model, self.feet_ground_query_idx)
         self.contacts_torso_ground = ContactView(self.model, self.torso_ground_query_idx)
 
-
         # Precompute foot body indices for efficient color updates
         self.foot_body_indices = []
         for body_key in self.contacts_feet_ground.query_keys[0]:

@@ -3404,11 +3404,11 @@ class ModelBuilder:
 
             if self.contact_queries:
                 from newton.utils.contact_reporter import ContactReporter
+
                 m.contact_reporter = ContactReporter(m)
                 for entity_pattern, filter_pattern, match_fun in self.contact_queries:
-
                     if match_fun is None:
-                        match_fun = fnmatch
+                        match_fun = fnmatch  # noqa: PLW2901
                     elif match_fun == "re":
 
                         def match_fun(name, pat):
@@ -3417,15 +3417,18 @@ class ModelBuilder:
                     # Get entities matching the pattern
                     entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun, m)
                     if not entity_a_keys:
-                        raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
+                        raise KeyError(
+                            f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}."
+                        )
 
                     if filter_pattern is not None:
                         entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun, m)
                         if not entity_b_keys:
-                            raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
+                            raise KeyError(
+                                f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}."
+                            )
                     else:
                         raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
-
 
                     # Add entity keys and groups to contact reporter
                     m.contact_reporter.add_query_keys(entity_a_keys, entity_b_keys)

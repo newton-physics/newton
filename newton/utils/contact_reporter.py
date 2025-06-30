@@ -335,12 +335,9 @@ class ContactReporter:
         """Add a pair of entity groups (aka query) to the contact reporter."""
         self.entity_group_pairs.append((entity_group_a, entity_group_b))
 
-
     def add_query_keys(self, entity_a_keys: list[str], entity_b_keys: list[str]):
-        """Add entity keys (names) for a contact query.
-        """
+        """Add entity keys (names) for a contact query."""
         self.query_keys.append((entity_a_keys, entity_b_keys))
-
 
     def finalize(self):
         # TODO: speed up entity pair filtering by finding collision groups per entity
@@ -400,7 +397,7 @@ class ContactReporter:
 
         # for each bin(shape pair), allocate the necessary space
         def shape_pair_maxcontacts(shape_pair):
-            return 24  #TODO
+            return 24  # TODO
 
         bin_size = list(map(shape_pair_maxcontacts, shape_pairs))
         bin_start = np.cumsum([0] + bin_size[:-1])  # Cumulative sum for start indices
@@ -574,7 +571,7 @@ class ContactReporter:
                 self.query_entity_pair_mat_idx[query_idx],
                 data,
                 query_flip[query_idx],
-                flip
+                flip,
             ],
             outputs=[matrix],
         )
@@ -588,7 +585,7 @@ class ContactReporter:
         matrix = self.query_force_matrix[query_idx]
         self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix, self.query_flip, True)
         return self.query_entities[query_idx], matrix
-    
+
     def get_normal(self, query_idx: int):
         matrix = self.query_normal_matrix[query_idx]
         self.fill_contact_matrix(query_idx, self.entity_pair_normal, matrix, self.query_flip, True)
@@ -600,4 +597,4 @@ class ContactReporter:
         return self.query_entities[query_idx], matrix
 
     def get_query_keys(self, query_idx: int):
-            return self.query_keys[query_idx]
+        return self.query_keys[query_idx]
