@@ -20,8 +20,6 @@ from newton.sim import Contacts, Control, State, Style3DModel, Style3DModelBuild
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .kernels import (
-    PD_jacobi_step_kernel,
-    apply_chebyshev_kernel,
     eval_bend_kernel,
     eval_body_contact_kernel,
     eval_drag_kernel,
@@ -81,7 +79,6 @@ class Style3DSolver(SolverBase):
 
         super().__init__(model)
         self.style3d_model = model
-        self._enable_chebyshev = True
         self.nonlinear_iterations = iterations
         self.drag_spring_stiff = drag_spring_stiff
         self.enable_mouse_dragging = enable_mouse_dragging
@@ -103,10 +100,6 @@ class Style3DSolver(SolverBase):
         self.inv_A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
         self.A_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
 
-        # For chebyshev-accel
-        self.temp_verts0 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-        self.temp_verts1 = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
-
         # contact
         self.contact_hessian_diags = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
         self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
@@ -118,16 +111,6 @@ class Style3DSolver(SolverBase):
         self.drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
         self.drag_index = wp.array([-1], dtype=int, device=self.device)
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
-
-    @staticmethod
-    def get_chebyshev_omega(omega: float, iter: int):
-        rho = 0.997
-        if iter <= 5:
-            return 1.0
-        elif iter == 6:
-            return 2.0 / (2.0 - rho * rho)
-        else:
-            return 4.0 / (4.0 - omega * rho * rho)
 
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         wp.launch(
@@ -152,8 +135,6 @@ class Style3DSolver(SolverBase):
             device=self.device,
         )
 
-        omega = 1.0
-        self.temp_verts1.assign(state_in.particle_q)
         for _iter in range(self.nonlinear_iterations):
             wp.launch(
                 init_rhs_kernel,
@@ -164,14 +145,13 @@ class Style3DSolver(SolverBase):
                     self.x_inertia,
                     self.model.particle_mass,
                 ],
-                outputs=[
-                    self.rhs,
-                ],
+                outputs=[self.rhs],
                 device=self.device,
             )
 
             # contact
             self.contact_hessian_diags.zero_()
+
             wp.launch(
                 kernel=eval_body_contact_kernel,
                 dim=self.body_contact_max,
@@ -243,65 +223,27 @@ class Style3DSolver(SolverBase):
                         self.model.tri_indices,
                         state_in.particle_q,
                     ],
-                    outputs=[
-                        self.rhs,
-                    ],
+                    outputs=[self.rhs],
                     device=self.device,
                 )
 
             wp.launch(
                 prepare_jacobi_preconditioner_kernel,
                 dim=self.model.particle_count,
-                inputs=[
-                    self.static_A_diags,
-                    self.contact_hessian_diags,
-                ],
+                inputs=[self.static_A_diags, self.contact_hessian_diags],
                 outputs=[self.inv_A_diags, self.A_diags],
                 device=self.device,
             )
 
-            if self.linear_solver is None:  # for debug
-                wp.launch(
-                    PD_jacobi_step_kernel,
-                    dim=self.model.particle_count,
-                    inputs=[
-                        self.rhs,
-                        state_in.particle_q,
-                        self.inv_A_diags,
-                    ],
-                    outputs=[
-                        self.temp_verts0,
-                    ],
-                    device=self.device,
-                )
+            self.linear_solver.solve(self.pd_non_diags, self.A_diags, self.dx, self.rhs, self.inv_A_diags, self.dx, 10)
 
-                if self._enable_chebyshev:
-                    omega = self.get_chebyshev_omega(omega, _iter)
-                    if omega > 1.0:
-                        wp.launch(
-                            apply_chebyshev_kernel,
-                            dim=self.model.particle_count,
-                            inputs=[omega, self.temp_verts1],
-                            outputs=[self.temp_verts0],
-                            device=self.device,
-                        )
-                    self.temp_verts1.assign(state_in.particle_q)
-
-                state_out.particle_q.assign(self.temp_verts0)
-            else:
-                self.linear_solver.solve(
-                    self.pd_non_diags, self.A_diags, self.dx, self.rhs, self.inv_A_diags, self.dx, 10
-                )
-
-                wp.launch(
-                    nonlinear_step_kernel,
-                    dim=self.model.particle_count,
-                    inputs=[
-                        state_in.particle_q,
-                    ],
-                    outputs=[state_out.particle_q, self.dx],
-                    device=self.device,
-                )
+            wp.launch(
+                nonlinear_step_kernel,
+                dim=self.model.particle_count,
+                inputs=[state_in.particle_q],
+                outputs=[state_out.particle_q, self.dx],
+                device=self.device,
+            )
 
             state_in.particle_q.assign(state_out.particle_q)
 

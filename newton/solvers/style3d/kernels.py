@@ -282,16 +282,6 @@ def nonlinear_step_kernel(
 
 
 @wp.kernel
-def apply_chebyshev_kernel(
-    omega: float,
-    prev_verts: wp.array(dtype=wp.vec3),
-    next_verts: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    next_verts[tid] = wp.lerp(prev_verts[tid], next_verts[tid], omega)
-
-
-@wp.kernel
 def update_velocity(
     dt: float,
     prev_pos: wp.array(dtype=wp.vec3),
