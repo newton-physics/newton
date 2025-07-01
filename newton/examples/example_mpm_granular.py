@@ -229,7 +229,9 @@ def _create_collider_mesh(collider: str):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
 
     parser.add_argument("--collider", type=str)
 
@@ -257,10 +259,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
-    options = parser.parse_args()
+    args = parser.parse_known_args()[0]
 
-    example = Example(options)
+    with wp.ScopedDevice(args.device):
+        example = Example(args)
 
-    for _ in range(options.num_frames):
-        example.step()
-        example.render()
+        for _ in range(args.num_frames):
+            example.step()
+            example.render()

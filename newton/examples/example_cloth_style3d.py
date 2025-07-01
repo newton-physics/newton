@@ -156,7 +156,7 @@ class Example:
             self.solver.step(self.state0, self.state1, self.control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
-    def advance_frame(self):
+    def step(self):
         with wp.ScopedTimer("step", print=False, dict=self.profiler):
             if self.use_cuda_graph:
                 wp.capture_launch(self.cuda_graph)
@@ -165,11 +165,13 @@ class Example:
             self.sim_time += self.dt
 
     def run(self):
-        for _ in range(self.num_frames):
-            if self.renderer.has_exit:
+        for i in range(self.num_frames):
+            if self.renderer and self.renderer.has_exit:
                 break
-            self.advance_frame()
+            self.step()
             self.render()
+
+            print(f"[{i:4d}/{args.num_frames}]")
 
     def render(self):
         if self.renderer is not None:

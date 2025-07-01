@@ -175,7 +175,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_mjc.usda",
+        default="example_g1.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")

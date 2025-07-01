@@ -29,7 +29,7 @@ wp.config.enable_backward = False
 
 
 class Example:
-    def __init__(self, stage_path="example_mjc.usda", num_envs=8):
+    def __init__(self, stage_path="example_humanoid.usd", num_envs=8):
         self.num_envs = num_envs
 
         use_mujoco = False
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_mjc.usda",
+        default="example_humanoid.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
@@ -144,9 +144,11 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-        for _ in range(args.num_frames):
+        for i in range(args.num_frames):
             example.step()
             example.render()
+
+            print(f"[{i:4d}/{args.num_frames}]")
 
         if example.renderer:
             example.renderer.save()
