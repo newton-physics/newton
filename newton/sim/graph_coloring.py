@@ -247,8 +247,10 @@ def color_graph(
         )
 
         if max_min_ratio > target_max_min_color_ratio:
-            warp.utils.warn(
-                f"The graph is not optimizable anymore, terminated with a max/min ratio: {max_min_ratio} without reaching the target ratio: {target_max_min_color_ratio}"
+            wp.utils.warn(
+                f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
+                f"exceeds target {target_max_min_color_ratio:.3f}. "
+                "The graph may not be further optimizable."
             )
 
     color_groups = convert_to_color_groups(num_colors, particle_colors, return_wp_array=False)
