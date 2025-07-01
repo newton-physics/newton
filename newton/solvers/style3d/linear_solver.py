@@ -153,7 +153,7 @@ def array_inner(
 ):
     from warp.context import runtime  # noqa: PLC0415
 
-    runtime.core.array_inner_float_device(
+    runtime.core.wp_array_inner_float_device(
         a.ptr,
         b.ptr,
         out_ptr,
