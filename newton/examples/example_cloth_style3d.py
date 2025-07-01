@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 
 import numpy as np
 import warp as wp
@@ -37,25 +36,31 @@ class Example:
         self.sim_time = 0.0
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
-
-        usd_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "women_skirt.usda"))
-
-        # Grament
-        usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_Garment"))
-        garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
-        garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
-        garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
-        garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
-        garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
-
-        # Avatar
-        usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_SkinnedMesh_Avatar_0_Sub_0"))
-        avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
-        avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
-
         builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
+
         use_cloth_mesh = True
         if use_cloth_mesh:
+            asset_path = newton.utils.download_asset("style3d_description")
+
+            # Grament
+            # garment_usd_name = "Women_Skirt"
+            # garment_usd_name = "Female_T_Shirt"
+            garment_usd_name = "Women_Sweatshirt"
+            usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
+            usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment")))
+
+            garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
+            garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
+            garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
+            garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+            garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
+
+            # Avatar
+            usd_stage = Usd.Stage.Open(str(asset_path / "avatars" / "Female.usd"))
+            usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2"))
+            avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
+            avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
+
             builder.add_aniso_cloth_mesh(
                 pos=wp.vec3(0, 0, 0),
                 rot=wp.quat_identity(),
