@@ -59,7 +59,7 @@ def main(argv=None):
         # NVIDIA Modifications follow:
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""Example usage:
-        python -m newton.tests -s autodetect -p 'test_a*.py'
+        python -m newton.tests -p 'test_c*.py'
         python -m newton.tests -k 'mgpu' -k 'cuda'
         """,
     )
