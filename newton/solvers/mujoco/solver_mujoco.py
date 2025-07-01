@@ -649,11 +649,12 @@ def update_geom_properties_kernel(
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
     shape_to_geom: wp.array(dtype=wp.int32),
-    shapes_per_env: int,
+    selected_shapes: wp.array(dtype=wp.int32),
     up_axis: int,
     torsional_friction: float,
     rolling_friction: float,
     contact_stiffness_time_const: float,
+    num_envs: int,
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -664,55 +665,58 @@ def update_geom_properties_kernel(
 ):
     """Update geom properties from Newton shape properties."""
     tid = wp.tid()
-    worldid = tid // shapes_per_env
-    shape_in_env = tid % shapes_per_env
 
-    geom_idx = shape_to_geom[shape_in_env]
+    # Get the actual shape index from the selected shapes array
+    shape_idx = selected_shapes[tid]
+
+    geom_idx = shape_to_geom[shape_idx]
     if geom_idx < 0:  # Invalid mapping
         return
 
-    # Update bounding radius
-    geom_rbound[worldid, geom_idx] = shape_collision_radius[tid]
+    # For multi-world setup, replicate the geom properties across all worlds
+    for worldid in range(num_envs):
+        # Update bounding radius
+        geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
 
-    # Update friction (slide, torsion, roll)
-    mu = shape_mu[tid]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
+        # Update friction (slide, torsion, roll)
+        mu = shape_mu[shape_idx]
+        geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
-    # Update solref (stiffness, damping as time constants)
-    # MuJoCo uses time constants, Newton uses direct stiffness/damping
-    # Convert using heuristic: time_const = sqrt(mass/stiffness)
-    # For now, use a simplified mapping
-    ke = shape_ke[tid]
-    kd = shape_kd[tid]
-    if ke > 0.0:
-        # Use provided time constant for stiffness
-        time_const_stiff = contact_stiffness_time_const
-        if kd > 0.0:
-            time_const_damp = kd / (2.0 * wp.sqrt(ke))
+        # Update solref (stiffness, damping as time constants)
+        # MuJoCo uses time constants, Newton uses direct stiffness/damping
+        # Convert using heuristic: time_const = sqrt(mass/stiffness)
+        # For now, use a simplified mapping
+        ke = shape_ke[shape_idx]
+        kd = shape_kd[shape_idx]
+        if ke > 0.0:
+            # Use provided time constant for stiffness
+            time_const_stiff = contact_stiffness_time_const
+            if kd > 0.0:
+                time_const_damp = kd / (2.0 * wp.sqrt(ke))
+            else:
+                time_const_damp = 1.0
         else:
+            time_const_stiff = contact_stiffness_time_const
             time_const_damp = 1.0
-    else:
-        time_const_stiff = contact_stiffness_time_const
-        time_const_damp = 1.0
-    geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+        geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
-    # Update size
-    geom_size[worldid, geom_idx] = shape_size[tid]
+        # Update size
+        geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
-    # Update position and orientation
-    pos = wp.vec3f(shape_transform[tid].p)
-    quat = shape_transform[tid].q
+        # Update position and orientation
+        pos = wp.vec3f(shape_transform[shape_idx].p)
+        quat = shape_transform[shape_idx].q
 
-    # Handle up-axis conversion if needed
-    if up_axis == 1:
-        # MuJoCo uses Z-up, Newton Y-up requires conversion
-        pos = wp.vec3f(pos[0], -pos[2], pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        quat = rot_y2z * quat
+        # Handle up-axis conversion if needed
+        if up_axis == 1:
+            # MuJoCo uses Z-up, Newton Y-up requires conversion
+            pos = wp.vec3f(pos[0], -pos[2], pos[1])
+            rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+            quat = rot_y2z * quat
 
-    geom_pos[worldid, geom_idx] = pos
-    # Convert from xyzw to wxyz for MuJoCo
-    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+        geom_pos[worldid, geom_idx] = pos
+        # Convert from xyzw to wxyz for MuJoCo
+        geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
 
 class MuJoCoSolver(SolverBase):
@@ -845,8 +849,8 @@ class MuJoCoSolver(SolverBase):
             self.update_model_inertial_properties()
         if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
             self.update_joint_properties()
-        # if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
-        #     self.update_geom_properties()
+        if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
+            self.update_geom_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1034,28 +1038,29 @@ class MuJoCoSolver(SolverBase):
         Shapes can only collide with shapes of different colors.
         """
         # find graph coloring of collision filter pairs
+        collision_group = model.shape_collision_group
+        # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
             for i, j in product(selected_shapes, selected_shapes)
             if i != j
-            and (i, j) not in model.shape_collision_filter_pairs
-            and (j, i) not in model.shape_collision_filter_pairs
+            and (
+                ((i, j) not in model.shape_collision_filter_pairs and (j, i) not in model.shape_collision_filter_pairs)
+                or collision_group[i] != collision_group[j]
+            )
         ]
         if len(graph_edges) > 0:
             if visualize_graph:
                 plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
-                num_nodes=model.shape_count,
+                num_nodes=int(selected_shapes.max() + 1),
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
             )
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
             num_colors = 0
             for group in color_groups:
-                if len(group) > 1:
-                    num_colors += 1
-                    shape_color[group] = num_colors
-                else:
-                    shape_color[group] = 0
+                num_colors += 1
+                shape_color[group] = num_colors
         else:
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
@@ -1236,6 +1241,7 @@ class MuJoCoSolver(SolverBase):
         shape_type = model.shape_geo.type.numpy()
         shape_size = model.shape_geo.scale.numpy()
         shape_body = model.shape_body.numpy()
+        shape_flags = model.shape_flags.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1307,7 +1313,7 @@ class MuJoCoSolver(SolverBase):
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
-            selected_shapes = np.arange(model.shape_count)
+            selected_shapes = np.where(shape_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))[0]
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
@@ -1323,12 +1329,15 @@ class MuJoCoSolver(SolverBase):
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
-        shape_color = self.color_collision_shapes(model, selected_shapes)
+        # filter out shapes that are not colliding with anything
+        colliding_shapes = selected_shapes[
+            shape_flags[selected_shapes] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES) != 0
+        ]
+        shape_color = self.color_collision_shapes(model, colliding_shapes)
 
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
-            shape_flags = model.shape_flags.numpy()
             if not shapes:
                 return
             for shape in shapes:
@@ -1399,7 +1408,7 @@ class MuJoCoSolver(SolverBase):
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
                 # Use shape materials instead of defaults if available
-                if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
+                if model.shape_materials.mu is not None:
                     shape_mu = model.shape_materials.mu.numpy()
                     if shape < len(shape_mu):
                         # Set friction from Newton shape materials using model's friction parameters
@@ -1715,6 +1724,9 @@ class MuJoCoSolver(SolverBase):
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
 
+            # store selected shapes for later use in update_geom_properties
+            self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
+
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
@@ -1854,18 +1866,10 @@ class MuJoCoSolver(SolverBase):
 
     def update_joint_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
-        if not hasattr(self, "mjw_model") or self.mjw_model is None:
-            return
-
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
-        if (
-            hasattr(self.model, "mjc_axis_to_actuator")
-            and self.model.mjc_axis_to_actuator is not None
-            and hasattr(self.mjw_model, "actuator_forcerange")
-            and len(self.mjw_model.actuator_forcerange.shape) == 2
-        ):
+        if self.model.mjc_axis_to_actuator is not None:
             wp.launch(
                 update_axis_properties_kernel,
                 dim=self.model.joint_dof_count,
@@ -1878,84 +1882,60 @@ class MuJoCoSolver(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature and friction) in a single kernel launch
-        if (
-            hasattr(self.mjw_model, "dof_armature")
-            and len(self.mjw_model.dof_armature.shape) == 2
-            and hasattr(self.mjw_model, "dof_frictionloss")
-            and len(self.mjw_model.dof_frictionloss.shape) == 2
-        ):
-            wp.launch(
-                update_dof_properties_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
-                    self.model.joint_armature,
-                    self.model.joint_friction,
-                    dofs_per_env,
-                ],
-                outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
-                device=self.model.device,
-            )
+        # Update DOF properties (armature and friction)
+        wp.launch(
+            update_dof_properties_kernel,
+            dim=self.model.joint_dof_count,
+            inputs=[
+                self.model.joint_armature,
+                self.model.joint_friction,
+                dofs_per_env,
+            ],
+            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            device=self.model.device,
+        )
 
     def update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
-        if not hasattr(self, "mjw_model") or self.mjw_model is None:
+        # Skip if we don't have selected_shapes (e.g., when mjw_model/mjw_data provided externally)
+        if not hasattr(self, "selected_shapes"):
             return
 
-        if not hasattr(self.model, "mjc_shape_to_geom") or self.model.mjc_shape_to_geom is None:
+        # Skip if shape materials are not available
+        if self.model.shape_materials.mu is None:
             return
 
-        # Check if shape materials are available
-        if not hasattr(self.model, "shape_materials") or self.model.shape_materials.mu is None:
-            return
+        # Get contact stiffness time constant from solver or use default
+        if self.contact_stiffness_time_const is not None:
+            contact_time_const = self.contact_stiffness_time_const
+        else:
+            contact_time_const = 0.02  # Default 20ms
 
-        shapes_per_env = self.model.shape_count // self.model.num_envs
-
-        # Update geom properties if the arrays have the right shape (2D for multi-world)
-        if (
-            hasattr(self.mjw_model, "geom_rbound")
-            and len(self.mjw_model.geom_rbound.shape) == 2
-            and hasattr(self.mjw_model, "geom_friction")
-            and len(self.mjw_model.geom_friction.shape) == 2
-            and hasattr(self.mjw_model, "geom_solref")
-            and len(self.mjw_model.geom_solref.shape) == 2
-            and hasattr(self.mjw_model, "geom_size")
-            and len(self.mjw_model.geom_size.shape) == 2
-            and hasattr(self.mjw_model, "geom_pos")
-            and len(self.mjw_model.geom_pos.shape) == 2
-            and hasattr(self.mjw_model, "geom_quat")
-            and len(self.mjw_model.geom_quat.shape) == 2
-        ):
-            # Get contact stiffness time constant from solver or use default
-            if self.contact_stiffness_time_const is not None:
-                contact_time_const = self.contact_stiffness_time_const
-            else:
-                contact_time_const = 0.02  # Default 20ms
-
-            wp.launch(
-                update_geom_properties_kernel,
-                dim=self.model.shape_count,
-                inputs=[
-                    self.model.shape_collision_radius,
-                    self.model.shape_materials.mu,
-                    self.model.shape_materials.ke,
-                    self.model.shape_materials.kd,
-                    self.model.shape_geo.scale,
-                    self.model.shape_transform,
-                    self.model.mjc_shape_to_geom,
-                    shapes_per_env,
-                    self.model.up_axis,
-                    self.model.rigid_contact_torsional_friction,
-                    self.model.rigid_contact_rolling_friction,
-                    contact_time_const,
-                ],
-                outputs=[
-                    self.mjw_model.geom_rbound,
-                    self.mjw_model.geom_friction,
-                    self.mjw_model.geom_solref,
-                    self.mjw_model.geom_size,
-                    self.mjw_model.geom_pos,
-                    self.mjw_model.geom_quat,
-                ],
-                device=self.model.device,
-            )
+        wp.launch(
+            update_geom_properties_kernel,
+            dim=len(self.selected_shapes),
+            inputs=[
+                self.model.shape_collision_radius,
+                self.model.shape_materials.mu,
+                self.model.shape_materials.ke,
+                self.model.shape_materials.kd,
+                self.model.shape_geo.scale,
+                self.model.shape_transform,
+                self.model.mjc_shape_to_geom,
+                self.selected_shapes,
+                self.model.up_axis,
+                self.model.rigid_contact_torsional_friction,
+                self.model.rigid_contact_rolling_friction,
+                contact_time_const,
+                self.model.num_envs,
+            ],
+            outputs=[
+                self.mjw_model.geom_rbound,
+                self.mjw_model.geom_friction,
+                self.mjw_model.geom_solref,
+                self.mjw_model.geom_size,
+                self.mjw_model.geom_pos,
+                self.mjw_model.geom_quat,
+            ],
+            device=self.model.device,
+        )

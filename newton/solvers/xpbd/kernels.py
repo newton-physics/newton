@@ -2079,7 +2079,8 @@ def solve_body_contact_positions(
     contact_offset0: wp.array(dtype=wp.vec3),
     contact_offset1: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
-    contact_thickness: wp.array(dtype=float),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     shape_materials: ShapeMaterials,
@@ -2122,7 +2123,7 @@ def solve_body_contact_positions(
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
-    thickness = contact_thickness[tid]
+    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = -contact_normal[tid]
     d = wp.dot(n, bx_b - bx_a) - thickness
 

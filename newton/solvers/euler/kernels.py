@@ -28,7 +28,6 @@ from newton.sim import (
     Contacts,
     Control,
     Model,
-    ShapeGeometry,
     ShapeMaterials,
     State,
 )
@@ -830,7 +829,6 @@ def eval_rigid_contacts(
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     shape_materials: ShapeMaterials,
-    geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -838,6 +836,8 @@ def eval_rigid_contacts(
     contact_normal: wp.array(dtype=wp.vec3),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
@@ -856,8 +856,8 @@ def eval_rigid_contacts(
     ka = 0.0  # adhesion distance
     mu = 0.0  # friction coefficient
     mat_nonzero = 0
-    thickness_a = 0.0
-    thickness_b = 0.0
+    thickness_a = contact_thickness0[tid]
+    thickness_b = contact_thickness1[tid]
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
@@ -871,7 +871,6 @@ def eval_rigid_contacts(
         kf += shape_materials.kf[shape_a]
         ka += shape_materials.ka[shape_a]
         mu += shape_materials.mu[shape_a]
-        thickness_a = geo.thickness[shape_a]
         body_a = shape_body[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
@@ -880,7 +879,6 @@ def eval_rigid_contacts(
         kf += shape_materials.kf[shape_b]
         ka += shape_materials.ka[shape_b]
         mu += shape_materials.mu[shape_b]
-        thickness_b = geo.thickness[shape_b]
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         ke /= float(mat_nonzero)
@@ -1627,8 +1625,17 @@ def eval_tetrahedral_forces(model: Model, state: State, control: Control, partic
         )
 
 
-def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | None, friction_smoothing: float = 1.0):
+def eval_body_contact_forces(
+    model: Model,
+    state: State,
+    contacts: Contacts | None,
+    friction_smoothing: float = 1.0,
+    force_in_world_frame: bool = False,
+    body_f_out: wp.array | None = None,
+):
     if contacts is not None and contacts.rigid_contact_max:
+        if body_f_out is None:
+            body_f_out = state.body_f
         wp.launch(
             kernel=eval_rigid_contacts,
             dim=contacts.rigid_contact_max,
@@ -1637,7 +1644,6 @@ def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | No
                 state.body_qd,
                 model.body_com,
                 model.shape_materials,
-                model.shape_geo,
                 model.shape_body,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
@@ -1645,10 +1651,12 @@ def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | No
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
-                False,
+                contacts.rigid_contact_thickness0,
+                contacts.rigid_contact_thickness1,
+                force_in_world_frame,
                 friction_smoothing,
             ],
-            outputs=[state.body_f],
+            outputs=[body_f_out],
             device=model.device,
         )
 
