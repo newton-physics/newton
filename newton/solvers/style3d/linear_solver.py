@@ -75,6 +75,9 @@ def array_mul_kernel(
     out[tid] = a[tid] * b[tid]
 
 
+wp.overload(array_mul_kernel, [wp.array(dtype=wp.float32), wp.array(dtype=wp.vec3), wp.array(dtype=wp.vec3)])
+
+
 @wp.kernel
 def ell_mat_vel_mul_kernel(
     M_non_diag: SparseMatrixELL,

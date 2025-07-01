@@ -27,17 +27,27 @@ CUDA device.
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from typing import Any
 
 import warp as wp
-import warp.tests.unittest_utils
-from warp.tests.unittest_utils import (
+
+import newton.tests.unittest_utils
+from newton.tests.unittest_utils import (
     USD_AVAILABLE,
+    add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
     sanitize_identifier,
 )
+
+wp.init()
+
+test_mjwarp_cuda_examples = False
+
+if wp.context.runtime.driver_version >= (12, 3):
+    test_mjwarp_cuda_examples = True
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -98,18 +108,16 @@ def add_example_test(
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = warp_cache_path
 
-        if warp.tests.unittest_utils.coverage_enabled:
-            import tempfile
-
+        if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
             with tempfile.NamedTemporaryFile(
-                dir=warp.tests.unittest_utils.coverage_temp_dir, delete=False
+                dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False
             ) as coverage_file:
                 pass
 
             command = ["coverage", "run", f"--data-file={coverage_file.name}"]
 
-            if warp.tests.unittest_utils.coverage_branch:
+            if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
@@ -159,8 +167,6 @@ def add_example_test(
                 os.remove(stage_path)
             except OSError:
                 pass
-
-    from warp.tests.unittest_utils import add_function_test
 
     add_function_test(cls, f"test_{name}", run, devices=devices, check_output=False)
 
@@ -212,7 +218,7 @@ class TestBasicRobotExamples(unittest.TestCase):
 add_example_test(
     TestBasicRobotExamples,
     name="example_cartpole",
-    devices=test_devices,
+    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
     test_options={"stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
@@ -227,14 +233,14 @@ add_example_test(
 add_example_test(
     TestBasicRobotExamples,
     name="example_g1",
-    devices=test_devices,
+    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
     test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
     TestBasicRobotExamples,
     name="example_humanoid",
-    devices=test_devices,
+    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
     test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},
 )

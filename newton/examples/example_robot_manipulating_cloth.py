@@ -33,6 +33,10 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.geometry.kernels
+import newton.sim.articulation
+import newton.solvers.euler.kernels
+import newton.solvers.vbd.solver_vbd
 import newton.utils
 from newton.sim import Model, ModelBuilder, State, eval_fk
 from newton.solvers import FeatherstoneSolver, VBDSolver
@@ -168,6 +172,7 @@ class Example:
     ):
         self.stage_path = stage_path
 
+        self.cuda_graph = None
         self.use_cuda_graph = wp.get_device().is_cuda
         self.add_cloth = True
         self.add_robot = True
@@ -248,9 +253,6 @@ class Example:
 
             self.builder.color()
         self.model = self.builder.finalize(requires_grad=False)
-        if not wp.get_device().is_cuda:
-            self.use_graph_capture = False
-
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
@@ -355,7 +357,15 @@ class Example:
         self.initial_pose = self.model.joint_q.numpy()
 
     def capture_cuda_graph(self):
-        self.cuda_graph = None
+        if self.cuda_graph is None:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
+            wp.load_module(newton.sim.articulation, device=wp.get_device())
+            wp.set_module_options({"block_dim": 16}, newton.geometry.kernels)
+            wp.load_module(newton.geometry.kernels, device=wp.get_device())
+            wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
+            wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
+
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.integrate_frame()
