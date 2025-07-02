@@ -73,12 +73,14 @@ class Example:
                 indices=garment_mesh_indices.tolist(),
                 density=0.3,
                 scale=1.0,
+                particle_radius=5.0e-3,
             )
             builder.add_shape_mesh(
                 body=builder.add_body(),
                 mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
             )
-            fixed_points = [0]
+            # fixed_points = [0]
+            fixed_points = []
         else:
             grid_dim = 100
             grid_width = 1.0
@@ -99,6 +101,13 @@ class Example:
             )
             fixed_points = [0, grid_dim]
 
+        # add a table
+        builder.add_shape_box(
+            body=builder.add_body(),
+            hx=2.5,
+            hy=0.1,
+            hz=2.5,
+        )
         self.model = builder.finalize()
 
         # set fixed points
@@ -108,8 +117,11 @@ class Example:
         self.model.particle_flags = wp.array(flags)
 
         # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2
-        self.model.soft_contact_margin = 0.35
+        self.model.soft_contact_radius = 0.2e-2
+        self.model.soft_contact_margin = 0.35e-2
+        self.model.soft_contact_ke = 1.0e1
+        self.model.soft_contact_kd = 1.0e-6
+        self.model.soft_contact_mu = 0.2
 
         self.solver = newton.solvers.Style3DSolver(
             self.model,
@@ -121,6 +133,7 @@ class Example:
         self.state0 = self.model.state()
         self.state1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state0)
 
         self.renderer = None
         if stage_path:
@@ -138,8 +151,9 @@ class Example:
             self.cuda_graph = capture.graph
 
     def integrate_frame_substeps(self):
+        self.contacts = self.model.collide(self.state0)
         for _ in range(self.num_substeps):
-            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
+            self.solver.step(self.model, self.state0, self.state1, self.control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def advance_frame(self):
