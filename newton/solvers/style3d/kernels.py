@@ -102,6 +102,39 @@ def eval_bend_kernel(
 
 
 @wp.kernel
+def eval_drag_kernel(
+    spring_stiff: float,
+    face_index: wp.array(dtype=int),
+    drag_pos: wp.array(dtype=wp.vec3),
+    drag_bary_coord: wp.array(dtype=wp.vec3),
+    faces: wp.array(dtype=wp.int32, ndim=2),
+    vert_pos: wp.array(dtype=wp.vec3),
+    # outputs
+    forces: wp.array(dtype=wp.vec3),
+    # pd_diags: wp.array(dtype=float),
+):
+    fid = face_index[0]
+    if fid != -1:
+        coord = drag_bary_coord[0]
+        face = wp.vec3i(faces[fid, 0], faces[fid, 1], faces[fid, 2])
+        x0 = vert_pos[face[0]]
+        x1 = vert_pos[face[1]]
+        x2 = vert_pos[face[2]]
+        p = x0 * coord[0] + x1 * coord[1] + x2 * coord[2]
+        dir = drag_pos[0] - p
+
+        # spring_stiff = 1e2
+        force = spring_stiff * dir
+        wp.atomic_add(forces, face[0], force * coord[0])
+        wp.atomic_add(forces, face[1], force * coord[1])
+        wp.atomic_add(forces, face[2], force * coord[2])
+
+        # pd_diags[face[0]] += spring_k * coord[0]
+        # pd_diags[face[1]] += spring_k * coord[1]
+        # pd_diags[face[2]] += spring_k * coord[2]
+
+
+@wp.kernel
 def eval_body_contact_kernel(
     # inputs
     dt: float,

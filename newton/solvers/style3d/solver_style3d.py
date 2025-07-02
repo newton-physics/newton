@@ -24,6 +24,7 @@ from .kernels import (
     apply_chebyshev_kernel,
     eval_bend_kernel,
     eval_body_contact_kernel,
+    eval_drag_kernel,
     eval_stretch_kernel,
     init_rhs_kernel,
     init_step_kernel,
@@ -65,13 +66,25 @@ class Style3DSolver(SolverBase):
         self,
         model: Style3DModel,
         iterations=10,
+        drag_spring_stiff: float = 1e2,
+        enable_mouse_dragging: bool = False,
         integrate_with_external_rigid_solver: bool = False,
         friction_epsilon: float = 1e-2,
     ):
+        """
+        Args:
+            model: The `Style3DModel` to integrate.
+            iterations: Number of non-linear iterations per step.
+            drag_spring_stiff: The stiffness of spring connecting barycentric-weighted drag-point and target-point.
+            enable_mouse_dragging: Enable/disable dragging kernel.
+        """
+
         super().__init__(model)
         self.style3d_model = model
         self._enable_chebyshev = True
         self.nonlinear_iterations = iterations
+        self.drag_spring_stiff = drag_spring_stiff
+        self.enable_mouse_dragging = enable_mouse_dragging
         self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
         self.linear_solver = PcgSolver(model.particle_count, self.device)
 
@@ -100,6 +113,11 @@ class Style3DSolver(SolverBase):
         self.body_contact_max = model.shape_count * model.particle_count
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         self.friction_epsilon = friction_epsilon
+
+        # Drag info
+        self.drag_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self.drag_index = wp.array([-1], dtype=int, device=self.device)
+        self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
     @staticmethod
     def get_chebyshev_omega(omega: float, iter: int):
@@ -218,6 +236,24 @@ class Style3DSolver(SolverBase):
                 device=self.device,
             )
 
+            if self.enable_mouse_dragging:
+                wp.launch(
+                    eval_drag_kernel,
+                    dim=1,
+                    inputs=[
+                        self.drag_spring_stiff,
+                        self.drag_index,
+                        self.drag_pos,
+                        self.drag_bary_coord,
+                        self.model.tri_indices,
+                        state_in.particle_q,
+                    ],
+                    outputs=[
+                        self.rhs,
+                    ],
+                    device=self.device,
+                )
+
             wp.launch(
                 prepare_jacobi_preconditioner_kernel,
                 dim=self.model.particle_count,
@@ -282,10 +318,7 @@ class Style3DSolver(SolverBase):
             device=self.device,
         )
 
-    def precompute(
-        self,
-        builder: Style3DModelBuilder,
-    ):
+    def precompute(self, builder: Style3DModelBuilder):
         with wp.ScopedTimer("Style3DSolver::precompute()"):
             self.pd_matrix_builder.add_stretch_constraints(
                 builder.tri_indices, builder.tri_poses, builder.tri_aniso_ke, builder.tri_areas
@@ -299,4 +332,10 @@ class Style3DSolver(SolverBase):
             self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = self.pd_matrix_builder.finalize(
                 self.device
             )
-            self.static_A_diags = wp.zeros_like(self.pd_diags)
+
+    def update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
+        """Should be invoked when state changed."""
+        # print([index, pos, bary_coord])
+        self.drag_bary_coord.fill_(bary_coord)
+        self.drag_index.fill_(index)
+        self.drag_pos.fill_(pos)
