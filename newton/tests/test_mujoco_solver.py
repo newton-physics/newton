@@ -217,7 +217,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         )
 
         self.builder = newton.ModelBuilder()
-        # self.builder.add_shape_plane()
+        self.builder.add_shape_plane()
 
         for i in range(num_envs):
             env_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
