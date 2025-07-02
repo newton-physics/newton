@@ -629,15 +629,16 @@ def update_axis_properties_kernel(
         kv = joint_target_kv[tid]
         mode = joint_dof_mode[tid]
 
-        if newton.JOINT_MODE_TARGET_POSITION == mode:
+        if mode == newton.JOINT_MODE_TARGET_POSITION:
             # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             actuator_bias[worldid, actuator_idx][1] = -kp
             actuator_bias[worldid, actuator_idx][2] = -kv
             actuator_gain[worldid, actuator_idx][0] = kp
-        elif newton.JOINT_MODE_TARGET_VELOCITY == mode:
+        elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
             # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = 0.0
             actuator_bias[worldid, actuator_idx][2] = -kv
             actuator_gain[worldid, actuator_idx][0] = kv
         else:
