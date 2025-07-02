@@ -223,7 +223,7 @@ class Style3DSolver(SolverBase):
                         self.model.tri_indices,
                         state_in.particle_q,
                     ],
-                    outputs=[self.rhs],
+                    outputs=[self.rhs, self.contact_hessian_diags],
                     device=self.device,
                 )
 
