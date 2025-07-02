@@ -24,7 +24,7 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
-from .types import Devicelike, ModelShapeGeometry, ModelShapeMaterials
+from .types import ShapeGeometry, ShapeMaterials
 
 
 class Model:

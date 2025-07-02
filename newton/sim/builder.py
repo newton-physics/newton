@@ -973,7 +973,7 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointAxis): The axis of rotation in the parent body's local frame, can be a :class:`JointAxis` object whose settings will be used instead of the other arguments.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
             target: The target angle (in radians) or target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.

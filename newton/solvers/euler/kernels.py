@@ -28,7 +28,6 @@ from newton.sim import (
     Contacts,
     Control,
     Model,
-    ShapeGeometry,
     ShapeMaterials,
     State,
 )
@@ -140,71 +139,44 @@ def eval_triangles(
     P2 = F2 * k_mu + dFdt2 * k_damp
 
     # -----------------------------
-    # St. Venant-Kirchoff
-
-    # # Green strain, F'*F-I
-    # e00 = dot(f1, f1) - 1.0
-    # e10 = dot(f2, f1)
-    # e01 = dot(f1, f2)
-    # e11 = dot(f2, f2) - 1.0
-
-    # E = wp.mat22(e00, e01,
-    #              e10, e11)
-
-    # # local forces (deviatoric part)
-    # T = wp.mul(E, wp.transpose(Dm))
-
-    # # spatial forces, F*T
-    # fq = (f1*T[0,0] + f2*T[1,0])*k_mu*2.0
-    # fr = (f1*T[0,1] + f2*T[1,1])*k_mu*2.0
-    # alpha = 1.0
-
-    # -----------------------------
-    # Baraff & Witkin, note this model is not isotropic
-
-    # c1 = length(f1) - 1.0
-    # c2 = length(f2) - 1.0
-    # f1 = normalize(f1)*c1*k1
-    # f2 = normalize(f2)*c2*k1
-
-    # fq = f1*Dm[0,0] + f2*Dm[0,1]
-    # fr = f1*Dm[1,0] + f2*Dm[1,1]
-
-    # -----------------------------
     # Neo-Hookean (with rest stability)
 
     # force = P*Dm'
     f1 = P1 * Dm[0, 0] + P2 * Dm[0, 1]
     f2 = P1 * Dm[1, 0] + P2 * Dm[1, 1]
-    alpha = 1.0 + k_mu / k_lambda
 
     # -----------------------------
     # Area Preservation
 
     n = wp.cross(x10, x20)
     area = wp.length(n) * 0.5
+    n = wp.normalize(n)
 
     # actuation
     act = activation[tid]
 
-    # J-alpha
-    c = area * inv_rest_area - alpha + act
+    # Apply area preservation only when k_lambda > 0
+    if k_lambda > 0.0:
+        alpha = 1.0 + k_mu / k_lambda
 
-    # dJdx
-    n = wp.normalize(n)
-    dcdq = wp.cross(x20, n) * inv_rest_area * 0.5
-    dcdr = wp.cross(n, x10) * inv_rest_area * 0.5
+        # J-alpha
+        c = area * inv_rest_area - alpha + act
 
-    f_area = k_lambda * c
+        # dJdx
+        dcdq = wp.cross(x20, n) * inv_rest_area * 0.5
+        dcdr = wp.cross(n, x10) * inv_rest_area * 0.5
 
-    # -----------------------------
-    # Area Damping
+        f_area = k_lambda * c
 
-    dcdt = wp.dot(dcdq, v1) + wp.dot(dcdr, v2) - wp.dot(dcdq + dcdr, v0)
-    f_damp = k_damp * dcdt
+        # -----------------------------
+        # Area Damping
 
-    f1 = f1 + dcdq * (f_area + f_damp)
-    f2 = f2 + dcdr * (f_area + f_damp)
+        dcdt = wp.dot(dcdq, v1) + wp.dot(dcdr, v2) - wp.dot(dcdq + dcdr, v0)
+        f_damp = k_damp * dcdt
+
+        f1 = f1 + dcdq * (f_area + f_damp)
+        f2 = f2 + dcdr * (f_area + f_damp)
+
     f0 = f1 + f2
 
     # -----------------------------
@@ -235,17 +207,12 @@ def eval_triangles_contact(
     indices: wp.array2d(dtype=int),
     materials: wp.array2d(dtype=float),
     particle_radius: wp.array(dtype=float),
+    contact_stiffness: float,
     f: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
     face_no = tid // num_particles  # which face
     particle_no = tid % num_particles  # which particle
-
-    # k_mu = materials[face_no, 0]
-    # k_lambda = materials[face_no, 1]
-    # k_damp = materials[face_no, 2]
-    # k_drag = materials[face_no, 3]
-    # k_lift = materials[face_no, 4]
 
     # at the moment, just one particle
     pos = x[particle_no]
@@ -261,29 +228,30 @@ def eval_triangles_contact(
     q = x[j]  # point one
     r = x[k]  # point two
 
-    # vp = v[i] # vel zero
-    # vq = v[j] # vel one
-    # vr = v[k] # vel two
-
-    # qp = q-p # barycentric coordinates (centered at p)
-    # rp = r-p
-
     bary = triangle_closest_point_barycentric(p, q, r, pos)
     closest = p * bary[0] + q * bary[1] + r * bary[2]
 
     diff = pos - closest
-    dist = wp.dot(diff, diff)
-    n = wp.normalize(diff)
-    c = wp.min(dist - particle_radius[particle_no], 0.0)  # 0 unless within particle's contact radius
-    # c = wp.leaky_min(dot(n, x0)-0.01, 0.0, 0.0)
-    fn = n * c * 1e5
+    dist = wp.length(diff)
 
-    wp.atomic_sub(f, particle_no, fn)
+    # early exit if no contact or degenerate case
+    collision_radius = particle_radius[particle_no]
+    if dist >= collision_radius or dist < 1e-6:
+        return
 
-    # # apply forces (could do - f / 3 here)
-    wp.atomic_add(f, i, fn * bary[0])
-    wp.atomic_add(f, j, fn * bary[1])
-    wp.atomic_add(f, k, fn * bary[2])
+    # contact normal (points from triangle to particle)
+    n = diff / dist
+
+    # penetration depth
+    penetration_depth = collision_radius - dist
+
+    # contact force
+    fn = contact_stiffness * penetration_depth * n
+
+    wp.atomic_add(f, particle_no, fn)
+    wp.atomic_add(f, i, -fn * bary[0])
+    wp.atomic_add(f, j, -fn * bary[1])
+    wp.atomic_add(f, k, -fn * bary[2])
 
 
 @wp.kernel
@@ -450,18 +418,18 @@ def eval_bending(
     if n1_length < eps or n2_length < eps or e_length < eps:
         return
 
-    n1 = n1 / n1_length
-    n2 = n2 / n2_length
+    n1_hat = n1 / n1_length
+    n2_hat = n2 / n2_length
     e_hat = e / e_length
 
-    cos_theta = wp.dot(n1, n2)
-    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    cos_theta = wp.dot(n1_hat, n2_hat)
+    sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
-    d1 = n1 * e_length
-    d2 = n2 * e_length
-    d3 = n1 * wp.dot(x1 - x4, e_hat) + n2 * wp.dot(x2 - x4, e_hat)
-    d4 = n1 * wp.dot(x3 - x1, e_hat) + n2 * wp.dot(x3 - x2, e_hat)
+    d1 = -n1_hat * e_length
+    d2 = -n2_hat * e_length
+    d3 = -n1_hat * wp.dot(x1 - x4, e_hat) - n2_hat * wp.dot(x2 - x4, e_hat)
+    d4 = -n1_hat * wp.dot(x3 - x1, e_hat) - n2_hat * wp.dot(x3 - x2, e_hat)
 
     # elastic
     f_elastic = ke * (theta - rest_angle)
@@ -830,7 +798,6 @@ def eval_rigid_contacts(
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     shape_materials: ShapeMaterials,
-    geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -838,6 +805,8 @@ def eval_rigid_contacts(
     contact_normal: wp.array(dtype=wp.vec3),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
@@ -856,8 +825,8 @@ def eval_rigid_contacts(
     ka = 0.0  # adhesion distance
     mu = 0.0  # friction coefficient
     mat_nonzero = 0
-    thickness_a = 0.0
-    thickness_b = 0.0
+    thickness_a = contact_thickness0[tid]
+    thickness_b = contact_thickness1[tid]
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
@@ -871,7 +840,6 @@ def eval_rigid_contacts(
         kf += shape_materials.kf[shape_a]
         ka += shape_materials.ka[shape_a]
         mu += shape_materials.mu[shape_a]
-        thickness_a = geo.thickness[shape_a]
         body_a = shape_body[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
@@ -880,7 +848,6 @@ def eval_rigid_contacts(
         kf += shape_materials.kf[shape_b]
         ka += shape_materials.ka[shape_b]
         mu += shape_materials.mu[shape_b]
-        thickness_b = geo.thickness[shape_b]
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         ke /= float(mat_nonzero)
@@ -1586,6 +1553,7 @@ def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.arra
                 model.tri_indices,
                 model.tri_materials,
                 model.particle_radius,
+                model.soft_contact_ke,
             ],
             outputs=[particle_f],
             device=model.device,
@@ -1627,8 +1595,17 @@ def eval_tetrahedral_forces(model: Model, state: State, control: Control, partic
         )
 
 
-def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | None, friction_smoothing: float = 1.0):
+def eval_body_contact_forces(
+    model: Model,
+    state: State,
+    contacts: Contacts | None,
+    friction_smoothing: float = 1.0,
+    force_in_world_frame: bool = False,
+    body_f_out: wp.array | None = None,
+):
     if contacts is not None and contacts.rigid_contact_max:
+        if body_f_out is None:
+            body_f_out = state.body_f
         wp.launch(
             kernel=eval_rigid_contacts,
             dim=contacts.rigid_contact_max,
@@ -1637,7 +1614,6 @@ def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | No
                 state.body_qd,
                 model.body_com,
                 model.shape_materials,
-                model.shape_geo,
                 model.shape_body,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
@@ -1645,10 +1621,12 @@ def eval_body_contact_forces(model: Model, state: State, contacts: Contacts | No
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
-                False,
+                contacts.rigid_contact_thickness0,
+                contacts.rigid_contact_thickness1,
+                force_in_world_frame,
                 friction_smoothing,
             ],
-            outputs=[state.body_f],
+            outputs=[body_f_out],
             device=model.device,
         )
 
