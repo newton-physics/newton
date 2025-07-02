@@ -29,6 +29,11 @@ from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
 
+
+class vec10f(wp.types.vector(length=10, dtype=float)):
+    pass
+
+
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
@@ -253,6 +258,29 @@ def apply_mjc_control_kernel(
             mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
         else:
             mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
+
+
+@wp.kernel
+def apply_mjc_body_f_kernel(
+    up_axis: int,
+    body_q: wp.array(dtype=wp.transform),
+    body_f: wp.array(dtype=wp.spatial_vector),
+    to_mjc_body_index: wp.array(dtype=wp.int32),
+    bodies_per_env: int,
+    # outputs
+    xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
+):
+    worldid, bodyid = wp.tid()
+    mj_body_id = to_mjc_body_index[bodyid]
+    if mj_body_id != -1:
+        f = body_f[worldid * bodies_per_env + bodyid]
+        w = wp.vec3(f[0], f[1], f[2])
+        v = wp.vec3(f[3], f[4], f[5])
+        if up_axis == 1:
+            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+            w = wp.quat_rotate(rot_y2z, w)
+            v = wp.quat_rotate(rot_y2z, v)
+        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
@@ -602,10 +630,15 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_axis_properties_kernel(
+    joint_dof_mode: wp.array(dtype=int),
+    joint_target_kp: wp.array(dtype=float),
+    joint_target_kv: wp.array(dtype=float),
     joint_effort_limit: wp.array(dtype=float),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
+    actuator_bias: wp.array2d(dtype=vec10f),
+    actuator_gain: wp.array2d(dtype=vec10f),
     actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
     """Update actuator force ranges based on joint effort limits."""
@@ -615,6 +648,29 @@ def update_axis_properties_kernel(
 
     actuator_idx = axis_to_actuator[axis_in_env]
     if actuator_idx >= 0:  # Valid actuator
+        kp = joint_target_kp[tid]
+        kv = joint_target_kv[tid]
+        mode = joint_dof_mode[tid]
+
+        if mode == newton.JOINT_MODE_TARGET_POSITION:
+            # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = -kp
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kp
+        elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
+            # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kv
+        else:
+            # bias = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+            # gain = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = 0.0
+            actuator_gain[worldid, actuator_idx][0] = 1.0
+
         effort_limit = joint_effort_limit[tid]
         actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
@@ -858,55 +914,77 @@ class MuJoCoSolver(SolverBase):
     @staticmethod
     def apply_mjc_control(model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
         if control is None or control.joint_f is None:
-            return
+            if state.body_f is None:
+                return
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             ctrl = mj_data.ctrl
             qfrc = mj_data.qfrc_applied
+            xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+            xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_dof_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
-        wp.launch(
-            apply_mjc_control_kernel,
-            dim=(nworld, axes_per_env),
-            inputs=[
-                control.joint_target,
-                control.joint_f,
-                model.joint_dof_mode,
-                model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
-                axes_per_env,
-            ],
-            outputs=[
-                ctrl,
-            ],
-            device=model.device,
-        )
-        wp.launch(
-            apply_mjc_qfrc_kernel,
-            dim=(nworld, joints_per_env),
-            inputs=[
-                state.body_q,
-                control.joint_f,
-                model.joint_type,
-                model.body_com,
-                model.joint_child,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_dof_dim,
-                joints_per_env,
-                bodies_per_env,
-            ],
-            outputs=[
-                qfrc,
-            ],
-            device=model.device,
-        )
+        if control is not None:
+            wp.launch(
+                apply_mjc_control_kernel,
+                dim=(nworld, axes_per_env),
+                inputs=[
+                    control.joint_target,
+                    control.joint_f,
+                    model.joint_dof_mode,
+                    model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
+                    axes_per_env,
+                ],
+                outputs=[
+                    ctrl,
+                ],
+                device=model.device,
+            )
+            wp.launch(
+                apply_mjc_qfrc_kernel,
+                dim=(nworld, joints_per_env),
+                inputs=[
+                    state.body_q,
+                    control.joint_f,
+                    model.joint_type,
+                    model.body_com,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    joints_per_env,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    qfrc,
+                ],
+                device=model.device,
+            )
+
+        if state.body_f is not None:
+            wp.launch(
+                apply_mjc_body_f_kernel,
+                dim=(nworld, bodies_per_env),
+                inputs=[
+                    model.up_axis,
+                    state.body_q,
+                    state.body_f,
+                    model.to_mjc_body_index,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    xfrc,
+                ],
+                device=model.device,
+            )
         if not is_mjwarp:
+            mj_data.xfrc_applied = xfrc.numpy()
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
@@ -1476,6 +1554,8 @@ class MuJoCoSolver(SolverBase):
 
             inertia = body_inertia[child]
             if model.up_axis == 1:
+                # # TODO: what frame is the fullinertia in Mujoco?
+                # mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
                 inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
@@ -1787,8 +1867,8 @@ class MuJoCoSolver(SolverBase):
             # "eq_solimp",
             # "eq_data",
             # "actuator_dynprm",
-            # "actuator_gainprm",
-            # "actuator_biasprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
             # "actuator_ctrlrange",
             "actuator_forcerange",
             # "actuator_actrange",
@@ -1876,11 +1956,18 @@ class MuJoCoSolver(SolverBase):
                 update_axis_properties_kernel,
                 dim=self.model.joint_dof_count,
                 inputs=[
+                    self.model.joint_dof_mode,
+                    self.model.joint_target_ke,
+                    self.model.joint_target_kd,
                     self.model.joint_effort_limit,
                     self.model.mjc_axis_to_actuator,
                     dofs_per_env,
                 ],
-                outputs=[self.mjw_model.actuator_forcerange],
+                outputs=[
+                    self.mjw_model.actuator_biasprm,
+                    self.mjw_model.actuator_gainprm,
+                    self.mjw_model.actuator_forcerange,
+                ],
                 device=self.model.device,
             )
 
