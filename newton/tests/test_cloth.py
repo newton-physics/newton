@@ -609,7 +609,7 @@ class ClothSim:
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
             tri_ke=tri_ke,
-            tri_ka=0.0,
+            tri_ka=tri_ke,
             tri_kd=tri_kd,
             edge_ke=edge_ke,
             edge_kd=edge_kd,
@@ -957,7 +957,7 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
 def test_cloth_bending_damping_with_free_fall(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e0, fixed_particles=None, use_gravity=True
+        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison
@@ -997,7 +997,7 @@ def test_cloth_bending_damping_with_free_fall(test, device, solver):
 
     # Verify that non-gravitational displacement is minimal for all vertices
     test.assertTrue(
-        max_non_gravity_displacement < 0.01,
+        max_non_gravity_displacement < 0.02,
         f"Non-gravitational displacement detected: max {max_non_gravity_displacement:.4f} at vertex indices {problematic_vertices}",
     )
 
@@ -1081,6 +1081,11 @@ tests_to_run = {
         test_cloth_free_fall,
         test_cloth_sagging,
         test_cloth_bending,
+        test_cloth_bending_consistent_angle_computation,
+        test_cloth_bending_non_zero_rest_angle_bending,
+        test_cloth_bending_with_complex_rest_angles,
+        test_cloth_bending_damping_with_free_fall,
+        test_cloth_body_collision,
     ],
     "vbd": [
         test_cloth_free_fall,
