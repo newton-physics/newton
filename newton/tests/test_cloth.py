@@ -658,6 +658,7 @@ class ClothSim:
         self.finalize(ground=False)
 
     def set_up_body_cloth_contact_experiment(self):
+        # fmt: off
         vs = [
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
@@ -665,13 +666,10 @@ class ClothSim:
             [1.0, 0.0, 0.0],
         ]
         fs = [
-            0,
-            1,
-            2,
-            2,
-            3,
-            0,
+            0, 1, 2,
+            2, 3, 0
         ]
+        # fmt: on
 
         if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
@@ -703,20 +701,7 @@ class ClothSim:
             particle_radius=particle_radius,
         )
 
-        self.builder.add_shape_box(
-            -1,
-            wp.transform(
-                wp.vec3(
-                    0,
-                    -2,
-                    0,
-                ),
-                wp.quat_identity(),
-            ),
-            hx=2,
-            hy=2,
-            hz=2,
-        )
+        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()), hx=2, hy=2, hz=2)
 
         self.renderer_scale_factor = 0.1
 
@@ -788,6 +773,7 @@ class ClothSim:
                 wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
                 wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
 
+            wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
             wp.load_module(newton.solvers.solver, device=self.device)
             wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
