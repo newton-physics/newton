@@ -267,18 +267,13 @@ def apply_mjc_body_f_kernel(
     mj_body_id = to_mjc_body_index[bodyid]
     if mj_body_id != -1:
         f = body_f[worldid * bodies_per_env + bodyid]
-        tf = body_q[worldid * bodies_per_env + bodyid]
-        rot = wp.transform_get_rotation(tf)
-        # com_world = wp.transform_point(tf, body_com[child])
-        # swap angular and linear components
         w = wp.vec3(f[0], f[1], f[2])
         v = wp.vec3(f[3], f[4], f[5])
-        # rotate angular torque to world frame
-        # w = wp.quat_rotate(rot, w)
-        w = wp.quat_rotate_inv(rot, w)
-        # xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
-        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(wp.spatial_bottom(f), wp.spatial_top(f))
-
+        if up_axis == 1:
+            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+            w = wp.quat_rotate(rot_y2z, w)
+            v = wp.quat_rotate(rot_y2z, v)
+        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
@@ -1145,7 +1140,7 @@ class MuJoCoSolver(SolverBase):
         add_axes: bool = True,
         maxhullvert: int = 64,
         contact_stiffness_time_const: float | None = None,
-    ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
+    ):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
@@ -1297,7 +1292,7 @@ class MuJoCoSolver(SolverBase):
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        # rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
+        rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -1509,9 +1504,9 @@ class MuJoCoSolver(SolverBase):
 
             inertia = body_inertia[child]
             if model.up_axis == 1:
-                # TODO: what frame is the fullinertia in Mujoco?
-                mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
-                inertia = mat @ inertia @ mat.T
+                # # TODO: what frame is the fullinertia in Mujoco?
+                # mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
+                inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
                 pos=tf_p,

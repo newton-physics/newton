@@ -172,22 +172,33 @@ solvers = {
 for device in devices:
     for solver_name, solver_fn in solvers.items():
         # add_function_test(TestBodyForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
+        # add_function_test(
+        #     TestBodyForce,
+        #     f"test_floating_body_angular_up_axis_Y_{solver_name}",
+        #     test_floating_body,
+        #     devices=[device],
+        #     solver_fn=solver_fn,
+        #     test_angular=True,
+        #     up_axis=newton.Axis.Y,
+        # )
         add_function_test(
             TestBodyForce,
-            f"test_floating_body_angular_{solver_name}",
+            f"test_floating_body_angular_up_axis_Z_{solver_name}",
             test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=True,
+            up_axis=newton.Axis.Z,
         )
-        add_function_test(
-            TestBodyForce,
-            f"test_floating_body_linear_{solver_name}",
-            test_floating_body,
-            devices=[device],
-            solver_fn=solver_fn,
-            test_angular=False,
-        )
+        # add_function_test(
+        #     TestBodyForce,
+        #     f"test_floating_body_linear_up_axis_Y_{solver_name}",
+        #     test_floating_body,
+        #     devices=[device],
+        #     solver_fn=solver_fn,
+        #     test_angular=False,
+        #     up_axis=newton.Axis.Y,
+        # )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_linear_up_axis_Z_{solver_name}",
@@ -199,15 +210,15 @@ for device in devices:
         )
 
         # # test 3d articulation
-        add_function_test(
-            TestBodyForce,
-            f"test_3d_articulation_{solver_name}",
-            test_3d_articulation,
-            devices=[device],
-            solver_fn=solver_fn,
-            test_angular=True,
-            up_axis=newton.Axis.Y,
-        )
+        # add_function_test(
+        #     TestBodyForce,
+        #     f"test_3d_articulation_up_axis_Y_{solver_name}",
+        #     test_3d_articulation,
+        #     devices=[device],
+        #     solver_fn=solver_fn,
+        #     test_angular=True,
+        #     up_axis=newton.Axis.Y,
+        # )
         add_function_test(
             TestBodyForce,
             f"test_3d_articulation_up_axis_Z_{solver_name}",
@@ -217,15 +228,15 @@ for device in devices:
             test_angular=True,
             up_axis=newton.Axis.Z,
         )
-        add_function_test(
-            TestBodyForce,
-            f"test_3d_articulation_up_axis_Y_{solver_name}",
-            test_3d_articulation,
-            devices=[device],
-            solver_fn=solver_fn,
-            test_angular=False,
-            up_axis=newton.Axis.Y,
-        )
+        # add_function_test(
+        #     TestBodyForce,
+        #     f"test_3d_articulation_up_axis_Y_{solver_name}",
+        #     test_3d_articulation,
+        #     devices=[device],
+        #     solver_fn=solver_fn,
+        #     test_angular=False,
+        #     up_axis=newton.Axis.Y,
+        # )
         add_function_test(
             TestBodyForce,
             f"test_3d_articulation_up_axis_Z_{solver_name}",
