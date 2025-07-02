@@ -26,7 +26,7 @@ import warp as wp
 import newton
 from newton.core import quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
-from newton.geometry import Mesh
+from newton.geometry import MESH_MAXHULLVERT, Mesh
 from newton.sim import ModelBuilder
 
 
@@ -124,8 +124,8 @@ def parse_mjcf(
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh.attrib.get("scale", "1.0 1.0 1.0")
                 s = np.fromstring(s, sep=" ", dtype=np.float32)
-                # parse maxhullvert attribute, default to 64 if not specified
-                maxhullvert = int(mesh.attrib.get("maxhullvert", "64"))
+                # parse maxhullvert attribute, default to MESH_MAXHULLVERT if not specified
+                maxhullvert = int(mesh.attrib.get("maxhullvert", str(MESH_MAXHULLVERT)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
 
     class_parent = {}
@@ -320,7 +320,7 @@ def parse_mjcf(
                 assert len(geom_size) == 3, "need to specify size for mesh geom"
 
                 # get maxhullvert value from mesh assets
-                maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", 64)
+                maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", MESH_MAXHULLVERT)
 
                 if hasattr(m, "geometry"):
                     # multiple meshes are contained in a scene

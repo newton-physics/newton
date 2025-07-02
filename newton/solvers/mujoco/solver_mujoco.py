@@ -25,6 +25,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.core.types import nparray, override
+from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
@@ -1101,7 +1102,7 @@ class MuJoCoSolver(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
-        maxhullvert: int = 64,
+        maxhullvert: int = MESH_MAXHULLVERT,
         contact_stiffness_time_const: float | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """

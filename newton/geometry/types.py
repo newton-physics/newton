@@ -31,6 +31,9 @@ GEO_SDF = wp.constant(6)
 GEO_PLANE = wp.constant(7)
 GEO_NONE = wp.constant(8)
 
+# Default maximum vertices for convex hull approximation
+MESH_MAXHULLVERT = 64
+
 
 class SDF:
     """Describes a signed distance field for simulation
@@ -98,7 +101,7 @@ class Mesh:
         indices: Sequence[int],
         compute_inertia=True,
         is_solid=True,
-        maxhullvert: int = 64,
+        maxhullvert: int = MESH_MAXHULLVERT,
         convex_hull: "Mesh | None" = None,
     ):
         """Construct a Mesh object from a triangle mesh
