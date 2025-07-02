@@ -29,6 +29,11 @@ from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
 
+
+class vec10f(wp.types.vector(length=10, dtype=float)):
+    pass
+
+
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
@@ -602,10 +607,15 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_axis_properties_kernel(
+    joint_dof_mode: wp.array(dtype=int),
+    joint_target_kp: wp.array(dtype=float),
+    joint_target_kv: wp.array(dtype=float),
     joint_effort_limit: wp.array(dtype=float),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
+    actuator_bias: wp.array2d(dtype=vec10f),
+    actuator_gain: wp.array2d(dtype=vec10f),
     actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
     """Update actuator force ranges based on joint effort limits."""
@@ -615,6 +625,29 @@ def update_axis_properties_kernel(
 
     actuator_idx = axis_to_actuator[axis_in_env]
     if actuator_idx >= 0:  # Valid actuator
+        kp = joint_target_kp[tid]
+        kv = joint_target_kv[tid]
+        mode = joint_dof_mode[tid]
+
+        if mode == newton.JOINT_MODE_TARGET_POSITION:
+            # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = -kp
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kp
+        elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
+            # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kv
+        else:
+            # bias = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+            # gain = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = 0.0
+            actuator_gain[worldid, actuator_idx][0] = 1.0
+
         effort_limit = joint_effort_limit[tid]
         actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
@@ -1785,8 +1818,8 @@ class MuJoCoSolver(SolverBase):
             # "eq_solimp",
             # "eq_data",
             # "actuator_dynprm",
-            # "actuator_gainprm",
-            # "actuator_biasprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
             # "actuator_ctrlrange",
             "actuator_forcerange",
             # "actuator_actrange",
@@ -1874,11 +1907,18 @@ class MuJoCoSolver(SolverBase):
                 update_axis_properties_kernel,
                 dim=self.model.joint_dof_count,
                 inputs=[
+                    self.model.joint_dof_mode,
+                    self.model.joint_target_ke,
+                    self.model.joint_target_kd,
                     self.model.joint_effort_limit,
                     self.model.mjc_axis_to_actuator,
                     dofs_per_env,
                 ],
-                outputs=[self.mjw_model.actuator_forcerange],
+                outputs=[
+                    self.mjw_model.actuator_biasprm,
+                    self.mjw_model.actuator_gainprm,
+                    self.mjw_model.actuator_forcerange,
+                ],
                 device=self.model.device,
             )
 
