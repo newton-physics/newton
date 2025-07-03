@@ -42,7 +42,7 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     control = model.control()
 
     sim_dt = 1.0 / 10.0
-    solver.step(model, state_0, state_1, control, None, sim_dt)
+    solver.step(state_0, state_1, control, None, sim_dt)
 
     lin_vel = state_1.body_qd.numpy()[0, 3:]
     test.assertAlmostEqual(lin_vel[up_axis.value], -0.981, delta=1e-5)
