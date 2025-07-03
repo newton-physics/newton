@@ -44,10 +44,10 @@ from newton.tests.unittest_utils import (
 
 wp.init()
 
-test_mjwarp_cuda_examples = False
+supports_load_during_graph_capture = False
 
 if wp.context.runtime.driver_version >= (12, 3):
-    test_mjwarp_cuda_examples = True
+    supports_load_during_graph_capture = True
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -57,6 +57,8 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
     for key, value in test_options.items():
         if key == "headless" and value:
             additional_options.extend(["--headless"])
+        elif key == "use_cuda_graph" and not value:
+            additional_options.extend(["--no-use_cuda_graph"])
         else:
             # Just add --key value
             additional_options.extend(["--" + key, str(value)])
@@ -218,31 +220,42 @@ class TestBasicRobotExamples(unittest.TestCase):
 add_example_test(
     TestBasicRobotExamples,
     name="example_cartpole",
-    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
-    test_options={"stage_path": "None", "num_frames": 100},
+    devices=test_devices,
+    test_options={
+        "stage_path": "None",
+        "num_frames": 100 if supports_load_during_graph_capture else 10,
+        "use_cuda_graph": supports_load_during_graph_capture,
+    },
     test_options_cpu={"num_frames": 10},
 )
-
+add_example_test(
+    TestBasicRobotExamples,
+    name="example_g1",
+    devices=test_devices,
+    test_options={
+        "stage_path": "None",
+        "num_frames": 500 if supports_load_during_graph_capture else 20,
+        "use_cuda_graph": supports_load_during_graph_capture,
+    },
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestBasicRobotExamples,
+    name="example_humanoid",
+    devices=test_devices,
+    test_options={
+        "stage_path": "None",
+        "num_frames": 500 if supports_load_during_graph_capture else 20,
+        "use_cuda_graph": supports_load_during_graph_capture,
+    },
+    test_options_cpu={"num_frames": 10},
+)
 add_example_test(
     TestBasicRobotExamples,
     name="example_quadruped",
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 1000},
     test_options_cpu={"num_envs": 10},
-)
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_g1",
-    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
-    test_options={"stage_path": "None", "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
-)
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_humanoid",
-    devices=test_devices if test_mjwarp_cuda_examples else [wp.get_device("cpu")],
-    test_options={"stage_path": "None", "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
 )
 
 
@@ -268,6 +281,20 @@ add_example_test(
     name="example_mpm_granular",
     devices=cuda_test_devices,
     test_options={"headless": True, "num_frames": 100},
+)
+add_example_test(
+    TestOtherExamples,
+    name="example_selection_articulations",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestOtherExamples,
+    name="example_selection_cartpole",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
 )
 
 if __name__ == "__main__":

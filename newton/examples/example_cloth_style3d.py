@@ -171,13 +171,14 @@ class Example:
             self.sim_time += self.dt
 
     def run(self):
-        for i in range(self.num_frames):
+        for frame_idx in range(self.num_frames):
             if self.renderer and self.renderer.has_exit:
                 break
             self.step()
             self.render()
 
-            print(f"[{i:4d}/{args.num_frames}]")
+            if self.renderer is None:
+                print(f"[{frame_idx:4d}/{args.num_frames}]")
 
     def render(self):
         if self.renderer is not None:
