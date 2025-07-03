@@ -96,7 +96,6 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-        # self.model.rigid_contact_max = 1204*128
 
         self.control = self.model.control()
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
@@ -180,15 +179,36 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
     parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument(
+        "--debug_mujoco",
+        type=bool,
+        default=False,
+        help="Show MuJoCo viewer next to Newton renderer if MuJoCoSolver is used.",
+    )
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
+        show_mujoco_viewer = args.debug_mujoco and example.use_mujoco
+        if show_mujoco_viewer:
+            import mujoco
+            import mujoco.viewer
+            import mujoco_warp
+
+            mjm, mjd = example.solver.mj_model, example.solver.mj_data
+            m, d = example.solver.mjw_model, example.solver.mjw_data
+            viewer = mujoco.viewer.launch_passive(mjm, mjd)
+
         for _ in range(args.num_frames):
             example.step()
             example.render()
+
+            if show_mujoco_viewer:
+                if not example.solver.use_mujoco:
+                    mujoco_warp.get_data_into(mjd, mjm, d)
+                viewer.sync()
 
         if example.renderer:
             example.renderer.save()
