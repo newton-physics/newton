@@ -265,7 +265,6 @@ class Model:
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
-
         self.contact_reporter = None
         """ContactReporter instance for querying contact information between entities."""
 
