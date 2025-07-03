@@ -27,6 +27,7 @@ import newton.utils
 from newton.core.types import nparray, override
 from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
+from newton.sim.contacts import ContactInfo
 
 from ..solver import SolverBase
 
@@ -248,6 +249,7 @@ def convert_mjw_contact_to_warp_kernel(
     contact_geom_mapping: wp.array2d(dtype=wp.int32),
     pyramidal_cone: bool,
     mj_ncon: wp.array(dtype=wp.int32),
+    mj_contact_frame: wp.array(dtype=wp.mat33f),
     mj_contact_dim: wp.array(dtype=int),
     mj_contact_geom: wp.array(dtype=wp.vec2i),
     mj_contact_efc_address: wp.array2d(dtype=int),
@@ -255,7 +257,8 @@ def convert_mjw_contact_to_warp_kernel(
     mj_efc_force: wp.array(dtype=float),
     num_threads: int,
     # outputs
-    contact_geom: wp.array(dtype=wp.vec2i),
+    contact_pair: wp.array(dtype=wp.vec2i),
+    contact_normal: wp.array(dtype=wp.vec3f),
     contact_force: wp.array(dtype=float),
 ):
     n_contacts = mj_ncon[0]
@@ -279,10 +282,11 @@ def convert_mjw_contact_to_warp_kernel(
                 for i in range(1, 2 * (dim - 1)):
                     normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
 
-        geoms = wp.vec2i()
+        pair = wp.vec2i()
         for i in range(2):
-            geoms[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
-        contact_geom[contact_idx] = geoms
+            pair[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
+        contact_pair[contact_idx] = pair
+        contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
         contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
 
 
@@ -1209,15 +1213,23 @@ class MuJoCoSolver(SolverBase):
 
         return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
 
-    def update_newton_contacts(self, model: Model, mj_data: MjWarpData, contact: Contact):
-        if not hasattr(contact, "dist"):
-            contact.dist = wp.empty(mj_data.nconmax, dtype=wp.float32, device=model.device)
-        contact.frame = mj_data.contact.frame
-        if not hasattr(contact, "geom"):
-            contact.geom = wp.empty(mj_data.nconmax, dtype=wp.vec2i, device=model.device)
-        contact.worldid = mj_data.contact.worldid
-        if not hasattr(contact, "force"):
-            contact.force = wp.empty(mj_data.nconmax, dtype=wp.float32, device=model.device)
+    def update_newton_contacts(self, model: Model, mj_data: MjWarpData, contact_info: ContactInfo):
+        nconmax = mj_data.nconmax
+
+        mj_contact = mj_data.contact
+
+        contact_info.ncon = mj_data.ncon
+        contact_info.position = mj_contact.pos
+        contact_info.separation = mj_contact.dist
+
+        if contact_info.pair is None:
+            contact_info.pair = wp.empty(nconmax, dtype=wp.vec2i, device=model.device)
+
+        if contact_info.normal is None:
+            contact_info.normal = wp.empty(nconmax, dtype=wp.vec3f, device=model.device)
+
+        if contact_info.force is None:
+            contact_info.force = wp.empty(nconmax, dtype=wp.float32, device=model.device)
 
         num_threads = min(mj_data.nconmax, 8192)
         wp.launch(
@@ -1227,16 +1239,18 @@ class MuJoCoSolver(SolverBase):
                 self.contact_geom_mapping,
                 self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
                 mj_data.ncon,
-                mj_data.contact.dim,
-                mj_data.contact.geom,
-                mj_data.contact.efc_address,
-                contact.worldid,
+                mj_contact.frame,
+                mj_contact.dim,
+                mj_contact.geom,
+                mj_contact.efc_address,
+                mj_contact.worldid,
                 mj_data.efc.force,
                 num_threads,
             ],
             outputs=[
-                contact.geom,
-                contact.force,
+                contact_info.pair,
+                contact_info.normal,
+                contact_info.force,
             ],
             device=model.device,
         )

@@ -19,8 +19,9 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton import Contact, Model
+from newton import Model
 from newton.solvers import MuJoCoSolver, SolverBase
+from newton.sim.contacts import ContactInfo
 
 NUM_THREADS = 8192
 
@@ -132,7 +133,7 @@ def select_bin_contacts(
 @wp.kernel
 def aggregate_entity_pair_maxdepth(
     # inputs
-    contact_frame: wp.array(dtype=wp.mat33f),
+    contact_normal: wp.array(dtype=wp.vec3f),
     n_entity_pairs: wp.int32,
     ep_sp_ord: wp.array(dtype=wp.int32),
     ep_sp_start: wp.array(dtype=wp.int32),
@@ -173,7 +174,7 @@ def aggregate_entity_pair_maxdepth(
                 best_contact = contact_idx
                 best_flip = ep_sp_flip[start + i]
 
-    entity_pair_normal[entity_pair_idx] = wp.where(best_flip, -1.0, 1.0) * contact_frame[best_contact][0]
+    entity_pair_normal[entity_pair_idx] = wp.where(best_flip, -1.0, 1.0) * contact_normal[best_contact]
     entity_pair_contact[entity_pair_idx] = best_contact
     entity_pair_dist[entity_pair_idx] = best_dist
 
@@ -181,7 +182,7 @@ def aggregate_entity_pair_maxdepth(
 @wp.kernel
 def aggregate_entity_pair_net_force(
     # inputs
-    contact_frame: wp.array(dtype=wp.mat33f),
+    contact_normal: wp.array(dtype=wp.vec3f),
     n_entity_pairs: wp.int32,
     ep_sp_ord: wp.array(dtype=wp.int32),
     ep_sp_start: wp.array(dtype=wp.int32),
@@ -213,7 +214,7 @@ def aggregate_entity_pair_net_force(
         for j in range(n_bin_contacts):
             contact_idx = bin_contacts[contacts_start + j]
             force = contact_force[contact_idx]
-            net_force += wp.where(flip, -1.0, 1.0) * contact_frame[contact_idx][0] * force
+            net_force += wp.where(flip, -1.0, 1.0) * contact_normal[contact_idx] * force
 
     entity_pair_net_force[entity_pair_idx] = net_force
 
@@ -491,7 +492,7 @@ class ContactReporter:
 
     def select_aggregate(
         self,
-        contact: Contact,
+        contact: ContactInfo,
         num_contacts: wp.array(dtype=wp.int32),
         solver: SolverBase | None = None,
     ):
@@ -505,8 +506,8 @@ class ContactReporter:
             select_bin_contacts,
             dim=NUM_THREADS,
             inputs=[
-                contact.geom,
-                contact.dist,
+                contact.pair,
+                contact.separation,
                 self.shape_pairs,
                 self.n_shape_pairs,
                 num_contacts,
@@ -523,7 +524,7 @@ class ContactReporter:
             aggregate_entity_pair_maxdepth,
             dim=self.n_entity_pairs,
             inputs=[
-                contact.frame,
+                contact.normal,
                 self.n_entity_pairs,
                 self.ep_sp_ord,
                 self.ep_sp_start,
@@ -541,12 +542,12 @@ class ContactReporter:
             ],
         )
 
-        if hasattr(contact, "force"):
+        if contact.force is not None:
             wp.launch(
                 aggregate_entity_pair_net_force,
                 dim=self.n_entity_pairs,
                 inputs=[
-                    contact.frame,
+                    contact.normal,
                     self.n_entity_pairs,
                     self.ep_sp_ord,
                     self.ep_sp_start,
