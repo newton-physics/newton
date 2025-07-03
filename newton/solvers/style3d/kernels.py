@@ -17,6 +17,9 @@
 import warp as wp
 
 from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton.sim.model import ShapeMaterials
+
+from ..vbd.solver_vbd import evaluate_body_particle_contact
 
 
 @wp.func
@@ -83,19 +86,113 @@ def eval_bend_kernel(
     eid = wp.tid()
     if edges[eid][0] < 0 or edges[eid][1] < 0:
         return
-    # reorder as qbend order
-    edge = wp.vec4i(edges[eid][2], edges[eid][3], edges[eid][0], edges[eid][1])
+    edge = edges[eid]
+    edge_stiff = edge_bending_properties[eid][0] / edge_rest_area[eid]
     bend_weight = wp.vec4(0.0)
-    bend_weight[0] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
-    bend_weight[1] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
-    bend_weight[2] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
-    bend_weight[3] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
-    bend_weight = bend_weight * (edge_bending_properties[eid][0] / wp.sqrt(edge_rest_area[eid]))
+    bend_weight[2] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
+    bend_weight[3] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
+    bend_weight[0] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
+    bend_weight[1] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
+    bend_weight = bend_weight * edge_stiff
     for i in range(4):
         force = wp.vec3(0.0)
         for j in range(4):
             force = force - bend_weight[i] * bend_weight[j] * pos[edge[j]]
         wp.atomic_add(forces, edge[i], force)
+
+
+@wp.kernel
+def eval_drag_kernel(
+    spring_stiff: float,
+    face_index: wp.array(dtype=int),
+    drag_pos: wp.array(dtype=wp.vec3),
+    drag_bary_coord: wp.array(dtype=wp.vec3),
+    faces: wp.array(dtype=wp.int32, ndim=2),
+    vert_pos: wp.array(dtype=wp.vec3),
+    # outputs
+    forces: wp.array(dtype=wp.vec3),
+    # pd_diags: wp.array(dtype=float),
+):
+    fid = face_index[0]
+    if fid != -1:
+        coord = drag_bary_coord[0]
+        face = wp.vec3i(faces[fid, 0], faces[fid, 1], faces[fid, 2])
+        x0 = vert_pos[face[0]]
+        x1 = vert_pos[face[1]]
+        x2 = vert_pos[face[2]]
+        p = x0 * coord[0] + x1 * coord[1] + x2 * coord[2]
+        dir = drag_pos[0] - p
+
+        # spring_stiff = 1e2
+        force = spring_stiff * dir
+        wp.atomic_add(forces, face[0], force * coord[0])
+        wp.atomic_add(forces, face[1], force * coord[1])
+        wp.atomic_add(forces, face[2], force * coord[2])
+
+        # pd_diags[face[0]] += spring_k * coord[0]
+        # pd_diags[face[1]] += spring_k * coord[1]
+        # pd_diags[face[2]] += spring_k * coord[2]
+
+
+@wp.kernel
+def eval_body_contact_kernel(
+    # inputs
+    dt: float,
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    # body-particle contact
+    soft_contact_ke: float,
+    soft_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    particle_radius: wp.array(dtype=float),
+    soft_contact_particle: wp.array(dtype=int),
+    contact_count: wp.array(dtype=int),
+    contact_max: int,
+    shape_materials: ShapeMaterials,
+    shape_body: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_com: wp.array(dtype=wp.vec3),
+    contact_shape: wp.array(dtype=int),
+    contact_body_pos: wp.array(dtype=wp.vec3),
+    contact_body_vel: wp.array(dtype=wp.vec3),
+    contact_normal: wp.array(dtype=wp.vec3),
+    # outputs: particle force and hessian
+    forces: wp.array(dtype=wp.vec3),
+    hessians: wp.array(dtype=wp.mat33),
+):
+    t_id = wp.tid()
+
+    particle_body_contact_count = min(contact_max, contact_count[0])
+
+    if t_id < particle_body_contact_count:
+        particle_idx = soft_contact_particle[t_id]
+        body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            particle_idx,
+            pos[particle_idx],
+            pos_prev[particle_idx],
+            t_id,
+            soft_contact_ke,
+            soft_contact_kd,
+            friction_mu,
+            friction_epsilon,
+            particle_radius,
+            shape_materials,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            dt,
+        )
+        wp.atomic_add(forces, particle_idx, body_contact_force)
+        wp.atomic_add(hessians, particle_idx, body_contact_hessian)
 
 
 @wp.kernel
@@ -111,8 +208,7 @@ def init_step_kernel(
     particle_flags: wp.array(dtype=wp.uint32),
     # outputs
     x_inertia: wp.array(dtype=wp.vec3),
-    inv_diags: wp.array(dtype=float),
-    diags: wp.array(dtype=float),
+    static_A_diags: wp.array(dtype=float),
     dx: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -121,14 +217,12 @@ def init_step_kernel(
 
     if not particle_flags[tid] & PARTICLE_FLAG_ACTIVE:
         x_inertia[tid] = x_prev[tid]
+        static_A_diags[tid] = 0.0
         dx[tid] = wp.vec3(0.0)
-        inv_diags[tid] = 0.0
-        diags[tid] = 0.0
     else:
         v_prev = v_curr[tid]
         mass = particle_masses[tid]
-        diags[tid] = pd_diags[tid] + mass / (dt * dt)
-        inv_diags[tid] = 1.0 / (pd_diags[tid] + mass / (dt * dt))
+        static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
         x_inertia[tid] = x_last + v_prev * dt + (gravity + f_ext[tid] / mass) * (dt * dt)
         dx[tid] = v_prev * dt
 
@@ -150,15 +244,30 @@ def init_rhs_kernel(
 
 
 @wp.kernel
+def prepare_jacobi_preconditioner_kernel(
+    static_A_diags: wp.array(dtype=float),
+    contact_hessian_diags: wp.array(dtype=wp.mat33),
+    # outputs
+    inv_A_diags: wp.array(dtype=wp.mat33),
+    A_diags: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    diag = wp.identity(3, float) * static_A_diags[tid]
+    diag += contact_hessian_diags[tid]
+    inv_A_diags[tid] = wp.inverse(diag)
+    A_diags[tid] = diag
+
+
+@wp.kernel
 def PD_jacobi_step_kernel(
     rhs: wp.array(dtype=wp.vec3),
     x_in: wp.array(dtype=wp.vec3),
-    inv_diags: wp.array(dtype=float),
+    inv_diags: wp.array(dtype=wp.mat33),
     # outputs
     x_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
-    x_out[tid] = x_in[tid] + rhs[tid] * inv_diags[tid]
+    x_out[tid] = x_in[tid] + inv_diags[tid] * rhs[tid]
 
 
 @wp.kernel
