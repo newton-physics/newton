@@ -577,7 +577,7 @@ class Example:
             self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
 
             if self.add_cloth:
-                self.cloth_solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
