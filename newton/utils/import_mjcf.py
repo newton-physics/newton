@@ -26,7 +26,7 @@ import warp as wp
 import newton
 from newton.core import quat_between_axes
 from newton.core.types import Axis, AxisType, Sequence, Transform
-from newton.geometry import Mesh
+from newton.geometry import MESH_MAXHULLVERT, Mesh
 from newton.sim import ModelBuilder
 
 
@@ -124,7 +124,9 @@ def parse_mjcf(
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh.attrib.get("scale", "1.0 1.0 1.0")
                 s = np.fromstring(s, sep=" ", dtype=np.float32)
-                mesh_assets[name] = {"file": fname, "scale": s}
+                # parse maxhullvert attribute, default to MESH_MAXHULLVERT if not specified
+                maxhullvert = int(mesh.attrib.get("maxhullvert", str(MESH_MAXHULLVERT)))
+                mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
 
     class_parent = {}
     class_children = {}
@@ -317,12 +319,15 @@ def parse_mjcf(
                 # as per the Mujoco XML reference, ignore geom size attribute
                 assert len(geom_size) == 3, "need to specify size for mesh geom"
 
+                # get maxhullvert value from mesh assets
+                maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", MESH_MAXHULLVERT)
+
                 if hasattr(m, "geometry"):
                     # multiple meshes are contained in a scene
                     for m_geom in m.geometry.values():
                         m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(m_vertices, m_faces)
+                        m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
                         s = builder.add_shape_mesh(
                             xform=tf,
                             mesh=m_mesh,
@@ -333,7 +338,7 @@ def parse_mjcf(
                     # a single mesh
                     m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_mesh = Mesh(m_vertices, m_faces)
+                    m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,

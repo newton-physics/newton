@@ -78,7 +78,7 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # F = m * a, a = 1.0, dt = 0.4 -> V = 0.4
     # T = I * alpha, alpha_ii = 6.0, dt = 0.4 -> W = 2.4
     for _ in range(1):
-        solver.step(model, state_0, state_1, None, None, sim_dt)
+        solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
         # renderer.begin_frame(sim_time)
         # renderer.render(state_1)
@@ -155,7 +155,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
         # sim_time = 0.0
 
         for _ in range(1):
-            solver.step(model, state_0, state_1, None, None, sim_dt)
+            solver.step(state_0, state_1, None, None, sim_dt)
             state_0, state_1 = state_1, state_0
             # renderer.begin_frame(sim_time)
             # renderer.render(state_1)

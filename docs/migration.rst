@@ -18,7 +18,7 @@ Solvers
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
 |:class:`warp.sim.XPBDIntegrator`                                              |:class:`newton.solvers.XPBDSolver`                                                   |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
-| ``integrator.simulate(self.model, self.state0, self.state1, self.dt, None)`` | ``solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)``  |
+| ``integrator.simulate(self.model, self.state0, self.state1, self.dt, None)`` | ``solver.step(self.state0, self.state1, self.control, None, self.dt)``              |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
 
 Importers

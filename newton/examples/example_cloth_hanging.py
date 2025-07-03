@@ -161,7 +161,7 @@ class Example:
         for _ in range(self.num_substeps):
             contacts = self.model.collide(self.state_0)
             self.state_0.clear_forces()
-            self.solver.step(self.model, self.state_0, self.state_1, None, contacts, self.dt)
+            self.solver.step(self.state_0, self.state_1, None, contacts, self.dt)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
