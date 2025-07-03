@@ -155,6 +155,7 @@ class ArticulationView:
         model_joint_child = model.joint_child.numpy()
         model_joint_q_start = model.joint_q_start.numpy()
         model_joint_qd_start = model.joint_qd_start.numpy()
+        model_shape_body = model.shape_body.numpy()
 
         # FIXME:
         # - this assumes homogeneous envs with one selected articulation per env
@@ -263,6 +264,7 @@ class ArticulationView:
         selected_joint_dof_ids = []
         selected_joint_coord_ids = []
         selected_link_ids = []
+        selected_shape_ids = []
 
         self.joint_names = []
         self.joint_dof_names = []
@@ -270,6 +272,8 @@ class ArticulationView:
         self.joint_coord_names = []
         self.joint_coord_counts = []
         self.body_names = []
+        self.shape_names = []
+        self.body_shapes = []
 
         # populate info for selected joints and dofs
         for idx in selected_joint_indices:
@@ -301,11 +305,34 @@ class ArticulationView:
                     self.joint_coord_names.append(f"{joint_name}:{coord}")
                     selected_joint_coord_ids.append(int(coord_begin + coord))
 
-        # populate info for selected links
+        # HACK: skip any leading and trailing static shapes
+        envs_shape_start = 0
+        envs_shape_end = model.shape_count
+        for i in range(model.shape_count):
+            if model_shape_body[i] > -1 and model_shape_body[-i - 1] > -1:
+                break
+            if model_shape_body[i] == -1:
+                envs_shape_start += 1
+            if model_shape_body[-i - 1] == -1:
+                envs_shape_end -= 1
+        self._envs_shape_start = envs_shape_start
+        self._envs_shape_end = envs_shape_end
+        self._envs_shape_count = envs_shape_end - envs_shape_start
+
+        # populate info for selected links and shapes
         for idx in selected_link_indices:
             body_id = arti_link_ids[idx]
             selected_link_ids.append(body_id)
             self.body_names.append(get_name_from_key(model.body_key[body_id]))
+
+            shape_ids = model.body_shapes[body_id]
+            shape_index_list = []
+            for shape_id in shape_ids:
+                shape_index = len(selected_shape_ids)
+                shape_index_list.append(shape_index)
+                selected_shape_ids.append(shape_id)
+                self.shape_names.append(get_name_from_key(model.shape_key[shape_id]))
+            self.body_shapes.append(shape_index_list)
 
         # selected counts
         self.count = articulation_count
@@ -313,6 +340,7 @@ class ArticulationView:
         self.joint_dof_count = len(selected_joint_dof_ids)
         self.joint_coord_count = len(selected_joint_coord_ids)
         self.link_count = len(selected_link_ids)
+        self.shape_count = len(selected_shape_ids)
 
         # support custom slicing and indexing
         self._arti_joint_begin = int(arti_joint_begin)
@@ -341,6 +369,7 @@ class ArticulationView:
         self.joint_dofs_contiguous = is_contiguous_slice(selected_joint_dof_ids)
         self.joint_coords_contiguous = is_contiguous_slice(selected_joint_coord_ids)
         self.links_contiguous = is_contiguous_slice(selected_link_ids)
+        self.shapes_contiguous = is_contiguous_slice(selected_shape_ids)
 
         # contiguous slices or indices by attribute frequency
         #
@@ -369,6 +398,14 @@ class ArticulationView:
         else:
             self._frequency_indices["body"] = wp.array(selected_link_ids, dtype=int, device=self.device)
 
+        if self.shapes_contiguous:
+            # HACK: we need to skip leading static shapes
+            self._frequency_slices["shape"] = slice(
+                selected_shape_ids[0] - envs_shape_start, selected_shape_ids[-1] + 1 - envs_shape_start
+            )
+        else:
+            self._frequency_indices["shape"] = wp.array(selected_shape_ids, dtype=int, device=self.device)
+
         self.articulation_indices = wp.array(articulation_ids, dtype=int, device=self.device)
 
         # TODO: zero-stride mask would use less memory
@@ -386,6 +423,7 @@ class ArticulationView:
         if verbose:
             print(f"Articulation '{pattern}': {self.count}")
             print(f"  Link count:     {self.link_count} ({'strided' if self.links_contiguous else 'indexed'})")
+            print(f"  Shape count:    {self.shape_count} ({'strided' if self.shapes_contiguous else 'indexed'})")
             print(f"  Joint count:    {self.joint_count} ({'strided' if self.joints_contiguous else 'indexed'})")
             print(
                 f"  DOF count:      {self.joint_dof_count} ({'strided' if self.joint_dofs_contiguous else 'indexed'})"
@@ -399,14 +437,36 @@ class ArticulationView:
             print("Joint DOF names:")
             print(f"  {self.joint_dof_names}")
 
+            print("Shapes:")
+            for body_idx in range(self.link_count):
+                body_shape_names = [self.shape_names[shape_idx] for shape_idx in self.body_shapes[body_idx]]
+                print(f"  Link '{self.body_names[body_idx]}': {body_shape_names}")
+
     # ========================================================================================
     # Generic attribute API
 
     @functools.lru_cache(maxsize=None)  # noqa
     def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | None = None):
-        # get the attribute array
+        # support structured attributes (e.g., "shape_materials.mu")
+        name_components = name.split(".")
+        name = name_components[0]
+
+        # get the attribute
         attrib = getattr(source, name)
+
+        # handle structures
+        if isinstance(attrib, wp.codegen.StructInstance):
+            if len(name_components) < 2:
+                raise AttributeError(f"Attribute '{name}' is a structure, use '{name}.attrib' to get an attribute")
+            attrib = getattr(attrib, name_components[1])
+
         assert isinstance(attrib, wp.array)
+
+        frequency = self.model.get_attribute_frequency(name)
+
+        # HACK: trim leading and trailing static shapes
+        if frequency == "shape":
+            attrib = attrib[self._envs_shape_start : self._envs_shape_end]
 
         # reshape with batch dim at front
         assert attrib.shape[0] % self.count == 0
@@ -414,7 +474,6 @@ class ArticulationView:
         attrib = attrib.reshape(batched_shape)
 
         if _slice is None:
-            frequency = self.model.get_attribute_frequency(name)
             _slice = self._frequency_slices.get(frequency)
         else:
             _slice = _slice.get()
@@ -425,6 +484,8 @@ class ArticulationView:
         else:
             # create indexed array + contiguous staging array
             _indices = self._frequency_indices.get(frequency)
+            if _indices is None:
+                raise AttributeError(f"Unable to determine the frequency of attribute '{name}'")
             attrib = wp.indexedarray(attrib, [None, _indices])
             attrib._staging_array = wp.empty_like(attrib)
 
