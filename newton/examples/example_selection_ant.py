@@ -24,6 +24,7 @@ import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
 from newton.utils.selection import ArticulationView, ContactView
+from newton.utils.contact_reporter import ContactInfo
 
 COLLAPSE_FIXED_JOINTS = True
 VERBOSE = True
@@ -54,13 +55,13 @@ class Example:
         builder.add_ground_plane()
 
         self.feet_ground_query_idx = builder.add_contact_query(
-            entity_pattern="/World/envs/*/Robot/*_foot",  # all robots' feet
-            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+            entity_pattern="*_foot",  # all robots' feet
+            filter_pattern="ground_plane",
         )
 
         self.torso_ground_query_idx = builder.add_contact_query(
-            entity_pattern="/World/envs/*/Robot/torso",  # all robots' torsos
-            filter_pattern="/World/ground/GroundPlane/CollisionPlane",
+            entity_pattern="torso",  # all robots' torsos
+            filter_pattern="ground_plane",
         )
 
         # finalize model
@@ -110,9 +111,6 @@ class Example:
         self.default_root_velocities = wp.to_torch(self.ants.get_root_velocities(self.model)).clone()
         self.default_root_velocities[:, 2] = 0.5 * math.pi  # rotate about z-axis
         self.default_root_velocities[:, 5] = 5.0  # move up z-axis
-
-        # set all DOFs to the middle of their range by default
-        self.contact_mgr = ContactViewManager(self.model)
 
         self.contacts_feet_ground = ContactView(self.model, self.feet_ground_query_idx)
         self.contacts_torso_ground = ContactView(self.model, self.torso_ground_query_idx)
@@ -179,14 +177,10 @@ class Example:
         dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
         self.ants.set_dof_forces(self.control, dof_forces)
 
-        contact = self.model.contact()
-        contact.dist = self.solver.mjw_data.contact.dist
-        contact.geom = self.solver.mjw_data.contact.geom
-        contact.frame = self.solver.mjw_data.contact.frame
-        contact.worldid = self.solver.mjw_data.contact.worldid
+        contact_info = ContactInfo()
 
         n_contacts = self.solver.mjw_data.ncon
-        self.model.contact_reporter.select_aggregate(contact, n_contacts, self.solver)
+        self.model.contact_reporter.select_aggregate(contact_info, n_contacts, self.solver)
 
         feet_entities, feet_matrix = self.contacts_feet_ground.get_contact_dist()
 

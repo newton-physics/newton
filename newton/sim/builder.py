@@ -3488,6 +3488,8 @@ class ModelBuilder:
                 entities.append((shape_id,))
                 entity_keys.append(shape_key)
 
-        entities, entity_keys = zip(*sorted(zip(entities, entity_keys)))
+        if not entities:
+            return None, None
 
+        entities, entity_keys = zip(*sorted(zip(entities, entity_keys)))
         return entities, entity_keys
