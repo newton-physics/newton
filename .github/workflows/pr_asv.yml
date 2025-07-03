@@ -35,4 +35,4 @@ jobs:
           source .venv/bin/activate
           uv pip install asv virtualenv
           asv machine --yes
-          asv continuous --interleave-rounds --append-samples --no-only-changed -f 1.10 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} -e
+          asv continuous --launch-method spawn --interleave-rounds --append-samples --no-only-changed -f 1.10 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} -e

@@ -32,7 +32,7 @@ wp.config.enable_backward = False
 
 
 class Example:
-    def __init__(self, stage_path="example_g1.usd", num_envs=8):
+    def __init__(self, stage_path="example_g1.usd", num_envs=8, use_cuda_graph=True):
         self.num_envs = num_envs
         self.use_mujoco = True
         articulation_builder = newton.ModelBuilder()
@@ -133,7 +133,9 @@ class Example:
         self.contacts = None
         if not self.use_mujoco:
             self.contacts = self.model.collide(self.state_0)
-        self.use_cuda_graph = not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda
+        self.use_cuda_graph = (
+            not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda and use_cuda_graph
+        )
 
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
@@ -174,24 +176,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_mjc.usda",
+        default="example_g1.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
     parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument(
-        "--debug_mujoco",
+        "--show_mujoco_viewer",
         type=bool,
         default=False,
         help="Show MuJoCo viewer next to Newton renderer if MuJoCoSolver is used.",
     )
+    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
+        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
-        show_mujoco_viewer = args.debug_mujoco and example.use_mujoco
+        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
         if show_mujoco_viewer:
             import mujoco
             import mujoco.viewer
