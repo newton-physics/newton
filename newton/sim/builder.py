@@ -64,6 +64,7 @@ from newton.geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from newton.utils.contact_reporter import ContactReporter
 
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -3403,8 +3404,6 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             if self.contact_queries:
-                from newton.utils.contact_reporter import ContactReporter
-
                 m.contact_reporter = ContactReporter(m)
                 for entity_pattern, filter_pattern, match_fun in self.contact_queries:
                     if match_fun is None:
