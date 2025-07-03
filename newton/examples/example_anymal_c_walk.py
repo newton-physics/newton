@@ -17,6 +17,7 @@
 # Example Anymal C walk
 #
 # Shows how to control Anymal C with a pretrained policy.
+# uv run --with torch newton/examples/example_anymal_c_walk.py
 #
 ###########################################################################
 
