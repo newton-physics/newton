@@ -1191,7 +1191,7 @@ class MuJoCoSolver(SolverBase):
         """
 
         if not model.joint_count:
-            raise ValueError("The model must have at least one joint to be convert to MuJoCo.")
+            raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
 
         mujoco, mujoco_warp = import_mujoco()
 
@@ -1389,9 +1389,19 @@ class MuJoCoSolver(SolverBase):
             ]
             selected_bodies = np.unique(shape_body[selected_shapes])
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
+            # figure out the articulations that are selected
+            for i in range(model.articulation_count):
+                if np.any(np.isin(articulation_start[i : i + 1], selected_joints)):
+                    selected_joints = np.concatenate((selected_joints, articulation_start[i : i + 1]))
+                selected_joints = np.unique(selected_joints)
+            if len(selected_joints) == 0:
+                # select all joints from the first articulation
+                selected_joints = np.arange(articulation_start[0], articulation_start[1])
+            selected_bodies = np.unique(np.concatenate((selected_bodies, joint_child[selected_joints])))
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             selected_shapes = np.where(shape_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))[0]
+            selected_bodies = np.arange(model.body_count)
 
         # store selected shapes, bodies, joints for later use in update_geom_properties
         self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
