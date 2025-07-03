@@ -17,6 +17,8 @@
 # Example Anymal C walk
 #
 # Shows how to control Anymal C with a pretrained policy.
+#
+# Run the script with the --with option to temporarily add the PyTorch dependency for its execution:
 # uv run --with torch newton/examples/example_anymal_c_walk.py
 #
 ###########################################################################
