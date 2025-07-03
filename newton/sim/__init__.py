@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from newton.sim.bvh.bvh import (
+    Bvh,
+    EdgeBvh,
+    TriBvh,
+)
+
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline, count_rigid_contact_points
@@ -62,9 +68,11 @@ __all__ = [
     "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
+    "Bvh",
     "CollisionPipeline",
     "Contacts",
     "Control",
+    "EdgeBvh",
     "Model",
     "ModelBuilder",
     "ShapeGeometry",
@@ -72,6 +80,7 @@ __all__ = [
     "State",
     "Style3DModel",
     "Style3DModelBuilder",
+    "TriBvh",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",
