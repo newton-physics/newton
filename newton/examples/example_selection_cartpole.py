@@ -45,7 +45,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, stage_path=None, num_envs=8):
+    def __init__(self, stage_path=None, num_envs=8, use_cuda_graph=True):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z
@@ -119,7 +119,7 @@ class Example:
                 camera_pos=(0, 3, 10),
             )
 
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -199,15 +199,19 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
     parser.add_argument("--num_envs", type=int, default=16, help="Total number of simulated environments.")
+    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
+        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
-        for _ in range(args.num_frames):
+        for frame_idx in range(args.num_frames):
             example.step()
             example.render()
+
+            if not example.renderer:
+                print(f"[{frame_idx:4d}/{args.num_frames}]")
 
         if example.renderer:
             example.renderer.save()

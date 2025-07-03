@@ -20,6 +20,8 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.solvers.style3d.kernels
+import newton.solvers.style3d.linear_solver
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
@@ -146,6 +148,10 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.load_module(newton.solvers.style3d.kernels, device=wp.get_device())
+            wp.load_module(newton.solvers.style3d.linear_solver, device=wp.get_device())
+
             with wp.ScopedCapture() as capture:
                 self.integrate_frame_substeps()
             self.cuda_graph = capture.graph
@@ -156,7 +162,7 @@ class Example:
             self.solver.step(self.state0, self.state1, self.control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
-    def advance_frame(self):
+    def step(self):
         with wp.ScopedTimer("step", print=False, dict=self.profiler):
             if self.use_cuda_graph:
                 wp.capture_launch(self.cuda_graph)
@@ -165,11 +171,14 @@ class Example:
             self.sim_time += self.dt
 
     def run(self):
-        for _ in range(self.num_frames):
-            if self.renderer.has_exit:
+        for frame_idx in range(self.num_frames):
+            if self.renderer and self.renderer.has_exit:
                 break
-            self.advance_frame()
+            self.step()
             self.render()
+
+            if self.renderer is None:
+                print(f"[{frame_idx:4d}/{args.num_frames}]")
 
     def render(self):
         if self.renderer is not None:

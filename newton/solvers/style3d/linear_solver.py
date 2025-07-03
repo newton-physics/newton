@@ -65,6 +65,10 @@ def eval_residual_kernel(
     r[tid] = b[tid] - Ax
 
 
+# Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
+wp.overload(eval_residual_kernel, {"A_diag": wp.array(dtype=wp.mat33)})
+
+
 @wp.kernel
 def array_mul_kernel(
     a: wp.array(dtype=Any),
@@ -73,6 +77,11 @@ def array_mul_kernel(
 ):
     tid = wp.tid()
     out[tid] = a[tid] * b[tid]
+
+
+# Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
+wp.overload(array_mul_kernel, {"a": wp.array(dtype=wp.float32)})
+wp.overload(array_mul_kernel, {"a": wp.array(dtype=wp.mat33)})
 
 
 @wp.kernel
@@ -84,6 +93,10 @@ def ell_mat_vel_mul_kernel(
 ):
     tid = wp.tid()
     Mx[tid] = (M_diag[tid] * x[tid]) + ell_mat_vec_mul(M_non_diag.num_nz, M_non_diag.nz_ell, x, tid)
+
+
+# Forward-declare instances of the generic kernel to support graph capture on CUDA <12.3 drivers
+wp.overload(ell_mat_vel_mul_kernel, {"M_diag": wp.array(dtype=wp.mat33)})
 
 
 @wp.kernel

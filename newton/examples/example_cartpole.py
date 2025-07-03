@@ -30,7 +30,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_cartpole.usd", num_envs=8):
+    def __init__(self, stage_path="example_cartpole.usd", num_envs=8, use_cuda_graph=True):
         self.num_envs = num_envs
 
         articulation_builder = newton.ModelBuilder()
@@ -80,7 +80,7 @@ class Example:
 
         newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -123,11 +123,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_frames", type=int, default=1200, help="Total number of frames.")
     parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
+        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
         for _ in range(args.num_frames):
             example.step()
