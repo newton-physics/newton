@@ -1,0 +1,1949 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Index &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="_static/documentation_options.js?v=3521d46b"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'genindex';</script>
+    <link rel="index" title="Index" href="#" />
+    <link rel="search" title="Search" href="search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.1.1.a2)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none"></div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+
+<h1 id="index">Index</h1>
+
+<div class="genindex-jumpbox">
+ 
+ <a href="#_"><strong>_</strong></a> | 
+ 
+ <a href="#A"><strong>A</strong></a> | 
+ 
+ <a href="#B"><strong>B</strong></a> | 
+ 
+ <a href="#C"><strong>C</strong></a> | 
+ 
+ <a href="#D"><strong>D</strong></a> | 
+ 
+ <a href="#E"><strong>E</strong></a> | 
+ 
+ <a href="#F"><strong>F</strong></a> | 
+ 
+ <a href="#G"><strong>G</strong></a> | 
+ 
+ <a href="#H"><strong>H</strong></a> | 
+ 
+ <a href="#I"><strong>I</strong></a> | 
+ 
+ <a href="#J"><strong>J</strong></a> | 
+ 
+ <a href="#K"><strong>K</strong></a> | 
+ 
+ <a href="#L"><strong>L</strong></a> | 
+ 
+ <a href="#M"><strong>M</strong></a> | 
+ 
+ <a href="#N"><strong>N</strong></a> | 
+ 
+ <a href="#P"><strong>P</strong></a> | 
+ 
+ <a href="#R"><strong>R</strong></a> | 
+ 
+ <a href="#S"><strong>S</strong></a> | 
+ 
+ <a href="#T"><strong>T</strong></a> | 
+ 
+ <a href="#U"><strong>U</strong></a> | 
+ 
+ <a href="#V"><strong>V</strong></a> | 
+ 
+ <a href="#X"><strong>X</strong></a> 
+ 
+</div>
+<h2 id="_">_</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.__init__">__init__() (newton.Control method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Mesh.html#newton.Mesh.__init__">(newton.Mesh method)</a></dt>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.__init__">(newton.Model method)</a></dt>
+            <dt><a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.__init__">(newton.ModelBuilder method)</a></dt>
+            <dt><a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.__init__">(newton.ModelBuilder.JointDofConfig method)</a></dt>
+            <dt><a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.__init__">(newton.ModelBuilder.ShapeConfig method)</a></dt>
+            <dt><a href="generated/core/newton.SDF.html#newton.SDF.__init__">(newton.SDF method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.__init__">(newton.solvers.FeatherstoneSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.__init__">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.__init__">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.__init__">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.__init__">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.__init__">(newton.solvers.XPBDSolver method)</a></dt>
+            <dt><a href="generated/core/newton.State.html#newton.State.__init__">(newton.State method)</a></dt>
+            <dt><a href="generated/importers/newton.utils.import_usd.resolve_usd_from_url.html#newton.utils.import_usd.resolve_usd_from_url.__init__">(newton.utils.import_usd.resolve_usd_from_url method)</a></dt>
+            <dt><a href="generated/importers/newton.utils.parse_mjcf.html#newton.utils.parse_mjcf.__init__">(newton.utils.parse_mjcf method)</a></dt>
+            <dt><a href="generated/importers/newton.utils.parse_urdf.html#newton.utils.parse_urdf.__init__">(newton.utils.parse_urdf method)</a></dt>
+            <dt><a href="generated/importers/newton.utils.parse_usd.html#newton.utils.parse_usd.__init__">(newton.utils.parse_usd method)</a></dt>
+            <dt><a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.__init__">(newton.utils.SimRendererOpenGL method)</a></dt>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.__init__">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="A">A</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.add_attribute">add_attribute() (newton.Model method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_body">add_body() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_builder">add_builder() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_grid">add_cloth_grid() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_cloth_mesh">add_cloth_mesh() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_edge">add_edge() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_edges">add_edges() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_ground_plane">add_ground_plane() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint">add_joint() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_ball">add_joint_ball() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_d6">add_joint_d6() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_distance">add_joint_distance() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_fixed">add_joint_fixed() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_free">add_joint_free() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_prismatic">add_joint_prismatic() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_revolute">add_joint_revolute() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_muscle">add_muscle() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_particle">add_particle() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_particles">add_particles() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape">add_shape() (newton.ModelBuilder method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_box">add_shape_box() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_capsule">add_shape_capsule() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_cone">add_shape_cone() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_cylinder">add_shape_cylinder() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_mesh">add_shape_mesh() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_plane">add_shape_plane() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_sdf">add_shape_sdf() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_sphere">add_shape_sphere() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_grid">add_soft_grid() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_soft_mesh">add_soft_mesh() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_spring">add_spring() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_tetrahedron">add_tetrahedron() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_triangle">add_triangle() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.add_triangles">add_triangles() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.armature">armature (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.articulation_count">articulation_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.articulation_key">articulation_key (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.articulation_start">articulation_start (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.attribute_frequency">attribute_frequency (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.axis">axis (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="B">B</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_com">body_com (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_count">body_count (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.body_count">(newton.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.State.html#newton.State.body_f">body_f (newton.State attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_inertia">body_inertia (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_inv_inertia">body_inv_inertia (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_inv_mass">body_inv_mass (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_key">body_key (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_mass">body_mass (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_q">body_q (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.body_q">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_qd">body_qd (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.body_qd">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.body_shapes">body_shapes (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="C">C</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.clear">clear() (newton.Control method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.State.html#newton.State.clear_forces">clear_forces() (newton.State method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.collapse_fixed_joints">collapse_fixed_joints() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.collide">collide() (newton.Model method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.collision_filter_parent">collision_filter_parent (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.collision_group">collision_group (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.color">color() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.color_collision_shapes">color_collision_shapes() (newton.solvers.MuJoCoSolver static method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.com">com (newton.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.SDF.html#newton.SDF.com">(newton.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.compute_convex_hull">compute_convex_hull() (newton.Mesh method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.compute_projection_matrix">compute_projection_matrix() (newton.utils.SimRendererOpenGL static method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control">Control (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.control">control() (newton.Model method)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.convert_to_mjc">convert_to_mjc() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.convex_hull">convex_hull (newton.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.create_unlimited">create_unlimited() (newton.ModelBuilder.JointDofConfig class method)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="D">D</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.default_num_segments">default_num_segments (newton.utils.SimRendererOpenGL attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.density">density (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.device">device (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.device">(newton.solvers.FeatherstoneSolver property)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.device">(newton.solvers.MuJoCoSolver property)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.device">(newton.solvers.SemiImplicitSolver property)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.device">(newton.solvers.SolverBase property)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.device">(newton.solvers.VBDSolver property)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.device">(newton.solvers.XPBDSolver property)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="E">E</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_bending_properties">edge_bending_properties (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_constraint_lambdas">edge_constraint_lambdas (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_count">edge_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_indices">edge_indices (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_rest_angle">edge_rest_angle (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.edge_rest_length">edge_rest_length (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.effort_limit">effort_limit (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="concepts/articulations.html#newton.eval_fk">eval_fk() (in module newton)</a>
+        </dt>
+        <dt>
+          <a href="concepts/articulations.html#newton.eval_ik">eval_ik() (in module newton)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="F">F</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver">FeatherstoneSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.finalize">finalize() (newton.Mesh method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.finalize">(newton.ModelBuilder method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.friction">friction (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="G">G</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.get_attribute_frequency">get_attribute_frequency() (newton.Model method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.get_pixels">get_pixels() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.gravity">gravity (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="H">H</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.has_particle_collision">has_particle_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.has_shape_collision">has_shape_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="I">I</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.I">I (newton.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.SDF.html#newton.SDF.I">(newton.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.indices">indices (newton.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.integrate_bodies">integrate_bodies() (newton.solvers.FeatherstoneSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.integrate_bodies">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.integrate_bodies">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.integrate_bodies">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.integrate_bodies">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.integrate_bodies">(newton.solvers.XPBDSolver method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.integrate_particles">integrate_particles() (newton.solvers.FeatherstoneSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.integrate_particles">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.integrate_particles">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.integrate_particles">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.integrate_particles">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.integrate_particles">(newton.solvers.XPBDSolver method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.is_solid">is_solid (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.is_visible">is_visible (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="J">J</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_ancestor">joint_ancestor (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_armature">joint_armature (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_axis">joint_axis (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_child">joint_child (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_coord_count">joint_coord_count (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.joint_coord_count">(newton.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_count">joint_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_dof_count">joint_dof_count (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.joint_dof_count">(newton.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_dof_dim">joint_dof_dim (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_dof_mode">joint_dof_mode (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_effort_limit">joint_effort_limit (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_enabled">joint_enabled (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.joint_f">joint_f (newton.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.joint_f">(newton.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_friction">joint_friction (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_key">joint_key (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_limit_kd">joint_limit_kd (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_limit_ke">joint_limit_ke (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_limit_lower">joint_limit_lower (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_limit_upper">joint_limit_upper (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_parent">joint_parent (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_q">joint_q (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.joint_q">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_q_start">joint_q_start (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_qd">joint_qd (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.joint_qd">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_qd_start">joint_qd_start (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.joint_target">joint_target (newton.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.joint_target">(newton.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_target_kd">joint_target_kd (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_target_ke">joint_target_ke (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_twist_lower">joint_twist_lower (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_twist_upper">joint_twist_upper (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_type">joint_type (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_velocity_limit">joint_velocity_limit (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_X_c">joint_X_c (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.joint_X_p">joint_X_p (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="K">K</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ka">ka (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd">kd (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke">ke (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kf">kf (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="L">L</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.limit_kd">limit_kd (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.limit_ke">limit_ke (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.limit_lower">limit_lower (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.limit_upper">limit_upper (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="M">M</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.mass">mass (newton.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.SDF.html#newton.SDF.mass">(newton.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.maxhullvert">maxhullvert (newton.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh">Mesh (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.mode">mode (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model">Model (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder">ModelBuilder (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig">ModelBuilder.JointDofConfig (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig">ModelBuilder.ShapeConfig (class in newton)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu">mu (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver">MuJoCoSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.muscle_activations">muscle_activations (newton.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.muscle_activations">(newton.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.muscle_bodies">muscle_bodies (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.muscle_count">muscle_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.muscle_params">muscle_params (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.muscle_points">muscle_points (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.muscle_start">muscle_start (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="N">N</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.notify_model_changed">notify_model_changed() (newton.solvers.FeatherstoneSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.notify_model_changed">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.notify_model_changed">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.notify_model_changed">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.notify_model_changed">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.notify_model_changed">(newton.solvers.XPBDSolver method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.num_envs">num_envs (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="P">P</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/importers/newton.utils.parse_mjcf.html#newton.utils.parse_mjcf">parse_mjcf (class in newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="generated/importers/newton.utils.parse_urdf.html#newton.utils.parse_urdf">parse_urdf (class in newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="generated/importers/newton.utils.parse_usd.html#newton.utils.parse_usd">parse_usd (class in newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_adhesion">particle_adhesion (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_cohesion">particle_cohesion (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_color_groups">particle_color_groups (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_colors">particle_colors (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_count">particle_count (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.particle_count">(newton.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.State.html#newton.State.particle_f">particle_f (newton.State attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_flags">particle_flags (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_grid">particle_grid (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_inv_mass">particle_inv_mass (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_kd">particle_kd (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_ke">particle_ke (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_kf">particle_kf (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_mass">particle_mass (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_max_radius">particle_max_radius (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_max_velocity">particle_max_velocity (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_mu">particle_mu (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_q">particle_q (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.particle_q">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_qd">particle_qd (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.particle_qd">(newton.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.particle_radius">particle_radius (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.plot_articulation">plot_articulation() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.populate">populate() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.populate">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="R">R</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.rebuild_bvh">rebuild_bvh() (newton.solvers.VBDSolver method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render">render() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_arrow">render_arrow() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_box">render_box() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_box">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_capsule">render_capsule() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_capsule">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_cone">render_cone() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_cone">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_contacts">render_contacts() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_contacts">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_cylinder">render_cylinder() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_cylinder">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_ground">render_ground() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_line_list">render_line_list() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_line_list">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_line_strip">render_line_strip() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_mesh">render_mesh() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_plane">render_plane() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_plane">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_points">render_points() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_ref">render_ref() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.render_sphere">render_sphere() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.render_sphere">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.requires_grad">requires_grad (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.State.html#newton.State.requires_grad">(newton.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/importers/newton.utils.import_usd.resolve_usd_from_url.html#newton.utils.import_usd.resolve_usd_from_url">resolve_usd_from_url (class in newton.utils.import_usd)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.restitution">restitution (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.rigid_contact_max">rigid_contact_max (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.rigid_contact_rolling_friction">rigid_contact_rolling_friction (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.rigid_contact_torsional_friction">rigid_contact_torsional_friction (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="S">S</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.SDF.html#newton.SDF">SDF (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver">SemiImplicitSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.set_coloring">set_coloring() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.set_convex_hull">set_convex_hull() (newton.Mesh method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.setup_tiled_rendering">setup_tiled_rendering() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_body">shape_body (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_collision_filter_pairs">shape_collision_filter_pairs (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_collision_group">shape_collision_group (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_collision_group_map">shape_collision_group_map (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_collision_radius">shape_collision_radius (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_contact_pair_count">shape_contact_pair_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_contact_pairs">shape_contact_pairs (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_count">shape_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_flags">shape_flags (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_geo">shape_geo (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_geo_src">shape_geo_src (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_key">shape_key (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_materials">shape_materials (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.shape_transform">shape_transform (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL">SimRendererOpenGL (class in newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd">SimRendererUsd (class in newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.soft_contact_kd">soft_contact_kd (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.soft_contact_ke">soft_contact_ke (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.soft_contact_kf">soft_contact_kf (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.soft_contact_mu">soft_contact_mu (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.soft_contact_restitution">soft_contact_restitution (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase">SolverBase (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_constraint_lambdas">spring_constraint_lambdas (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_control">spring_control (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_count">spring_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_damping">spring_damping (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_indices">spring_indices (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_rest_length">spring_rest_length (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.spring_stiffness">spring_stiffness (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.State.html#newton.State">State (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.state">state() (newton.Model method)</a>
+        </dt>
+        <dt>
+          <a href="generated/solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.step">step() (newton.solvers.FeatherstoneSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.step">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.step">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.step">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.step">(newton.solvers.XPBDSolver method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="T">T</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.target">target (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.target_kd">target_kd (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.target_ke">target_ke (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.tet_activations">tet_activations (newton.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.tet_activations">(newton.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tet_count">tet_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tet_indices">tet_indices (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tet_materials">tet_materials (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tet_poses">tet_poses (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.thickness">thickness (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Control.html#newton.Control.tri_activations">tri_activations (newton.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.Model.html#newton.Model.tri_activations">(newton.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tri_areas">tri_areas (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tri_count">tri_count (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tri_indices">tri_indices (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tri_materials">tri_materials (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.tri_poses">tri_poses (newton.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="U">U</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.up_axis">up_axis (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.Model.html#newton.Model.up_vector">up_vector (newton.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.up_vector">(newton.ModelBuilder property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.update_geom_properties">update_geom_properties() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.update_joint_properties">update_joint_properties() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.update_shape_instance">update_shape_instance() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.update_tile">update_tile() (newton.utils.SimRendererOpenGL method)</a>
+        </dt>
+        <dt>
+          <a href="generated/renderers/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL.use_unique_colors">use_unique_colors (newton.utils.SimRendererOpenGL attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="generated/renderers/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.use_unique_colors">(newton.utils.SimRendererUsd attribute)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="V">V</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver">VBDSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.velocity_limit">velocity_limit (newton.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/core/newton.Mesh.html#newton.Mesh.vertices">vertices (newton.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="generated/core/newton.SDF.html#newton.SDF.volume">volume (newton.SDF attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="X">X</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="generated/solvers/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver">XPBDSolver (class in newton.solvers)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
