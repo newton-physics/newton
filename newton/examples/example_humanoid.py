@@ -104,7 +104,7 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

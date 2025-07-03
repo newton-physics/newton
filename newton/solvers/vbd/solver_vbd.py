@@ -1896,7 +1896,7 @@ class VBDSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
 
@@ -2090,18 +2090,17 @@ class VBDSolver(SolverBase):
         return adjacency
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        if model is not self.model:
-            raise ValueError("model must be the one used to initialize VBDSolver")
-
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.handle_self_contact:
-            self.simulate_one_step_with_collisions_penetration_free(model, state_in, state_out, control, contacts, dt)
+            self.simulate_one_step_with_collisions_penetration_free(state_in, state_out, control, contacts, dt)
         else:
-            self.simulate_one_step_no_self_contact(model, state_in, state_out, control, contacts, dt)
+            self.simulate_one_step_no_self_contact(state_in, state_out, control, contacts, dt)
 
     def simulate_one_step_no_self_contact(
-        self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
+        self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
     ):
+        model = self.model
+
         wp.launch(
             kernel=forward_step,
             inputs=[
@@ -2204,10 +2203,12 @@ class VBDSolver(SolverBase):
         )
 
     def simulate_one_step_with_collisions_penetration_free(
-        self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
+        self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
     ):
         # collision detection before initialization to compute conservative bounds for initialization
         self.collision_detection_penetration_free(state_in, dt)
+
+        model = self.model
 
         wp.launch(
             kernel=forward_step_penetration_free,
