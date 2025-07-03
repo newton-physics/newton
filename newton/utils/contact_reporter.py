@@ -20,8 +20,8 @@ import numpy as np
 import warp as wp
 
 from newton import Model
-from newton.solvers import MuJoCoSolver, SolverBase
 from newton.sim.contacts import ContactInfo
+from newton.solvers import MuJoCoSolver, SolverBase
 
 NUM_THREADS = 8192
 

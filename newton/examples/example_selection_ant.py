@@ -23,8 +23,8 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView, ContactView
 from newton.utils.contact_reporter import ContactInfo
+from newton.utils.selection import ArticulationView, ContactView
 
 COLLAPSE_FIXED_JOINTS = True
 VERBOSE = True
@@ -116,16 +116,14 @@ class Example:
         self.contacts_torso_ground = ContactView(self.model, self.torso_ground_query_idx)
 
         # Precompute foot body indices for efficient color updates
-        self.foot_body_indices = []
-        for body_key in self.contacts_feet_ground.query_keys[0]:
-            body_idx = self.model.body_key.index(body_key)
-            self.foot_body_indices.append(body_idx)
+        self.foot_shape_indices = []
+        for entity in self.contacts_feet_ground.contact_reporter.entity_group_pairs[0][0]:
+            self.foot_shape_indices.append(entity)
 
         # Precompute torso body indices for efficient color updates
-        self.torso_body_indices = []
-        for body_key in self.contacts_torso_ground.query_keys[0]:
-            body_idx = self.model.body_key.index(body_key)
-            self.torso_body_indices.append(body_idx)
+        self.torso_shape_indices = []
+        for entity in self.contacts_torso_ground.contact_reporter.entity_group_pairs[1][0]:
+            self.torso_shape_indices.append(entity)
 
         # set all dofs to the middle of their range by default
         dof_limit_lower = wp.to_torch(self.ants.get_attribute("joint_limit_lower", self.model))
@@ -149,8 +147,6 @@ class Example:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-
-        self.t = 0
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -192,21 +188,23 @@ class Example:
             return (v, v * (1 - d), v * (1 - d))
 
         # Update shape colors based on contact distances
-        body_colors = {}
+        shape_colors = {}
         for foot_nr, dist in enumerate(feet_matrix.numpy()):
-            body_idx = self.foot_body_indices[foot_nr]
-            body_colors[body_idx] = colormap(dist)
+            shapes = self.foot_shape_indices[foot_nr]
+            for s in shapes:
+                shape_colors[s] = colormap(dist)
 
         # Handle torso contacts
         torso_entities, torso_matrix = self.contacts_torso_ground.get_contact_dist()
         for torso_nr, dist in enumerate(torso_matrix.numpy()):
-            body_idx = self.torso_body_indices[torso_nr]
-            if dist < 1:  # in contact
-                body_colors[body_idx] = (1.0, 0.0, 1.0)  # magenta
-            else:  # not in contact
-                body_colors[body_idx] = (1.0, 0.5, 0.0)  # orange
+            shapes = self.torso_shape_indices[torso_nr]
+            for s in shapes:
+                if dist < 1:  # in contact
+                    shape_colors[s] = (1.0, 0.0, 1.0)  # magenta
+                else:  # not in contact
+                    shape_colors[s] = (1.0, 0.5, 0.0)  # orange
 
-        self._set_shape_colors(body_colors)
+        self._set_shape_colors(shape_colors)
 
         with wp.ScopedTimer("step", active=False):
             if self.use_cuda_graph:
@@ -227,21 +225,19 @@ class Example:
         if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
             self.ants.eval_fk(self.state_0, mask=mask)
 
-    def _set_shape_colors(self, body_colors):
-        """Set colors for all shapes of specified bodies in the renderer."""
+    def _set_shape_colors(self, shape_colors):
+        """Set colors for all shapes in the renderer."""
         if self.renderer is None:
             return
 
         inst = list(self.renderer._instances.values())
         inst_keys = list(self.renderer._instances.keys())
 
-        for body_idx, color in body_colors.items():
-            # Get all shapes for this body
-            for shape_idx in self.model.body_shapes[body_idx]:
-                inst_copy = list(inst[shape_idx])
-                inst_copy[5] = color
-                inst_copy[6] = np.array(color)
-                self.renderer._instances[inst_keys[shape_idx]] = tuple(inst_copy)
+        for shape_idx, color in shape_colors.items():
+            inst_copy = list(inst[shape_idx])
+            inst_copy[5] = color
+            inst_copy[6] = np.array(color)
+            self.renderer._instances[inst_keys[shape_idx]] = tuple(inst_copy)
 
         self.renderer.update_instance_colors()
 
