@@ -1389,15 +1389,26 @@ class MuJoCoSolver(SolverBase):
             selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
                 0
             ]
-            selected_bodies = np.unique(shape_body[selected_shapes])
+            selected_bodies = np.unique([i for i in shape_body[selected_shapes] if i != -1])
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
             # figure out the articulations that are selected
+            joint_ptr = 0
+            selected_articulations = []
             for i in range(model.articulation_count):
-                if np.any(np.isin(articulation_start[i : i + 1], selected_joints)):
-                    selected_joints = np.concatenate((selected_joints, articulation_start[i : i + 1]))
+                while joint_ptr < len(selected_joints) and selected_joints[joint_ptr] < articulation_start[i]:
+                    joint_ptr += 1
+                if joint_ptr >= len(selected_joints):
+                    continue
+                joint = selected_joints[joint_ptr]
+                if joint >= articulation_start[i] and joint < articulation_start[i + 1]:
+                    selected_articulations.append(i)
                 selected_joints = np.unique(selected_joints)
+            for articulation in selected_articulations:
+                # add all joints of the articulation to the selected joints
+                articulation_joints = np.arange(articulation_start[articulation], articulation_start[articulation + 1])
+                selected_joints = np.unique(np.concatenate((selected_joints, articulation_joints)))
             if len(selected_joints) == 0:
-                # select all joints from the first articulation
+                # select all joints from the first articulation if we didn't populate any so far
                 selected_joints = np.arange(articulation_start[0], articulation_start[1])
             selected_bodies = np.unique(np.concatenate((selected_bodies, joint_child[selected_joints])))
         else:
@@ -1806,12 +1817,11 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
-            self.notify_model_changed(flags)
 
             # Also update shape properties once during initialization
             if model.shape_materials.mu is not None:
-                shape_flags = newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
-                self.notify_model_changed(shape_flags)
+                shape_flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+            self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
