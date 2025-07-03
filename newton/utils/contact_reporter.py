@@ -401,7 +401,7 @@ class ContactReporter:
             return 24  # TODO
 
         bin_size = list(map(shape_pair_maxcontacts, shape_pairs))
-        bin_start = np.cumsum([0] + bin_size[:-1])  # Cumulative sum for start indices
+        bin_start = np.cumsum([0, *bin_size[:-1]])  # Cumulative sum for start indices
 
         total_bin_size = sum(bin_size)  # Total size for linearized arrays
 
@@ -423,7 +423,7 @@ class ContactReporter:
                 ep_sp_ord.append(shape_pairs_id_to_ord[sp_idx])
                 ep_sp_flip.append(flip)
             ep_sp_num.append(len(sps))
-        ep_sp_start = np.cumsum([0] + ep_sp_num[:-1])
+        ep_sp_start = np.cumsum([0, *ep_sp_num[:-1]])
 
         n_bins = self.n_shape_pairs
 
