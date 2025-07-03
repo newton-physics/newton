@@ -25,6 +25,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.core.types import nparray, override
+from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
@@ -1179,7 +1180,7 @@ class MuJoCoSolver(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = True,
-        maxhullvert: int = 64,
+        maxhullvert: int = MESH_MAXHULLVERT,
         contact_stiffness_time_const: float | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
@@ -1436,11 +1437,17 @@ class MuJoCoSolver(SolverBase):
                 }
                 if stype == newton.GEO_MESH:
                     mesh_src = model.shape_geo_src[shape]
+                    # use mesh-specific maxhullvert or fall back to the default
+                    mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
+                    # check if mesh has a pre-computed convex hull
+                    convex_hull = getattr(mesh_src, "convex_hull", None)
+                    # use convex hull if available, otherwise use original mesh
+                    mesh_to_use = convex_hull if convex_hull is not None else mesh_src
                     spec.add_mesh(
                         name=name,
-                        uservert=mesh_src.vertices.flatten(),
-                        userface=mesh_src.indices.flatten(),
-                        maxhullvert=maxhullvert,
+                        uservert=mesh_to_use.vertices.flatten(),
+                        userface=mesh_to_use.indices.flatten(),
+                        maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
                 q = wp.quat(*shape_transform[shape, 3:])

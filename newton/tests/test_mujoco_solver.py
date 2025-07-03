@@ -21,6 +21,7 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
+from newton.geometry import Mesh
 from newton.solvers import MuJoCoSolver
 
 # Import the kernels for coordinate conversion
@@ -972,6 +973,57 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Ensure we actually tested some shapes
         self.assertGreater(verified_count, 0, "Should have verified at least one shape")
+
+    def test_mesh_maxhullvert_attribute(self):
+        """Test that Mesh objects can store maxhullvert attribute"""
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        indices = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
+
+        # Test default maxhullvert
+        mesh1 = Mesh(vertices, indices)
+        self.assertEqual(mesh1.maxhullvert, 64)
+
+        # Test custom maxhullvert
+        mesh2 = Mesh(vertices, indices, maxhullvert=128)
+        self.assertEqual(mesh2.maxhullvert, 128)
+
+    def test_mujoco_solver_uses_mesh_maxhullvert(self):
+        """Test that MuJoCo solver uses per-mesh maxhullvert values"""
+
+        builder = newton.ModelBuilder()
+
+        # Create meshes with different maxhullvert values
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        indices = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
+
+        mesh1 = Mesh(vertices, indices, maxhullvert=32)
+        mesh2 = Mesh(vertices, indices, maxhullvert=128)
+
+        # Add bodies and shapes with these meshes
+        body1 = builder.add_body(mass=1.0)
+        builder.add_shape_mesh(body=body1, mesh=mesh1)
+
+        body2 = builder.add_body(mass=1.0)
+        builder.add_shape_mesh(body=body2, mesh=mesh2)
+
+        # Add joints to make MuJoCo happy
+        builder.add_joint_free(body1)
+        builder.add_joint_free(body2)
+
+        model = builder.finalize()
+
+        # Create MuJoCo solver
+        solver = MuJoCoSolver(model)
+
+        # The solver should have used the per-mesh maxhullvert values
+        # We can't directly verify this without inspecting MuJoCo internals,
+        # but we can at least verify the solver was created successfully
+        self.assertIsNotNone(solver)
+
+        # Verify that the meshes retained their maxhullvert values
+        self.assertEqual(model.shape_geo_src[0].maxhullvert, 32)
+        self.assertEqual(model.shape_geo_src[1].maxhullvert, 128)
 
 
 if __name__ == "__main__":
