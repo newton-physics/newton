@@ -33,9 +33,9 @@ class TestAnymalCWalk(unittest.TestCase):
             else:
                 example.simulate()
 
-            root_pos = wp.to_torch(example.state_0.joint_q[:3]).detach().cpu().numpy()
+            root_pos = example.state_0.joint_q[:3].numpy()
             root_height = root_pos[1]
-            root_quat = wp.to_torch(example.state_0.joint_q[3:7]).detach().cpu().numpy()
+            root_quat = example.state_0.joint_q[3:7].numpy()
 
             x, y, z, w = root_quat[0], root_quat[1], root_quat[2], root_quat[3]
             R = np.array(
@@ -46,8 +46,8 @@ class TestAnymalCWalk(unittest.TestCase):
                 ]
             )
 
-            joint_qd_linear = wp.to_torch(example.state_0.joint_qd[3:6]).detach().cpu().numpy()
-            joint_qd_angular = wp.to_torch(example.state_0.joint_qd[0:3]).detach().cpu().numpy()
+            joint_qd_linear = example.state_0.joint_qd[3:6].numpy()
+            joint_qd_angular = example.state_0.joint_qd[0:3].numpy()
 
             joint_qd_linear_corrected = joint_qd_linear - np.cross(root_pos, joint_qd_angular)
             vel_body_joint_qd_corrected = R.T @ joint_qd_linear_corrected
@@ -55,7 +55,9 @@ class TestAnymalCWalk(unittest.TestCase):
             has_fallen = root_height < height_threshold
 
             if has_fallen:
-                self.fail(f"Robot fallen, Step {step_num} - Height: {root_height:.3f}m (threshold: {height_threshold}m)")
+                self.fail(
+                    f"Robot fell, Step {step_num} - Height: {root_height:.3f}m (threshold: {height_threshold}m)"
+                )
 
             if step_num % 100 == 0 and step_num != 0:
                 self.assertGreater(
