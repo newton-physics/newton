@@ -2,13 +2,37 @@ version = 1
 revision = 2
 requires-python = ">=3.9"
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
+conflicts = [[
+    { package = "newton-physics", extra = "cpu" },
+    { package = "newton-physics", extra = "cu128" },
+]]
 
 [[package]]
 name = "absl-py"
@@ -36,8 +60,13 @@ name = "alabaster"
 version = "0.7.16"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c9/3e/13dd8e5ed9094e734ac430b5d0eb4f2bb001708a8b7856cbf8e084e001ba/alabaster-0.7.16.tar.gz", hash = "sha256:75a8b99c28a5dad50dd7f8ccdd447a121ddb3892da9e53d1ca5cca3106d58d65", size = 23776, upload-time = "2024-01-10T00:56:10.189Z" }
 wheels = [
@@ -49,10 +78,25 @@ name = "alabaster"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a6/f8/d9c74d0daf3f742840fd818d69cfae176fa332022fd44e3469487d5a9420/alabaster-1.0.0.tar.gz", hash = "sha256:c00dca57bca26fa62a6d7d0a9fcce65f3e026e9bfe33e9c538fd3fbb2144fd9e", size = 24210, upload-time = "2024-07-26T18:15:03.762Z" }
 wheels = [
@@ -64,21 +108,21 @@ name = "alphashape"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "click-log" },
-    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "rtree" },
-    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "scipy", version = "1.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "shapely", version = "2.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "shapely", version = "2.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "scipy", version = "1.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "shapely", version = "2.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "shapely", version = "2.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "trimesh" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/83/67ff905694df5b34a777123b59fdfd05998d5a31766f188aafbf5b340055/alphashape-1.3.1.tar.gz", hash = "sha256:7a27340afc5f8ed301577acec46bb0cf2bada5410045f7289142e735ef6977ec", size = 26316, upload-time = "2021-04-16T17:47:19.486Z" }
@@ -196,11 +240,16 @@ name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version < '3.10' and sys_platform == 'win32'" },
+    { name = "colorama", marker = "(python_full_version < '3.10' and sys_platform == 'win32') or (python_full_version >= '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/2e/0090cbf739cee7d23781ad4b89a9894a41538e4fcf4c31dcdd705b78eb8b/click-8.1.8.tar.gz", hash = "sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a", size = 226593, upload-time = "2024-12-21T18:38:44.339Z" }
 wheels = [
@@ -212,13 +261,28 @@ name = "click"
 version = "8.2.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version >= '3.10' and sys_platform == 'win32'" },
+    { name = "colorama", marker = "(python_full_version >= '3.10' and sys_platform == 'win32') or (python_full_version < '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/60/6c/8ca2efa64cf75a977a0d7fac081354553ebe483345c734fb6b6515d96bbc/click-8.2.1.tar.gz", hash = "sha256:27c491cc05d968d271d5a1db13e3b5a184636d9d930f148c50b038f0d0646202", size = 286342, upload-time = "2025-05-20T23:19:49.832Z" }
 wheels = [
@@ -230,8 +294,8 @@ name = "click-log"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "click", version = "8.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/32/32/228be4f971e4bd556c33d52a22682bfe318ffe57a1ddb7a546f347a90260/click-log-0.4.0.tar.gz", hash = "sha256:3970f8570ac54491237bcdb3d8ab5e3eef6c057df29f8c3d1151a51a9c23b975", size = 9985, upload-time = "2022-03-13T11:10:15.262Z" }
 wheels = [
@@ -252,11 +316,16 @@ name = "contourpy"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f5/f6/31a8f28b4a2a4fa0e01085e542f3081ab0588eff8e589d39d775172c9792/contourpy-1.3.0.tar.gz", hash = "sha256:7ffa0db17717a8ffb127efd0c95a4362d996b892c2904db72428d5b52e1938a4", size = 13464370, upload-time = "2024-08-27T21:00:03.328Z" }
 wheels = [
@@ -331,14 +400,29 @@ name = "contourpy"
 version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/54/eb9bfc647b19f2009dd5c7f5ec51c4e6ca831725f1aea7a993034f483147/contourpy-1.3.2.tar.gz", hash = "sha256:b6945942715a034c671b7fc54f9588126b0b8bf23db2696e3ca8328f3ff0ab54", size = 13466130, upload-time = "2025-04-15T17:47:53.79Z" }
 wheels = [
@@ -476,7 +560,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", marker = "python_full_version <= '3.11'" },
+    { name = "tomli", marker = "python_full_version <= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 
 [[package]]
@@ -502,8 +586,13 @@ name = "etils"
 version = "1.5.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ad/fa/8637c95271dd9eed00e258184295dd00ba163bb8924ba3be978ec89f093f/etils-1.5.2.tar.gz", hash = "sha256:ba6a3e1aff95c769130776aa176c11540637f5dd881f3b79172a5149b6b1c446", size = 87021, upload-time = "2023-10-24T12:22:58.996Z" }
 wheels = [
@@ -512,10 +601,10 @@ wheels = [
 
 [package.optional-dependencies]
 epath = [
-    { name = "fsspec", marker = "python_full_version < '3.10'" },
-    { name = "importlib-resources", marker = "python_full_version < '3.10'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.10'" },
-    { name = "zipp", marker = "python_full_version < '3.10'" },
+    { name = "fsspec", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "importlib-resources", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "zipp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 
 [[package]]
@@ -523,10 +612,25 @@ name = "etils"
 version = "1.12.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/12/1cc11e88a0201280ff389bc4076df7c3432e39d9f22cba8b71aa263f67b8/etils-1.12.2.tar.gz", hash = "sha256:c6b9e1f0ce66d1bbf54f99201b08a60ba396d3446d9eb18d4bc39b26a2e1a5ee", size = 104711, upload-time = "2025-03-10T15:14:13.671Z" }
 wheels = [
@@ -535,10 +639,10 @@ wheels = [
 
 [package.optional-dependencies]
 epath = [
-    { name = "fsspec", marker = "python_full_version >= '3.10'" },
-    { name = "importlib-resources", marker = "python_full_version >= '3.10'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.10'" },
-    { name = "zipp", marker = "python_full_version >= '3.10'" },
+    { name = "fsspec", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "importlib-resources", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "zipp", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 
 [[package]]
@@ -546,9 +650,9 @@ name = "fast-simplification"
 version = "0.1.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/78/98/1e10c12ac539826e81902952175961f2717f188b1e2276949e687a88c91c/fast_simplification-0.1.11.tar.gz", hash = "sha256:deba1bd719b372e375ed38cbfcc47d98e9e3e41405c470d10efdae3a2b676d3d", size = 26334, upload-time = "2025-05-07T15:53:15.825Z" }
 wheels = [
@@ -572,6 +676,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/45/7e/954b4a99dda9b4d611ff752aed9d35fc9554acafbdc2a6e3c41ca695ee6e/fast_simplification-0.1.11-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:f40bdec940180af2a9bf6f5894cd9203dbc55b8182c485f8a0deb7bae13b86ee", size = 242641, upload-time = "2025-05-07T15:53:09.804Z" },
     { url = "https://files.pythonhosted.org/packages/95/1d/44cab05fc9a71627b606598f2cde63c4e2adafc6c907ce5b8a43bfc71a87/fast_simplification-0.1.11-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e4c2172e1e0f77777b76e5425c2a1117bad7d24606cb3f66ce2efb2af7817ee6", size = 1699320, upload-time = "2025-05-07T15:53:11.656Z" },
     { url = "https://files.pythonhosted.org/packages/c8/48/50fbef14f15c724fb1fa92a076d2222d7a7464214996d89aad5863515b17/fast_simplification-0.1.11-cp39-cp39-win_amd64.whl", hash = "sha256:5fe79aee0b5371627d7cf8510ac91f25f318b940e7ef2a82ecff68501f2b6356", size = 213398, upload-time = "2025-05-07T15:53:13.885Z" },
+]
+
+[[package]]
+name = "filelock"
+version = "3.18.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/10/c23352565a6544bdc5353e0b15fc1c563352101f30e24bf500207a54df9a/filelock-3.18.0.tar.gz", hash = "sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2", size = 18075, upload-time = "2025-03-14T07:11:40.47Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/36/2a115987e2d8c300a974597416d9de88f2444426de9571f4b59b2cca3acc/filelock-3.18.0-py3-none-any.whl", hash = "sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de", size = 16215, upload-time = "2025-03-14T07:11:39.145Z" },
 ]
 
 [[package]]
@@ -695,7 +808,7 @@ name = "importlib-metadata"
 version = "8.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.10'" },
+    { name = "zipp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/66/650a33bd90f786193e4de4b3ad86ea60b53c89b669a5c7be931fac31cdb0/importlib_metadata-8.7.0.tar.gz", hash = "sha256:d13b81ad223b890aa16c5471f2ac3056cf76c5f10f82d6f9292f0b415f389000", size = 56641, upload-time = "2025-04-27T15:29:01.736Z" }
 wheels = [
@@ -707,7 +820,7 @@ name = "importlib-resources"
 version = "6.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.10'" },
+    { name = "zipp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cf/8c/f834fbf984f691b4f7ff60f50b514cc3de5cc08abfc3295564dd89c5e2e7/importlib_resources-6.5.2.tar.gz", hash = "sha256:185f87adef5bcc288449d98fb4fba07cea78bc036455dd44c5fc4a2fe78fed2c", size = 44693, upload-time = "2025-01-03T18:51:56.698Z" }
 wheels = [
@@ -731,8 +844,13 @@ name = "kiwisolver"
 version = "1.4.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/85/4d/2255e1c76304cbd60b48cee302b66d1dde4468dc5b1160e4b7cb43778f2a/kiwisolver-1.4.7.tar.gz", hash = "sha256:9893ff81bd7107f7b685d3017cc6583daadb4fc26e4a888350df530e41980a60", size = 97286, upload-time = "2024-09-04T09:39:44.302Z" }
 wheels = [
@@ -835,10 +953,25 @@ name = "kiwisolver"
 version = "1.4.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/82/59/7c91426a8ac292e1cdd53a63b6d9439abd573c875c3f92c146767dd33faf/kiwisolver-1.4.8.tar.gz", hash = "sha256:23d5f023bdc8c7e54eb65f03ca5d5bb25b601eac4d7f1a042888a1f45237987e", size = 97538, upload-time = "2024-12-24T18:30:51.519Z" }
 wheels = [
@@ -1008,20 +1141,25 @@ name = "matplotlib"
 version = "3.9.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "contourpy", version = "1.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "cycler", marker = "python_full_version < '3.10'" },
-    { name = "fonttools", marker = "python_full_version < '3.10'" },
-    { name = "importlib-resources", marker = "python_full_version < '3.10'" },
-    { name = "kiwisolver", version = "1.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "packaging", marker = "python_full_version < '3.10'" },
-    { name = "pillow", marker = "python_full_version < '3.10'" },
-    { name = "pyparsing", marker = "python_full_version < '3.10'" },
-    { name = "python-dateutil", marker = "python_full_version < '3.10'" },
+    { name = "contourpy", version = "1.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "cycler", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "fonttools", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "importlib-resources", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "kiwisolver", version = "1.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "packaging", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pillow", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pyparsing", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "python-dateutil", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/df/17/1747b4154034befd0ed33b52538f5eb7752d05bb51c5e2a31470c3bc7d52/matplotlib-3.9.4.tar.gz", hash = "sha256:1e00e8be7393cbdc6fedfa8a6fba02cf3e83814b285db1c60b906a023ba41bc3", size = 36106529, upload-time = "2024-12-13T05:56:34.184Z" }
 wheels = [
@@ -1072,22 +1210,37 @@ name = "matplotlib"
 version = "3.10.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "cycler", marker = "python_full_version >= '3.10'" },
-    { name = "fonttools", marker = "python_full_version >= '3.10'" },
-    { name = "kiwisolver", version = "1.4.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "packaging", marker = "python_full_version >= '3.10'" },
-    { name = "pillow", marker = "python_full_version >= '3.10'" },
-    { name = "pyparsing", marker = "python_full_version >= '3.10'" },
-    { name = "python-dateutil", marker = "python_full_version >= '3.10'" },
+    { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "cycler", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "fonttools", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "kiwisolver", version = "1.4.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "packaging", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pillow", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pyparsing", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "python-dateutil", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/26/91/d49359a21893183ed2a5b6c76bec40e0b1dcbf8ca148f864d134897cfc75/matplotlib-3.10.3.tar.gz", hash = "sha256:2f82d2c5bb7ae93aaaa4cd42aca65d76ce6376f83304fa3a630b569aca274df0", size = 34799811, upload-time = "2025-05-08T19:10:54.39Z" }
 wheels = [
@@ -1148,17 +1301,26 @@ wheels = [
 ]
 
 [[package]]
+name = "mpmath"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
+]
+
+[[package]]
 name = "mujoco"
 version = "3.3.4.dev775632047"
 source = { registry = "https://py.mujoco.org/" }
 dependencies = [
     { name = "absl-py" },
-    { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10'" },
-    { name = "etils", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version >= '3.10'" },
+    { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "etils", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "glfw" },
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "pyopengl" },
 ]
 wheels = [
@@ -1190,14 +1352,14 @@ version = "0.0.1"
 source = { git = "https://github.com/google-deepmind/mujoco_warp#8e1b3b0ffb1ab6b9df3123b136bd30837fc31eab" }
 dependencies = [
     { name = "absl-py" },
-    { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10'" },
-    { name = "etils", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version >= '3.10'" },
+    { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "etils", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "mujoco" },
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "warp-lang", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.8.0.dev20250625", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "warp-lang", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "warp-lang", version = "1.8.0.dev20250625", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 
 [[package]]
@@ -1205,16 +1367,21 @@ name = "myst-parser"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "docutils", marker = "python_full_version < '3.10'" },
-    { name = "jinja2", marker = "python_full_version < '3.10'" },
-    { name = "markdown-it-py", marker = "python_full_version < '3.10'" },
-    { name = "mdit-py-plugins", marker = "python_full_version < '3.10'" },
-    { name = "pyyaml", marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "docutils", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "jinja2", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "markdown-it-py", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "mdit-py-plugins", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pyyaml", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/49/64/e2f13dac02f599980798c01156393b781aec983b52a6e4057ee58f07c43a/myst_parser-3.0.1.tar.gz", hash = "sha256:88f0cb406cb363b077d176b51c476f62d60604d68a8dcdf4832e080441301a87", size = 92392, upload-time = "2024-04-28T20:22:42.116Z" }
 wheels = [
@@ -1226,19 +1393,34 @@ name = "myst-parser"
 version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "docutils", marker = "python_full_version >= '3.10'" },
-    { name = "jinja2", marker = "python_full_version >= '3.10'" },
-    { name = "markdown-it-py", marker = "python_full_version >= '3.10'" },
-    { name = "mdit-py-plugins", marker = "python_full_version >= '3.10'" },
-    { name = "pyyaml", marker = "python_full_version >= '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "docutils", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "jinja2", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "markdown-it-py", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "mdit-py-plugins", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pyyaml", marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/a5/9626ba4f73555b3735ad86247a8077d4603aa8628537687c839ab08bfe44/myst_parser-4.0.1.tar.gz", hash = "sha256:5cfea715e4f3574138aecbf7d54132296bfd72bb614d31168f48c477a830a7c4", size = 93985, upload-time = "2025-02-12T10:53:03.833Z" }
 wheels = [
@@ -1250,8 +1432,13 @@ name = "networkx"
 version = "3.2.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/80/a84676339aaae2f1cfdf9f418701dd634aef9cc76f708ef55c36ff39c3ca/networkx-3.2.1.tar.gz", hash = "sha256:9f1bb5cf3409bf324e0a722c20bdb4c20ee39bf1c30ce8ae499c8502b0b5e0c6", size = 2073928, upload-time = "2023-10-28T08:41:39.364Z" }
 wheels = [
@@ -1263,8 +1450,13 @@ name = "networkx"
 version = "3.4.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fd/1d/06475e1cd5264c0b870ea2cc6fdb3e37177c1e565c43f56ff17a10e3937f/networkx-3.4.2.tar.gz", hash = "sha256:307c3669428c5362aab27c8a1260aa8f47c4e91d3891f48be0141738d8d053e1", size = 2151368, upload-time = "2024-10-21T12:39:38.695Z" }
 wheels = [
@@ -1276,8 +1468,18 @@ name = "networkx"
 version = "3.5"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4f/ccdb8ad3a38e583f214547fd2f7ff1fc160c43a75af88e6aec213404b96a/networkx-3.5.tar.gz", hash = "sha256:d4c6f9cf81f52d69230866796b82afbccdec3db7ae4fbd1b65ea750feed50037", size = 2471065, upload-time = "2025-05-29T11:35:07.804Z" }
 wheels = [
@@ -1288,36 +1490,39 @@ wheels = [
 name = "newton-physics"
 source = { editable = "." }
 dependencies = [
-    { name = "warp-lang", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.8.0.dev20250625", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "warp-lang", version = "1.8.0.dev20250625", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 
 [package.optional-dependencies]
+cu128 = [
+    { name = "torch", version = "2.7.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "torch", version = "2.7.1+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cu128') or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+]
 dev = [
     { name = "alphashape" },
-    { name = "coverage", extra = ["toml"] },
     { name = "fast-simplification" },
     { name = "gitpython" },
-    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "matplotlib", version = "3.10.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "matplotlib", version = "3.10.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
-    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "scipy", version = "1.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "scipy", version = "1.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "tqdm" },
     { name = "trimesh" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'" },
+    { name = "usd-core", marker = "platform_machine != 'aarch64' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 docs = [
-    { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "myst-parser", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "myst-parser", version = "4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "pydata-sphinx-theme" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
     { name = "sphinx-tabs" },
@@ -1327,20 +1532,11 @@ docs = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage", extra = ["toml"] },
-    { name = "gitpython" },
-    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "matplotlib", version = "3.10.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "mujoco-warp" },
-    { name = "pycollada" },
-    { name = "pyglet" },
-    { name = "trimesh" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "alphashape", marker = "extra == 'dev'", specifier = ">=1.3.1" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
     { name = "fast-simplification", marker = "extra == 'dev'", specifier = ">=0.1.11" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.9.4" },
@@ -1356,33 +1552,31 @@ requires-dist = [
     { name = "sphinx-design", marker = "extra == 'docs'", specifier = "<=0.6.1" },
     { name = "sphinx-tabs", marker = "extra == 'docs'", specifier = ">=3.3.0" },
     { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'", specifier = ">=1.0.0" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'cu128') or (sys_platform == 'win32' and extra == 'cu128')", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'cu128'", specifier = ">=2.7.0" },
     { name = "tqdm", marker = "extra == 'dev'", specifier = ">=4.67.1" },
     { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.6.8" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
     { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250625", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250625" },
 ]
-provides-extras = ["dev", "docs"]
+provides-extras = ["cu128", "dev", "docs"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "coverage", extras = ["toml"], specifier = ">=7.8.0" },
-    { name = "gitpython", specifier = ">=3.1.44" },
-    { name = "matplotlib", specifier = ">=3.9.4" },
-    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "pycollada", specifier = ">=0.9" },
-    { name = "pyglet", specifier = ">=2.1.6" },
-    { name = "trimesh", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'", specifier = ">=25.5" },
-]
+dev = [{ name = "coverage", extras = ["toml"], specifier = ">=7.8.0" }]
 
 [[package]]
 name = "numpy"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/75/10dd1f8116a8b796cb2c737b674e02d02e80454bda953fa7e65d8c12b016/numpy-2.0.2.tar.gz", hash = "sha256:883c987dee1880e2a864ab0dc9892292582510604156762362d9326444636e78", size = 18902015, upload-time = "2024-08-26T20:19:40.945Z" }
 wheels = [
@@ -1437,8 +1631,13 @@ name = "numpy"
 version = "2.2.6"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/21/7d2a95e4bba9dc13d043ee156a356c0a8f0c6309dff6b21b4d71a073b8a8/numpy-2.2.6.tar.gz", hash = "sha256:e29554e2bef54a90aa5cc07da6ce955accb83f21ab5de01a62c8478897b264fd", size = 20276440, upload-time = "2025-05-17T22:38:04.611Z" }
 wheels = [
@@ -1503,8 +1702,18 @@ name = "numpy"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/19/d7c972dfe90a353dbd3efbbe1d14a5951de80c99c9dc1b93cd998d51dc0f/numpy-2.3.1.tar.gz", hash = "sha256:1ec9ae20a4226da374362cca3c62cd753faf2f951440b0e3b98e93c235441d2b", size = 20390372, upload-time = "2025-06-21T12:28:33.469Z" }
 wheels = [
@@ -1558,6 +1767,158 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ae/ee/89bedf69c36ace1ac8f59e97811c1f5031e179a37e4821c3a230bf750142/numpy-2.3.1-pp311-pypy311_pp73-manylinux_2_28_aarch64.whl", hash = "sha256:c6e0bf9d1a2f50d2b65a7cf56db37c095af17b59f6c132396f7c6d5dd76484df", size = 14399010, upload-time = "2025-06-21T12:26:54.086Z" },
     { url = "https://files.pythonhosted.org/packages/15/08/e00e7070ede29b2b176165eba18d6f9784d5349be3c0c1218338e79c27fd/numpy-2.3.1-pp311-pypy311_pp73-manylinux_2_28_x86_64.whl", hash = "sha256:eabd7e8740d494ce2b4ea0ff05afa1b7b291e978c0ae075487c51e8bd93c0c68", size = 16752042, upload-time = "2025-06-21T12:27:19.018Z" },
     { url = "https://files.pythonhosted.org/packages/48/6b/1c6b515a83d5564b1698a61efa245727c8feecf308f4091f565988519d20/numpy-2.3.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:e610832418a2bc09d974cc9fecebfa51e9532d6190223bc5ef6a7402ebf3b5cb", size = 12927246, upload-time = "2025-06-21T12:27:38.618Z" },
+]
+
+[[package]]
+name = "nvidia-cublas-cu12"
+version = "12.8.3.14"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/63/684a6f72f52671ea222c12ecde9bdf748a0ba025e2ad3ec374e466c26eb6/nvidia_cublas_cu12-12.8.3.14-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:93a4e0e386cc7f6e56c822531396de8170ed17068a1e18f987574895044cd8c3", size = 604900717, upload-time = "2025-01-23T17:52:55.486Z" },
+    { url = "https://files.pythonhosted.org/packages/82/df/4b01f10069e23c641f116c62fc31e31e8dc361a153175d81561d15c8143b/nvidia_cublas_cu12-12.8.3.14-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:3f0e05e7293598cf61933258b73e66a160c27d59c4422670bf0b79348c04be44", size = 609620630, upload-time = "2025-01-23T17:55:00.753Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/54/fbfa3315b936d3358517f7da5f9f2557c279bf210e5261f0cf66cc0f9832/nvidia_cublas_cu12-12.8.3.14-py3-none-win_amd64.whl", hash = "sha256:9ae5eae500aead01fc4bdfc458209df638b1a3551557ce11a78eea9ece602ae9", size = 578387959, upload-time = "2025-01-23T18:08:00.662Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-cupti-cu12"
+version = "12.8.57"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/53/458956a65283c55c22ba40a65745bbe9ff20c10b68ea241bc575e20c0465/nvidia_cuda_cupti_cu12-12.8.57-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ff154211724fd824e758ce176b66007b558eea19c9a5135fc991827ee147e317", size = 9526469, upload-time = "2025-01-23T17:47:33.104Z" },
+    { url = "https://files.pythonhosted.org/packages/39/6f/3683ecf4e38931971946777d231c2df00dd5c1c4c2c914c42ad8f9f4dca6/nvidia_cuda_cupti_cu12-12.8.57-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:8e0b2eb847de260739bee4a3f66fac31378f4ff49538ff527a38a01a9a39f950", size = 10237547, upload-time = "2025-01-23T17:47:56.863Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/2a/cabe033045427beb042b70b394ac3fd7cfefe157c965268824011b16af67/nvidia_cuda_cupti_cu12-12.8.57-py3-none-win_amd64.whl", hash = "sha256:bbed719c52a476958a74cfc42f2b95a3fd6b3fd94eb40134acc4601feb4acac3", size = 7002337, upload-time = "2025-01-23T18:04:35.34Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-nvrtc-cu12"
+version = "12.8.61"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/22/32029d4583f7b19cfe75c84399cbcfd23f2aaf41c66fc8db4da460104fff/nvidia_cuda_nvrtc_cu12-12.8.61-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:a0fa9c2a21583105550ebd871bd76e2037205d56f33f128e69f6d2a55e0af9ed", size = 88024585, upload-time = "2025-01-23T17:50:10.722Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/98/29f98d57fc40d6646337e942d37509c6d5f8abe29012671f7a6eb9978ebe/nvidia_cuda_nvrtc_cu12-12.8.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b1f376bf58111ca73dde4fd4df89a462b164602e074a76a2c29c121ca478dcd4", size = 43097015, upload-time = "2025-01-23T17:49:44.331Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/5b/052d05aa068e4752415ad03bac58e852ea8bc17c9321e08546b3f261e47e/nvidia_cuda_nvrtc_cu12-12.8.61-py3-none-win_amd64.whl", hash = "sha256:9c8887bf5e5dffc441018ba8c5dc59952372a6f4806819e8c1f03d62637dbeea", size = 73567440, upload-time = "2025-01-23T18:05:51.036Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-runtime-cu12"
+version = "12.8.57"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/9d/e77ec4227e70c6006195bdf410370f2d0e5abfa2dc0d1d315cacd57c5c88/nvidia_cuda_runtime_cu12-12.8.57-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:534ccebd967b6a44292678fa5da4f00666029cb2ed07a79515ea41ef31fe3ec7", size = 965264, upload-time = "2025-01-23T17:47:11.759Z" },
+    { url = "https://files.pythonhosted.org/packages/16/f6/0e1ef31f4753a44084310ba1a7f0abaf977ccd810a604035abb43421c057/nvidia_cuda_runtime_cu12-12.8.57-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:75342e28567340b7428ce79a5d6bb6ca5ff9d07b69e7ce00d2c7b4dc23eff0be", size = 954762, upload-time = "2025-01-23T17:47:22.21Z" },
+    { url = "https://files.pythonhosted.org/packages/16/ee/52508c74bee2a3de8d59c6fd9af4ca2f216052fa2bc916da3a6a7bb998af/nvidia_cuda_runtime_cu12-12.8.57-py3-none-win_amd64.whl", hash = "sha256:89be637e3ee967323865b85e0f147d75f9a5bd98360befa37481b02dd57af8f5", size = 944309, upload-time = "2025-01-23T18:04:23.143Z" },
+]
+
+[[package]]
+name = "nvidia-cudnn-cu12"
+version = "9.7.1.26"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/2e/ec5dda717eeb1de3afbbbb611ca556f9d6d057470759c6abd36d72f0063b/nvidia_cudnn_cu12-9.7.1.26-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:848a61d40ef3b32bd4e1fadb599f0cf04a4b942fbe5fb3be572ad75f9b8c53ef", size = 725862213, upload-time = "2025-02-06T22:14:57.169Z" },
+    { url = "https://files.pythonhosted.org/packages/25/dc/dc825c4b1c83b538e207e34f48f86063c88deaa35d46c651c7c181364ba2/nvidia_cudnn_cu12-9.7.1.26-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:6d011159a158f3cfc47bf851aea79e31bcff60d530b70ef70474c84cac484d07", size = 726851421, upload-time = "2025-02-06T22:18:29.812Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/ea/636cda41b3865caa0d43c34f558167304acde3d2c5f6c54c00a550e69ecd/nvidia_cudnn_cu12-9.7.1.26-py3-none-win_amd64.whl", hash = "sha256:7b805b9a4cf9f3da7c5f4ea4a9dff7baf62d1a612d6154a7e0d2ea51ed296241", size = 715962100, upload-time = "2025-02-06T22:21:32.431Z" },
+]
+
+[[package]]
+name = "nvidia-cufft-cu12"
+version = "11.3.3.41"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/95/6157cb45a49f5090a470de42353a22a0ed5b13077886dca891b4b0e350fe/nvidia_cufft_cu12-11.3.3.41-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:68509dcd7e3306e69d0e2d8a6d21c8b25ed62e6df8aac192ce752f17677398b5", size = 193108626, upload-time = "2025-01-23T17:55:49.192Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/26/b53c493c38dccb1f1a42e1a21dc12cba2a77fbe36c652f7726d9ec4aba28/nvidia_cufft_cu12-11.3.3.41-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:da650080ab79fcdf7a4b06aa1b460e99860646b176a43f6208099bdc17836b6a", size = 193118795, upload-time = "2025-01-23T17:56:30.536Z" },
+    { url = "https://files.pythonhosted.org/packages/32/f3/f6248aa119c2726b1bdd02d472332cae274133bd32ca5fa8822efb0c308c/nvidia_cufft_cu12-11.3.3.41-py3-none-win_amd64.whl", hash = "sha256:f9760612886786601d27a0993bb29ce1f757e6b8b173499d0ecfa850d31b50f8", size = 192216738, upload-time = "2025-01-23T18:08:51.102Z" },
+]
+
+[[package]]
+name = "nvidia-cufile-cu12"
+version = "1.13.0.11"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/9c/1f3264d0a84c8a031487fb7f59780fc78fa6f1c97776233956780e3dc3ac/nvidia_cufile_cu12-1.13.0.11-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:483f434c541806936b98366f6d33caef5440572de8ddf38d453213729da3e7d4", size = 1197801, upload-time = "2025-01-23T17:57:07.247Z" },
+    { url = "https://files.pythonhosted.org/packages/35/80/f6a0fc90ab6fa4ac916f3643e5b620fd19724626c59ae83b74f5efef0349/nvidia_cufile_cu12-1.13.0.11-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:2acbee65dc2eaf58331f0798c5e6bcdd790c4acb26347530297e63528c9eba5d", size = 1120660, upload-time = "2025-01-23T17:56:56.608Z" },
+]
+
+[[package]]
+name = "nvidia-curand-cu12"
+version = "10.3.9.55"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/13/bbcf48e2f8a6a9adef58f130bc968810528a4e66bbbe62fad335241e699f/nvidia_curand_cu12-10.3.9.55-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b6bb90c044fa9b07cedae2ef29077c4cf851fb6fdd6d862102321f359dca81e9", size = 63623836, upload-time = "2025-01-23T17:57:22.319Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/fc/7be5d0082507269bb04ac07cc614c84b78749efb96e8cf4100a8a1178e98/nvidia_curand_cu12-10.3.9.55-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:8387d974240c91f6a60b761b83d4b2f9b938b7e0b9617bae0f0dafe4f5c36b86", size = 63618038, upload-time = "2025-01-23T17:57:41.838Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/f0/91252f3cffe3f3c233a8e17262c21b41534652edfe783c1e58ea1c92c115/nvidia_curand_cu12-10.3.9.55-py3-none-win_amd64.whl", hash = "sha256:570d82475fe7f3d8ed01ffbe3b71796301e0e24c98762ca018ff8ce4f5418e1f", size = 62761446, upload-time = "2025-01-23T18:09:21.663Z" },
+]
+
+[[package]]
+name = "nvidia-cusolver-cu12"
+version = "11.7.2.55"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/ce/4214a892e804b20bf66d04f04a473006fc2d3dac158160ef85f1bc906639/nvidia_cusolver_cu12-11.7.2.55-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:0fd9e98246f43c15bee5561147ad235dfdf2d037f5d07c9d41af3f7f72feb7cc", size = 260094827, upload-time = "2025-01-23T17:58:17.586Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/08/953675873a136d96bb12f93b49ba045d1107bc94d2551c52b12fa6c7dec3/nvidia_cusolver_cu12-11.7.2.55-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:4d1354102f1e922cee9db51920dba9e2559877cf6ff5ad03a00d853adafb191b", size = 260373342, upload-time = "2025-01-23T17:58:56.406Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/f9/e0e6f8b7aecd13e0f9e937d116fb3211329a0a92b9bea9624b1368de307a/nvidia_cusolver_cu12-11.7.2.55-py3-none-win_amd64.whl", hash = "sha256:a5a516c55da5c5aba98420d9bc9bcab18245f21ec87338cc1f930eb18dd411ac", size = 249600787, upload-time = "2025-01-23T18:10:07.641Z" },
+]
+
+[[package]]
+name = "nvidia-cusparse-cu12"
+version = "12.5.7.53"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/a2/313db0453087f5324a5900380ca2e57e050c8de76f407b5e11383dc762ae/nvidia_cusparse_cu12-12.5.7.53-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d869c6146ca80f4305b62e02d924b4aaced936f8173e3cef536a67eed2a91af1", size = 291963692, upload-time = "2025-01-23T17:59:40.325Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/ab/31e8149c66213b846c082a3b41b1365b831f41191f9f40c6ddbc8a7d550e/nvidia_cusparse_cu12-12.5.7.53-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:3c1b61eb8c85257ea07e9354606b26397612627fdcd327bfd91ccf6155e7c86d", size = 292064180, upload-time = "2025-01-23T18:00:23.233Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/48/64b01653919a3d1d9b5117c156806ab0db8312c7496ff646477a5c1545bf/nvidia_cusparse_cu12-12.5.7.53-py3-none-win_amd64.whl", hash = "sha256:82c201d6781bacf6bb7c654f0446728d0fe596dfdd82ef4a04c204ce3e107441", size = 288767123, upload-time = "2025-01-23T18:11:01.543Z" },
+]
+
+[[package]]
+name = "nvidia-cusparselt-cu12"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/da/4de092c61c6dea1fc9c936e69308a02531d122e12f1f649825934ad651b5/nvidia_cusparselt_cu12-0.6.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:8371549623ba601a06322af2133c4a44350575f5a3108fb75f3ef20b822ad5f1", size = 156402859, upload-time = "2024-10-16T02:23:17.184Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/9a/72ef35b399b0e183bc2e8f6f558036922d453c4d8237dab26c666a04244b/nvidia_cusparselt_cu12-0.6.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:e5c8a26c36445dd2e6812f1177978a24e2d37cacce7e090f297a688d1ec44f46", size = 156785796, upload-time = "2024-10-15T21:29:17.709Z" },
+    { url = "https://files.pythonhosted.org/packages/46/3e/9e1e394a02a06f694be2c97bbe47288bb7c90ea84c7e9cf88f7b28afe165/nvidia_cusparselt_cu12-0.6.3-py3-none-win_amd64.whl", hash = "sha256:3b325bcbd9b754ba43df5a311488fca11a6b5dc3d11df4d190c000cf1a0765c7", size = 155595972, upload-time = "2024-10-15T22:58:35.426Z" },
+]
+
+[[package]]
+name = "nvidia-nccl-cu12"
+version = "2.26.2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/5b/ca2f213f637305633814ae8c36b153220e40a07ea001966dcd87391f3acb/nvidia_nccl_cu12-2.26.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:5c196e95e832ad30fbbb50381eb3cbd1fadd5675e587a548563993609af19522", size = 291671495, upload-time = "2025-03-13T00:30:07.805Z" },
+    { url = "https://files.pythonhosted.org/packages/67/ca/f42388aed0fddd64ade7493dbba36e1f534d4e6fdbdd355c6a90030ae028/nvidia_nccl_cu12-2.26.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:694cf3879a206553cc9d7dbda76b13efaf610fdb70a50cba303de1b0d1530ac6", size = 201319755, upload-time = "2025-03-13T00:29:55.296Z" },
+]
+
+[[package]]
+name = "nvidia-nvjitlink-cu12"
+version = "12.8.61"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/f8/9d85593582bd99b8d7c65634d2304780aefade049b2b94d96e44084be90b/nvidia_nvjitlink_cu12-12.8.61-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:45fd79f2ae20bd67e8bc411055939049873bfd8fac70ff13bd4865e0b9bdab17", size = 39243473, upload-time = "2025-01-23T18:03:03.509Z" },
+    { url = "https://files.pythonhosted.org/packages/af/53/698f3758f48c5fcb1112721e40cc6714da3980d3c7e93bae5b29dafa9857/nvidia_nvjitlink_cu12-12.8.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b80ecab31085dda3ce3b41d043be0ec739216c3fc633b8abe212d5a30026df0", size = 38374634, upload-time = "2025-01-23T18:02:35.812Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/c6/0d1b2bfeb2ef42c06db0570c4d081e5cde4450b54c09e43165126cfe6ff6/nvidia_nvjitlink_cu12-12.8.61-py3-none-win_amd64.whl", hash = "sha256:1166a964d25fdc0eae497574d38824305195a5283324a21ccb0ce0c802cbf41c", size = 268514099, upload-time = "2025-01-23T18:12:33.874Z" },
+]
+
+[[package]]
+name = "nvidia-nvtx-cu12"
+version = "12.8.55"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bb/e8/ae6ecbdade8bb9174d75db2b302c57c1c27d9277d6531c62aafde5fb32a3/nvidia_nvtx_cu12-12.8.55-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c38405335fbc0f0bf363eaeaeb476e8dfa8bae82fada41d25ace458b9ba9f3db", size = 91103, upload-time = "2025-01-23T17:50:24.664Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/cd/0e8c51b2ae3a58f054f2e7fe91b82d201abfb30167f2431e9bd92d532f42/nvidia_nvtx_cu12-12.8.55-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:2dd0780f1a55c21d8e06a743de5bd95653de630decfff40621dbde78cc307102", size = 89896, upload-time = "2025-01-23T17:50:44.487Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/14/84d46e62bfde46dd20cfb041e0bb5c2ec454fd6a384696e7fa3463c5bb59/nvidia_nvtx_cu12-12.8.55-py3-none-win_amd64.whl", hash = "sha256:9022681677aef1313458f88353ad9c0d2fbbe6402d6b07c9f00ba0e3ca8774d3", size = 56435, upload-time = "2025-01-23T18:06:06.268Z" },
 ]
 
 [[package]]
@@ -1662,9 +2023,9 @@ name = "pycollada"
 version = "0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "python-dateutil" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/6b/caadd3d65fde5a6a5a33e608183d5a52525a41e2c44f479a99620413a661/pycollada-0.9.tar.gz", hash = "sha256:824f6e809e510d649b5984a6ea8e614ce5cf270c81eab6fbeaaf0ae71de6a6af", size = 109666, upload-time = "2025-02-16T22:59:04.849Z" }
@@ -1679,9 +2040,9 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "docutils" },
     { name = "pygments" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/00/20/bb50f9de3a6de69e6abd6b087b52fa2418a0418b19597601605f855ad044/pydata_sphinx_theme-0.16.1.tar.gz", hash = "sha256:a08b7f0b7f70387219dc659bff0893a7554d5eb39b59d3b8ef37b8401b7642d7", size = 2412693, upload-time = "2024-12-17T10:53:39.537Z" }
@@ -1836,11 +2197,16 @@ name = "scipy"
 version = "1.13.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ae/00/48c2f661e2816ccf2ecd77982f6605b2950afe60f60a52b4cbbc2504aa8f/scipy-1.13.1.tar.gz", hash = "sha256:095a87a0312b08dfd6a6155cbbd310a8c51800fc931b8c0b84003014b874ed3c", size = 57210720, upload-time = "2024-05-23T03:29:26.079Z" }
 wheels = [
@@ -1875,11 +2241,16 @@ name = "scipy"
 version = "1.15.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/37/6964b830433e654ec7485e45a00fc9a27cf868d622838f6b6d9c5ec0d532/scipy-1.15.3.tar.gz", hash = "sha256:eae3cf522bc7df64b42cad3925c876e1b0b6c35c1337c93e12c0f366f55b0eaf", size = 59419214, upload-time = "2025-05-08T16:13:05.955Z" }
 wheels = [
@@ -1935,11 +2306,21 @@ name = "scipy"
 version = "1.16.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/81/18/b06a83f0c5ee8cddbde5e3f3d0bb9b702abfa5136ef6d4620ff67df7eee5/scipy-1.16.0.tar.gz", hash = "sha256:b5ef54021e832869c8cfb03bc3bf20366cbcd426e02a58e8a58d7584dfbb8f62", size = 30581216, upload-time = "2025-06-22T16:27:55.782Z" }
 wheels = [
@@ -1982,15 +2363,29 @@ wheels = [
 ]
 
 [[package]]
+name = "setuptools"
+version = "80.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/5d/3bf57dcd21979b887f014ea83c24ae194cfcd12b9e0fda66b957c69d1fca/setuptools-80.9.0.tar.gz", hash = "sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c", size = 1319958, upload-time = "2025-05-27T00:56:51.443Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl", hash = "sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922", size = 1201486, upload-time = "2025-05-27T00:56:49.664Z" },
+]
+
+[[package]]
 name = "shapely"
 version = "2.0.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/21/c0/a911d1fd765d07a2b6769ce155219a281bfbe311584ebe97340d75c5bdb1/shapely-2.0.7.tar.gz", hash = "sha256:28fe2997aab9a9dc026dc6a355d04e85841546b2a5d232ed953e3321ab958ee5", size = 283413, upload-time = "2025-01-31T01:10:20.787Z" }
 wheels = [
@@ -2031,14 +2426,29 @@ name = "shapely"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ca/3c/2da625233f4e605155926566c0e7ea8dda361877f48e8b1655e53456f252/shapely-2.1.1.tar.gz", hash = "sha256:500621967f2ffe9642454808009044c21e5b35db89ce69f8a2042c2ffd0e2772", size = 315422, upload-time = "2025-05-19T11:04:41.265Z" }
 wheels = [
@@ -2125,28 +2535,33 @@ name = "sphinx"
 version = "7.4.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "alabaster", version = "0.7.16", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "babel", marker = "python_full_version < '3.10'" },
-    { name = "colorama", marker = "python_full_version < '3.10' and sys_platform == 'win32'" },
-    { name = "docutils", marker = "python_full_version < '3.10'" },
-    { name = "imagesize", marker = "python_full_version < '3.10'" },
-    { name = "importlib-metadata", marker = "python_full_version < '3.10'" },
-    { name = "jinja2", marker = "python_full_version < '3.10'" },
-    { name = "packaging", marker = "python_full_version < '3.10'" },
-    { name = "pygments", marker = "python_full_version < '3.10'" },
-    { name = "requests", marker = "python_full_version < '3.10'" },
-    { name = "snowballstemmer", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-applehelp", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-devhelp", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-jsmath", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-qthelp", marker = "python_full_version < '3.10'" },
-    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version < '3.10'" },
-    { name = "tomli", marker = "python_full_version < '3.10'" },
+    { name = "alabaster", version = "0.7.16", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "babel", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "colorama", marker = "(python_full_version < '3.10' and sys_platform == 'win32') or (python_full_version >= '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "docutils", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "imagesize", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "importlib-metadata", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "jinja2", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "packaging", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pygments", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "requests", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "snowballstemmer", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-applehelp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-devhelp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-jsmath", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-qthelp", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "tomli", marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5b/be/50e50cb4f2eff47df05673d361095cafd95521d2a22521b920c67a372dcb/sphinx-7.4.7.tar.gz", hash = "sha256:242f92a7ea7e6c5b406fdc2615413890ba9f699114a9c09192d7dfead2ee9cfe", size = 8067911, upload-time = "2024-07-20T14:46:56.059Z" }
 wheels = [
@@ -2158,27 +2573,32 @@ name = "sphinx"
 version = "8.1.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "alabaster", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "babel", marker = "python_full_version == '3.10.*'" },
-    { name = "colorama", marker = "python_full_version == '3.10.*' and sys_platform == 'win32'" },
-    { name = "docutils", marker = "python_full_version == '3.10.*'" },
-    { name = "imagesize", marker = "python_full_version == '3.10.*'" },
-    { name = "jinja2", marker = "python_full_version == '3.10.*'" },
-    { name = "packaging", marker = "python_full_version == '3.10.*'" },
-    { name = "pygments", marker = "python_full_version == '3.10.*'" },
-    { name = "requests", marker = "python_full_version == '3.10.*'" },
-    { name = "snowballstemmer", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-applehelp", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-devhelp", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-jsmath", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-qthelp", marker = "python_full_version == '3.10.*'" },
-    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version == '3.10.*'" },
-    { name = "tomli", marker = "python_full_version == '3.10.*'" },
+    { name = "alabaster", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "babel", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "colorama", marker = "(python_full_version == '3.10.*' and sys_platform == 'win32') or (python_full_version != '3.10.*' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "docutils", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "imagesize", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "jinja2", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "packaging", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pygments", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "requests", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "snowballstemmer", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-applehelp", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-devhelp", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-jsmath", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-qthelp", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "tomli", marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6f/6d/be0b61178fe2cdcb67e2a92fc9ebb488e3c51c4f74a36a7824c0adf23425/sphinx-8.1.3.tar.gz", hash = "sha256:43c1911eecb0d3e161ad78611bc905d1ad0e523e4ddc202a58a821773dc4c927", size = 8184611, upload-time = "2024-10-13T20:27:13.93Z" }
 wheels = [
@@ -2190,27 +2610,37 @@ name = "sphinx"
 version = "8.2.3"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "alabaster", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "babel", marker = "python_full_version >= '3.11'" },
-    { name = "colorama", marker = "python_full_version >= '3.11' and sys_platform == 'win32'" },
-    { name = "docutils", marker = "python_full_version >= '3.11'" },
-    { name = "imagesize", marker = "python_full_version >= '3.11'" },
-    { name = "jinja2", marker = "python_full_version >= '3.11'" },
-    { name = "packaging", marker = "python_full_version >= '3.11'" },
-    { name = "pygments", marker = "python_full_version >= '3.11'" },
-    { name = "requests", marker = "python_full_version >= '3.11'" },
-    { name = "roman-numerals-py", marker = "python_full_version >= '3.11'" },
-    { name = "snowballstemmer", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-applehelp", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-devhelp", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-jsmath", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-qthelp", marker = "python_full_version >= '3.11'" },
-    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version >= '3.11'" },
+    { name = "alabaster", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "babel", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "colorama", marker = "(python_full_version >= '3.11' and sys_platform == 'win32') or (python_full_version < '3.11' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "docutils", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "imagesize", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "jinja2", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "packaging", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "pygments", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "requests", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "roman-numerals-py", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "snowballstemmer", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-applehelp", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-devhelp", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-jsmath", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-qthelp", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/38/ad/4360e50ed56cb483667b8e6dadf2d3fda62359593faabbe749a27c4eaca6/sphinx-8.2.3.tar.gz", hash = "sha256:398ad29dee7f63a75888314e9424d40f52ce5a6a87ae88e7071e80af296ec348", size = 8321876, upload-time = "2025-03-02T22:31:59.658Z" }
 wheels = [
@@ -2222,9 +2652,9 @@ name = "sphinx-copybutton"
 version = "0.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fc/2b/a964715e7f5295f77509e59309959f4125122d648f86b4fe7d70ca1d882c/sphinx-copybutton-0.5.2.tar.gz", hash = "sha256:4cf17c82fb9646d1bc9ca92ac280813a3b605d8c421225fd9913154103ee1fbd", size = 23039, upload-time = "2023-04-14T08:10:22.998Z" }
 wheels = [
@@ -2236,9 +2666,9 @@ name = "sphinx-design"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2b/69/b34e0cb5336f09c6866d53b4a19d76c227cdec1bbc7ac4de63ca7d58c9c7/sphinx_design-0.6.1.tar.gz", hash = "sha256:b44eea3719386d04d765c1a8257caca2b3e6f8421d7b3a5e742c0fd45f84e632", size = 2193689, upload-time = "2024-08-02T13:48:44.277Z" }
 wheels = [
@@ -2252,9 +2682,9 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docutils" },
     { name = "pygments" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6a/53/a9a91995cb365e589f413b77fc75f1c0e9b4ac61bfa8da52a779ad855cc0/sphinx-tabs-3.4.7.tar.gz", hash = "sha256:991ad4a424ff54119799ba1491701aa8130dd43509474aef45a81c42d889784d", size = 15891, upload-time = "2024-10-08T13:37:27.887Z" }
 wheels = [
@@ -2303,9 +2733,9 @@ version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
-    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sphinx", version = "7.4.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/97/69/bf039237ad260073e8c02f820b3e00dc34f3a2de20aff7861e6b19d2f8c5/sphinxcontrib_mermaid-1.0.0.tar.gz", hash = "sha256:2e8ab67d3e1e2816663f9347d026a8dee4a858acdd4ad32dd1c808893db88146", size = 15153, upload-time = "2024-10-12T16:33:03.863Z" }
 wheels = [
@@ -2328,6 +2758,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3b/44/6716b257b0aa6bfd51a1b31665d1c205fb12cb5ad56de752dfa15657de2f/sphinxcontrib_serializinghtml-2.0.0.tar.gz", hash = "sha256:e9d912827f872c029017a53f0ef2180b327c3f7fd23c87229f7a8e8b70031d4d", size = 16080, upload-time = "2024-07-29T01:10:09.332Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/52/a7/d2782e4e3f77c8450f727ba74a8f12756d5ba823d81b941f1b04da9d033a/sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl", hash = "sha256:6e2cb0eef194e10c27ec0023bfeb25badbbb5868244cf5bc5bdc04e4464bf331", size = 92072, upload-time = "2024-07-29T01:10:08.203Z" },
+]
+
+[[package]]
+name = "sympy"
+version = "1.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mpmath" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
 ]
 
 [[package]]
@@ -2370,11 +2812,120 @@ wheels = [
 ]
 
 [[package]]
+name = "torch"
+version = "2.7.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "python_full_version < '3.10' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "fsspec", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "jinja2", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cu128') or (python_full_version != '3.10.*' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.11' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' and sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "sympy", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "typing-extensions", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/27/2e06cb52adf89fe6e020963529d17ed51532fc73c1e6d1b18420ef03338c/torch-2.7.1-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:a103b5d782af5bd119b81dbcc7ffc6fa09904c423ff8db397a1e6ea8fd71508f", size = 99089441, upload-time = "2025-06-04T17:38:48.268Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/7c/0a5b3aee977596459ec45be2220370fde8e017f651fecc40522fd478cb1e/torch-2.7.1-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:fe955951bdf32d182ee8ead6c3186ad54781492bf03d547d31771a01b3d6fb7d", size = 821154516, upload-time = "2025-06-04T17:36:28.556Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/91/3d709cfc5e15995fb3fe7a6b564ce42280d3a55676dad672205e94f34ac9/torch-2.7.1-cp310-cp310-win_amd64.whl", hash = "sha256:885453d6fba67d9991132143bf7fa06b79b24352f4506fd4d10b309f53454162", size = 216093147, upload-time = "2025-06-04T17:39:38.132Z" },
+    { url = "https://files.pythonhosted.org/packages/92/f6/5da3918414e07da9866ecb9330fe6ffdebe15cb9a4c5ada7d4b6e0a6654d/torch-2.7.1-cp310-none-macosx_11_0_arm64.whl", hash = "sha256:d72acfdb86cee2a32c0ce0101606f3758f0d8bb5f8f31e7920dc2809e963aa7c", size = 68630914, upload-time = "2025-06-04T17:39:31.162Z" },
+    { url = "https://files.pythonhosted.org/packages/11/56/2eae3494e3d375533034a8e8cf0ba163363e996d85f0629441fa9d9843fe/torch-2.7.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:236f501f2e383f1cb861337bdf057712182f910f10aeaf509065d54d339e49b2", size = 99093039, upload-time = "2025-06-04T17:39:06.963Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/94/34b80bd172d0072c9979708ccd279c2da2f55c3ef318eceec276ab9544a4/torch-2.7.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:06eea61f859436622e78dd0cdd51dbc8f8c6d76917a9cf0555a333f9eac31ec1", size = 821174704, upload-time = "2025-06-04T17:37:03.799Z" },
+    { url = "https://files.pythonhosted.org/packages/50/9e/acf04ff375b0b49a45511c55d188bcea5c942da2aaf293096676110086d1/torch-2.7.1-cp311-cp311-win_amd64.whl", hash = "sha256:8273145a2e0a3c6f9fd2ac36762d6ee89c26d430e612b95a99885df083b04e52", size = 216095937, upload-time = "2025-06-04T17:39:24.83Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/2b/d36d57c66ff031f93b4fa432e86802f84991477e522adcdffd314454326b/torch-2.7.1-cp311-none-macosx_11_0_arm64.whl", hash = "sha256:aea4fc1bf433d12843eb2c6b2204861f43d8364597697074c8d38ae2507f8730", size = 68640034, upload-time = "2025-06-04T17:39:17.989Z" },
+    { url = "https://files.pythonhosted.org/packages/87/93/fb505a5022a2e908d81fe9a5e0aa84c86c0d5f408173be71c6018836f34e/torch-2.7.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:27ea1e518df4c9de73af7e8a720770f3628e7f667280bce2be7a16292697e3fa", size = 98948276, upload-time = "2025-06-04T17:39:12.852Z" },
+    { url = "https://files.pythonhosted.org/packages/56/7e/67c3fe2b8c33f40af06326a3d6ae7776b3e3a01daa8f71d125d78594d874/torch-2.7.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:c33360cfc2edd976c2633b3b66c769bdcbbf0e0b6550606d188431c81e7dd1fc", size = 821025792, upload-time = "2025-06-04T17:34:58.747Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/37/a37495502bc7a23bf34f89584fa5a78e25bae7b8da513bc1b8f97afb7009/torch-2.7.1-cp312-cp312-win_amd64.whl", hash = "sha256:d8bf6e1856ddd1807e79dc57e54d3335f2b62e6f316ed13ed3ecfe1fc1df3d8b", size = 216050349, upload-time = "2025-06-04T17:38:59.709Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/60/04b77281c730bb13460628e518c52721257814ac6c298acd25757f6a175c/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl", hash = "sha256:787687087412c4bd68d315e39bc1223f08aae1d16a9e9771d95eabbb04ae98fb", size = 68645146, upload-time = "2025-06-04T17:38:52.97Z" },
+    { url = "https://files.pythonhosted.org/packages/66/81/e48c9edb655ee8eb8c2a6026abdb6f8d2146abd1f150979ede807bb75dcb/torch-2.7.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:03563603d931e70722dce0e11999d53aa80a375a3d78e6b39b9f6805ea0a8d28", size = 98946649, upload-time = "2025-06-04T17:38:43.031Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/24/efe2f520d75274fc06b695c616415a1e8a1021d87a13c68ff9dce733d088/torch-2.7.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:d632f5417b6980f61404a125b999ca6ebd0b8b4bbdbb5fbbba44374ab619a412", size = 821033192, upload-time = "2025-06-04T17:38:09.146Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/d9/9c24d230333ff4e9b6807274f6f8d52a864210b52ec794c5def7925f4495/torch-2.7.1-cp313-cp313-win_amd64.whl", hash = "sha256:23660443e13995ee93e3d844786701ea4ca69f337027b05182f5ba053ce43b38", size = 216055668, upload-time = "2025-06-04T17:38:36.253Z" },
+    { url = "https://files.pythonhosted.org/packages/95/bf/e086ee36ddcef9299f6e708d3b6c8487c1651787bb9ee2939eb2a7f74911/torch-2.7.1-cp313-cp313t-macosx_14_0_arm64.whl", hash = "sha256:0da4f4dba9f65d0d203794e619fe7ca3247a55ffdcbd17ae8fb83c8b2dc9b585", size = 68925988, upload-time = "2025-06-04T17:38:29.273Z" },
+    { url = "https://files.pythonhosted.org/packages/69/6a/67090dcfe1cf9048448b31555af6efb149f7afa0a310a366adbdada32105/torch-2.7.1-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:e08d7e6f21a617fe38eeb46dd2213ded43f27c072e9165dc27300c9ef9570934", size = 99028857, upload-time = "2025-06-04T17:37:50.956Z" },
+    { url = "https://files.pythonhosted.org/packages/90/1c/48b988870823d1cc381f15ec4e70ed3d65e043f43f919329b0045ae83529/torch-2.7.1-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:30207f672328a42df4f2174b8f426f354b2baa0b7cca3a0adb3d6ab5daf00dc8", size = 821098066, upload-time = "2025-06-04T17:37:33.939Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/eb/10050d61c9d5140c5dc04a89ed3257ef1a6b93e49dd91b95363d757071e0/torch-2.7.1-cp313-cp313t-win_amd64.whl", hash = "sha256:79042feca1c634aaf6603fe6feea8c6b30dfa140a6bbc0b973e2260c7e79a22e", size = 216336310, upload-time = "2025-06-04T17:36:09.862Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/29/beb45cdf5c4fc3ebe282bf5eafc8dfd925ead7299b3c97491900fe5ed844/torch-2.7.1-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:988b0cbc4333618a1056d2ebad9eb10089637b659eb645434d0809d8d937b946", size = 68645708, upload-time = "2025-06-04T17:34:39.852Z" },
+    { url = "https://files.pythonhosted.org/packages/71/8a/7db5ed2696e9d67dbc7f8df02d0bc1680b68a0552a3c07ea2d1795fb3f19/torch-2.7.1-cp39-cp39-manylinux_2_28_aarch64.whl", hash = "sha256:e0d81e9a12764b6f3879a866607c8ae93113cbcad57ce01ebde63eb48a576369", size = 99140587, upload-time = "2025-06-04T17:36:46.282Z" },
+    { url = "https://files.pythonhosted.org/packages/95/7b/62bedf718e6100c6d1d53fbdb7e56cb7ad80912a57f2bc7f4f1f289988f1/torch-2.7.1-cp39-cp39-manylinux_2_28_x86_64.whl", hash = "sha256:8394833c44484547ed4a47162318337b88c97acdb3273d85ea06e03ffff44998", size = 821146689, upload-time = "2025-06-04T17:35:47.69Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/e3/80230d0eec3a4dd1b5d2b423e663026452ac8ffb64aeac1619febc1b4ac7/torch-2.7.1-cp39-cp39-win_amd64.whl", hash = "sha256:df41989d9300e6e3c19ec9f56f856187a6ef060c3662fe54f4b6baf1fc90bd19", size = 215987480, upload-time = "2025-06-04T17:35:19.335Z" },
+    { url = "https://files.pythonhosted.org/packages/62/77/6391214d084a85aeb099d520420d39f405928b6a5f27a3f1a453c27c5173/torch-2.7.1-cp39-none-macosx_11_0_arm64.whl", hash = "sha256:a737b5edd1c44a5c1ece2e9f3d00df9d1b3fb9541138bee56d83d38293fb6c9d", size = 68630146, upload-time = "2025-06-04T17:35:26.434Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.7.1+cu128"
+source = { registry = "https://download.pytorch.org/whl/cu128" }
+resolution-markers = [
+    "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform == 'win32')",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform == 'win32')",
+    "(python_full_version < '3.10' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform == 'win32')",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "fsspec", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "jinja2", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "networkx", version = "3.2.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'linux' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and sys_platform == 'linux' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.11' and sys_platform == 'win32' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'linux' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'win32' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cufft-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cufile-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-curand-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusolver-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparselt-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nccl-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "(python_full_version >= '3.12' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform == 'win32')" },
+    { name = "sympy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "triton", marker = "sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:aca3472608e3c92df5166537595687b53a6c997082478b372427b043dbed98d0" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:d6c3cba198dc93f93422a8545f48a6697890366e4b9701f54351fc27e2304bd3" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp310-cp310-win_amd64.whl", hash = "sha256:5174f02de8ca14df87c8e333c4c39cf3ce93a323c9d470d690301d110a053b3c" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:3a0954c54fd7cb9f45beab1272dece2a05b0e77023c1da33ba32a7919661260f" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:c301dc280458afd95450af794924c98fe07522dd148ff384739b810e3e3179f2" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-win_amd64.whl", hash = "sha256:138c66dcd0ed2f07aafba3ed8b7958e2bed893694990e0b4b55b6b2b4a336aa6" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:268e54db9f0bc2b7b9eb089852d3e592c2dea2facc3db494100c3d3b796549fa" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0b64f7d0a6f2a739ed052ba959f7b67c677028c9566ce51997f9f90fe573ddaa" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-win_amd64.whl", hash = "sha256:2bb8c05d48ba815b316879a18195d53a6472a03e297d971e916753f8e1053d30" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:d56d29a6ad7758ba5173cc2b0c51c93e126e2b0a918e874101dc66545283967f" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:9560425f9ea1af1791507e8ca70d5b9ecf62fed7ca226a95fcd58d0eb2cca78f" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313-win_amd64.whl", hash = "sha256:500ad5b670483f62d4052e41948a3fb19e8c8de65b99f8d418d879cbb15a82d6" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:f112465fdf42eb1297c6dddda1a8b7f411914428b704e1b8a47870c52e290909" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:c355db49c218ada70321d5c5c9bb3077312738b99113c8f3723ef596b554a7b9" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313t-win_amd64.whl", hash = "sha256:e27e5f7e74179fb5d814a0412e5026e4b50c9e0081e9050bc4c28c992a276eb1" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp39-cp39-manylinux_2_28_aarch64.whl", hash = "sha256:01d4745b4289d8a238c1741cae9920241fb1be199108c83002c661fc3e4d60da" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp39-cp39-manylinux_2_28_x86_64.whl", hash = "sha256:738ac9b3ad79e62a21256e3d250cee858de955f93f89fab114da8d1919347d06" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp39-cp39-win_amd64.whl", hash = "sha256:9eadb0a49ae383b2d20e059b8614485cf216f3ebd13c4f401daa917e9979254b" },
+]
+
+[[package]]
 name = "tqdm"
 version = "4.67.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a8/4b/29b4ef32e036bb34e4ab51796dd745cdba7ed47ad142a9f4a1eb8e0c744d/tqdm-4.67.1.tar.gz", hash = "sha256:f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2", size = 169737, upload-time = "2024-11-24T20:12:22.481Z" }
 wheels = [
@@ -2386,13 +2937,29 @@ name = "trimesh"
 version = "4.6.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9b/fb/b3d8fb188a1ec7df337df9e2fd5dea672c8806860677a7a6ef26b123865f/trimesh-4.6.12.tar.gz", hash = "sha256:cf8ad4a5c2d9b0277f34d999a077aa9331c465040c402774e1455054a6c20e67", size = 803682, upload-time = "2025-06-11T22:23:54.258Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/fa/3dc02004746b7708f3c206e6363da1dcdaed764f24a89fc3462ac2e01f2f/trimesh-4.6.12-py3-none-any.whl", hash = "sha256:71e71d1e698d2ffb73e60b461836352669974082fa7970807660bcd81de8aa30", size = 711977, upload-time = "2025-06-11T22:23:50.905Z" },
+]
+
+[[package]]
+name = "triton"
+version = "3.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "setuptools", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/a9/549e51e9b1b2c9b854fd761a1d23df0ba2fbc60bd0c13b489ffa518cfcb7/triton-3.3.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b74db445b1c562844d3cfad6e9679c72e93fdfb1a90a24052b03bb5c49d1242e", size = 155600257, upload-time = "2025-05-29T23:39:36.085Z" },
+    { url = "https://files.pythonhosted.org/packages/21/2f/3e56ea7b58f80ff68899b1dbe810ff257c9d177d288c6b0f55bf2fe4eb50/triton-3.3.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b31e3aa26f8cb3cc5bf4e187bf737cbacf17311e1112b781d4a059353dfd731b", size = 155689937, upload-time = "2025-05-29T23:39:44.182Z" },
+    { url = "https://files.pythonhosted.org/packages/24/5f/950fb373bf9c01ad4eb5a8cd5eaf32cdf9e238c02f9293557a2129b9c4ac/triton-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9999e83aba21e1a78c1f36f21bce621b77bcaa530277a50484a7cb4a822f6e43", size = 155669138, upload-time = "2025-05-29T23:39:51.771Z" },
+    { url = "https://files.pythonhosted.org/packages/74/1f/dfb531f90a2d367d914adfee771babbd3f1a5b26c3f5fbc458dee21daa78/triton-3.3.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b89d846b5a4198317fec27a5d3a609ea96b6d557ff44b56c23176546023c4240", size = 155673035, upload-time = "2025-05-29T23:40:02.468Z" },
+    { url = "https://files.pythonhosted.org/packages/28/71/bd20ffcb7a64c753dc2463489a61bf69d531f308e390ad06390268c4ea04/triton-3.3.1-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a3198adb9d78b77818a5388bff89fa72ff36f9da0bc689db2f0a651a67ce6a42", size = 155735832, upload-time = "2025-05-29T23:40:10.522Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/81/ac4d50af22f594c4cb7c84fd2ad5ba1e0c03e2a83fe3483ddd79edcd7ec7/triton-3.3.1-cp39-cp39-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f6139aeb04a146b0b8e0fbbd89ad1e65861c57cfed881f21d62d3cb94a36bab7", size = 155596799, upload-time = "2025-05-29T23:40:18.949Z" },
 ]
 
 [[package]]
@@ -2437,17 +3004,28 @@ name = "warp-lang"
 version = "1.7.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform == 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
-    "python_full_version < '3.10' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform == 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform == 'darwin'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform == 'darwin') or (python_full_version >= '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform == 'darwin') or (python_full_version != '3.10.*' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and sys_platform == 'darwin') or (python_full_version < '3.11' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a5/eb/bef2bf8404186115be15cd015c11ab356228410514c9878ad1a8b405b9a7/warp_lang-1.7.2-py3-none-macosx_10_13_universal2.whl", hash = "sha256:3825d7ddeb1c733812ff00cce12febcd7fb80b20c413b17e3517dc67b9d5b5ee", size = 45180599, upload-time = "2025-05-31T20:36:08.153Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/81/49be6af5701f21582b8b41ffb9c159bcf63606b83a7134f3906e670fa990/warp_lang-1.7.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:44ea71528d667b4a6b851767d2ccceee3c81a49956798122004aefd95e614a6f", size = 126571159, upload-time = "2025-05-31T20:36:14.246Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/56/3c004907c5322157b3e5dc6534f3d12ff55fbba0f2458bf8af6d767d0485/warp_lang-1.7.2-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:e966450620d6c7a091417d9368528ed1ddf8e819304c84d12e0c440b2e47ef79", size = 127496325, upload-time = "2025-05-31T20:36:22.539Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/2f/455ffdfd0e0aefcf7da0b90ec567329ca01c01e2c5cfafee207799efa627/warp_lang-1.7.2-py3-none-win_amd64.whl", hash = "sha256:a68dd8a4493670aa02ec12c4eb724d4ee9f54e47fa332333fb863a696fe4b40b", size = 108800535, upload-time = "2025-05-31T20:36:28.975Z" },
 ]
 
 [[package]]
@@ -2455,14 +3033,26 @@ name = "warp-lang"
 version = "1.8.0.dev20250625"
 source = { registry = "https://pypi.nvidia.com/" }
 resolution-markers = [
-    "python_full_version >= '3.11' and sys_platform != 'darwin'",
-    "python_full_version == '3.10.*' and sys_platform != 'darwin'",
-    "python_full_version < '3.10' and sys_platform != 'darwin'",
+    "(python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version >= '3.12' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.11.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.11.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version == '3.10.*' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version == '3.10.*' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "(python_full_version < '3.10' and sys_platform == 'linux' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (python_full_version < '3.10' and sys_platform == 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra != 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.11.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version >= '3.11' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version == '3.10.*' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
+    "python_full_version < '3.10' and sys_platform != 'darwin' and extra != 'extra-14-newton-physics-cpu' and extra != 'extra-14-newton-physics-cu128'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' and sys_platform != 'darwin'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*' and sys_platform != 'darwin'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.10' and sys_platform != 'darwin') or (python_full_version >= '3.10' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.10.*' and sys_platform != 'darwin') or (python_full_version != '3.10.*' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and sys_platform != 'darwin') or (python_full_version < '3.11' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128') or (sys_platform == 'darwin' and extra == 'extra-14-newton-physics-cpu' and extra == 'extra-14-newton-physics-cu128')" },
 ]
 wheels = [
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.8.0.dev20250625-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ce042da8e85f62acd0f8e1b61b18c02193c078581df5d9317ffd8310b386c9ce" },

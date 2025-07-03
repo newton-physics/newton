@@ -98,6 +98,19 @@ def add_example_test(
         else:
             options = _merge_options(test_options, test_options_cpu)
 
+        # Mark the test as skipped if Torch is not installed but required
+        torch_required = options.pop("torch_required", False)
+        if torch_required:
+            try:
+                import torch  # noqa: PLC0415
+
+                if wp.get_device(device).is_cuda and not torch.cuda.is_available():
+                    # Ensure torch has CUDA support
+                    test.skipTest("Torch not compiled with CUDA support")
+
+            except Exception as e:
+                test.skipTest(f"{e}")
+
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
         if usd_required and not USD_AVAILABLE:
@@ -269,6 +282,18 @@ add_example_test(
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 300},
     test_options_cpu={"num_frames": 2},
+)
+add_example_test(
+    TestAdvancedRobotExamples,
+    name="example_anymal_c_walk",
+    devices=cuda_test_devices,
+    test_options={"stage_path": "None", "num_frames": 200, "headless": True, "torch_required": True},
+)
+add_example_test(
+    TestAdvancedRobotExamples,
+    name="example_anymal_c_walk_on_sand",
+    devices=cuda_test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
 )
 
 

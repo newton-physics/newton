@@ -30,7 +30,6 @@ dependencies = ["warp-lang>=1.7.0.dev20250625"]
 
 [project.optional-dependencies]
 dev = [
-    "coverage[toml]>=7.8.0",
     "mujoco-warp>=3.2.7",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "pycollada>=0.9",
@@ -53,6 +52,7 @@ docs = [
     "sphinx-design<=0.6.1",
     "sphinx-tabs>=3.3.0",
 ]
+cu128 = ["torch>=2.7.0"]
 
 [tool.hatch.version]
 path = "newton/_version.py"
@@ -65,10 +65,18 @@ name = "nvidia"
 url = "https://pypi.nvidia.com"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 mujoco = { index = "mujoco" }
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 [[tool.uv.index]]
 name = "mujoco"
@@ -76,16 +84,7 @@ url = "https://py.mujoco.org"
 explicit = true
 
 [dependency-groups]
-dev = [
-    "coverage[toml]>=7.8.0",
-    "mujoco-warp>=3.2.7",
-    "usd-core>=25.5 ; platform_machine != 'aarch64'",
-    "pycollada>=0.9",
-    "pyglet>=2.1.6",
-    "trimesh>=4.6.8",
-    "matplotlib>=3.9.4",
-    "gitpython>=3.1.44",
-]
+dev = ["coverage[toml]>=7.8.0"]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
