@@ -66,7 +66,7 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
         # ensure data is allocated and modules are loaded before graph capture
         # in case of an earlier CUDA version
         simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device) as capture:
             simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
         graph = capture.graph
 
