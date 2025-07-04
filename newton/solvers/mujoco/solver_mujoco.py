@@ -1775,6 +1775,8 @@ class MuJoCoSolver(SolverBase):
             model.mjc_shape_to_geom = wp.array(shape_to_geom, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+            self.mjw_model.opt.graph_conditional = True
+            
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:

@@ -67,6 +67,7 @@ class Example:
         self.model = builder.finalize()
 
         self.solver = newton.solvers.MuJoCoSolver(self.model, disable_contacts=True)
+        self.solver = newton.solvers.MuJoCoSolver(self.model)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
@@ -86,6 +87,8 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
+        self.run_time = 0.0
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -93,18 +96,21 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
+
+        with wp.ScopedTimer("step", synchronize=True, print=False) as timer:
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
+
+        self.run_time  += timer.elapsed
         self.sim_time += self.frame_dt
 
     def render(self):
         if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", synchronize=True, print=False):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
@@ -133,6 +139,10 @@ if __name__ == "__main__":
         for _ in range(args.num_frames):
             example.step()
             example.render()
+
+        steps = args.num_frames * example.sim_substeps * args.num_envs
+        print(f"Simulation time: {example.run_time:.3f} ms")
+        print(f"Steps per second:  {steps / (example.run_time / 1000):,.0f}")
 
         if example.renderer:
             example.renderer.save()
