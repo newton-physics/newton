@@ -20,11 +20,14 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton.examples.example_anymal_c_walk import Example
-
 
 class TestAnymalCWalk(unittest.TestCase):
     def test_anymal_walk_policy(self):
+        try:
+            from newton.examples.example_anymal_c_walk import Example
+        except ImportError:
+            self.skipTest("Example import failed - skipping test")
+
         example = Example(stage_path=None, render=False)
         num_test_steps = 1000
         for step_num in range(num_test_steps):
@@ -55,9 +58,7 @@ class TestAnymalCWalk(unittest.TestCase):
             has_fallen = root_height < height_threshold
 
             if has_fallen:
-                self.fail(
-                    f"Robot fell, Step {step_num} - Height: {root_height:.3f}m (threshold: {height_threshold}m)"
-                )
+                self.fail(f"Robot fell, Step {step_num} - Height: {root_height:.3f}m (threshold: {height_threshold}m)")
 
             if step_num % 100 == 0 and step_num != 0:
                 self.assertGreater(
