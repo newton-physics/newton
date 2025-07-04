@@ -66,7 +66,6 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model, disable_contacts=True)
         self.solver = newton.solvers.MuJoCoSolver(self.model)
         # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
