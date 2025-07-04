@@ -19,8 +19,12 @@ from newton.geometry.kernels import (
     aabb_aabb_query_kernel,
     compute_edge_aabbs_kernel,
     compute_tri_aabbs_kernel,
+    edge_colliding_edges_detection_kernel,
     edge_edge_query_kernel,
     line_aabb_query_kernel,
+    triangle_triangle_collision_detection_kernel,
+    vertex_triangle_collision_detection_kernel,
+    vertex_triangle_collision_detection_no_triangle_buffers_kernel,
     vertex_triangle_query_kernel,
 )
 
@@ -306,6 +310,51 @@ class EdgeBvh(Bvh):
             device=self.device,
         )
 
+    def edge_colliding_edges_detection(
+        self,
+        query_radius: float,
+        pos: wp.array(dtype=wp.vec3),
+        edge_indices: wp.array(dtype=wp.int32, ndim=2),
+        edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
+        edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+        edge_edge_parallel_epsilon: float,
+        # outputs
+        edge_colliding_edges: wp.array(dtype=wp.int32),
+        edge_colliding_edges_count: wp.array(dtype=wp.int32),
+        edge_colliding_edges_min_dist: wp.array(dtype=float),
+        resize_flags: wp.array(dtype=wp.int32),
+    ):
+        """
+        query_radius (float):
+        pos (array): positions of all the vertices that make up edges
+        edge_colliding_triangles (array): flattened buffer of edges' collision edges
+        edge_colliding_edges_count (array): number of edges each edge collides
+        edge_colliding_triangles_offsets (array): where each edge's collision buffer starts
+        edge_colliding_triangles_buffer_size (array): size of each edge's collision buffer, will be modified if resizing is needed
+        edge_min_dis_to_triangles (array): each vertex' min distance to all (non-neighbor) triangles
+        resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+        """
+        wp.launch(
+            edge_colliding_edges_detection_kernel,
+            dim=edge_indices.shape[0],
+            inputs=[
+                query_radius,
+                self.bvh.id,
+                pos,
+                edge_indices,
+                edge_colliding_edges_offsets,
+                edge_colliding_edges_buffer_sizes,
+                edge_edge_parallel_epsilon,
+            ],
+            outputs=[
+                edge_colliding_edges,
+                edge_colliding_edges_count,
+                edge_colliding_edges_min_dist,
+                resize_flags,
+            ],
+            device=self.device,
+        )
+
 
 ########################################################################################################################
 ##################################################    Triangle Bvh    ##################################################
@@ -434,6 +483,171 @@ class TriBvh(Bvh):
     ):
         # TODO
         pass
+
+    def vertex_triangle_collision_detection(
+        self,
+        query_radius: float,
+        pos: wp.array(dtype=wp.vec3),
+        tri_indices: wp.array(dtype=wp.int32, ndim=2),
+        vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
+        triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32),
+        triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
+        # outputs
+        vertex_colliding_triangles: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_min_dist: wp.array(dtype=float),
+        triangle_colliding_vertices: wp.array(dtype=wp.int32),
+        triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
+        triangle_colliding_vertices_min_dist: wp.array(dtype=float),
+        resize_flags: wp.array(dtype=wp.int32),
+    ):
+        """
+        This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
+        record the collision data. This collision detector works both ways, i.e., it records vertices' colliding triangles to
+        `vertex_colliding_triangles`, and records each triangles colliding vertices to `triangle_colliding_vertices`.
+
+        This function assumes that all the vertices are on triangles, and can be indexed from the pos argument.
+
+        Note:
+
+            The collision date buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
+            may not be enough. If the space is not enough to record all the collision information, the function will set a
+            certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
+            and vertex_colliding_triangles_count.
+
+        Attributes:
+            query_radius (float): the contact radius. vertex-triangle pairs whose distance are less than this will get detected
+            pos (array): positions of all the vertices that make up triangles
+            vertex_colliding_triangles (array): flattened buffer of vertices' collision triangles
+            vertex_colliding_triangles_count (array): number of triangles each vertex collides
+            vertex_colliding_triangles_offsets (array): where each vertex' collision buffer starts
+            vertex_colliding_triangles_buffer_sizes (array): size of each vertex' collision buffer, will be modified if resizing is needed
+            vertex_colliding_triangles_min_dist (array): each vertex' min distance to all (non-neighbor) triangles
+            triangle_colliding_vertices (array): positions of all the triangles' collision vertices, every two elements
+                records the vertex index and a triangle index it collides to
+            triangle_colliding_vertices_count (array): number of triangles each vertex collides
+            triangle_colliding_vertices_offsets (array): where each triangle's collision buffer starts
+            triangle_colliding_vertices_buffer_sizes (array): size of each triangle's collision buffer, will be modified if resizing is needed
+            triangle_colliding_vertices_min_dist (array): each triangle's min distance to all (non-self) vertices
+            resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+        """
+        wp.launch(
+            vertex_triangle_collision_detection_kernel,
+            dim=len(pos),
+            inputs=[
+                query_radius,
+                self.bvh.id,
+                pos,
+                tri_indices,
+                vertex_colliding_triangles_offsets,
+                vertex_colliding_triangles_buffer_sizes,
+                triangle_colliding_vertices_offsets,
+                triangle_colliding_vertices_buffer_sizes,
+            ],
+            outputs=[
+                vertex_colliding_triangles,
+                vertex_colliding_triangles_count,
+                vertex_colliding_triangles_min_dist,
+                triangle_colliding_vertices,
+                triangle_colliding_vertices_count,
+                triangle_colliding_vertices_min_dist,
+                resize_flags,
+            ],
+            device=self.device,
+        )
+
+    def vertex_triangle_collision_detection_no_triangle_buffers(
+        self,
+        query_radius: float,
+        pos: wp.array(dtype=wp.vec3),
+        tri_indices: wp.array(dtype=wp.int32, ndim=2),
+        vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
+        # outputs
+        vertex_colliding_triangles: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
+        vertex_colliding_triangles_min_dist: wp.array(dtype=float),
+        triangle_colliding_vertices_min_dist: wp.array(dtype=float),
+        resize_flags: wp.array(dtype=wp.int32),
+    ):
+        """
+        This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
+        record the collision data. Unlike `vertex_triangle_collision_detection_kernel`, this collision detection kernel
+        works only in one way, i.e., it only records vertices' colliding triangles to `vertex_colliding_triangles`.
+
+        This function assumes that all the vertices are on triangles, and can be indexed from the pos argument.
+
+        Note:
+
+            The collision date buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
+            may not be enough. If the space is not enough to record all the collision information, the function will set a
+            certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
+            and vertex_colliding_triangles_count.
+
+        Attributes:
+            query_radius (float): the contact radius. vertex-triangle pairs whose distance are less than this will get detected
+            pos (array): positions of all the vertices that make up triangles
+            vertex_colliding_triangles (array): flattened buffer of vertices' collision triangles, every two elements records
+                the vertex index and a triangle index it collides to
+            vertex_colliding_triangles_count (array): number of triangles each vertex collides
+            vertex_colliding_triangles_offsets (array): where each vertex' collision buffer starts
+            vertex_colliding_triangles_buffer_sizes (array): size of each vertex' collision buffer, will be modified if resizing is needed
+            vertex_colliding_triangles_min_dist (array): each vertex' min distance to all (non-neighbor) triangles
+            triangle_colliding_vertices_min_dist (array): each triangle's min distance to all (non-self) vertices
+            resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+        """
+        wp.launch(
+            vertex_triangle_collision_detection_no_triangle_buffers_kernel,
+            dim=len(pos),
+            inputs=[
+                query_radius,
+                self.bvh.id,
+                pos,
+                tri_indices,
+                vertex_colliding_triangles_offsets,
+                vertex_colliding_triangles_buffer_sizes,
+            ],
+            outputs=[
+                vertex_colliding_triangles,
+                vertex_colliding_triangles_count,
+                vertex_colliding_triangles_min_dist,
+                triangle_colliding_vertices_min_dist,
+                resize_flags,
+            ],
+            device=self.device,
+        )
+
+    def triangle_triangle_collision_detection(
+        self,
+        pos: wp.array(dtype=wp.vec3),
+        tri_indices: wp.array(dtype=wp.int32, ndim=2),
+        triangle_intersecting_triangles_offsets: wp.array(dtype=wp.int32),
+        # outputs
+        triangle_intersecting_triangles: wp.array(dtype=wp.int32),
+        triangle_intersecting_triangles_count: wp.array(dtype=wp.int32),
+        resize_flags: wp.array(dtype=wp.int32),
+    ):
+        """
+        Move from `newton.solvers.vbd.tri_mesh_collision`
+        TODO:
+        """
+        wp.launch(
+            triangle_triangle_collision_detection_kernel,
+            dim=tri_indices.shape[0],
+            inputs=[
+                self.bvh.id,
+                pos,
+                tri_indices,
+                triangle_intersecting_triangles_offsets,
+            ],
+            outputs=[
+                triangle_intersecting_triangles,
+                triangle_intersecting_triangles_count,
+                resize_flags,
+            ],
+            device=self.device,
+        )
 
 
 ########################################################################################################################
