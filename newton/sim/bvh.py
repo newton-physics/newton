@@ -71,10 +71,19 @@ class Bvh:
         self.lower_bounds = wp.zeros(num_leaves, dtype=wp.vec3, device=self.device)
         self.upper_bounds = wp.zeros(num_leaves, dtype=wp.vec3, device=self.device)
 
+    def is_built(self) -> bool:
+        """Returns if BVH has been built."""
+        return self.bvh is not None
+
     def build(self):
         """Builds the BVH from the current lower and upper bounds.
 
         This should be called when the leaf bounds are set for the first time or if the BVH needs to be fully rebuilt.
+
+        Warning:
+            This function **must not** be called inside a `wp.ScopedCapture()` context.
+            Currently, Warp does not provide an API to rebuild a `Bvh` without triggering memory movement,
+            which is incompatible with capture mode.
         """
         self.bvh = wp.Bvh(self.lower_bounds, self.upper_bounds)
 
@@ -83,11 +92,9 @@ class Bvh:
 
         This is more efficient than rebuilding and should be used when the structure of the BVH
         remains the same but the positions of the bounding boxes have changed (e.g., moving objects).
-
-        Note: If the BVH hasn't been built yet, this will automatically build it.
         """
         if self.bvh is None:
-            self.build()
+            raise RuntimeError("BVH hasn't been built yet!")
         else:
             self.bvh.refit()
 
@@ -223,6 +230,11 @@ class EdgeBvh(Bvh):
             edge_indices (wp.array): Integer array of shape (M, 4), where each row [i2, i3] defines an edge
                                     connecting vertices pos[i2] and pos[i3].
             enlarge (float): Optional padding value to expand each edge's bounding box (default is 0.0).
+
+        Warning:
+            This function **must not** be called inside a `wp.ScopedCapture()` context.
+            Currently, Warp does not provide an API to rebuild a `Bvh` without triggering memory movement,
+            which is incompatible with capture mode.
         """
         self.update_aabbs(pos, edge_indices, enlarge)
         super().build()
@@ -340,6 +352,11 @@ class TriBvh(Bvh):
             pos (wp.array): Vertex positions (wp.vec3).
             tri_indices (wp.array): Triangle indices (M x 3 int array), where each row defines a triangle.
             enlarge (float): Optional padding value to expand each triangle's bounding box (default is 0.0).
+
+        Warning:
+            This function **must not** be called inside a `wp.ScopedCapture()` context.
+            Currently, Warp does not provide an API to rebuild a `Bvh` without triggering memory movement,
+            which is incompatible with capture mode.
         """
         self.update_aabbs(pos, tri_indices, enlarge)
         super().build()
