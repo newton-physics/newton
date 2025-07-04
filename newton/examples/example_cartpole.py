@@ -95,14 +95,13 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-
         with wp.ScopedTimer("step", synchronize=True, print=False) as timer:
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
 
-        self.run_time  += timer.elapsed
+        self.run_time += timer.elapsed
         self.sim_time += self.frame_dt
 
     def render(self):
