@@ -24,7 +24,7 @@ import warp as wp
 class TestAnymalCWalk(unittest.TestCase):
     def test_anymal_walk_policy(self):
         try:
-            from newton.examples.example_anymal_c_walk import Example
+            from newton.examples.example_anymal_c_walk import Example  # noqa: PLC0415
         except ImportError:
             self.skipTest("Example import failed - skipping test")
 
