@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .broad_phase_blocks import binary_search, check_aabb_overlap, proceed_broad_phase, write_pair
+from .broad_phase_common import binary_search, check_aabb_overlap, proceed_broad_phase, write_pair
 
 wp.set_module_options({"enable_backward": False})
 
@@ -46,14 +46,14 @@ def _build_sort_key(collision_group: int, value: float) -> wp.int64:
 
 @wp.kernel
 def _flag_group_id_kernel(
-    collision_group_per_box: wp.array(dtype=int, ndim=1),
+    geom_collision_groups: wp.array(dtype=int, ndim=1),
     marker: wp.array(dtype=int, ndim=1),
     negative_group_counter: wp.array(dtype=int, ndim=1),
     negative_group_indices: wp.array(dtype=int, ndim=1),
 ):
     id = wp.tid()
 
-    group = collision_group_per_box[id]
+    group = geom_collision_groups[id]
     if group > 0 and marker[group] == 0:
         marker[group] = 1
     if group < 0:
@@ -98,7 +98,7 @@ def _sap_project_kernel(
     geom_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
     geom_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
     geom_cutoff: wp.array(dtype=float, ndim=1),
-    collision_group_per_box: wp.array(dtype=int, ndim=1),
+    geom_collision_groups: wp.array(dtype=int, ndim=1),
     unique_group_id_counter: wp.array(dtype=int, ndim=1),
     unique_group_ids: wp.array(dtype=int, ndim=1),
     negative_group_counter: wp.array(dtype=int, ndim=1),
@@ -119,7 +119,7 @@ def _sap_project_kernel(
         group_id = 0
         if id < num_boxes:
             box_id = id
-            group_id = collision_group_per_box[box_id]
+            group_id = geom_collision_groups[box_id]
         else:
             id2 = id - num_boxes
             box_id = negative_group_indices[id2 % num_negative_groups]
@@ -285,7 +285,7 @@ def _sap_broadphase_kernel(
         geomid += nsweep_in
 
 
-class SAPBroadPhase:
+class BroadPhaseSAP:
     """Sweep and Prune (SAP) broad phase collision detection.
 
     This class implements the sweep and prune algorithm for broad phase collision detection.
@@ -333,11 +333,11 @@ class SAPBroadPhase:
 
     def launch(
         self,
-        geom_bounding_box_lower_wp: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
-        geom_bounding_box_upper_wp: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
-        num_active_boxes: int,  # Number of active bounding boxes
-        geom_cutoff_per_box: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
-        collision_group_per_box: wp.array(dtype=int, ndim=1),  # Collision group ID per box
+        geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
+        geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
+        geom_count: int,  # Number of active bounding boxes
+        geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
+        geom_collision_groups: wp.array(dtype=int, ndim=1),  # Collision group ID per box
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
@@ -349,11 +349,11 @@ class SAPBroadPhase:
         negative groups only collide with different negative groups or positive groups.
 
         Args:
-            geom_bounding_box_lower_wp: Lower bounds of geometry axis-aligned bounding boxes (in world space)
-            geom_bounding_box_upper_wp: Upper bounds of geometry axis-aligned bounding boxes (in world space)
-            num_active_boxes: Number of active bounding boxes to process
-            geom_cutoff_per_box: Additional enlargement per geometry box
-            collision_group_per_box: Collision group IDs for filtering collisions.
+            geom_lower: Lower bounds of geometry axis-aligned bounding boxes (in world space)
+            geom_upper: Upper bounds of geometry axis-aligned bounding boxes (in world space)
+            geom_count: Number of active bounding boxes to process
+            geom_cutoffs: Additional enlargement per geometry box
+            geom_collision_groups: Collision group IDs for filtering collisions.
                                    Positive IDs only collide with same ID or negative IDs.
                                    Negative IDs only collide with different negative IDs or positive IDs.
                                    ID 0 does not collide with anything.
@@ -366,7 +366,7 @@ class SAPBroadPhase:
         direction = wp.normalize(direction)
 
         max_candidate_pair = candidate_pair.shape[0]
-        num_threads = num_active_boxes + self.max_num_negative_group_members * self.max_num_distinct_positive_groups
+        num_threads = geom_count + self.max_num_negative_group_members * self.max_num_distinct_positive_groups
 
         # Temporarily use sap_cumulative_sum since it's not used until later in the method
         self.sap_cumulative_sum.zero_()
@@ -374,9 +374,9 @@ class SAPBroadPhase:
 
         wp.launch(
             kernel=_flag_group_id_kernel,
-            dim=num_active_boxes,
+            dim=geom_count,
             inputs=[
-                collision_group_per_box,
+                geom_collision_groups,
                 self.sap_cumulative_sum,
                 self.negative_group_counter,
                 self.negative_group_indices,
@@ -385,7 +385,7 @@ class SAPBroadPhase:
 
         wp.launch(
             kernel=_write_unique_group_id_kernel,
-            dim=num_active_boxes,
+            dim=geom_count,
             inputs=[self.sap_cumulative_sum],
             outputs=[
                 self.unique_group_ids,
@@ -398,15 +398,15 @@ class SAPBroadPhase:
             dim=num_threads,
             inputs=[
                 direction,
-                geom_bounding_box_lower_wp,
-                geom_bounding_box_upper_wp,
-                geom_cutoff_per_box,
-                collision_group_per_box,
+                geom_lower,
+                geom_upper,
+                geom_cutoffs,
+                geom_collision_groups,
                 self.unique_group_id_counter,
                 self.unique_group_ids,
                 self.negative_group_counter,
                 self.negative_group_indices,
-                num_active_boxes,
+                geom_count,
             ],
             outputs=[
                 self.sap_projection_lower,
@@ -425,7 +425,7 @@ class SAPBroadPhase:
             kernel=_sap_range_kernel,
             dim=num_threads,
             inputs=[
-                num_active_boxes,
+                geom_count,
                 self.negative_group_counter,
                 self.unique_group_id_counter,
                 self.sap_projection_lower,
@@ -444,17 +444,17 @@ class SAPBroadPhase:
             kernel=_sap_broadphase_kernel,
             dim=nsweep_in,
             inputs=[
-                geom_bounding_box_lower_wp,
-                geom_bounding_box_upper_wp,
-                num_active_boxes,
+                geom_lower,
+                geom_upper,
+                geom_count,
                 num_threads,
                 self.negative_group_indices,
                 self.negative_group_counter,
                 self.unique_group_id_counter,
-                collision_group_per_box,
+                geom_collision_groups,
                 self.sap_sort_index,
                 self.sap_cumulative_sum,
-                geom_cutoff_per_box,
+                geom_cutoffs,
                 nsweep_in,
             ],
             outputs=[
