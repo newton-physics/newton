@@ -820,7 +820,7 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        contact_stiffness_time_const: float | None = None,
+        contact_stiffness_time_const: float = 0.02,
     ):
         """
         Args:
@@ -841,8 +841,7 @@ class MuJoCoSolver(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            contact_stiffness_time_const (float | None): Time constant for contact stiffness in MuJoCo's solver reference model. If None, defaults to 0.02 (20ms).
-                                                        Can be set to match the simulation timestep for tighter coupling.
+            contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
 
         """
         super().__init__(model)
@@ -874,7 +873,6 @@ class MuJoCoSolver(SolverBase):
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
-                contact_stiffness_time_const=contact_stiffness_time_const,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1179,9 +1177,8 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
-        add_axes: bool = True,
+        add_axes: bool = False,
         maxhullvert: int = MESH_MAXHULLVERT,
-        contact_stiffness_time_const: float | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1193,6 +1190,10 @@ class MuJoCoSolver(SolverBase):
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: A tuple containing the model and data objects for ``mujoco_warp`` and MuJoCo.
         """
+
+        if not model.joint_count:
+            raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
+
         mujoco, mujoco_warp = import_mujoco()
 
         actuator_args = {
@@ -1252,9 +1253,7 @@ class MuJoCoSolver(SolverBase):
         defaults.geom.condim = geom_condim
         # Use provided or default contact stiffness time constant
         if geom_solref is None:
-            if contact_stiffness_time_const is None:
-                contact_stiffness_time_const = 0.02  # Default 20ms
-            geom_solref = (contact_stiffness_time_const, 1.0)
+            geom_solref = (self.contact_stiffness_time_const, 1.0)
         defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
@@ -1294,6 +1293,7 @@ class MuJoCoSolver(SolverBase):
                 conaffinity=0,
             )
 
+        articulation_start = model.articulation_start.numpy()
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
@@ -1388,11 +1388,37 @@ class MuJoCoSolver(SolverBase):
             selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
                 0
             ]
-            selected_bodies = np.unique(shape_body[selected_shapes])
+            selected_bodies = np.unique([i for i in shape_body[selected_shapes] if i != -1])
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
+            # figure out the articulations that are selected
+            joint_ptr = 0
+            selected_articulations = []
+            for i in range(model.articulation_count):
+                while joint_ptr < len(selected_joints) and selected_joints[joint_ptr] < articulation_start[i]:
+                    joint_ptr += 1
+                if joint_ptr >= len(selected_joints):
+                    continue
+                joint = selected_joints[joint_ptr]
+                if joint >= articulation_start[i] and joint < articulation_start[i + 1]:
+                    selected_articulations.append(i)
+                selected_joints = np.unique(selected_joints)
+            for articulation in selected_articulations:
+                # add all joints of the articulation to the selected joints
+                articulation_joints = np.arange(articulation_start[articulation], articulation_start[articulation + 1])
+                selected_joints = np.unique(np.concatenate((selected_joints, articulation_joints)))
+            if len(selected_joints) == 0:
+                # select all joints from the first articulation if we didn't populate any so far
+                selected_joints = np.arange(articulation_start[0], articulation_start[1])
+            selected_bodies = np.unique(np.concatenate((selected_bodies, joint_child[selected_joints])))
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             selected_shapes = np.where(shape_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))[0]
+            selected_bodies = np.arange(model.body_count)
+
+        # store selected shapes, bodies, joints for later use in update_geom_properties
+        self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
+        self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
+        self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
@@ -1790,12 +1816,11 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
-            self.notify_model_changed(flags)
 
-            # Also update shape properties once during initialization
-            if model.shape_materials.mu is not None:
-                shape_flags = newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
-                self.notify_model_changed(shape_flags)
+            # TODO: Also update shape properties once during initialization
+            # if model.shape_materials.mu is not None:
+            #     shape_flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+            self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
@@ -1810,9 +1835,6 @@ class MuJoCoSolver(SolverBase):
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
-
-            # store selected shapes for later use in update_geom_properties
-            self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
 
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -1999,12 +2021,6 @@ class MuJoCoSolver(SolverBase):
         if self.model.shape_materials.mu is None:
             return
 
-        # Get contact stiffness time constant from solver or use default
-        if self.contact_stiffness_time_const is not None:
-            contact_time_const = self.contact_stiffness_time_const
-        else:
-            contact_time_const = 0.02  # Default 20ms
-
         wp.launch(
             update_geom_properties_kernel,
             dim=len(self.selected_shapes),
@@ -2020,7 +2036,7 @@ class MuJoCoSolver(SolverBase):
                 self.model.up_axis,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
-                contact_time_const,
+                self.contact_stiffness_time_const,
                 self.model.num_envs,
             ],
             outputs=[
