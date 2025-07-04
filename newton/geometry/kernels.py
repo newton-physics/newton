@@ -1585,9 +1585,11 @@ def compute_tri_aabb(
 
 
 @wp.kernel
-def compute_tri_aabbs(
+def compute_tri_aabbs_kernel(
+    enlarge: float,
     pos: wp.array(dtype=wp.vec3),
     tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    # outputs
     lower_bounds: wp.array(dtype=wp.vec3),
     upper_bounds: wp.array(dtype=wp.vec3),
 ):
@@ -1599,14 +1601,16 @@ def compute_tri_aabbs(
 
     lower, upper = compute_tri_aabb(v1, v2, v3)
 
-    lower_bounds[t_id] = lower
-    upper_bounds[t_id] = upper
+    lower_bounds[t_id] = lower - wp.vec3(enlarge)
+    upper_bounds[t_id] = upper + wp.vec3(enlarge)
 
 
 @wp.kernel
-def compute_edge_aabbs(
+def compute_edge_aabbs_kernel(
+    enlarge: float,
     pos: wp.array(dtype=wp.vec3),
     edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    # outputs
     lower_bounds: wp.array(dtype=wp.vec3),
     upper_bounds: wp.array(dtype=wp.vec3),
 ):
@@ -1615,8 +1619,8 @@ def compute_edge_aabbs(
     v1 = pos[edge_indices[e_id, 2]]
     v2 = pos[edge_indices[e_id, 3]]
 
-    lower_bounds[e_id] = wp.min(v1, v2)
-    upper_bounds[e_id] = wp.max(v1, v2)
+    lower_bounds[e_id] = wp.min(v1, v2) - wp.vec3(enlarge)
+    upper_bounds[e_id] = wp.max(v1, v2) + wp.vec3(enlarge)
 
 
 @wp.func

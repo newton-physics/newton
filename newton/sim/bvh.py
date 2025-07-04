@@ -17,8 +17,8 @@ import warp as wp
 
 from newton.geometry.kernels import (
     aabb_aabb_query_kernel,
-    compute_edge_aabbs,
-    compute_tri_aabbs,
+    compute_edge_aabbs_kernel,
+    compute_tri_aabbs_kernel,
     edge_edge_query_kernel,
     line_aabb_query_kernel,
     vertex_triangle_query_kernel,
@@ -212,9 +212,10 @@ class EdgeBvh(Bvh):
         assert edge_indices.shape[0] == self.lower_bounds.shape[0], "Mismatch between edge count and BVH leaf count."
         # ================================    Runtime checks    ================================
         wp.launch(
-            compute_edge_aabbs,
+            compute_edge_aabbs_kernel,
             dim=self.lower_bounds.shape[0],
-            inputs=[pos, edge_indices, self.lower_bounds, self.upper_bounds],
+            inputs=[enlarge, pos, edge_indices],
+            outputs=[self.lower_bounds, self.upper_bounds],
             device=self.device,
         )
 
@@ -302,7 +303,7 @@ class EdgeBvh(Bvh):
                 edge_indices,
             ],
             outputs=[query_results],
-            deice=self.device,
+            device=self.device,
         )
 
 
@@ -335,9 +336,10 @@ class TriBvh(Bvh):
         assert tri_indices.shape[0] == self.lower_bounds.shape[0], "Mismatch between triangle count and BVH leaf count."
         # ================================    Runtime checks    ================================
         wp.launch(
-            compute_tri_aabbs,
+            compute_tri_aabbs_kernel,
             dim=self.lower_bounds.shape[0],
-            inputs=[pos, tri_indices, self.lower_bounds, self.upper_bounds],
+            inputs=[enlarge, pos, tri_indices],
+            outputs=[self.lower_bounds, self.upper_bounds],
             device=self.device,
         )
 

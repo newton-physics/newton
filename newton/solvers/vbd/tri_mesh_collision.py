@@ -17,8 +17,8 @@ import numpy as np
 import warp as wp
 
 from newton.geometry.kernels import (
-    compute_edge_aabbs,
-    compute_tri_aabbs,
+    compute_edge_aabbs_kernel,
+    compute_tri_aabbs_kernel,
     edge_colliding_edges_detection_kernel,
     init_triangle_collision_data_kernel,
     triangle_triangle_collision_detection_kernel,
@@ -137,8 +137,8 @@ class TriMeshCollisionDetector:
         self.lower_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
         wp.launch(
-            kernel=compute_tri_aabbs,
-            inputs=[self.vertex_positions, model.tri_indices, self.lower_bounds_tris, self.upper_bounds_tris],
+            kernel=compute_tri_aabbs_kernel,
+            inputs=[0.0, self.vertex_positions, model.tri_indices, self.lower_bounds_tris, self.upper_bounds_tris],
             dim=model.tri_count,
             device=model.device,
         )
@@ -220,8 +220,8 @@ class TriMeshCollisionDetector:
         self.lower_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         wp.launch(
-            kernel=compute_edge_aabbs,
-            inputs=[self.vertex_positions, model.edge_indices, self.lower_bounds_edges, self.upper_bounds_edges],
+            kernel=compute_edge_aabbs_kernel,
+            inputs=[0.0, self.vertex_positions, model.edge_indices, self.lower_bounds_edges, self.upper_bounds_edges],
             dim=model.edge_count,
             device=model.device,
         )
@@ -277,8 +277,9 @@ class TriMeshCollisionDetector:
             self.vertex_positions = new_pos
 
         wp.launch(
-            kernel=compute_tri_aabbs,
+            kernel=compute_tri_aabbs_kernel,
             inputs=[
+                0.0,
                 self.vertex_positions,
                 self.model.tri_indices,
             ],
@@ -289,8 +290,8 @@ class TriMeshCollisionDetector:
         self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
 
         wp.launch(
-            kernel=compute_edge_aabbs,
-            inputs=[self.vertex_positions, self.model.edge_indices],
+            kernel=compute_edge_aabbs_kernel,
+            inputs=[0.0, self.vertex_positions, self.model.edge_indices],
             outputs=[self.lower_bounds_edges, self.upper_bounds_edges],
             dim=self.model.edge_count,
             device=self.model.device,
@@ -306,8 +307,8 @@ class TriMeshCollisionDetector:
 
     def refit_triangles(self):
         wp.launch(
-            kernel=compute_tri_aabbs,
-            inputs=[self.vertex_positions, self.model.tri_indices, self.lower_bounds_tris, self.upper_bounds_tris],
+            kernel=compute_tri_aabbs_kernel,
+            inputs=[0.0, self.vertex_positions, self.model.tri_indices, self.lower_bounds_tris, self.upper_bounds_tris],
             dim=self.model.tri_count,
             device=self.model.device,
         )
@@ -315,8 +316,14 @@ class TriMeshCollisionDetector:
 
     def refit_edges(self):
         wp.launch(
-            kernel=compute_edge_aabbs,
-            inputs=[self.vertex_positions, self.model.edge_indices, self.lower_bounds_edges, self.upper_bounds_edges],
+            kernel=compute_edge_aabbs_kernel,
+            inputs=[
+                0.0,
+                self.vertex_positions,
+                self.model.edge_indices,
+                self.lower_bounds_edges,
+                self.upper_bounds_edges,
+            ],
             dim=self.model.edge_count,
             device=self.model.device,
         )
