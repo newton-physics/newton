@@ -1177,9 +1177,8 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
-        add_axes: bool = True,
+        add_axes: bool = False,
         maxhullvert: int = MESH_MAXHULLVERT,
-        contact_stiffness_time_const: float | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1819,8 +1818,8 @@ class MuJoCoSolver(SolverBase):
             )
 
             # Also update shape properties once during initialization
-            if model.shape_materials.mu is not None:
-                shape_flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+            # if model.shape_materials.mu is not None:
+            #     shape_flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
