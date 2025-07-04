@@ -58,7 +58,7 @@ class Bvh:
         - Rows equal the maximum query count plus 1 (for the count row).
         - Use the following pattern to iterate over results:
 
-    ...code-block:: python
+    .. code-block:: python
 
         for i in range(query_results[0, tid])
             idx = query_results[i + 1, tid]
@@ -104,7 +104,7 @@ class Bvh:
         For each query AABB defined by `lower_bounds[i]` and `upper_bounds[i]`, this method finds
         all leaf nodes in the BVH that overlap with the query box (optionally expanded by `query_radius`).
 
-        Results are written to `query_results` in a column-major layout:
+        Results are written to `query_results` in a row-major layout:
             - Each column corresponds to a query thread.
             - Row 0 stores the number of hits for that thread.
             - Rows 1..N store the indices of the intersecting leaf nodes.
@@ -147,10 +147,10 @@ class Bvh:
         `vertices[edge_indices[i, 3]]` against the BVH. For each segment, it collects all AABBs
         (from the BVH leaves) that intersect with the segment.
 
-        The results are written to `query_results` in column-major layout:
-            - Each column corresponds to a segment (i.e., one thread).
+        Results are written to `query_results` in a row-major layout:
+            - Each column corresponds to a query thread.
             - Row 0 stores the number of hits for that thread.
-            - Rows 1..N store the indices of intersecting leaf nodes.
+            - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
             vertices (wp.array): Array of 3D points representing geometry vertices.
@@ -254,6 +254,27 @@ class EdgeBvh(Bvh):
         max_dist: float,
         query_radius: float = 0.0,
     ):
+        """Queries the BVH to find edges that are within a maximum distance from a set of points.
+
+        For each input edge (defined by `test_pos` and `test_edge_indices`), this function identifies edge
+        (defined by `edge_indices` and `edge_pos`) that fall within `max_dist` of the edge. It supports
+        optional self-hit suppression and radius-based padding for edge bounds.
+
+        Results are written to `query_results` in a row-major layout:
+            - Each column corresponds to a query thread.
+            - Row 0 stores the number of hits for that thread.
+            - Rows 1..N store the indices of the intersecting leaf nodes.
+
+        Args:
+            test_pos (wp.array): Query edge vertex positions (wp.vec3).
+            test_edge_indices (wp.array): Query edge indices (M x 4 int array).
+            edge_pos (wp.array): Edge vertex positions (same as used when building BVH).
+            edge_indices (wp.array): Edge indices (M x 4 int array).
+            query_results (wp.array): 2D int array to store the result layout (max_results + 1, P).
+            ignore_self_hits (bool): If True, skips hits between a point and its associated triangle (e.g. for self-collision).
+            max_dist (float): Maximum allowed distance between point and triangle for a match to be considered.
+            query_radius (float): Optional padding to enlarge triangle AABBs during the query (default: 0.0).
+        """
         wp.launch(
             edge_edge_query_kernel,
             dim=test_edge_indices.shape[0],
@@ -354,10 +375,10 @@ class TriBvh(Bvh):
         that fall within `max_dist` of the point. It supports optional self-hit suppression and radius-based
         padding for triangle bounds.
 
-        Results are stored in `query_results` in 2D layout:
-            - Each column corresponds to a query point.
-            - Row 0 stores the hit count for that point.
-            - Rows 1..N store the indices of hit triangles.
+        Results are written to `query_results` in a row-major layout:
+            - Each column corresponds to a query thread.
+            - Row 0 stores the number of hits for that thread.
+            - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
             pos (wp.array): Query point positions (wp.vec3).
