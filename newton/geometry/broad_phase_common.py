@@ -67,7 +67,7 @@ def write_pair(
 
 # Collision filtering
 @wp.func
-def proceed_broad_phase(group_a: int, group_b: int) -> bool:
+def test_group_pair(group_a: int, group_b: int) -> bool:
     if group_a == 0 or group_b == 0:
         return False
     if group_a > 0:

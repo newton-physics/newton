@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .broad_phase_common import binary_search, check_aabb_overlap, proceed_broad_phase, write_pair
+from .broad_phase_common import binary_search, check_aabb_overlap, test_group_pair, write_pair
 
 wp.set_module_options({"enable_backward": False})
 
@@ -263,7 +263,7 @@ def _sap_broadphase_kernel(
         group1 = collision_group[geom1]
         group2 = collision_group[geom2]
 
-        if not proceed_broad_phase(group1, group2):
+        if not test_group_pair(group1, group2):
             geomid += nsweep_in
             continue
 
@@ -335,9 +335,9 @@ class BroadPhaseSAP:
         self,
         geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
-        geom_count: int,  # Number of active bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
         geom_collision_groups: wp.array(dtype=int, ndim=1),  # Collision group ID per box
+        geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),

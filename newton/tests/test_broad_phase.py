@@ -19,7 +19,7 @@ from math import sqrt
 import numpy as np
 import warp as wp
 
-from newton import BroadPhaseExplicit, BroadPhaseAllPairs, BroadPhaseSAP
+from newton.geometry import BroadPhaseExplicit, BroadPhaseAllPairs, BroadPhaseSAP
 
 
 def check_aabb_overlap_host(
@@ -42,7 +42,7 @@ def check_aabb_overlap_host(
 
 
 # Collision filtering
-def proceed_broad_phase(group_a: int, group_b: int) -> bool:
+def test_group_pair(group_a: int, group_b: int) -> bool:
     if group_a == 0 or group_b == 0:
         return False
     if group_a > 0:
@@ -65,7 +65,7 @@ def find_overlapping_pairs_np(
         for j in range(i + 1, n):
             # Check for overlap in all three axes
             cutoff_combined = max(cutoff[i], cutoff[j])
-            if not proceed_broad_phase(collision_group[i], collision_group[j]):
+            if not test_group_pair(collision_group[i], collision_group[j]):
                 continue
 
             if (
@@ -138,9 +138,9 @@ class TestBroadPhase(unittest.TestCase):
         nxn_broadphase.launch(
             geom_lower,
             geom_upper,
-            ngeom,
             geom_cutoff,
             collision_group,
+            ngeom,
             candidate_pair,
             num_candidate_pair,
         )
@@ -391,9 +391,9 @@ class TestBroadPhase(unittest.TestCase):
         sap_broadphase.launch(
             geom_lower,
             geom_upper,
-            ngeom,
             geom_cutoff,
             collision_group,
+            ngeom,
             candidate_pair,
             num_candidate_pair,
         )

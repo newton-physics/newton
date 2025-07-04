@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .broad_phase_common import check_aabb_overlap, proceed_broad_phase, write_pair
+from .broad_phase_common import check_aabb_overlap, test_group_pair, write_pair
 
 
 @wp.kernel
@@ -94,7 +94,7 @@ def _nxn_broadphase_kernel(
     geom1 = pair[0]
     geom2 = pair[1]
 
-    if collision_group.shape[0] > 0 and not proceed_broad_phase(collision_group[geom1], collision_group[geom2]):
+    if collision_group.shape[0] > 0 and not test_group_pair(collision_group[geom1], collision_group[geom2]):
         return
 
     # wp.printf("geom1=%d, geom2=%d\n", geom1, geom2)
@@ -125,7 +125,7 @@ class BroadPhaseAllPairs:
     The collision checks take into account per-geometry cutoff distances and collision groups. Two geometries
     will only be considered as a candidate pair if:
     1. Their AABBs overlap when expanded by their cutoff distances
-    2. Their collision groups allow interaction (determined by proceed_broad_phase())
+    2. Their collision groups allow interaction (determined by test_group_pair())
 
     The class outputs an array of candidate collision pairs that need more detailed narrow phase collision
     checking.
@@ -138,9 +138,9 @@ class BroadPhaseAllPairs:
         self,
         geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
-        geom_count: int,  # Number of active bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
         geom_collision_groups: wp.array(dtype=int, ndim=1),  # Collision group ID per box
+        geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
@@ -204,8 +204,8 @@ class BroadPhaseExplicit:
         geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
-        explicit_cancidate_geom_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Precomputed pairs to check
-        num_paris_to_check: int,
+        geom_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Precomputed pairs to check
+        geom_pair_count: int,
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
@@ -235,12 +235,12 @@ class BroadPhaseExplicit:
 
         wp.launch(
             kernel=_nxn_broadphase_precomputed_pairs,
-            dim=num_paris_to_check,
+            dim=geom_pair_count,
             inputs=[
                 geom_lower,
                 geom_upper,
                 geom_cutoffs,
-                explicit_cancidate_geom_pairs,
+                geom_pairs,
                 candidate_pair,
                 num_candidate_pair,
                 max_candidate_pair,
