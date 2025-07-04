@@ -129,18 +129,13 @@ class Style3DSolver(SolverBase):
         else:
             return 4.0 / (4.0 - omega * rho * rho)
 
-    def step(
-        self, model: Style3DModel, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
-    ):
-        if model is not self.model:
-            raise ValueError("model must be the one used to initialize Style3DSolver")
-
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         wp.launch(
             kernel=init_step_kernel,
             dim=self.model.particle_count,
             inputs=[
                 dt,
-                model.gravity,
+                self.model.gravity,
                 state_in.particle_f,
                 state_in.particle_qd,
                 state_in.particle_q,

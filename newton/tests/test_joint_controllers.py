@@ -72,7 +72,7 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
     sim_time = 0.0
     for _ in range(100):
         state_0.clear_forces()
-        solver.step(model, state_0, state_1, control, None, sim_dt)
+        solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
         # renderer.begin_frame(sim_time)
         # renderer.render(state_1)

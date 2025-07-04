@@ -29,6 +29,8 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.geometry.kernels
+import newton.solvers.vbd.solver_vbd
 import newton.utils
 
 
@@ -104,6 +106,12 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
+            wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
+            wp.set_module_options({"block_dim": 16}, newton.geometry.kernels)
+            wp.load_module(newton.geometry.kernels, device=wp.get_device())
+
             with wp.ScopedCapture() as capture:
                 self.simulate_substeps()
             self.cuda_graph = capture.graph
@@ -112,7 +120,7 @@ class Example:
         for _ in range(self.num_substeps):
             contacts = self.model.collide(self.state_0)
             self.state_0.clear_forces()
-            self.solver.step(self.model, self.state_0, self.state_1, None, contacts, self.dt)
+            self.solver.step(self.state_0, self.state_1, None, contacts, self.dt)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):

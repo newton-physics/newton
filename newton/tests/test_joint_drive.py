@@ -173,7 +173,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Perform 1 sim step.
-        solver.step(model=model, state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+        solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
@@ -211,7 +211,7 @@ class TestJointDrive(unittest.TestCase):
 
         # Run a sim step with the new values of ke and kd
         solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
-        solver.step(model=model, state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+        solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
@@ -254,7 +254,7 @@ class TestJointDrive(unittest.TestCase):
 
         # Run a sim step with the new drive type
         solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
-        solver.step(model=model, state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+        solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
@@ -289,7 +289,7 @@ class TestJointDrive(unittest.TestCase):
 
         # Run a sim step with the new drive type
         solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
-        solver.step(model=model, state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+        solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
 

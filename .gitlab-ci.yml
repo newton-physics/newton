@@ -101,7 +101,7 @@ linting:
     - when: manual # If not auto-triggered, allow any pipeline to run this job manually
       allow_failure: true
   script:
-    - uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --failfast --serial-fallback
+    - uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --serial-fallback
 
 linux-x86_64 test:
   image: ghcr.io/astral-sh/uv:bookworm

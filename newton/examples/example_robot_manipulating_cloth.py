@@ -14,16 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Robot manipulating Cloth
+# Example Sim Robot Manipulating Cloth
 #
-# This simulation demonstrates twisting a coupled robot-cloth simulation using the VBD
-# solver for the cloth and FeatherStone for the robot, showcasing its ability to handle complex contacts while
-# ensuring it remains intersection-free.
+# This simulation demonstrates twisting a coupled robot-cloth simulation
+# using the VBD solver for the cloth and Featherstone for the robot,
+# showcasing its ability to handle complex contacts while ensuring it
+# remains intersection-free.
 #
 ###########################################################################
 
+from __future__ import annotations
+
 import math
-from typing import Optional, Union
 
 import numpy as np
 import warp as wp
@@ -31,6 +33,10 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.geometry.kernels
+import newton.sim.articulation
+import newton.solvers.euler.kernels
+import newton.solvers.vbd.solver_vbd
 import newton.utils
 from newton.sim import Model, ModelBuilder, State, eval_fk
 from newton.solvers import FeatherstoneSolver, VBDSolver
@@ -46,9 +52,7 @@ def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
 
 
 def vec_rotation(x: float, y: float, z: float) -> wp.transform:
-    """
-    Converts plane coordinates given by the plane normal and its offset along the normal to a transform.
-    """
+    """Convert plane coordinates given by the plane normal and its offset along the normal to a transform."""
     normal = wp.normalize(wp.vec3(x, y, z))
     if allclose(normal, wp.vec3(0.0, 0.0, 1.0)):
         # no rotation necessary
@@ -92,8 +96,8 @@ def compute_body_jacobian(
     model: Model,
     joint_q: wp.array,
     joint_qd: wp.array,
-    body_id: Union[int, str],  # Can be either body index or body name
-    offset: Optional[wp.transform] = None,
+    body_id: int | str,  # Can be either body index or body name
+    offset: wp.transform | None = None,
     velocity: bool = True,
     include_rotation: bool = False,
 ):
@@ -145,18 +149,12 @@ def compute_body_jacobian(
             joint_qd,
             out_state,
         )
-        wp.launch(
-            compute_body_out,
-            1,
-            inputs=[out_state.body_qd if velocity else out_state.body_q],
-            outputs=[body_out],
-            device=model.device,
-        )
+        wp.launch(compute_body_out, 1, inputs=[out_state.body_qd if velocity else out_state.body_q], outputs=[body_out])
 
     def onehot(i):
         x = np.zeros(out_dim, dtype=np.float32)
         x[i] = 1.0
-        return wp.array(x, device=model.device)
+        return wp.array(x)
 
     J = np.empty((out_dim, in_dim), dtype=wp.float32)
     for i in range(out_dim):
@@ -166,16 +164,16 @@ def compute_body_jacobian(
     return J.astype(np.float32)
 
 
-class ExampleClothManipulation:
+class Example:
     def __init__(
         self,
-        stage_path: str = "example_coupled_simulation.usd",
+        stage_path: str = "example_robot_manipulating_cloth.usd",
+        num_frames: int | None = None,
     ):
         self.stage_path = stage_path
 
-        self.device = wp.get_device()
-        self.use_cuda_graph = self.device.is_cuda
-        # self.use_cuda_graph = False
+        self.cuda_graph = None
+        self.use_cuda_graph = wp.get_device().is_cuda
         self.add_cloth = True
         self.add_robot = True
 
@@ -221,30 +219,13 @@ class ExampleClothManipulation:
             self.create_articulation(articulation_builder)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.builder.add_builder(
-                articulation_builder,
-                xform,
-                separate_collision_group=False,
-            )
+            self.builder.add_builder(articulation_builder, xform, separate_collision_group=False)
             self.bodies_per_env = articulation_builder.body_count
             self.dof_q_per_env = articulation_builder.joint_coord_count
             self.dof_qd_per_env = articulation_builder.joint_dof_count
 
         # add a table
-        self.builder.add_shape_box(
-            -1,
-            wp.transform(
-                wp.vec3(
-                    0,
-                    0,
-                    50,
-                ),
-                wp.quat_identity(),
-            ),
-            hx=40,
-            hy=10,
-            hz=40,
-        )
+        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, 0, 50), wp.quat_identity()), hx=40, hy=10, hz=40)
 
         # add the T-shirt
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
@@ -271,21 +252,21 @@ class ExampleClothManipulation:
             )
 
             self.builder.color()
-        self.model = self.builder.finalize(requires_grad=False, device=self.device)
-        self.device = self.model.device
-        if not self.model.device.is_cuda:
-            self.use_graph_capture = False
-
+        self.model = self.builder.finalize(requires_grad=False)
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
 
-        if self.add_robot:
-            self.episode_duration = np.sum(self.transition_duration)
-        else:
-            self.episode_duration = 10.0
+        if num_frames is None:
+            if self.add_robot:
+                episode_duration = np.sum(self.transition_duration)
+            else:
+                episode_duration = 10.0
 
-        self.num_frames = int(self.episode_duration / self.frame_dt)
+            self.num_frames = int(episode_duration / self.frame_dt)
+        else:
+            self.num_frames = num_frames
+
         self.sim_dt = self.frame_dt / max(1, self.num_substeps)
         self.sim_steps = self.num_frames * self.num_substeps
         self.sim_step = 0
@@ -304,6 +285,7 @@ class ExampleClothManipulation:
         self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_interval=self.num_substeps)
         self.set_up_control()
 
+        self.cloth_solver: VBDSolver | None = None
         if self.add_cloth:
             # initialize cloth solver
             #   set edge rest angle to zero to disable bending, this is currently a walkaround to make VBDSolver stable
@@ -347,15 +329,15 @@ class ExampleClothManipulation:
         out_dim = 6
         in_dim = self.model.joint_dof_count
 
-        def onehot(i, out_dim, device):
-            x = wp.array([1.0 if j == i else 0.0 for j in range(out_dim)], dtype=float, device=self.model.device)
+        def onehot(i, out_dim):
+            x = wp.array([1.0 if j == i else 0.0 for j in range(out_dim)], dtype=float)
             return x
 
-        self.Jacobian_one_hots = [onehot(i, out_dim, self.model.device) for i in range(out_dim)]
+        self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
 
         # for robot control
-        self.delta_q = wp.empty(self.model.joint_count, dtype=float, device=self.device)
-        self.joint_q_des = wp.array(self.model.joint_q.numpy(), dtype=float, device=self.device)
+        self.delta_q = wp.empty(self.model.joint_count, dtype=float)
+        self.joint_q_des = wp.array(self.model.joint_q.numpy(), dtype=float)
 
         @wp.kernel
         def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
@@ -369,13 +351,21 @@ class ExampleClothManipulation:
 
         self.body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
 
-        self.J_flat = wp.empty(out_dim * in_dim, dtype=float, device=self.model.device)
-        self.J_shape = wp.array((out_dim, in_dim), dtype=int, device=self.model.device)
-        self.ee_delta = wp.empty(1, dtype=wp.spatial_vector, device=self.device)
+        self.J_flat = wp.empty(out_dim * in_dim, dtype=float)
+        self.J_shape = wp.array((out_dim, in_dim), dtype=int)
+        self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
         self.initial_pose = self.model.joint_q.numpy()
 
     def capture_cuda_graph(self):
-        self.cuda_graph = None
+        if self.cuda_graph is None:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
+            wp.load_module(newton.sim.articulation, device=wp.get_device())
+            wp.set_module_options({"block_dim": 16}, newton.geometry.kernels)
+            wp.load_module(newton.geometry.kernels, device=wp.get_device())
+            wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
+            wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
+
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.integrate_frame()
@@ -480,11 +470,7 @@ class ExampleClothManipulation:
         with tape:
             eval_fk(model, joint_q, joint_qd, self.temp_state_for_jacobian)
             wp.launch(
-                self.compute_body_out_kernel,
-                1,
-                inputs=[self.temp_state_for_jacobian.body_qd],
-                outputs=[self.body_out],
-                device=model.device,
+                self.compute_body_out_kernel, 1, inputs=[self.temp_state_for_jacobian.body_qd], outputs=[self.body_out]
             )
 
         for i in range(out_dim):
@@ -516,7 +502,6 @@ class ExampleClothManipulation:
                 wp.transform(*self.target[:7]),
             ],
             outputs=[self.ee_delta],
-            device=self.device,
         )
 
         self.compute_body_jacobian(
@@ -556,23 +541,7 @@ class ExampleClothManipulation:
 
         self.target_joint_qd.assign(delta_q)
 
-    def run(self):
-        for frame_idx in range(self.num_frames):
-            self.advance_frame()
-
-            if self.add_cloth and not (frame_idx % 10):
-                self.cloth_solver.rebuild_bvh(self.state_0)
-                self.capture_cuda_graph()
-
-            if self.renderer is not None:
-                self.renderer.begin_frame(self.sim_time)
-                self.renderer.render(self.state_0)
-                self.renderer.end_frame()
-
-    def cloth_sim_substep(self, state_in, state_out):
-        self.cloth_solver.step(self.model, state_in, state_out, self.control, self.contacts, self.sim_dt)
-
-    def advance_frame(self):
+    def step(self):
         self.generate_control_joint_qd(self.state_0)
         if self.use_cuda_graph:
             wp.capture_launch(self.cuda_graph)
@@ -597,7 +566,7 @@ class ExampleClothManipulation:
 
                 self.state_0.joint_qd.assign(self.target_joint_qd)
                 # Just update the forward kinematics to get body positions from joint coordinates
-                self.robot_solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
+                self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
                 self.state_0.particle_f.zero_()
 
@@ -608,13 +577,52 @@ class ExampleClothManipulation:
             self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
 
             if self.add_cloth:
-                self.cloth_sim_substep(self.state_0, self.state_1)
+                self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             self.sim_time += self.sim_dt
 
+    def render(self):
+        if self.renderer is None:
+            return
+
+        with wp.ScopedTimer("render", active=False):
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state_0)
+            self.renderer.end_frame()
+
 
 if __name__ == "__main__":
-    simulator = ExampleClothManipulation()
-    simulator.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument(
+        "--stage_path",
+        type=lambda x: None if x == "None" else str(x),
+        default="example_robot_manipulating_cloth.usd",
+        help="Path to the output USD file.",
+    )
+    parser.add_argument(
+        "--num_frames",
+        type=lambda x: None if x == "None" else int(x),
+        default=None,
+        help="Total number of frames. If None, the number of frames will be determined automatically.",
+    )
+
+    args = parser.parse_known_args()[0]
+
+    with wp.ScopedDevice(args.device):
+        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
+
+        for frame_idx in range(example.num_frames):
+            example.step()
+
+            if example.cloth_solver and not (frame_idx % 10):
+                example.cloth_solver.rebuild_bvh(example.state_0)
+                example.capture_cuda_graph()
+
+            example.render()
+
+            print(f"[{frame_idx:4d}/{example.num_frames}]")
