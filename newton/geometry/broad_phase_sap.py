@@ -291,30 +291,27 @@ class BroadPhaseSAP:
     This class implements the sweep and prune algorithm for broad phase collision detection.
     It efficiently finds potentially colliding pairs of objects by sorting their bounding box
     projections along a fixed axis and checking for overlaps.
-
-    Args:
-        max_broad_phase_elements: Maximum number of elements that can be processed
-        max_num_distinct_positive_groups: Maximum number of distinct positive (not including the zero group) collision groups
-        max_num_negative_group_members: Maximum number of elements with negative collision groups
-
-    Attributes:
-        negative_group_indices: Indices of elements with negative collision groups
-        negative_group_counter: Counter for number of negative group elements
-        unique_group_ids: Array storing unique collision group IDs
-        unique_group_id_counter: Counter for number of unique group IDs
-        sap_projection_lower: Lower bounds of AABB projections onto sweep axis
-        sap_projection_upper: Upper bounds of AABB projections onto sweep axis
-        sap_sort_index: Sorted indices of elements based on projections
-        sap_range: Range of overlapping elements for each element
-        sap_cumulative_sum: Cumulative sum used for work distribution
     """
 
     def __init__(
-        self, max_broad_phase_elements: int, max_num_distinct_positive_groups: int, max_num_negative_group_members: int
+        self,
+        max_broad_phase_elements: int,
+        max_num_distinct_positive_groups: int,
+        max_num_negative_group_members: int,
+        sweep_thread_count_multiplier: int = 5,
     ):
+        """Initialize arrays for sweep and prune broad phase collision detection.
+
+        Args:
+            max_broad_phase_elements: Maximum number of elements to process
+            max_num_distinct_positive_groups: Maximum number of unique positive collision groups
+            max_num_negative_group_members: Maximum number of elements with negative groups
+            sweep_thread_count_multiplier: Multiplier for number of threads used in sweep phase
+        """
         self.max_broad_phase_elements = max_broad_phase_elements
         self.max_num_distinct_positive_groups = max_num_distinct_positive_groups
         self.max_num_negative_group_members = max_num_negative_group_members
+        self.sweep_thread_count_multiplier = sweep_thread_count_multiplier
 
         upper_bound = max_broad_phase_elements + max_num_negative_group_members * max_num_distinct_positive_groups
 
@@ -438,8 +435,7 @@ class BroadPhaseSAP:
         wp.utils.array_scan(self.sap_range.reshape(-1), self.sap_cumulative_sum, True)
 
         # estimate number of overlap checks
-        # assumes each geom has 5 other geoms (batched over all worlds)
-        nsweep_in = 5 * num_threads
+        nsweep_in = self.sweep_thread_count_multiplier * num_threads
         wp.launch(
             kernel=_sap_broadphase_kernel,
             dim=nsweep_in,
