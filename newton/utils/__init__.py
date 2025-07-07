@@ -107,7 +107,7 @@ def check_conditional_graph_support():
         assert_conditional_graph_support()
     except Exception:
         return False
-    return False
+    return True
 
 
 __all__ = [
