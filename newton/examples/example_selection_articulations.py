@@ -108,6 +108,9 @@ class Example:
 
         self.solver = newton.solvers.MuJoCoSolver(self.model)
 
+        # TODO: This line is needed or else this example will crash on some systems
+        self.solver.mjw_model.opt.graph_conditional = False
+
         self.renderer = None
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(
