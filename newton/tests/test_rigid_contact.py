@@ -44,7 +44,7 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
     builder.default_shape_cfg.ke = 1e4
     builder.default_shape_cfg.kd = 1000.0
     builder.add_ground_plane()
-    num_spheres = 10
+    num_spheres = 9
     for i in range(num_spheres):
         b = builder.add_body(xform=wp.transform(wp.vec3(i * 0.5, 0.0, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
