@@ -716,7 +716,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
 
         for prim_path in self.path_body_map.keys():
             prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
-            self._xform_to_tqs(prim)
+            SimRendererUsd._xform_to_tqs(prim)
 
     def _create_output_stage(self, source_stage, output_stage) -> Usd.Stage:
         from pxr import Usd
@@ -735,7 +735,8 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         else:
             raise ValueError("output_stage must be a string or a Usd.Stage")
 
-    def _xform_to_tqs(self, prim: Usd.Prim, time=None):
+    @staticmethod
+    def _xform_to_tqs(prim: Usd.Prim, time: Usd.TimeCode | None = None):
         """Update the transformation stack of a primitive to translate/orient/scale format.
 
         The original transformation stack is assumed to be a rigid transformation.
