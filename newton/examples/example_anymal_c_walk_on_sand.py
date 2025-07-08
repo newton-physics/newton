@@ -335,18 +335,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_anymal_c_walk_on_sand.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=10000, help="Total number of frames.")
-    parser.add_argument("--voxel_size", "-dx", type=float, default=0.03)
-    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3.0)
-    parser.add_argument("--sand_friction", "-mu", type=float, default=0.48)
+    parser.add_argument("--num-frames", type=int, default=10000, help="Total number of frames.")
+    parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
+    parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
+    parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--dynamic_grid", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dynamic-grid", action=argparse.BooleanOptionalAction, default=True)
 
     args = parser.parse_known_args()[0]
 
