@@ -2027,12 +2027,6 @@ class MuJoCoSolver(SolverBase):
         if not hasattr(self.model, "to_newton_shape_index"):
             return
 
-        # get contact stiffness time constant from solver or use default
-        if self.contact_stiffness_time_const is not None:
-            contact_time_const = self.contact_stiffness_time_const
-        else:
-            contact_time_const = 0.02  # Default 20ms
-
         # Get number of geoms and worlds from MuJoCo model
         num_geoms = self.mj_model.ngeom
         num_worlds = self.model.num_envs  # why there's no 'self.mjw_data.nworld'?
