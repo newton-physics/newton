@@ -1471,9 +1471,12 @@ class MuJoCoSolver(SolverBase):
                     convex_hull = getattr(mesh_src, "convex_hull", None)
                     # use convex hull if available, otherwise use original mesh
                     mesh_to_use = convex_hull if convex_hull is not None else mesh_src
+                    # apply scaling
+                    size = shape_size[shape]
+                    vertices = mesh_to_use.vertices * size
                     spec.add_mesh(
                         name=name,
-                        uservert=mesh_to_use.vertices.flatten(),
+                        uservert=vertices.flatten(),
                         userface=mesh_to_use.indices.flatten(),
                         maxhullvert=mesh_maxhullvert,
                     )
@@ -1504,6 +1507,7 @@ class MuJoCoSolver(SolverBase):
                     size[size == 0.0] = nonzero
                     geom_params["size"] = size
                 else:
+                    assert stype == newton.GEO_PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
 
