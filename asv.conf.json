@@ -18,7 +18,8 @@
     "python -m pip install -U numpy",
     "python -m pip install -U --pre warp-lang --index-url=https://pypi.nvidia.com/",
     "python -m pip install mujoco --pre --upgrade -f https://py.mujoco.org/",
+    "python -m pip install -U torch --index-url https://download.pytorch.org/whl/cu128",
     "python -m pip install git+https://github.com/google-deepmind/mujoco_warp.git@main",
-    "in-dir={env_dir} python -m pip install {wheel_file}"
+    "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
   ]
 }
