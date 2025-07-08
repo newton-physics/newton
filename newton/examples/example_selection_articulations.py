@@ -72,7 +72,7 @@ def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_env
 
 
 class Example:
-    def __init__(self, stage_path=None, num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path=None, num_envs=16, use_cuda_graph=True):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z

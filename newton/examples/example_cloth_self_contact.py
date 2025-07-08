@@ -123,7 +123,7 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=300):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph

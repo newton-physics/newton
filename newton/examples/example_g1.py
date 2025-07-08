@@ -183,9 +183,9 @@ if __name__ == "__main__":
     parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument(
         "--show-mujoco-viewer",
-        type=bool,
         default=False,
-        help="Show MuJoCo viewer next to Newton renderer if MuJoCoSolver is used.",
+        action=argparse.BooleanOptionalAction,
+        help="Toggle MuJoCo viewer next to Newton renderer when MuJoCoSolver is active.",
     )
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 

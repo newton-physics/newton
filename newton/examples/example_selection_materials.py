@@ -268,7 +268,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda_graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
