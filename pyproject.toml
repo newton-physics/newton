@@ -30,7 +30,7 @@ dependencies = ["warp-lang>=1.7.0.dev20250625"]
 
 [project.optional-dependencies]
 dev = [
-    "mujoco-warp>=3.2.7",
+    "mujoco-warp>=0.0.1",
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "pycollada>=0.9",
     "pyglet>=2.1.6",
@@ -61,14 +61,16 @@ path = "newton/_version.py"
 include = ["/newton", "/newton/licenses"]
 
 [[tool.uv.index]]
+url = "https://urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi/simple"
+default = true
+
+[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+url = "https://pypi.org/simple"
 
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
@@ -77,18 +79,26 @@ mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu128", extra = "cu12" }]
 
 [[tool.uv.index]]
-name = "mujoco"
-url = "https://py.mujoco.org"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [dependency-groups]
-dev = ["coverage[toml]>=7.8.0"]
+dev = [
+    "asv>=0.6.4",
+    "coverage[toml]>=7.8.0",
+]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
 line-length = 120
 indent-width = 4
 exclude = []
+
+[[tool.uv.index]]
+name = "mujoco"
+url = "https://py.mujoco.org"
+explicit = true
 
 [tool.ruff.lint]
 select = [
