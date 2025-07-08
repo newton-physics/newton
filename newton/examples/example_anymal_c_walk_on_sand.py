@@ -92,7 +92,7 @@ class Example:
         fps = 60
         self.frame_dt = 1.0e0 / fps
 
-        self.sim_substeps = 6
+        self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder.joint_q[:3] = [
@@ -205,6 +205,7 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
+            self.controller.get_control(self.state_0, self.control)
             with wp.ScopedCapture() as capture:
                 self.simulate_robot()
             self.robot_graph = capture.graph
@@ -215,6 +216,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            self.controller.assign_control(self.control, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
