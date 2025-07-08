@@ -1348,75 +1348,6 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
-def VBD_accumulate_bending_force_hessian_tile(
-    dt: float,
-    particle_ids_in_color: wp.array(dtype=wp.int32),
-    prev_pos: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
-    mass: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.uint32),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    tri_poses: wp.array(dtype=wp.mat22),
-    tri_materials: wp.array(dtype=float, ndim=2),
-    tri_areas: wp.array(dtype=float),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_rest_angles: wp.array(dtype=float),
-    edge_rest_length: wp.array(dtype=float),
-    edge_bending_properties: wp.array(dtype=float, ndim=2),
-    adjacency: ForceElementAdjacencyInfo,
-    # contact info
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
-    # output
-    pos_new: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-    thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-    particle_index = particle_ids_in_color[block_idx]
-
-    f = wp.vec3(0.0)
-    h = wp.mat33(0.0)
-
-    batch_counter = wp.int32(0)
-    num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
-    while batch_counter + thread_idx < num_adj_edges:
-        adj_edge_counter = batch_counter + thread_idx
-        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
-            adjacency, particle_index, adj_edge_counter
-        )
-        f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-            nei_edge_index,
-            vertex_order_on_edge,
-            pos,
-            prev_pos,
-            edge_indices,
-            edge_rest_angles,
-            edge_rest_length,
-            edge_bending_properties[nei_edge_index, 0],
-            edge_bending_properties[nei_edge_index, 1],
-            dt,
-        )
-
-        f = f + f_edge
-        h = h + h_edge
-
-    # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f[0], f[1], f[2])
-    f_tile = wp.tile(f, preserve_type=True)
-    h_tile = wp.tile(h, preserve_type=True)
-    # wp.printf("f_tile shape: %d | h_tile shape: %d\n", f_tile.shape[0], h_tile.shape[0])
-
-    f_total = wp.tile_reduce(wp.add, f_tile)
-    h_total = wp.tile_reduce(wp.add, h_tile)
-
-    wp.tile_store(particle_forces, f_total, particle_index)
-    wp.tile_store(particle_hessians, h_total, particle_index)
-
-
-@wp.kernel
 def VBD_solve_trimesh_no_self_contact_tile(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
@@ -2385,37 +2316,6 @@ class VBDSolver(SolverBase):
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                 )
-                #
-                # wp.launch(
-                #     kernel=VBD_accumulate_bending_force_hessian_tile,
-                #     inputs=[
-                #         dt,
-                #         self.model.particle_color_groups[color],
-                #         self.particle_q_prev,
-                #         state_in.particle_q,
-                #         state_in.particle_qd,
-                #         self.model.particle_mass,
-                #         self.inertia,
-                #         self.model.particle_flags,
-                #         self.model.tri_indices,
-                #         self.model.tri_poses,
-                #         self.model.tri_materials,
-                #         self.model.tri_areas,
-                #         self.model.edge_indices,
-                #         self.model.edge_rest_angle,
-                #         self.model.edge_rest_length,
-                #         self.model.edge_bending_properties,
-                #         self.adjacency,
-                #         self.particle_forces,
-                #         self.particle_hessians,
-                #     ],
-                #     outputs=[
-                #         state_out.particle_q,
-                #     ],
-                #     dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                #     block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                #     device=self.device,
-                # )
 
                 wp.launch(
                     kernel=VBD_solve_trimesh_no_self_contact_tile,
@@ -2447,36 +2347,6 @@ class VBDSolver(SolverBase):
                     block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                     device=self.device,
                 )
-
-                # wp.launch(
-                #     kernel=solve_trimesh_no_self_contact,
-                #     inputs=[
-                #         dt,
-                #         self.model.particle_color_groups[color],
-                #         self.particle_q_prev,
-                #         state_in.particle_q,
-                #         state_in.particle_qd,
-                #         self.model.particle_mass,
-                #         self.inertia,
-                #         self.model.particle_flags,
-                #         self.model.tri_indices,
-                #         self.model.tri_poses,
-                #         self.model.tri_materials,
-                #         self.model.tri_areas,
-                #         self.model.edge_indices,
-                #         self.model.edge_rest_angle,
-                #         self.model.edge_rest_length,
-                #         self.model.edge_bending_properties,
-                #         self.adjacency,
-                #         self.particle_forces,
-                #         self.particle_hessians,
-                #     ],
-                #     outputs=[
-                #         state_out.particle_q,
-                #     ],
-                #     dim=self.model.particle_color_groups[color].size ,
-                #     device=self.device,
-                # )
 
                 wp.launch(
                     kernel=copy_particle_positions_back,
