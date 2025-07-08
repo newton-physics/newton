@@ -26,6 +26,8 @@ from enum import Enum
 import warp as wp
 
 import newton
+import newton.geometry.kernels
+import newton.solvers.vbd.solver_vbd
 import newton.utils
 
 
@@ -55,7 +57,11 @@ class Example:
         fps = 60
         self.frame_dt = 1.0 / fps
 
-        self.num_substeps = 10
+        if self.solver_type == SolverType.EULER:
+            self.num_substeps = 32
+        else:
+            self.num_substeps = 10
+
         self.iterations = 10
         self.dt = self.frame_dt / self.num_substeps
 
@@ -68,7 +74,13 @@ class Example:
 
         builder = newton.ModelBuilder()
 
-        builder.add_ground_plane()
+        if self.solver_type == SolverType.EULER:
+            ground_cfg = builder.default_shape_cfg.copy()
+            ground_cfg.ke = 1.0e2
+            ground_cfg.kd = 5.0e1
+            builder.add_ground_plane(cfg=ground_cfg)
+        else:
+            builder.add_ground_plane()
 
         # common cloth properties
         common_params = {
@@ -83,6 +95,7 @@ class Example:
             "fix_left": True,
             "edge_ke": 1.0e1,
             "edge_kd": 0.0,
+            "particle_radius": 0.05,
         }
 
         solver_params = {}
@@ -142,6 +155,13 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            if self.solver_type == SolverType.VBD:
+                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
+                wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
+            wp.set_module_options({"block_dim": 256}, newton.geometry.kernels)
+            wp.load_module(newton.geometry.kernels, device=wp.get_device())
+
             with wp.ScopedCapture() as capture:
                 self.simulate_substeps()
             self.cuda_graph = capture.graph
@@ -150,7 +170,7 @@ class Example:
         for _ in range(self.num_substeps):
             contacts = self.model.collide(self.state_0)
             self.state_0.clear_forces()
-            self.solver.step(self.model, self.state_0, self.state_1, None, contacts, self.dt)
+            self.solver.step(self.state_0, self.state_1, None, contacts, self.dt)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):

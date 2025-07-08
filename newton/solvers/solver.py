@@ -247,12 +247,11 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 
         Args:
-            model (Model): The model to simulate.
             state_in (State): The input state.
             state_out (State): The output state.
             control (Control): The control input.

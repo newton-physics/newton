@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 
 import numpy as np
 import warp as wp
@@ -21,6 +20,8 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.solvers.style3d.kernels
+import newton.solvers.style3d.linear_solver
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
@@ -37,25 +38,31 @@ class Example:
         self.sim_time = 0.0
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
-
-        usd_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "women_skirt.usda"))
-
-        # Grament
-        usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_Garment"))
-        garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
-        garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
-        garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
-        garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
-        garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
-
-        # Avatar
-        usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/women_skirt/Root_SkinnedMesh_Avatar_0_Sub_0"))
-        avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
-        avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
-
         builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
+
         use_cloth_mesh = True
         if use_cloth_mesh:
+            asset_path = newton.utils.download_asset("style3d_description")
+
+            # Grament
+            # garment_usd_name = "Women_Skirt"
+            # garment_usd_name = "Female_T_Shirt"
+            garment_usd_name = "Women_Sweatshirt"
+            usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
+            usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment")))
+
+            garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
+            garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
+            garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
+            garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+            garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
+
+            # Avatar
+            usd_stage = Usd.Stage.Open(str(asset_path / "avatars" / "Female.usd"))
+            usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2"))
+            avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
+            avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
+
             builder.add_aniso_cloth_mesh(
                 pos=wp.vec3(0, 0, 0),
                 rot=wp.quat_identity(),
@@ -68,12 +75,14 @@ class Example:
                 indices=garment_mesh_indices.tolist(),
                 density=0.3,
                 scale=1.0,
+                particle_radius=5.0e-3,
             )
             builder.add_shape_mesh(
                 body=builder.add_body(),
                 mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
             )
-            fixed_points = [0]
+            # fixed_points = [0]
+            fixed_points = []
         else:
             grid_dim = 100
             grid_width = 1.0
@@ -94,6 +103,13 @@ class Example:
             )
             fixed_points = [0, grid_dim]
 
+        # add a table
+        builder.add_shape_box(
+            body=builder.add_body(),
+            hx=2.5,
+            hy=0.1,
+            hz=2.5,
+        )
         self.model = builder.finalize()
 
         # set fixed points
@@ -103,8 +119,11 @@ class Example:
         self.model.particle_flags = wp.array(flags)
 
         # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2
-        self.model.soft_contact_margin = 0.35
+        self.model.soft_contact_radius = 0.2e-2
+        self.model.soft_contact_margin = 0.35e-2
+        self.model.soft_contact_ke = 1.0e1
+        self.model.soft_contact_kd = 1.0e-6
+        self.model.soft_contact_mu = 0.2
 
         self.solver = newton.solvers.Style3DSolver(
             self.model,
@@ -116,6 +135,7 @@ class Example:
         self.state0 = self.model.state()
         self.state1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = self.model.collide(self.state0)
 
         self.renderer = None
         if stage_path:
@@ -128,16 +148,21 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.load_module(newton.solvers.style3d.kernels, device=wp.get_device())
+            wp.load_module(newton.solvers.style3d.linear_solver, device=wp.get_device())
+
             with wp.ScopedCapture() as capture:
                 self.integrate_frame_substeps()
             self.cuda_graph = capture.graph
 
     def integrate_frame_substeps(self):
+        self.contacts = self.model.collide(self.state0)
         for _ in range(self.num_substeps):
-            self.solver.step(self.model, self.state0, self.state1, self.control, None, self.dt)
+            self.solver.step(self.state0, self.state1, self.control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
-    def advance_frame(self):
+    def step(self):
         with wp.ScopedTimer("step", print=False, dict=self.profiler):
             if self.use_cuda_graph:
                 wp.capture_launch(self.cuda_graph)
@@ -146,11 +171,14 @@ class Example:
             self.sim_time += self.dt
 
     def run(self):
-        for _ in range(self.num_frames):
-            if self.renderer.has_exit:
+        for frame_idx in range(self.num_frames):
+            if self.renderer and self.renderer.has_exit:
                 break
-            self.advance_frame()
+            self.step()
             self.render()
+
+            if self.renderer is None:
+                print(f"[{frame_idx:4d}/{args.num_frames}]")
 
     def render(self):
         if self.renderer is not None:

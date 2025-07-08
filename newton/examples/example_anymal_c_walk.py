@@ -18,6 +18,9 @@
 #
 # Shows how to control Anymal C with a pretrained policy.
 #
+# Run the script with the --with option to temporarily add the PyTorch dependency for its execution:
+# uv run --with torch newton/examples/example_anymal_c_walk.py
+#
 ###########################################################################
 
 
@@ -163,6 +166,7 @@ class AnymalController:
         self.dof_q_per_env = model.joint_coord_count
         self.dof_qd_per_env = model.joint_dof_count
         self.num_envs = 1
+        self.ctrl = None
         obs_dim = 37
         self.obs_buf = wp.empty(
             (self.num_envs, obs_dim),
@@ -190,12 +194,12 @@ class AnymalController:
             device=self.device,
         )
 
-    def assign_control(self, actions: wp.array, control: Control, state: State):
+    def assign_control(self, control: Control, state: State):
         wp.launch(
             kernel=apply_joint_position_pd_control,
             dim=self.model.joint_count,
             inputs=[
-                wp.from_torch(wp.to_torch(actions).reshape(-1)),
+                wp.from_torch(wp.to_torch(self.ctrl).reshape(-1)),
                 self.action_scale,
                 self.default_joint_q,
                 state.joint_q,
@@ -215,8 +219,7 @@ class AnymalController:
     def get_control(self, state: State, control: Control):
         self.compute_observations(state, self.obs_buf)
         obs_torch = wp.to_torch(self.obs_buf).detach()
-        ctrl = wp.array(torch.clamp(self.policy_model(obs_torch).detach(), -1, 1), dtype=float)
-        self.assign_control(ctrl, control, state)
+        self.ctrl = wp.array(torch.clamp(self.policy_model(obs_torch).detach(), -1, 1), dtype=float)
 
 
 class Example:
@@ -313,6 +316,7 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
+            self.controller.get_control(self.state_0, self.control)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -323,7 +327,8 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.model, self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.controller.assign_control(self.control, self.state_0)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

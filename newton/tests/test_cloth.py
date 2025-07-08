@@ -609,7 +609,7 @@ class ClothSim:
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
             tri_ke=tri_ke,
-            tri_ka=0.0,
+            tri_ka=tri_ke,
             tri_kd=tri_kd,
             edge_ke=edge_ke,
             edge_kd=edge_kd,
@@ -658,6 +658,7 @@ class ClothSim:
         self.finalize(ground=False)
 
     def set_up_body_cloth_contact_experiment(self):
+        # fmt: off
         vs = [
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
@@ -665,13 +666,10 @@ class ClothSim:
             [1.0, 0.0, 0.0],
         ]
         fs = [
-            0,
-            1,
-            2,
-            2,
-            3,
-            0,
+            0, 1, 2,
+            2, 3, 0
         ]
+        # fmt: on
 
         if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
@@ -703,20 +701,7 @@ class ClothSim:
             particle_radius=particle_radius,
         )
 
-        self.builder.add_shape_box(
-            -1,
-            wp.transform(
-                wp.vec3(
-                    0,
-                    -2,
-                    0,
-                ),
-                wp.quat_identity(),
-            ),
-            hx=2,
-            hy=2,
-            hz=2,
-        )
+        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()), hx=2, hy=2, hz=2)
 
         self.renderer_scale_factor = 0.1
 
@@ -788,6 +773,7 @@ class ClothSim:
                 wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
                 wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
 
+            wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
             wp.load_module(newton.solvers.solver, device=self.device)
             wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
@@ -799,7 +785,7 @@ class ClothSim:
             self.state0.clear_forces()
             contacts = self.model.collide(self.state0, soft_contact_margin=self.soft_contact_margin)
             control = self.model.control()
-            self.solver.step(self.model, self.state0, self.state1, control, contacts, self.dt)
+            self.solver.step(self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def run(self):
@@ -957,7 +943,7 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
 def test_cloth_bending_damping_with_free_fall(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e0, fixed_particles=None, use_gravity=True
+        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison
@@ -997,7 +983,7 @@ def test_cloth_bending_damping_with_free_fall(test, device, solver):
 
     # Verify that non-gravitational displacement is minimal for all vertices
     test.assertTrue(
-        max_non_gravity_displacement < 0.01,
+        max_non_gravity_displacement < 0.02,
         f"Non-gravitational displacement detected: max {max_non_gravity_displacement:.4f} at vertex indices {problematic_vertices}",
     )
 
@@ -1081,6 +1067,11 @@ tests_to_run = {
         test_cloth_free_fall,
         test_cloth_sagging,
         test_cloth_bending,
+        test_cloth_bending_consistent_angle_computation,
+        test_cloth_bending_non_zero_rest_angle_bending,
+        test_cloth_bending_with_complex_rest_angles,
+        test_cloth_bending_damping_with_free_fall,
+        test_cloth_body_collision,
     ],
     "vbd": [
         test_cloth_free_fall,

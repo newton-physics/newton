@@ -25,9 +25,15 @@ import warp as wp
 import newton
 import newton.utils
 from newton.core.types import nparray, override
+from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
 
 from ..solver import SolverBase
+
+
+class vec10f(wp.types.vector(length=10, dtype=float)):
+    pass
+
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -253,6 +259,29 @@ def apply_mjc_control_kernel(
             mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
         else:
             mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
+
+
+@wp.kernel
+def apply_mjc_body_f_kernel(
+    up_axis: int,
+    body_q: wp.array(dtype=wp.transform),
+    body_f: wp.array(dtype=wp.spatial_vector),
+    to_mjc_body_index: wp.array(dtype=wp.int32),
+    bodies_per_env: int,
+    # outputs
+    xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
+):
+    worldid, bodyid = wp.tid()
+    mj_body_id = to_mjc_body_index[bodyid]
+    if mj_body_id != -1:
+        f = body_f[worldid * bodies_per_env + bodyid]
+        w = wp.vec3(f[0], f[1], f[2])
+        v = wp.vec3(f[3], f[4], f[5])
+        if up_axis == 1:
+            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+            w = wp.quat_rotate(rot_y2z, w)
+            v = wp.quat_rotate(rot_y2z, v)
+        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
@@ -524,13 +553,13 @@ def update_body_mass_ipos_kernel(
     if mjc_idx == -1:
         return
 
-    # Update COM position
+    # update COM position
     if up_axis == 1:
         body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
     else:
         body_ipos[worldid, mjc_idx] = body_com[tid]
 
-    # Update mass
+    # update mass
     body_mass_out[worldid, mjc_idx] = body_mass[tid]
 
 
@@ -602,10 +631,15 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_axis_properties_kernel(
+    joint_dof_mode: wp.array(dtype=int),
+    joint_target_kp: wp.array(dtype=float),
+    joint_target_kv: wp.array(dtype=float),
     joint_effort_limit: wp.array(dtype=float),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
     # outputs
+    actuator_bias: wp.array2d(dtype=vec10f),
+    actuator_gain: wp.array2d(dtype=vec10f),
     actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
     """Update actuator force ranges based on joint effort limits."""
@@ -615,6 +649,29 @@ def update_axis_properties_kernel(
 
     actuator_idx = axis_to_actuator[axis_in_env]
     if actuator_idx >= 0:  # Valid actuator
+        kp = joint_target_kp[tid]
+        kv = joint_target_kv[tid]
+        mode = joint_dof_mode[tid]
+
+        if mode == newton.JOINT_MODE_TARGET_POSITION:
+            # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = -kp
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kp
+        elif mode == newton.JOINT_MODE_TARGET_VELOCITY:
+            # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = -kv
+            actuator_gain[worldid, actuator_idx][0] = kv
+        else:
+            # bias = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+            # gain = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            actuator_bias[worldid, actuator_idx][1] = 0.0
+            actuator_bias[worldid, actuator_idx][2] = 0.0
+            actuator_gain[worldid, actuator_idx][0] = 1.0
+
         effort_limit = joint_effort_limit[tid]
         actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
@@ -633,10 +690,10 @@ def update_dof_properties_kernel(
     worldid = tid // dofs_per_env
     dof_in_env = tid % dofs_per_env
 
-    # Update armature
+    # update armature
     dof_armature[worldid, dof_in_env] = joint_armature[tid]
 
-    # Update friction loss
+    # update friction loss
     dof_frictionloss[worldid, dof_in_env] = joint_friction[tid]
 
 
@@ -648,8 +705,9 @@ def update_geom_properties_kernel(
     shape_kd: wp.array(dtype=float),
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
-    shape_to_geom: wp.array(dtype=wp.int32),
-    shapes_per_env: int,
+    shape_type: wp.array(dtype=wp.int32),
+    shape_body: wp.array(dtype=wp.int32),
+    to_newton_shape_index: wp.array(dtype=wp.int32),
     up_axis: int,
     torsional_friction: float,
     rolling_friction: float,
@@ -663,29 +721,26 @@ def update_geom_properties_kernel(
     geom_quat: wp.array2d(dtype=wp.quatf),
 ):
     """Update geom properties from Newton shape properties."""
-    tid = wp.tid()
-    worldid = tid // shapes_per_env
-    shape_in_env = tid % shapes_per_env
+    worldid, geom_idx = wp.tid()
 
-    geom_idx = shape_to_geom[shape_in_env]
-    if geom_idx < 0:  # Invalid mapping
+    shape_idx = to_newton_shape_index[geom_idx]
+    if shape_idx < 0:
         return
 
-    # Update bounding radius
-    geom_rbound[worldid, geom_idx] = shape_collision_radius[tid]
+    # update bounding radius
+    geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
 
-    # Update friction (slide, torsion, roll)
-    mu = shape_mu[tid]
+    # update friction (slide, torsion, roll)
+    mu = shape_mu[shape_idx]
     geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
-    # Update solref (stiffness, damping as time constants)
+    # update solref (stiffness, damping as time constants)
     # MuJoCo uses time constants, Newton uses direct stiffness/damping
-    # Convert using heuristic: time_const = sqrt(mass/stiffness)
-    # For now, use a simplified mapping
-    ke = shape_ke[tid]
-    kd = shape_kd[tid]
+    # convert using heuristic: time_const = sqrt(mass/stiffness)
+    ke = shape_ke[shape_idx]
+    kd = shape_kd[shape_idx]
     if ke > 0.0:
-        # Use provided time constant for stiffness
+        # use provided time constant for stiffness
         time_const_stiff = contact_stiffness_time_const
         if kd > 0.0:
             time_const_damp = kd / (2.0 * wp.sqrt(ke))
@@ -696,22 +751,34 @@ def update_geom_properties_kernel(
         time_const_damp = 1.0
     geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
-    # Update size
-    geom_size[worldid, geom_idx] = shape_size[tid]
+    # update size
+    geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
-    # Update position and orientation
-    pos = wp.vec3f(shape_transform[tid].p)
-    quat = shape_transform[tid].q
-
-    # Handle up-axis conversion if needed
+    # update position and orientation
+    pos = wp.vec3f(shape_transform[shape_idx].p)
+    quat = shape_transform[shape_idx].q
+    # get shape type and body
+    stype = shape_type[shape_idx]
+    body_idx = shape_body[shape_idx]
+    # apply shape-specific rotations (matching add_geoms logic)
+    if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
+        # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
+        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+        quat = quat * rot_y2z
+    # special handling for static geoms with Z-up axis (matching add_geoms logic)
+    if up_axis == 2 and body_idx == -1:
+        # reverse rotation that aligned the z-axis with the y-axis
+        rot_z2y = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
+        quat = quat * rot_z2y
+    # handle up-axis conversion if needed
     if up_axis == 1:
         # MuJoCo uses Z-up, Newton Y-up requires conversion
-        pos = wp.vec3f(pos[0], -pos[2], pos[1])
+        # for static geoms, position conversion is handled by perm_position flag in add_geoms
+        if body_idx == -1:
+            pos = wp.vec3f(pos[0], -pos[2], pos[1])
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
         quat = rot_y2z * quat
-
     geom_pos[worldid, geom_idx] = pos
-    # Convert from xyzw to wxyz for MuJoCo
     geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
 
@@ -736,7 +803,7 @@ class MuJoCoSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
 
@@ -759,7 +826,7 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        contact_stiffness_time_const: float | None = None,
+        contact_stiffness_time_const: float = 0.02,
     ):
         """
         Args:
@@ -780,8 +847,7 @@ class MuJoCoSolver(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            contact_stiffness_time_const (float | None): Time constant for contact stiffness in MuJoCo's solver reference model. If None, defaults to 0.02 (20ms).
-                                                        Can be set to match the simulation timestep for tighter coupling.
+            contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
 
         """
         super().__init__(model)
@@ -813,25 +879,24 @@ class MuJoCoSolver(SolverBase):
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
-                contact_stiffness_time_const=contact_stiffness_time_const,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
-                self.update_mjc_data(self.mj_data, model, state_in)
+                self.update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
-                self.update_mjc_data(self.mjw_data, model, state_in)
+                self.update_mjc_data(self.mjw_data, self.model, state_in)
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 self.mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -856,55 +921,77 @@ class MuJoCoSolver(SolverBase):
     @staticmethod
     def apply_mjc_control(model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
         if control is None or control.joint_f is None:
-            return
+            if state.body_f is None:
+                return
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             ctrl = mj_data.ctrl
             qfrc = mj_data.qfrc_applied
+            xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
             ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+            xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_dof_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
-        wp.launch(
-            apply_mjc_control_kernel,
-            dim=(nworld, axes_per_env),
-            inputs=[
-                control.joint_target,
-                control.joint_f,
-                model.joint_dof_mode,
-                model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
-                axes_per_env,
-            ],
-            outputs=[
-                ctrl,
-            ],
-            device=model.device,
-        )
-        wp.launch(
-            apply_mjc_qfrc_kernel,
-            dim=(nworld, joints_per_env),
-            inputs=[
-                state.body_q,
-                control.joint_f,
-                model.joint_type,
-                model.body_com,
-                model.joint_child,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_dof_dim,
-                joints_per_env,
-                bodies_per_env,
-            ],
-            outputs=[
-                qfrc,
-            ],
-            device=model.device,
-        )
+        if control is not None:
+            wp.launch(
+                apply_mjc_control_kernel,
+                dim=(nworld, axes_per_env),
+                inputs=[
+                    control.joint_target,
+                    control.joint_f,
+                    model.joint_dof_mode,
+                    model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
+                    axes_per_env,
+                ],
+                outputs=[
+                    ctrl,
+                ],
+                device=model.device,
+            )
+            wp.launch(
+                apply_mjc_qfrc_kernel,
+                dim=(nworld, joints_per_env),
+                inputs=[
+                    state.body_q,
+                    control.joint_f,
+                    model.joint_type,
+                    model.body_com,
+                    model.joint_child,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    joints_per_env,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    qfrc,
+                ],
+                device=model.device,
+            )
+
+        if state.body_f is not None:
+            wp.launch(
+                apply_mjc_body_f_kernel,
+                dim=(nworld, bodies_per_env),
+                inputs=[
+                    model.up_axis,
+                    state.body_q,
+                    state.body_f,
+                    model.to_mjc_body_index,
+                    bodies_per_env,
+                ],
+                outputs=[
+                    xfrc,
+                ],
+                device=model.device,
+            )
         if not is_mjwarp:
+            mj_data.xfrc_applied = xfrc.numpy()
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
@@ -1034,28 +1121,29 @@ class MuJoCoSolver(SolverBase):
         Shapes can only collide with shapes of different colors.
         """
         # find graph coloring of collision filter pairs
+        collision_group = model.shape_collision_group
+        # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
             for i, j in product(selected_shapes, selected_shapes)
             if i != j
-            and (i, j) not in model.shape_collision_filter_pairs
-            and (j, i) not in model.shape_collision_filter_pairs
+            and (
+                ((i, j) not in model.shape_collision_filter_pairs and (j, i) not in model.shape_collision_filter_pairs)
+                or collision_group[i] != collision_group[j]
+            )
         ]
         if len(graph_edges) > 0:
             if visualize_graph:
                 plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
-                num_nodes=model.shape_count,
+                num_nodes=int(selected_shapes.max() + 1),
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
             )
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
             num_colors = 0
             for group in color_groups:
-                if len(group) > 1:
-                    num_colors += 1
-                    shape_color[group] = num_colors
-                else:
-                    shape_color[group] = 0
+                num_colors += 1
+                shape_color[group] = num_colors
         else:
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
@@ -1095,9 +1183,8 @@ class MuJoCoSolver(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
-        add_axes: bool = True,
-        maxhullvert: int = 64,
-        contact_stiffness_time_const: float | None = None,
+        add_axes: bool = False,
+        maxhullvert: int = MESH_MAXHULLVERT,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1109,6 +1196,10 @@ class MuJoCoSolver(SolverBase):
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: A tuple containing the model and data objects for ``mujoco_warp`` and MuJoCo.
         """
+
+        if not model.joint_count:
+            raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
+
         mujoco, mujoco_warp = import_mujoco()
 
         actuator_args = {
@@ -1168,9 +1259,7 @@ class MuJoCoSolver(SolverBase):
         defaults.geom.condim = geom_condim
         # Use provided or default contact stiffness time constant
         if geom_solref is None:
-            if contact_stiffness_time_const is None:
-                contact_stiffness_time_const = 0.02  # Default 20ms
-            geom_solref = (contact_stiffness_time_const, 1.0)
+            geom_solref = (self.contact_stiffness_time_const, 1.0)
         defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
@@ -1210,6 +1299,7 @@ class MuJoCoSolver(SolverBase):
                 conaffinity=0,
             )
 
+        articulation_start = model.articulation_start.numpy()
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
@@ -1236,6 +1326,7 @@ class MuJoCoSolver(SolverBase):
         shape_type = model.shape_geo.type.numpy()
         shape_size = model.shape_geo.scale.numpy()
         shape_body = model.shape_body.numpy()
+        shape_flags = model.shape_flags.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1243,10 +1334,6 @@ class MuJoCoSolver(SolverBase):
         # mapping from joint axis to actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
-
-        # mapping from Newton shape index to MuJoCo geom index
-        shape_to_geom = np.zeros((model.shape_count,), dtype=np.int32) - 1
-        geom_count = 0
 
         # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
         rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
@@ -1303,11 +1390,37 @@ class MuJoCoSolver(SolverBase):
             selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
                 0
             ]
-            selected_bodies = np.unique(shape_body[selected_shapes])
+            selected_bodies = np.unique([i for i in shape_body[selected_shapes] if i != -1])
             selected_joints = np.unique(selected_joints[np.isin(joint_child, selected_bodies)])
+            # figure out the articulations that are selected
+            joint_ptr = 0
+            selected_articulations = []
+            for i in range(model.articulation_count):
+                while joint_ptr < len(selected_joints) and selected_joints[joint_ptr] < articulation_start[i]:
+                    joint_ptr += 1
+                if joint_ptr >= len(selected_joints):
+                    continue
+                joint = selected_joints[joint_ptr]
+                if joint >= articulation_start[i] and joint < articulation_start[i + 1]:
+                    selected_articulations.append(i)
+                selected_joints = np.unique(selected_joints)
+            for articulation in selected_articulations:
+                # add all joints of the articulation to the selected joints
+                articulation_joints = np.arange(articulation_start[articulation], articulation_start[articulation + 1])
+                selected_joints = np.unique(np.concatenate((selected_joints, articulation_joints)))
+            if len(selected_joints) == 0:
+                # select all joints from the first articulation if we didn't populate any so far
+                selected_joints = np.arange(articulation_start[0], articulation_start[1])
+            selected_bodies = np.unique(np.concatenate((selected_bodies, joint_child[selected_joints])))
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
-            selected_shapes = np.arange(model.shape_count)
+            selected_shapes = np.where(shape_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))[0]
+            selected_bodies = np.arange(model.body_count)
+
+        # store selected shapes, bodies, joints for later use in update_geom_properties
+        self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
+        self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
+        self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
@@ -1323,12 +1436,15 @@ class MuJoCoSolver(SolverBase):
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
-        shape_color = self.color_collision_shapes(model, selected_shapes)
+        # filter out shapes that are not colliding with anything
+        colliding_shapes = selected_shapes[
+            shape_flags[selected_shapes] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES) != 0
+        ]
+        shape_color = self.color_collision_shapes(model, colliding_shapes)
 
         def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
-            shape_flags = model.shape_flags.numpy()
             if not shapes:
                 return
             for shape in shapes:
@@ -1349,11 +1465,17 @@ class MuJoCoSolver(SolverBase):
                 }
                 if stype == newton.GEO_MESH:
                     mesh_src = model.shape_geo_src[shape]
+                    # use mesh-specific maxhullvert or fall back to the default
+                    mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
+                    # check if mesh has a pre-computed convex hull
+                    convex_hull = getattr(mesh_src, "convex_hull", None)
+                    # use convex hull if available, otherwise use original mesh
+                    mesh_to_use = convex_hull if convex_hull is not None else mesh_src
                     spec.add_mesh(
                         name=name,
-                        uservert=mesh_src.vertices.flatten(),
-                        userface=mesh_src.indices.flatten(),
-                        maxhullvert=maxhullvert,
+                        uservert=mesh_to_use.vertices.flatten(),
+                        userface=mesh_to_use.indices.flatten(),
+                        maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
                 q = wp.quat(*shape_transform[shape, 3:])
@@ -1398,11 +1520,11 @@ class MuJoCoSolver(SolverBase):
                         # collide with anything except shapes from the same color
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
-                # Use shape materials instead of defaults if available
-                if hasattr(model, "shape_materials") and model.shape_materials.mu is not None:
+                # use shape materials instead of defaults if available
+                if model.shape_materials.mu is not None:
                     shape_mu = model.shape_materials.mu.numpy()
                     if shape < len(shape_mu):
-                        # Set friction from Newton shape materials using model's friction parameters
+                        # set friction from Newton shape materials using model's friction parameters
                         mu = shape_mu[shape]
                         geom_params["friction"] = [
                             mu,
@@ -1411,12 +1533,8 @@ class MuJoCoSolver(SolverBase):
                         ]
 
                 body.add_geom(**geom_params)
-                shape_mapping[shape] = len(shape_mapping)
-
-                # Track shape-to-geom mapping
-                nonlocal geom_count
-                shape_to_geom[shape] = geom_count
-                geom_count += 1
+                # store the geom name instead of assuming index
+                shape_mapping[shape] = name
 
         # add static geoms attached to the worldbody
         add_geoms(-1, perm_position=model.up_axis == 1)
@@ -1462,6 +1580,8 @@ class MuJoCoSolver(SolverBase):
 
             inertia = body_inertia[child]
             if model.up_axis == 1:
+                # # TODO: what frame is the fullinertia in Mujoco?
+                # mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
                 inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
@@ -1636,6 +1756,14 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
+        # now that the model is compiled, get the actual geom indices
+        shape_to_geom_idx = {}
+        for shape, geom_name in shape_mapping.items():
+            geom_idx = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+            if geom_idx >= 0:
+                shape_to_geom_idx[shape] = geom_idx
+        shape_mapping = shape_to_geom_idx  # Replace with actual indices
+
         self.mj_data = mujoco.MjData(self.mj_model)
         self.mj_data.nefc = nefc_per_env
 
@@ -1667,18 +1795,22 @@ class MuJoCoSolver(SolverBase):
                 [reverse_body_mapping[i] + 1 for i in range(1, len(reverse_body_mapping))],
                 dtype=wp.int32,
             )
-            model.to_mjc_geom_index = shape_mapping  # pyright: ignore[reportAttributeAccessIssue]
-            reverse_shape_mapping = {v: k for k, v in shape_mapping.items()}
-            # mapping from MJC geom index to Newton shape index
-            model.to_newton_shape_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]
-                [reverse_shape_mapping[i] for i in range(len(shape_mapping))],
-                dtype=wp.int32,
-            )
 
-            # mapping from Newton shape index to MJC geom index
-            model.mjc_shape_to_geom = wp.array(shape_to_geom, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            # build the geom index mappings now that we have the actual indices
+            model.to_mjc_geom_index = shape_mapping  # pyright: ignore[reportAttributeAccessIssue]
+
+            # create reverse mapping and to_newton_shape_index array
+            # use the actual number of geoms from the MuJoCo model
+            to_newton_shape_array = np.full(self.mj_model.ngeom, -1, dtype=np.int32)
+            if len(shape_mapping) > 0:
+                reverse_shape_mapping = {v: k for k, v in shape_mapping.items()}
+                for geom_idx, shape_idx in reverse_shape_mapping.items():
+                    to_newton_shape_array[geom_idx] = shape_idx
+            model.to_newton_shape_index = wp.array(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+            self.mjw_model.opt.graph_conditional = newton.utils.check_conditional_graph_support()
+
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:
@@ -1694,12 +1826,11 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
-            self.notify_model_changed(flags)
 
-            # Also update shape properties once during initialization
+            # TODO: Also update shape properties once during initialization
             if model.shape_materials.mu is not None:
-                shape_flags = newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
-                self.notify_model_changed(shape_flags)
+                flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+            self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
@@ -1773,8 +1904,8 @@ class MuJoCoSolver(SolverBase):
             # "eq_solimp",
             # "eq_data",
             # "actuator_dynprm",
-            # "actuator_gainprm",
-            # "actuator_biasprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
             # "actuator_ctrlrange",
             "actuator_forcerange",
             # "actuator_actrange",
@@ -1854,108 +1985,74 @@ class MuJoCoSolver(SolverBase):
 
     def update_joint_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
-        if not hasattr(self, "mjw_model") or self.mjw_model is None:
-            return
-
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
-        if (
-            hasattr(self.model, "mjc_axis_to_actuator")
-            and self.model.mjc_axis_to_actuator is not None
-            and hasattr(self.mjw_model, "actuator_forcerange")
-            and len(self.mjw_model.actuator_forcerange.shape) == 2
-        ):
+        if self.model.mjc_axis_to_actuator is not None:
             wp.launch(
                 update_axis_properties_kernel,
                 dim=self.model.joint_dof_count,
                 inputs=[
+                    self.model.joint_dof_mode,
+                    self.model.joint_target_ke,
+                    self.model.joint_target_kd,
                     self.model.joint_effort_limit,
                     self.model.mjc_axis_to_actuator,
                     dofs_per_env,
                 ],
-                outputs=[self.mjw_model.actuator_forcerange],
+                outputs=[
+                    self.mjw_model.actuator_biasprm,
+                    self.mjw_model.actuator_gainprm,
+                    self.mjw_model.actuator_forcerange,
+                ],
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature and friction) in a single kernel launch
-        if (
-            hasattr(self.mjw_model, "dof_armature")
-            and len(self.mjw_model.dof_armature.shape) == 2
-            and hasattr(self.mjw_model, "dof_frictionloss")
-            and len(self.mjw_model.dof_frictionloss.shape) == 2
-        ):
-            wp.launch(
-                update_dof_properties_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
-                    self.model.joint_armature,
-                    self.model.joint_friction,
-                    dofs_per_env,
-                ],
-                outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
-                device=self.model.device,
-            )
+        # Update DOF properties (armature and friction)
+        wp.launch(
+            update_dof_properties_kernel,
+            dim=self.model.joint_dof_count,
+            inputs=[
+                self.model.joint_armature,
+                self.model.joint_friction,
+                dofs_per_env,
+            ],
+            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            device=self.model.device,
+        )
 
     def update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
-        if not hasattr(self, "mjw_model") or self.mjw_model is None:
-            return
 
-        if not hasattr(self.model, "mjc_shape_to_geom") or self.model.mjc_shape_to_geom is None:
-            return
+        # Get number of geoms and worlds from MuJoCo model
+        num_geoms = self.mj_model.ngeom
+        num_worlds = self.model.num_envs  # why is there no 'self.mjw_model.nworld'?
 
-        # Check if shape materials are available
-        if not hasattr(self.model, "shape_materials") or self.model.shape_materials.mu is None:
-            return
-
-        shapes_per_env = self.model.shape_count // self.model.num_envs
-
-        # Update geom properties if the arrays have the right shape (2D for multi-world)
-        if (
-            hasattr(self.mjw_model, "geom_rbound")
-            and len(self.mjw_model.geom_rbound.shape) == 2
-            and hasattr(self.mjw_model, "geom_friction")
-            and len(self.mjw_model.geom_friction.shape) == 2
-            and hasattr(self.mjw_model, "geom_solref")
-            and len(self.mjw_model.geom_solref.shape) == 2
-            and hasattr(self.mjw_model, "geom_size")
-            and len(self.mjw_model.geom_size.shape) == 2
-            and hasattr(self.mjw_model, "geom_pos")
-            and len(self.mjw_model.geom_pos.shape) == 2
-            and hasattr(self.mjw_model, "geom_quat")
-            and len(self.mjw_model.geom_quat.shape) == 2
-        ):
-            # Get contact stiffness time constant from solver or use default
-            if self.contact_stiffness_time_const is not None:
-                contact_time_const = self.contact_stiffness_time_const
-            else:
-                contact_time_const = 0.02  # Default 20ms
-
-            wp.launch(
-                update_geom_properties_kernel,
-                dim=self.model.shape_count,
-                inputs=[
-                    self.model.shape_collision_radius,
-                    self.model.shape_materials.mu,
-                    self.model.shape_materials.ke,
-                    self.model.shape_materials.kd,
-                    self.model.shape_geo.scale,
-                    self.model.shape_transform,
-                    self.model.mjc_shape_to_geom,
-                    shapes_per_env,
-                    self.model.up_axis,
-                    self.model.rigid_contact_torsional_friction,
-                    self.model.rigid_contact_rolling_friction,
-                    contact_time_const,
-                ],
-                outputs=[
-                    self.mjw_model.geom_rbound,
-                    self.mjw_model.geom_friction,
-                    self.mjw_model.geom_solref,
-                    self.mjw_model.geom_size,
-                    self.mjw_model.geom_pos,
-                    self.mjw_model.geom_quat,
-                ],
-                device=self.model.device,
-            )
+        wp.launch(
+            update_geom_properties_kernel,
+            dim=(num_worlds, num_geoms),
+            inputs=[
+                self.model.shape_collision_radius,
+                self.model.shape_materials.mu,
+                self.model.shape_materials.ke,
+                self.model.shape_materials.kd,
+                self.model.shape_geo.scale,
+                self.model.shape_transform,
+                self.model.shape_geo.type,
+                self.model.shape_body,
+                self.model.to_newton_shape_index,
+                self.model.up_axis,
+                self.model.rigid_contact_torsional_friction,
+                self.model.rigid_contact_rolling_friction,
+                self.contact_stiffness_time_const,
+            ],
+            outputs=[
+                self.mjw_model.geom_rbound,
+                self.mjw_model.geom_friction,
+                self.mjw_model.geom_solref,
+                self.mjw_model.geom_size,
+                self.mjw_model.geom_pos,
+                self.mjw_model.geom_quat,
+            ],
+            device=self.model.device,
+        )

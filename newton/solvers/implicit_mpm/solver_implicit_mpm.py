@@ -1198,13 +1198,14 @@ class ImplicitMPMSolver(SolverBase):
 
     def step(
         self,
-        model: Model,
         state_in: State,
         state_out: State,
         control: Control,
         contacts: Contacts,
         dt: float,
     ):
+        model = self.model
+
         with wp.ScopedDevice(model.device):
             if self.dynamic_grid:
                 scratch = self._rebuild_scratchpad(state_in)
@@ -1213,7 +1214,7 @@ class ImplicitMPMSolver(SolverBase):
                     self._fixed_scratchpad = self._rebuild_scratchpad(state_in)
                 scratch = self._fixed_scratchpad
 
-            self._step_impl(model, state_in, state_out, dt, scratch)
+            self._step_impl(state_in, state_out, dt, scratch)
 
     def project_outside(self, state_in: State, state_out: State, dt: float):
         """Projects particles outside of the colliders"""
@@ -1407,7 +1408,6 @@ class ImplicitMPMSolver(SolverBase):
 
     def _step_impl(
         self,
-        model: Model,
         state_in: State,
         state_out: State,
         dt: float,
@@ -1415,6 +1415,8 @@ class ImplicitMPMSolver(SolverBase):
     ):
         domain = scratch.velocity_test.domain
         inv_cell_volume = 1.0 / self.voxel_size**3
+
+        model = self.model
 
         with wp.ScopedTimer(
             "Warmstart fields",

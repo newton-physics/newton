@@ -1,0 +1,38 @@
+name: Pull Request Benchmarks (ASV)
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+
+concurrency:
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  run-asv-benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version" # Or a specific version
+      - name: Install uv
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
+        with:
+          version: "0.7.14"
+      - name: Install ASV, Configure, and Run Benchmarks
+        run: |
+          set -eux
+          uv venv
+          source .venv/bin/activate
+          uv pip install asv virtualenv
+          asv machine --yes
+          asv continuous --launch-method spawn --interleave-rounds --append-samples --no-only-changed -f 1.10 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} -e

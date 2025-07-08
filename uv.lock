@@ -1162,18 +1162,23 @@ dependencies = [
     { name = "pyopengl" },
 ]
 wheels = [
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp310-cp310-macosx_11_0_universal2.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp310-cp310-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp311-cp311-macosx_11_0_universal2.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp311-cp311-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp312-cp312-macosx_11_0_universal2.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp312-cp312-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp313-cp313-macosx_11_0_universal2.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp313-cp313-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp39-cp39-macosx_11_0_universal2.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
     { url = "https://py.mujoco.org/mujoco/mujoco-3.3.4.dev775632047-cp39-cp39-win_amd64.whl" },
@@ -1182,7 +1187,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.1"
-source = { git = "https://github.com/google-deepmind/mujoco_warp#67c9f45f84d06976b0d208e8e7a6f15497a021c0" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp#8e1b3b0ffb1ab6b9df3123b136bd30837fc31eab" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", version = "1.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["epath"], marker = "python_full_version < '3.10'" },

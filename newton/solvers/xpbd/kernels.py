@@ -420,20 +420,20 @@ def bending_constraint(
     if n1_length < eps or n2_length < eps or e_length < eps:
         return
 
-    n1 /= n1_length
-    n2 /= n2_length
+    n1_hat = n1 / n1_length
+    n2_hat = n2 / n2_length
     e_hat = e / e_length
 
-    cos_theta = wp.dot(n1, n2)
-    sin_theta = wp.dot(wp.cross(n1, n2), e_hat)
+    cos_theta = wp.dot(n1_hat, n2_hat)
+    sin_theta = wp.dot(wp.cross(n1_hat, n2_hat), e_hat)
     theta = wp.atan2(sin_theta, cos_theta)
 
     c = theta - rest_angle
 
-    grad_x1 = -n1 * e_length
-    grad_x2 = -n2 * e_length
-    grad_x3 = -n1 * wp.dot(x1 - x4, e_hat) - n2 * wp.dot(x2 - x4, e_hat)
-    grad_x4 = -n1 * wp.dot(x3 - x1, e_hat) - n2 * wp.dot(x3 - x2, e_hat)
+    grad_x1 = -n1_hat * e_length
+    grad_x2 = -n2_hat * e_length
+    grad_x3 = -n1_hat * wp.dot(x1 - x4, e_hat) - n2_hat * wp.dot(x2 - x4, e_hat)
+    grad_x4 = -n1_hat * wp.dot(x3 - x1, e_hat) - n2_hat * wp.dot(x3 - x2, e_hat)
 
     denominator = (
         w1 * wp.length_sq(grad_x1)
@@ -2079,7 +2079,8 @@ def solve_body_contact_positions(
     contact_offset0: wp.array(dtype=wp.vec3),
     contact_offset1: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
-    contact_thickness: wp.array(dtype=float),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     shape_materials: ShapeMaterials,
@@ -2122,7 +2123,7 @@ def solve_body_contact_positions(
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
-    thickness = contact_thickness[tid]
+    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = -contact_normal[tid]
     d = wp.dot(n, bx_b - bx_a) - thickness
 

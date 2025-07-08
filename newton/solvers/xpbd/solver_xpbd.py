@@ -57,7 +57,7 @@ class XPBDSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
     """
@@ -204,10 +204,12 @@ class XPBDSolver(SolverBase):
         return new_body_q, new_body_qd
 
     @override
-    def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
+
+        model = self.model
 
         particle_q = None
         particle_qd = None
@@ -221,7 +223,7 @@ class XPBDSolver(SolverBase):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness)
+                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -510,7 +512,8 @@ class XPBDSolver(SolverBase):
                                 contacts.rigid_contact_offset0,
                                 contacts.rigid_contact_offset1,
                                 contacts.rigid_contact_normal,
-                                contacts.rigid_contact_thickness,
+                                contacts.rigid_contact_thickness0,
+                                contacts.rigid_contact_thickness1,
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
                                 model.shape_materials,

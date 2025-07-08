@@ -82,7 +82,7 @@ class FeatherstoneSolver(SolverBase):
 
         # simulation loop
         for i in range(100):
-            solver.step(model, state_in, state_out, control, contacts, dt)
+            solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
     """
@@ -278,7 +278,6 @@ class FeatherstoneSolver(SolverBase):
     @override
     def step(
         self,
-        model: Model,
         state_in: State,
         state_out: State,
         control: Control,
@@ -292,6 +291,8 @@ class FeatherstoneSolver(SolverBase):
             state_aug = state_out
         else:
             state_aug = self
+
+        model = self.model
 
         if not getattr(state_aug, "_featherstone_augmented", False):
             self.allocate_state_aux_vars(model, state_aug, requires_grad)
@@ -398,7 +399,6 @@ class FeatherstoneSolver(SolverBase):
                             state_aug.body_v_s,
                             model.body_com,
                             model.shape_materials,
-                            model.shape_geo,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_point0,
@@ -406,15 +406,14 @@ class FeatherstoneSolver(SolverBase):
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
+                            contacts.rigid_contact_thickness0,
+                            contacts.rigid_contact_thickness1,
                             True,
                             self.friction_smoothing,
                         ],
                         outputs=[body_f],
                         device=model.device,
                     )
-
-                    # if model.rigid_contact_count.numpy()[0] > 0:
-                    #     print(body_f.numpy())
 
                 if model.articulation_count:
                     # evaluate joint torques
