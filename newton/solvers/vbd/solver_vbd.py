@@ -406,7 +406,7 @@ def evaluate_stvk_force_hessian(
         dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
 
         # Damping force from second constraint: -lambda * damping * area * (dClmbd/dt) * (dClmbd/dx)
-        kd_lmbd = damping * lmbd * area
+        kd_lmbd = lmbd * damping * area
         force += -kd_lmbd * dClmbd_dt * dClmbd_dx
 
         # Damping Hessian from second constraint: lambda * damping * area * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
