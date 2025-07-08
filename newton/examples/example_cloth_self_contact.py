@@ -166,7 +166,7 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=2.0e-6,
+            tri_kd=2.0e-4,
             edge_ke=10,
         )
         builder.color()

@@ -202,8 +202,8 @@ class Example:
         self.self_contact_friction = 0.25
 
         #   elasticity
-        self.tri_ke = 1e4
-        self.tri_ka = 1e4
+        self.tri_ke = 1e3
+        self.tri_ka = 1e3
         self.tri_kd = 1.5e-6
 
         self.bending_ke = 10
