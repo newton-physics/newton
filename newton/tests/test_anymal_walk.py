@@ -38,22 +38,11 @@ class TestAnymalCWalk(unittest.TestCase):
 
             root_pos = example.state_0.joint_q[:3].numpy()
             root_height = root_pos[1]
-            root_quat = example.state_0.joint_q[3:7].numpy()
 
-            x, y, z, w = root_quat[0], root_quat[1], root_quat[2], root_quat[3]
-            R = np.array(
-                [
-                    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-                    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-                ]
-            )
+            qd_linear = example.state_0.joint_qd[3:6].numpy()
+            qd_angular = example.state_0.joint_qd[0:3].numpy()
 
-            joint_qd_linear = example.state_0.joint_qd[3:6].numpy()
-            joint_qd_angular = example.state_0.joint_qd[0:3].numpy()
-
-            joint_qd_linear_corrected = joint_qd_linear - np.cross(root_pos, joint_qd_angular)
-            vel_body_joint_qd_corrected = R.T @ joint_qd_linear_corrected
+            qd_linear_corrected = qd_linear - np.cross(root_pos, qd_angular)
             height_threshold = 0.3
             has_fallen = root_height < height_threshold
 
@@ -62,9 +51,9 @@ class TestAnymalCWalk(unittest.TestCase):
 
             if step_num % 100 == 0 and step_num != 0:
                 self.assertGreater(
-                    vel_body_joint_qd_corrected[0],
+                    qd_linear_corrected[0],
                     0.5,
-                    f"Step {step_num}: Forward velocity too low: {vel_body_joint_qd_corrected[0]:.3f} m/s (expected > 0.5)",
+                    f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[0]:.3f} m/s (expected > 0.5)",
                 )
 
             example.controller.get_control(example.state_0, example.control)
