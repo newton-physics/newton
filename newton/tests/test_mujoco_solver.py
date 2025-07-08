@@ -1090,5 +1090,15 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(model.shape_geo_src[1].maxhullvert, 128)
 
 
+class TestMuJoCoConversion(unittest.TestCase):
+    def test_no_shapes(self):
+        builder = newton.ModelBuilder()
+        b = builder.add_body(mass=1.0, com=(1.0, 2.0, 3.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        builder.add_joint_prismatic(-1, b)
+        model = builder.finalize()
+        solver = MuJoCoSolver(model)
+        self.assertEqual(solver.mj_model.nv, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
