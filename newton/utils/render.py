@@ -492,9 +492,9 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         fps: int = 60,
         up_axis: newton.AxisType | None = None,
         show_joints: bool = False,
-        path_body_map: Optional[dict] = None,
-        path_body_relative_transform: Optional[dict] = None,
-        builder_results: Optional[dict] = None,
+        path_body_map: dict | None = None,
+        path_body_relative_transform: dict | None = None,
+        builder_results: dict | None = None,
         **render_kwargs,
     ):
         """
