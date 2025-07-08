@@ -138,6 +138,7 @@ class Example:
         )
 
         if self.use_cuda_graph:
+            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
