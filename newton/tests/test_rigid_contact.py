@@ -42,7 +42,7 @@ def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
 def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1e4
-    builder.default_shape_cfg.kd = 1000.0
+    builder.default_shape_cfg.kd = 500.0
     builder.add_ground_plane()
     num_spheres = 9
     for i in range(num_spheres):
@@ -60,8 +60,8 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
     control = model.control()
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-    substeps = 2
-    sim_dt = 1.0 / 100.0
+    substeps = 10
+    sim_dt = 1.0 / 60.0
     if use_cuda_graph:
         # ensure data is allocated and modules are loaded before graph capture
         # in case of an earlier CUDA version
@@ -70,7 +70,7 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
             simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
         graph = capture.graph
 
-    for _ in range(100):
+    for _ in range(120):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:

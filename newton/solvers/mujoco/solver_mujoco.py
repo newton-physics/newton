@@ -1828,8 +1828,8 @@ class MuJoCoSolver(SolverBase):
             )
 
             # TODO: Also update shape properties once during initialization
-            # if model.shape_materials.mu is not None:
-            #     shape_flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
+            if model.shape_materials.mu is not None:
+                flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
@@ -2023,13 +2023,10 @@ class MuJoCoSolver(SolverBase):
 
     def update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
-        # skip if we don't have to_newton_shape_index
-        if not hasattr(self.model, "to_newton_shape_index"):
-            return
 
         # Get number of geoms and worlds from MuJoCo model
         num_geoms = self.mj_model.ngeom
-        num_worlds = self.model.num_envs  # why there's no 'self.mjw_data.nworld'?
+        num_worlds = self.model.num_envs  # why is there no 'self.mjw_model.nworld'?
 
         wp.launch(
             update_geom_properties_kernel,
@@ -2048,7 +2045,6 @@ class MuJoCoSolver(SolverBase):
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
                 self.contact_stiffness_time_const,
-                self.model.num_envs,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
