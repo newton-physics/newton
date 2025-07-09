@@ -38,9 +38,9 @@ class ExampleLoad:
             sys.executable,
             "-m",
             "newton.examples.example_anymal_c_walk",
-            "--stage_path",
+            "--stage-path",
             "None",
-            "--num_frames",
+            "--num-frames",
             "1",
             "--headless",
         ]

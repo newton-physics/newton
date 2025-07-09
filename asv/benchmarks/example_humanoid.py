@@ -38,11 +38,12 @@ class ExampleLoad:
             sys.executable,
             "-m",
             "newton.examples.example_humanoid",
-            "--stage_path",
+            "--stage-path",
             "None",
-            "--num_frames",
+            "--num-frames",
             "1",
             "--headless",
+            "--no-use-cuda-graph",
         ]
 
         # Run the script as a subprocess

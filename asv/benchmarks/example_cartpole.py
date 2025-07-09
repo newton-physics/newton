@@ -64,12 +64,11 @@ class ExampleLoad:
             sys.executable,
             "-m",
             "newton.examples.example_cartpole",
-            "--stage_path",
+            "--stage-path",
             "None",
             "--num_frames",
             "1",
-            "--use_cuda_graph",
-            "False",
+            "--no-use-cuda-graph",
         ]
 
         # Run the script as a subprocess
