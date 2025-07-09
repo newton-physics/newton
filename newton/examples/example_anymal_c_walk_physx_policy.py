@@ -222,7 +222,7 @@ class Example:
             with torch.no_grad():
                 self.act = self.policy(obs)
                 self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-                a = self.joint_pos_initial + 0.4 * self.rearranged_act
+                a = self.joint_pos_initial + 0.5 * self.rearranged_act
                 a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(
