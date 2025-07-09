@@ -133,10 +133,10 @@ def CreateSimRenderer(renderer):
 
                 p = np.zeros(3, dtype=np.float32)
                 q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                scale = np.ones(3)
                 color = (1.0, 1.0, 1.0)
                 # loop over shapes excluding the ground plane
                 for s in range(model.shape_count):
+                    scale = np.ones(3, dtype=np.float32)
                     geo_type = shape_geo_type[s]
                     geo_scale = [float(v) for v in shape_geo_scale[s]]
                     geo_thickness = float(shape_geo_thickness[s])
@@ -226,6 +226,7 @@ def CreateSimRenderer(renderer):
                                 parent_body=body,
                                 is_template=True,
                             )
+                            scale = np.asarray(geo_scale, dtype=np.float32)
 
                         elif geo_type == newton.GEO_SDF:
                             continue
@@ -281,7 +282,7 @@ def CreateSimRenderer(renderer):
 
                         # find a good scale for the arrow based on the average radius
                         # of the shapes attached to the joint child body
-                        scale = np.ones(3)
+                        scale = np.ones(3, dtype=np.float32)
                         child = int(joint_child[i])
                         if child >= 0:
                             radii = []
