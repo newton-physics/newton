@@ -16,8 +16,10 @@
    .. autosummary::
    
       ~Model.__init__
+      ~Model.add_attribute
       ~Model.collide
       ~Model.control
+      ~Model.get_attribute_frequency
       ~Model.state
    
    
@@ -128,6 +130,7 @@
       ~Model.soft_contact_kf
       ~Model.soft_contact_mu
       ~Model.soft_contact_restitution
+      ~Model.rigid_contact_max
       ~Model.rigid_contact_torsional_friction
       ~Model.rigid_contact_rolling_friction
       ~Model.up_vector
@@ -148,5 +151,6 @@
       ~Model.particle_color_groups
       ~Model.particle_colors
       ~Model.device
+      ~Model.attribute_frequency
    
    
