@@ -318,8 +318,8 @@ add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_materials",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 99, "use_cuda_graph": supports_load_during_graph_capture},
-    test_options_cpu={"num_frames": 9},
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
 )
 
 

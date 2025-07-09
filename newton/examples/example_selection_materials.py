@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import warp as wp
 
 import newton
@@ -52,7 +54,7 @@ def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, num_envs: int
 
 
 class Example:
-    def __init__(self, stage_path: str | None = "example_selection_materials.usd", num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path: str | None = "example_selection_materials.usd", num_envs=16, use_cuda_graph=True):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z

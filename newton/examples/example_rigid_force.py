@@ -21,13 +21,15 @@
 #
 ###########################################################################
 
+from __future__ import annotations
+
 import warp as wp
 
 import newton
 
 
 class Example:
-    def __init__(self, stage_path="example_rigid_force.usd", headless=False):
+    def __init__(self, stage_path: str | None = "example_rigid_force.usd", headless: bool = False):
         fps = 60
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 5
@@ -69,11 +71,7 @@ class Example:
             self.state_0.clear_forces()
             self.state_1.clear_forces()
 
-            self.state_0.body_f.assign(
-                [
-                    [0.0, 0.0, -7000.0, 0.0, 0.0, 0.0],
-                ]
-            )
+            self.state_0.body_f.assign([[0.0, 0.0, -7000.0, 0.0, 0.0, 0.0]])
 
             self.solver.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)
 
@@ -114,7 +112,7 @@ if __name__ == "__main__":
         "--headless",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Toggles the opening of an interactive window to play back animations in real time. Ignores --num_frames if used.",
+        help="Toggles the opening of an interactive window to play back animations in real time. Ignores --num-frames if used.",
     )
 
     args = parser.parse_known_args()[0]
