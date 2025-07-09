@@ -167,45 +167,6 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-
-        self.model.body_mass = wp.array(
-            [
-                19.2035,
-                2.781,
-                3.071,
-                0.58842,
-                2.781,
-                3.071,
-                0.58842,
-                2.781,
-                3.071,
-                0.58842,
-                2.781,
-                3.071,
-                0.58842,
-            ],
-            dtype=wp.float32,
-        )
-
-        self.model.body_inertia = wp.array(
-            [
-                [[0.639559, 0.0, 0.0], [0.0, 0.624031, 0.0], [0.0, 0.0, 0.217374]],
-                [[0.00585729, 0.0, 0.0], [0.0, 0.00491868, 0.0], [0.0, 0.0, 0.00329081]],
-                [[0.03025, 0.0, 0.0], [0.0, 0.0298943, 0.0], [0.0, 0.0, 0.00418465]],
-                [[0.0101637, 0.0, 0.0], [0.0, 0.00923838, 0.0], [0.0, 0.0, 0.00111927]],
-                [[0.00585928, 0.0, 0.0], [0.0, 0.0049205, 0.0], [0.0, 0.0, 0.00329064]],
-                [[0.0302511, 0.0, 0.0], [0.0, 0.0298933, 0.0], [0.0, 0.0, 0.0041845]],
-                [[0.0101637, 0.0, 0.0], [0.0, 0.00923838, 0.0], [0.0, 0.0, 0.00111927]],
-                [[0.00585928, 0.0, 0.0], [0.0, 0.0049205, 0.0], [0.0, 0.0, 0.00329064]],
-                [[0.0302511, 0.0, 0.0], [0.0, 0.0298933, 0.0], [0.0, 0.0, 0.0041845]],
-                [[0.0101637, 0.0, 0.0], [0.0, 0.00923838, 0.0], [0.0, 0.0, 0.00111927]],
-                [[0.00585729, 0.0, 0.0], [0.0, 0.00491868, 0.0], [0.0, 0.0, 0.00329081]],
-                [[0.03025, 0.0, 0.0], [0.0, 0.0298943, 0.0], [0.0, 0.0, 0.00418465]],
-                [[0.0101637, 0.0, 0.0], [0.0, 0.00923838, 0.0], [0.0, 0.0, 0.00111927]],
-            ],
-            dtype=wp.mat33f,
-        )
-
         self.solver = newton.solvers.MuJoCoSolver(self.model)
 
         if render:
@@ -261,7 +222,7 @@ class Example:
             with torch.no_grad():
                 self.act = self.policy(obs)
                 self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-                a = self.joint_pos_initial + 0.3 * self.rearranged_act
+                a = self.joint_pos_initial + 0.4 * self.rearranged_act
                 a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(
