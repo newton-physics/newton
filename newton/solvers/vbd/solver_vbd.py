@@ -336,19 +336,19 @@ def evaluate_stvk_force_hessian(
     # Off-diagonal elements (xy, xz, yz components)
     H_01 = (
         df0_dx_sq * d2E_dF2_flattened00[0, 1]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[0, 1]
+        + df0_df1_cross * (d2E_dF2_flattened01[0, 1] + d2E_dF2_flattened01[1, 0])
         + df1_dx_sq * d2E_dF2_flattened11[0, 1]
     )
 
     H_02 = (
         df0_dx_sq * d2E_dF2_flattened00[0, 2]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[0, 2]
+        + df0_df1_cross * (d2E_dF2_flattened01[0, 2] + d2E_dF2_flattened01[2, 0])
         + df1_dx_sq * d2E_dF2_flattened11[0, 2]
     )
 
     H_12 = (
         df0_dx_sq * d2E_dF2_flattened00[1, 2]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[1, 2]
+        + df0_df1_cross * (d2E_dF2_flattened01[1, 2] + d2E_dF2_flattened01[2, 1])
         + df1_dx_sq * d2E_dF2_flattened11[1, 2]
     )
 
