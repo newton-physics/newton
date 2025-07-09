@@ -49,8 +49,8 @@ else:
 def import_mujoco():
     """Import the MuJoCo Warp dependencies."""
     try:
-        import mujoco  # noqa: PLC0415
-        import mujoco_warp  # noqa: PLC0415
+        import mujoco
+        import mujoco_warp
     except ImportError as e:
         raise ImportError(
             "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
@@ -894,7 +894,7 @@ class MuJoCoSolver(SolverBase):
             self.mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
-            self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
+            # self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, self.model, state_in)
             self.mjw_model.opt.timestep.fill_(dt)

@@ -103,11 +103,11 @@ def parse_usd(
               - Dictionary returned by :math:`ModelBuilder.collapse_fixed_joints()` if `collapse_fixed_joints` is True, otherwise None.
     """
     try:
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    from newton.utils import topological_sort  # noqa: PLC0415 (circular import)
+    from newton.utils import topological_sort
 
     @dataclass
     class PhysicsMaterial:
@@ -1105,10 +1105,10 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         File path to the downloaded USD file.
     """
 
-    import requests  # noqa: PLC0415
+    import requests
 
     try:
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 

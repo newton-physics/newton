@@ -118,7 +118,7 @@ class Mesh:
             maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
             convex_hull: Pre-computed convex hull mesh (optional)
         """
-        from .inertia import compute_mesh_inertia  # noqa: PLC0415
+        from .inertia import compute_mesh_inertia
 
         self.vertices = np.array(vertices).reshape(-1, 3)
         self.indices = np.array(indices, dtype=np.int32).flatten()

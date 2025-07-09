@@ -30,7 +30,7 @@ from newton.sim import ModelBuilder
 
 
 def _download_file(dst, url: str) -> None:
-    import requests  # noqa: PLC0415
+    import requests
 
     with requests.get(url, stream=True, timeout=10) as response:
         response.raise_for_status()
@@ -202,7 +202,7 @@ def parse_urdf(
                     wp.utils.warn(f"Warning: mesh file {filename} does not exist")
                     continue
 
-                import trimesh  # noqa: PLC0415
+                import trimesh
 
                 # use force='mesh' to load the mesh as a trimesh object
                 # with baked in transforms, e.g. from COLLADA files
@@ -253,6 +253,7 @@ def parse_urdf(
     for urdf_link in root.findall("link"):
         name = urdf_link.get("name")
         link = builder.add_body(key=name)
+        print(f"Added link: {name}")
 
         # add ourselves to the index
         link_index[name] = link
@@ -315,6 +316,7 @@ def parse_urdf(
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
             builder.body_inv_inertia[link] = wp.inverse(I_m)
+    print(builder.body_mass, "body masssssssssssssssss")
 
     end_shape_count = len(builder.shape_geo_type)
 
@@ -535,3 +537,4 @@ def parse_urdf(
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    print(builder.body_mass, "body yyyyyyyyy")
