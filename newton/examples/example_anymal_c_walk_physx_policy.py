@@ -266,7 +266,7 @@ class Example:
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(
                     self.control.joint_target, a_wp
-                )  # this can actually be optized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+                )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
