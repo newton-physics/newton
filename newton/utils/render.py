@@ -226,7 +226,7 @@ def CreateSimRenderer(renderer):
                                 parent_body=body,
                                 is_template=True,
                             )
-                            scale = geo_scale
+                            scale = np.asarray(geo_scale, dtype=np.float32)
 
                         elif geo_type == newton.GEO_SDF:
                             continue
