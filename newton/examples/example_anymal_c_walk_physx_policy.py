@@ -18,8 +18,8 @@
 #
 # Shows how to control Anymal C with a policy pretrained in physx.
 #
-# Run the script with the --with option to temporarily add the PyTorch dependency for its execution:
-# uv run --with torch newton/examples/example_anymal_c_walk_physx_policy.py
+# Example usage:
+# uv run --extra cu12 newton/examples/example_anymal_c_walk_physx_policy.py
 #
 ###########################################################################
 
@@ -266,7 +266,7 @@ if __name__ == "__main__":
         d = example.solver.mjw_data
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        policy_path = os.path.join(script_dir, "assets", "policy.pt")
+        policy_path = os.path.join(script_dir, "assets", "anymal_walking_policy_physx.pt")
 
         example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
         example.joint_pos_initial = torch.tensor(
