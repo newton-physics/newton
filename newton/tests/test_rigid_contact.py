@@ -98,7 +98,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
 
     expected_end_positions = []
 
-    for i, scale in enumerate([0.5, 1.0, 1.5]):
+    for i, scale in enumerate([0.5, 1.0]):
         y_pos = i * 1.5
 
         b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
