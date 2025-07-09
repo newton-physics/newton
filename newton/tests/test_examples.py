@@ -57,11 +57,12 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
     for key, value in test_options.items():
         if key == "headless" and value:
             additional_options.extend(["--headless"])
-        elif key == "use_cuda_graph" and not value:
-            additional_options.extend(["--no-use_cuda_graph"])
+        elif isinstance(value, bool):
+            # Fallback for other booleans
+            additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
         else:
             # Just add --key value
-            additional_options.extend(["--" + key, str(value)])
+            additional_options.extend(["--" + key.replace("_", "-"), str(value)])
 
     return additional_options
 
@@ -151,7 +152,7 @@ def add_example_test(
         )
 
         if stage_path:
-            command.extend(["--stage_path", stage_path])
+            command.extend(["--stage-path", stage_path])
             try:
                 os.remove(stage_path)
             except OSError:
