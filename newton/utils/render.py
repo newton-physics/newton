@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Optional
 
 import numpy as np
 import warp as wp
