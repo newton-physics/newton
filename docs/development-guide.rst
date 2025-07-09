@@ -46,7 +46,7 @@ Run basic examples:
     uv run newton/examples/example_quadruped.py
 
     # An example that requires extras
-    uv run --all-extras newton/examples/example_humanoid.py
+    uv run --extra dev newton/examples/example_humanoid.py
 
 When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile>`__
 (``uv.lock``) is used to resolve project dependencies
@@ -141,7 +141,7 @@ Pass ``--help`` to either runner to see all available flags.
         .. code-block:: console
 
             # install all extras and run tests
-            uv run --all-extras -m newton.tests
+            uv run --extra dev -m newton.tests
 
     .. tab-item:: venv
         :sync: venv
@@ -164,7 +164,7 @@ To generate a coverage report:
         .. code-block:: console
             
             # append the coverage flags:
-            uv run --all-extras -m newton.tests --coverage --coverage-html htmlcov
+            uv run --extra dev -m newton.tests --coverage --coverage-html htmlcov
 
     .. tab-item:: venv
         :sync: venv

@@ -33,7 +33,7 @@ jobs:
         with:
           python-version-file: ".python-version"
       - name: Run Tests
-        run: uv run --all-extras -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --serial-fallback
+        run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --serial-fallback
       - name: Test Summary
         uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86
         with:
