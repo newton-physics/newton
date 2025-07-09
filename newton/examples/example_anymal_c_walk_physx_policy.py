@@ -28,37 +28,37 @@ import warp as wp
 import os
 
 import newton
-import newton.examples
 import newton.utils
 from newton.sim import State
 
 lab_to_mujoco = {
-    0: 0,  # LF_HAA
-    1: 6,  # RF_HAA
-    2: 3,  # LH_HAA
-    3: 9,  # RH_HAA
-    4: 1,  # LF_HFE
-    5: 7,  # RF_HFE
-    6: 4,  # LH_HFE
-    7: 10,  # RH_HFE
-    8: 2,  # LF_KFE
-    9: 8,  # RF_KFE
-    10: 5,  # LH_KFE
-    11: 11,  # RH_KFE
+    0: 9,
+    1: 3,
+    2: 6,
+    3: 0,
+    4: 10,
+    5: 4,
+    6: 7,
+    7: 1,
+    8: 11,
+    9: 5,
+    10: 8,
+    11: 2,
 }
+
 mujoco_to_lab = {
-    0: 0,  # LF_HAA
-    1: 4,  # LF_HFE
-    2: 8,  # LF_KFE
-    3: 2,  # RF_HAA
-    4: 5,  # RF_HFE
-    5: 10,  # RF_KFE
-    6: 4,  # LH_HAA
-    7: 5,  # LH_HFE
-    8: 9,  # LH_KFE
-    9: 3,  # RH_HAA
-    10: 7,  # RH_HFE
-    11: 11,  # RH_KFE
+    0: 3,
+    1: 7,
+    2: 11,
+    3: 1,
+    4: 5,
+    5: 9,
+    6: 2,
+    7: 6,
+    8: 10,
+    9: 0,
+    10: 4,
+    11: 8,
 }
 
 
@@ -115,12 +115,9 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        # Get the directory of the current script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        mjcf_path = os.path.join(script_dir, "assets", "anymal_c.xml")
-        
-        newton.utils.parse_mjcf(
-            mjcf_path,
+        asset_path = newton.utils.download_asset("anymal_c_simple_description")
+        newton.utils.parse_urdf(
+            str(asset_path / "urdf" / "anymal.urdf"),
             builder,
             floating=True,
             enable_self_collisions=False,
@@ -149,17 +146,17 @@ class Example:
 
         builder.joint_q[7:] = [
             0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
             -0.4,
             0.8,
             0.0,
             -0.4,
             0.8,
+            0.0,
+            0.4,
+            -0.8,
+            0.0,
+            0.4,
+            -0.8,
         ]
         for i in range(len(builder.joint_dof_mode)):
             builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
@@ -171,7 +168,21 @@ class Example:
         self.model = builder.finalize()
 
         self.model.body_mass = wp.array(
-            [19.2035, 2.781, 3.071, 0.58842, 2.781, 3.071, 0.58842, 2.781, 3.071, 0.58842, 2.781, 3.071, 0.58842],
+            [
+                19.2035,
+                2.781,
+                3.071,
+                0.58842,
+                2.781,
+                3.071,
+                0.58842,
+                2.781,
+                3.071,
+                0.58842,
+                2.781,
+                3.071,
+                0.58842,
+            ],
             dtype=wp.float32,
         )
 
@@ -216,7 +227,7 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
-            torch_tensor = torch.zeros(12, device=self.torch_device, dtype=torch.float32)
+            torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
             self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -238,11 +249,10 @@ class Example:
             with torch.no_grad():
                 self.act = self.policy(obs)
                 self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-                # Combine operations: no need for separate .to() calls since tensors are already on correct device
                 a = self.joint_pos_initial + 0.3 * self.rearranged_act
-                a_wp = wp.from_torch(a.squeeze(0), dtype=wp.float32, requires_grad=False)
-                self.control.joint_target = a_wp
-                wp.copy(self.solver.mjw_data.ctrl[0], a_wp)  # todo
+                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+                wp.copy(self.control.joint_target, a_wp) # this can actually be optized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop. 
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
@@ -280,7 +290,6 @@ if __name__ == "__main__":
         m = example.solver.mjw_model
         d = example.solver.mjw_data
 
-        # Get the directory of the current script for policy path
         script_dir = os.path.dirname(os.path.abspath(__file__))
         policy_path = os.path.join(script_dir, "assets", "policy.pt")
         
