@@ -166,7 +166,7 @@ def array_inner(
     b: wp.array(dtype=wp.vec3),
     out_ptr: wp.uint64,
 ):
-    from warp.context import runtime
+    from warp.context import runtime  # noqa: PLC0415
 
     runtime.core.wp_array_inner_float_device(
         a.ptr,

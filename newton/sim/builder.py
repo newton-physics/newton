@@ -743,7 +743,6 @@ class ModelBuilder:
 
         self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
-        print(mass, inertia, body_id)
         return body_id
 
     # region joints
@@ -1284,8 +1283,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt
-        import networkx as nx
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+        import networkx as nx  # noqa: PLC0415
 
         def joint_type_str(type):
             if type == JOINT_FREE:
@@ -3171,7 +3170,7 @@ class ModelBuilder:
 
             A model object.
         """
-        from .collide import count_rigid_contact_points
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
@@ -3314,7 +3313,6 @@ class ModelBuilder:
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
             m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            print(self.body_mass, "body_mass")
             m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)

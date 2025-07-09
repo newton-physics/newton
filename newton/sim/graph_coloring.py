@@ -267,8 +267,8 @@ def plot_graph(vertices, edges, edge_labels=None):
         edges: A numpy array of shape (M, 2) containing the vertex indices of the edges.
         edge_labels: A list of edge labels.
     """
-    import matplotlib.pyplot as plt
-    import networkx as nx
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import networkx as nx  # noqa: PLC0415
 
     if edge_labels is None:
         edge_labels = []
