@@ -282,7 +282,7 @@ def CreateSimRenderer(renderer):
 
                         # find a good scale for the arrow based on the average radius
                         # of the shapes attached to the joint child body
-                        scale = np.ones(3)
+                        scale = np.ones(3, dtype=np.float32)
                         child = int(joint_child[i])
                         if child >= 0:
                             radii = []
