@@ -23,9 +23,10 @@
 #
 ###########################################################################
 
+import os
+
 import torch
 import warp as wp
-import os
 
 import newton
 import newton.utils
@@ -103,7 +104,7 @@ class Example:
         self.device = wp.get_device()
         # Convert Warp device to PyTorch device string
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
-        
+
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
@@ -219,8 +220,12 @@ class Example:
         newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # Pre-compute tensors that don't change during simulation
-        self.lab_to_mujoco_indices = torch.tensor([lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device)
-        self.mujoco_to_lab_indices = torch.tensor([mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device)
+        self.lab_to_mujoco_indices = torch.tensor(
+            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
+        )
+        self.mujoco_to_lab_indices = torch.tensor(
+            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
+        )
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self.command[0, 0] = 1
@@ -244,15 +249,24 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step"):
-            obs = compute_obs(self.act, self.state_0, self.joint_pos_initial, self.torch_device, 
-                            self.lab_to_mujoco_indices, self.gravity_vec, self.command)
+            obs = compute_obs(
+                self.act,
+                self.state_0,
+                self.joint_pos_initial,
+                self.torch_device,
+                self.lab_to_mujoco_indices,
+                self.gravity_vec,
+                self.command,
+            )
             with torch.no_grad():
                 self.act = self.policy(obs)
                 self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
                 a = self.joint_pos_initial + 0.3 * self.rearranged_act
                 a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-                wp.copy(self.control.joint_target, a_wp) # this can actually be optized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop. 
+                wp.copy(
+                    self.control.joint_target, a_wp
+                )  # this can actually be optized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
@@ -292,11 +306,11 @@ if __name__ == "__main__":
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
         policy_path = os.path.join(script_dir, "assets", "policy.pt")
-        
-        example.policy = torch.jit.load(
-            policy_path, map_location=example.torch_device
-        )
-        example.joint_pos_initial = torch.tensor(d.qpos[0, 7:], device=example.torch_device, dtype=torch.float32).unsqueeze(0)
+
+        example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
+        example.joint_pos_initial = torch.tensor(
+            d.qpos[0, 7:], device=example.torch_device, dtype=torch.float32
+        ).unsqueeze(0)
         example.joint_vel_initial = torch.tensor(d.qvel[0, 6:], device=example.torch_device, dtype=torch.float32)
         example.act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
         example.rearranged_act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
