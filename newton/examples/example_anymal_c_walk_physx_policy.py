@@ -32,35 +32,8 @@ import newton
 import newton.utils
 from newton.sim import State
 
-lab_to_mujoco = {
-    0: 9,
-    1: 3,
-    2: 6,
-    3: 0,
-    4: 10,
-    5: 4,
-    6: 7,
-    7: 1,
-    8: 11,
-    9: 5,
-    10: 8,
-    11: 2,
-}
-
-mujoco_to_lab = {
-    0: 3,
-    1: 7,
-    2: 11,
-    3: 1,
-    4: 5,
-    5: 9,
-    6: 2,
-    7: 6,
-    8: 10,
-    9: 0,
-    10: 4,
-    11: 8,
-}
+lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
+mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]
 
 
 @torch.jit.script
@@ -100,7 +73,7 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", render=True):
+    def __init__(self, stage_path=None, headless=False):
         self.device = wp.get_device()
         # Convert Warp device to PyTorch device string
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
@@ -116,9 +89,11 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("anymal_c_simple_description")
+        if stage_path is None:
+            asset_path = newton.utils.download_asset("anymal_c_simple_description")
+            stage_path = str(asset_path / "urdf" / "anymal.urdf")
         newton.utils.parse_urdf(
-            str(asset_path / "urdf" / "anymal.urdf"),
+            stage_path,
             builder,
             floating=True,
             enable_self_collisions=False,
@@ -169,10 +144,7 @@ class Example:
         self.model = builder.finalize()
         self.solver = newton.solvers.MuJoCoSolver(self.model)
 
-        if render:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
-        else:
-            self.renderer = None
+        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -250,17 +222,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_quadruped.usd",
-        help="Path to the output USD file.",
+        help="Path to the output URDF file.",
     )
-    parser.add_argument("--num_frames", type=int, default=1000, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path)
+        example = Example(stage_path=args.stage_path, headless=args.headless)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         policy_path = os.path.join(script_dir, "assets", "anymal_walking_policy_physx.pt")
 
