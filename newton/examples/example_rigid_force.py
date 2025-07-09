@@ -22,6 +22,7 @@
 ###########################################################################
 
 import warp as wp
+
 import newton
 
 
@@ -63,7 +64,7 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.contacts = self.model.collide(self.state_0,rigid_contact_margin=0.1)
+            self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
 
             self.state_0.clear_forces()
             self.state_1.clear_forces()
