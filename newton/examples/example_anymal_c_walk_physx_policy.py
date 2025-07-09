@@ -261,18 +261,16 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path)
-
-        m = example.solver.mjw_model
-        d = example.solver.mjw_data
-
         script_dir = os.path.dirname(os.path.abspath(__file__))
         policy_path = os.path.join(script_dir, "assets", "anymal_walking_policy_physx.pt")
 
         example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
         example.joint_pos_initial = torch.tensor(
-            d.qpos[0, 7:], device=example.torch_device, dtype=torch.float32
+            example.state_0.joint_q[7:], device=example.torch_device, dtype=torch.float32
         ).unsqueeze(0)
-        example.joint_vel_initial = torch.tensor(d.qvel[0, 6:], device=example.torch_device, dtype=torch.float32)
+        example.joint_vel_initial = torch.tensor(
+            example.state_0.joint_qd[6:], device=example.torch_device, dtype=torch.float32
+        )
         example.act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
         example.rearranged_act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
 
