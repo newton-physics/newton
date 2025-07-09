@@ -45,7 +45,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, stage_path=None, num_envs=16, use_cuda_graph=True):
+    def __init__(self, stage_path: str | None = "example_selection_cartpole.usd", num_envs=16, use_cuda_graph=True):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z
