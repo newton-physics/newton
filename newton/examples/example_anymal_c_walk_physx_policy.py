@@ -16,10 +16,10 @@
 ###########################################################################
 # Example Anymal C walk
 #
-# Shows how to control Anymal C with a pretrained policy.
+# Shows how to control Anymal C with a policy pretrained in physx.
 #
 # Run the script with the --with option to temporarily add the PyTorch dependency for its execution:
-# uv run --with torch newton/examples/example_anymal_c_walk.py
+# uv run --with torch newton/examples/example_anymal_c_walk_physx_policy.py
 #
 ###########################################################################
 
