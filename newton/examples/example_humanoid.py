@@ -133,14 +133,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_humanoid.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=9, help="Total number of simulated environments.")
-    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
+    parser.add_argument("--num-envs", type=int, default=9, help="Total number of simulated environments.")
+    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 

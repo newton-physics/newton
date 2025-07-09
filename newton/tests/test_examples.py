@@ -57,11 +57,12 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
     for key, value in test_options.items():
         if key == "headless" and value:
             additional_options.extend(["--headless"])
-        elif key == "use_cuda_graph" and not value:
-            additional_options.extend(["--no-use_cuda_graph"])
+        elif isinstance(value, bool):
+            # Fallback for other booleans
+            additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
         else:
             # Just add --key value
-            additional_options.extend(["--" + key, str(value)])
+            additional_options.extend(["--" + key.replace("_", "-"), str(value)])
 
     return additional_options
 
@@ -97,6 +98,19 @@ def add_example_test(
             options = _merge_options(test_options, test_options_cuda)
         else:
             options = _merge_options(test_options, test_options_cpu)
+
+        # Mark the test as skipped if Torch is not installed but required
+        torch_required = options.pop("torch_required", False)
+        if torch_required:
+            try:
+                import torch  # noqa: PLC0415
+
+                if wp.get_device(device).is_cuda and not torch.cuda.is_available():
+                    # Ensure torch has CUDA support
+                    test.skipTest("Torch not compiled with CUDA support")
+
+            except Exception as e:
+                test.skipTest(f"{e}")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
@@ -138,7 +152,7 @@ def add_example_test(
         )
 
         if stage_path:
-            command.extend(["--stage_path", stage_path])
+            command.extend(["--stage-path", stage_path])
             try:
                 os.remove(stage_path)
             except OSError:
@@ -270,6 +284,18 @@ add_example_test(
     test_options={"stage_path": "None", "num_frames": 300},
     test_options_cpu={"num_frames": 2},
 )
+add_example_test(
+    TestAdvancedRobotExamples,
+    name="example_anymal_c_walk",
+    devices=cuda_test_devices,
+    test_options={"stage_path": "None", "num_frames": 200, "headless": True, "torch_required": True},
+)
+add_example_test(
+    TestAdvancedRobotExamples,
+    name="example_anymal_c_walk_on_sand",
+    devices=cuda_test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
+)
 
 
 class TestOtherExamples(unittest.TestCase):
@@ -292,6 +318,13 @@ add_example_test(
 add_example_test(
     TestOtherExamples,
     name="example_selection_cartpole",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestOtherExamples,
+    name="example_selection_materials",
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
     test_options_cpu={"num_frames": 10},
