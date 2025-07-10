@@ -221,7 +221,7 @@ class AnymalController:
 
 
 class Example:
-    def __init__(self, stage_path="example_quadruped.usd", render=True):
+    def __init__(self, stage_path="example_anymal_c_walk.usd", headless=False):
         self.device = wp.get_device()
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -302,10 +302,7 @@ class Example:
         # fmt: on
 
         self.solver = newton.solvers.FeatherstoneSolver(self.model)
-        if render:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
-        else:
-            self.renderer = None
+        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

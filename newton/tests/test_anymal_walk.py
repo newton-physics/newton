@@ -28,7 +28,7 @@ class TestAnymalCWalk(unittest.TestCase):
         except ImportError:
             self.skipTest("Example import failed - skipping test")
 
-        example = Example(stage_path=None, render=False)
+        example = Example(stage_path=None, headless=True)
         num_test_steps = 1000
         for step_num in range(num_test_steps):
             if example.use_cuda_graph:
@@ -56,7 +56,7 @@ class TestAnymalCWalk(unittest.TestCase):
                     f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[0]:.3f} m/s (expected > 0.5)",
                 )
 
-            example.controller.get_control(example.state_0, example.control)
+            example.controller.get_control(example.state_0)
             example.sim_step += 1
             example.sim_time += example.frame_dt
 
