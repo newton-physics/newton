@@ -592,6 +592,18 @@ class Example:
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
 
+    def run(self):
+        for frame_idx in range(self.num_frames):
+            self.step()
+
+            if self.cloth_solver and not (frame_idx % 10):
+                self.cloth_solver.rebuild_bvh(self.state_0)
+                self.capture_cuda_graph()
+
+            self.render()
+
+            print(f"[{frame_idx:4d}/{self.num_frames}]")
+
 
 if __name__ == "__main__":
     import argparse
@@ -615,14 +627,4 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        for frame_idx in range(example.num_frames):
-            example.step()
-
-            if example.cloth_solver and not (frame_idx % 10):
-                example.cloth_solver.rebuild_bvh(example.state_0)
-                example.capture_cuda_graph()
-
-            example.render()
-
-            print(f"[{frame_idx:4d}/{example.num_frames}]")
+        example.run()
