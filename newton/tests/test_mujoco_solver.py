@@ -660,6 +660,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_sizes = self.model.shape_geo.scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
+        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
 
         # Get all property arrays from MuJoCo
         geom_friction = solver.mjw_model.geom_friction.numpy()
@@ -758,16 +759,18 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 actual_quat = geom_quat[world_idx, geom_idx]
 
                 # Get expected transform from Newton
-                shape_transform = shape_transforms[shape_idx]
-                expected_pos = wp.vec3(*shape_transform[:3])
-                expected_quat = wp.quat(*shape_transform[3:])
+                incoming_xform = wp.transform(*shape_incoming_xform[shape_idx])
+                # account for incoming transform due to joint child transform
+                shape_transform = incoming_xform * wp.transform(*shape_transforms[shape_idx])
+                expected_pos = wp.vec3(*shape_transform.p)
+                expected_quat = wp.quat(*shape_transform.q)
 
                 # Apply shape-specific rotations (matching update_geom_properties_kernel logic)
                 shape_body = shape_bodies[shape_idx]
 
                 # Capsules and cylinders need rotation from Y-axis to Z-axis
                 if shape_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
                     expected_quat = expected_quat * rot_y2z
 
                 # Special handling for static geoms with Z-up axis
@@ -819,6 +822,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Get mappings
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
         shape_types = self.model.shape_geo.type.numpy()
+        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step
@@ -978,15 +982,17 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 # Verify 5: Position and orientation updated
                 # Compute expected values based on new transforms
-                expected_pos = wp.vec3(*new_transforms[shape_idx].p)
-                expected_quat = new_transforms[shape_idx].q
+                incoming_xform = wp.transform(*shape_incoming_xform[shape_idx])
+                new_transform = incoming_xform * wp.transform(*new_transforms[shape_idx])
+                expected_pos = new_transform.p
+                expected_quat = new_transform.q
 
                 # Apply same transformations as in the kernel
                 shape_body = self.model.shape_body.numpy()[shape_idx]
 
                 # Capsules and cylinders need rotation from Y-axis to Z-axis
                 if shape_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
                     expected_quat = expected_quat * rot_y2z
 
                 # Special handling for static geoms with Z-up axis
