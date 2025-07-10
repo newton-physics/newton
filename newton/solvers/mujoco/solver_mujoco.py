@@ -1279,7 +1279,6 @@ class MuJoCoSolver(SolverBase):
         # MoJoCo doesn't have velocity limit
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
-        body_q = model.body_q.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -1393,8 +1392,8 @@ class MuJoCoSolver(SolverBase):
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
             )
 
-        # maps from body_id to transform to be applied to its children
-        # i.e. its inverse child transform
+        # maps from Newton body index to the transform to be applied to its children
+        # i.e. its inverse joint child transform
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
@@ -1505,21 +1504,16 @@ class MuJoCoSolver(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
-            parent_xform = wp.transform(*joint_parent_xform[ji])
-            tf_p = body_q[child, :3]
-            tf_q = parent_xform.q
+            tf = wp.transform(*joint_parent_xform[ji])
             joint_pos = wp.vec3(*joint_child_xform[ji, :3])
             if parent != -1:
-                tf_p = parent_xform[:3]
-
                 incoming_xform = body_child_tf.get(parent)
                 if incoming_xform is not None:
                     # apply the incoming transform from the parent body,
                     # which is the inverse of the parent joint's child transform
-                    tf = incoming_xform * wp.transform(tf_p, tf_q)
-                    tf_p = tf.p
-                    tf_q = tf.q
+                    tf = incoming_xform * tf
                     joint_pos = wp.vec3(0.0, 0.0, 0.0)
+
             # ensure unique body name
             name = model.body_key[child]
             if name not in body_name_counts:
@@ -1532,8 +1526,8 @@ class MuJoCoSolver(SolverBase):
             inertia = body_inertia[child]
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
-                pos=tf_p,
-                quat=quat2mjc(tf_q),
+                pos=tf.p,
+                quat=quat2mjc(tf.q),
                 mass=body_mass[child],
                 ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
