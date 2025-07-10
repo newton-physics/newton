@@ -82,13 +82,8 @@ def convert_mj_coords_to_warp_kernel(
 
     if type == newton.JOINT_FREE:
         # convert position components
-        if up_axis == 1:
-            joint_q[wq_i + 0] = qpos[worldid, q_i + 0]
-            joint_q[wq_i + 1] = qpos[worldid, q_i + 2]
-            joint_q[wq_i + 2] = -qpos[worldid, q_i + 1]
-        else:
-            for i in range(3):
-                joint_q[wq_i + i] = qpos[worldid, q_i + i]
+        for i in range(3):
+            joint_q[wq_i + i] = qpos[worldid, q_i + i]
 
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -97,10 +92,6 @@ def convert_mj_coords_to_warp_kernel(
             qpos[worldid, q_i + 6],
             qpos[worldid, q_i + 3],
         )
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-            rot = rot_y2z * rot
-            # rot = rot * rot_y2z
         joint_q[wq_i + 3] = rot[0]
         joint_q[wq_i + 4] = rot[1]
         joint_q[wq_i + 5] = rot[2]
@@ -117,14 +108,9 @@ def convert_mj_coords_to_warp_kernel(
         joint_qd[wqd_i + 1] = w[1]
         joint_qd[wqd_i + 2] = w[2]
         # convert linear velocity
-        if up_axis == 1:
-            joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
-            joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 2]
-            joint_qd[wqd_i + 5] = -qvel[worldid, qd_i + 1]
-        else:
-            joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
-            joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 1]
-            joint_qd[wqd_i + 5] = qvel[worldid, qd_i + 2]
+        joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
+        joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 1]
+        joint_qd[wqd_i + 5] = qvel[worldid, qd_i + 2]
     elif type == newton.JOINT_BALL:
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -133,9 +119,6 @@ def convert_mj_coords_to_warp_kernel(
             qpos[worldid, q_i + 3],
             qpos[worldid, q_i],
         )
-        # if up_axis == 1:
-        #     rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        #     rot = rot * rot_y2z
         joint_q[wq_i] = rot[0]
         joint_q[wq_i + 1] = rot[1]
         joint_q[wq_i + 2] = rot[2]
@@ -177,13 +160,8 @@ def convert_warp_coords_to_mj_kernel(
 
     if type == newton.JOINT_FREE:
         # convert position components
-        if up_axis == 1:
-            qpos[worldid, q_i + 0] = joint_q[wq_i + 0]
-            qpos[worldid, q_i + 1] = -joint_q[wq_i + 2]
-            qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
-        else:
-            for i in range(3):
-                qpos[worldid, q_i + i] = joint_q[wq_i + i]
+        for i in range(3):
+            qpos[worldid, q_i + i] = joint_q[wq_i + i]
 
         rot = wp.quat(
             joint_q[wq_i + 3],
@@ -191,30 +169,20 @@ def convert_warp_coords_to_mj_kernel(
             joint_q[wq_i + 5],
             joint_q[wq_i + 6],
         )
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-            rot_z_up = rot_y2z * rot
-        else:
-            rot_z_up = rot
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 3] = rot_z_up[3]
-        qpos[worldid, q_i + 4] = rot_z_up[0]
-        qpos[worldid, q_i + 5] = rot_z_up[1]
-        qpos[worldid, q_i + 6] = rot_z_up[2]
+        qpos[worldid, q_i + 3] = rot[3]
+        qpos[worldid, q_i + 4] = rot[0]
+        qpos[worldid, q_i + 5] = rot[1]
+        qpos[worldid, q_i + 6] = rot[2]
         # for i in range(6):
         #     # convert velocity components
         #     qvel[worldid, qd_i + i] = joint_qd[qd_i + i]
 
         # XXX swap angular and linear velocities
         # convert linear velocity
-        if up_axis == 1:
-            qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
-            qvel[worldid, qd_i + 1] = -joint_qd[wqd_i + 5]
-            qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 4]
-        else:
-            qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
-            qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 4]
-            qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 5]
+        qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
+        qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 4]
+        qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 5]
 
         # rotate angular velocity to body frame
         w = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
@@ -277,10 +245,6 @@ def apply_mjc_body_f_kernel(
         f = body_f[worldid * bodies_per_env + bodyid]
         w = wp.vec3(f[0], f[1], f[2])
         v = wp.vec3(f[3], f[4], f[5])
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-            w = wp.quat_rotate(rot_y2z, w)
-            v = wp.quat_rotate(rot_y2z, v)
         xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
@@ -1242,16 +1206,9 @@ class MuJoCoSolver(SolverBase):
             # convert from xyzw to wxyz
             return [q[3], q[0], q[1], q[2]]
 
-        def pos2mjc(p):
-            if model.up_axis == 1:
-                # mujoco uses y-axis up, Warp uses z-axis up
-                return [p[0], -p[2], p[1]]
-            else:
-                return p
-
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = pos2mjc(wp.vec3(*model.gravity))
+        spec.option.gravity = model.gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
@@ -1339,9 +1296,8 @@ class MuJoCoSolver(SolverBase):
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
 
-        # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
+        # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders, planes)
+        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -1378,7 +1334,7 @@ class MuJoCoSolver(SolverBase):
         shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
-        body_names = {}
+        body_name_counts = {}
         joint_names = {}
 
         # only generate the first environment, replicate state of multiple worlds in MjData
@@ -1448,7 +1404,7 @@ class MuJoCoSolver(SolverBase):
         ]
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
-        def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
+        def add_geoms(warp_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
             if not shapes:
@@ -1456,11 +1412,6 @@ class MuJoCoSolver(SolverBase):
             for shape in shapes:
                 if skip_visual_only_geoms and not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
-                #     # this is a shape in a different environment, skip it
-                #     # TODO fix handling of static shapes here, see cartpole.xml replication
-                #     # that is missing the rail shapes
-                #     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
                 if stype == newton.GEO_PLANE and warp_body_id != -1:
@@ -1496,15 +1447,11 @@ class MuJoCoSolver(SolverBase):
                     q = tf.q
                     p = tf.p
                     shape_incoming_xform[shape] = incoming_xform
-                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
+                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_PLANE):
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
+                    # TODO(vreutskyy): Newton to use +Z for these shapes
+                    # https://github.com/newton-physics/newton/issues/365
                     q = q * rot_y2z
-                if model.up_axis == 2 and warp_body_id == -1:
-                    # reverse rotation that aligned the z-axis with the y-axis
-                    q = q * wp.quat_inverse(rot_y2z)
-                if perm_position:
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    p = wp.vec3(p[0], -p[2], p[1])
                 geom_params["pos"] = p
                 geom_params["quat"] = quat2mjc(q)
                 size = shape_size[shape]
@@ -1548,7 +1495,7 @@ class MuJoCoSolver(SolverBase):
                 shape_mapping[shape] = name
 
         # add static geoms attached to the worldbody
-        add_geoms(-1, perm_position=model.up_axis == 1)
+        add_geoms(-1)
 
         # add joints, bodies and geoms
         for ji in joint_order:
@@ -1558,19 +1505,12 @@ class MuJoCoSolver(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
-            parent_xform = joint_parent_xform[ji]
+            parent_xform = wp.transform(*joint_parent_xform[ji])
             tf_p = body_q[child, :3]
-            tf_q = wp.quat(*body_q[child, 3:])
+            tf_q = parent_xform.q
             joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            if parent == -1:
-                # reverse rotation that aligned the z-axis with the y-axis
-                tf_q = wp.quat(*parent_xform[3:])
-                if model.up_axis == 1:
-                    tf_q = rot_y2z * tf_q
-                tf_p = pos2mjc(tf_p)
-            else:
+            if parent != -1:
                 tf_p = parent_xform[:3]
-                tf_q = wp.quat(*parent_xform[3:])
 
                 incoming_xform = body_child_tf.get(parent)
                 if incoming_xform is not None:
@@ -1582,24 +1522,20 @@ class MuJoCoSolver(SolverBase):
                     joint_pos = wp.vec3(0.0, 0.0, 0.0)
             # ensure unique body name
             name = model.body_key[child]
-            if name not in body_names:
-                body_names[name] = 1
+            if name not in body_name_counts:
+                body_name_counts[name] = 1
             else:
-                while name in body_names:
-                    body_names[name] += 1
-                    name = f"{name}_{body_names[name]}"
+                while name in body_name_counts:
+                    body_name_counts[name] += 1
+                    name = f"{name}_{body_name_counts[name]}"
 
             inertia = body_inertia[child]
-            if model.up_axis == 1:
-                # # TODO: what frame is the fullinertia in Mujoco?
-                # mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
-                inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
                 pos=tf_p,
                 quat=quat2mjc(tf_q),
                 mass=body_mass[child],
-                ipos=pos2mjc(body_com[child, :]),
+                ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
                 explicitinertial=True,
             )
@@ -1841,7 +1777,7 @@ class MuJoCoSolver(SolverBase):
 
             if model.shape_materials.mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
-            self.notify_model_changed(flags)
+            # self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
