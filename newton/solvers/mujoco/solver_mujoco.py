@@ -475,7 +475,6 @@ def convert_body_xforms_to_warp_kernel(
     xquat: wp.array2d(dtype=wp.quat),
     to_mjc_body_index: wp.array(dtype=wp.int32),
     bodies_per_env: int,
-    up_axis: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
 ):
@@ -489,13 +488,6 @@ def convert_body_xforms_to_warp_kernel(
     # quat = wp.quat(quat[3], quat[0], quat[1], quat[2])
     # quat = wp.quat_identity()
     # quat = wp.quat_inverse(quat)
-    # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-    # quat = rot_y2z * quat
-    if up_axis == 1:
-        pos = wp.vec3(pos[0], pos[2], -pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        # pos = wp.quat_rotate(rot_y2z, pos)
-        quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
 
@@ -569,10 +561,6 @@ def update_body_inertia_kernel(
     # Convert eigenvectors to quaternion (xyzw format for mujoco)
     # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
     # q = wp.normalize(q)
-
-    # if up_axis == 1:
-    #     q_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-    #     q = q_y2z * q
 
     # Convert from wxyz to xyzw format and compose with body orientation
     # q = wp.quat(q[1], q[2], q[3], q[0])
@@ -1061,7 +1049,6 @@ class MuJoCoSolver(SolverBase):
                     xquat,
                     model.to_mjc_body_index,
                     bodies_per_env,
-                    int(model.up_axis),
                 ],
                 outputs=[state.body_q],
                 device=model.device,
@@ -1284,9 +1271,6 @@ class MuJoCoSolver(SolverBase):
         # mapping from joint axis to actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
-
-        # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders, planes)
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
