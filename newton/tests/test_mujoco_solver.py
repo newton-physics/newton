@@ -810,8 +810,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_types = self.model.shape_geo.type.numpy()
-        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step
@@ -884,7 +882,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     continue
 
                 tested_count += 1
-                shape_type = shape_types[shape_idx]
 
                 # Verify 1: Friction updated
                 expected_mu = new_mu[shape_idx]
