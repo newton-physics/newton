@@ -33,6 +33,7 @@
       ~ModelBuilder.add_joint_revolute
       ~ModelBuilder.add_muscle
       ~ModelBuilder.add_particle
+      ~ModelBuilder.add_particles
       ~ModelBuilder.add_shape
       ~ModelBuilder.add_shape_box
       ~ModelBuilder.add_shape_capsule
