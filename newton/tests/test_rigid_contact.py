@@ -46,33 +46,38 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     builder.add_ground_plane()
     size = 0.3
     # fmt: off
+    vertices = np.array([
+        [-size, -size, -size],
+        [-size, -size, size],
+        [-size, size, size],
+        [-size, size, -size],
+        [size, -size, -size],
+        [size, -size, size],
+        [size, size, size],
+        [size, size, -size],
+        [-size, -size, -size],
+        [-size, -size, size],
+        [size, -size, size],
+        [size, -size, -size],
+        [-size, size, -size],
+        [-size, size, size],
+        [size, size, size],
+        [size, size, -size],
+        [-size, -size, -size,],
+        [-size, size, -size,],
+        [size, size, -size,],
+        [size, -size, -size,],
+        [-size, -size, size],
+        [-size, size, size],
+        [size, size, size],
+        [size, -size, size],
+    ], dtype=np.float32)
+    # Add some offset to the vertices to test proper handling of non-zero origin
+    # e.g. MuJoCo transforms the mesh to the origin
+    mesh_offset = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    vertices += mesh_offset
     cube_mesh = newton.geometry.Mesh(
-        vertices = [
-            [-size, -size, -size],
-            [-size, -size, size],
-            [-size, size, size],
-            [-size, size, -size],
-            [size, -size, -size],
-            [size, -size, size],
-            [size, size, size],
-            [size, size, -size],
-            [-size, -size, -size],
-            [-size, -size, size],
-            [size, -size, size],
-            [size, -size, -size],
-            [-size, size, -size],
-            [-size, size, size],
-            [size, size, size],
-            [size, size, -size],
-            [-size, -size, -size,],
-            [-size, size, -size,],
-            [size, size, -size,],
-            [size, -size, -size,],
-            [-size, -size, size],
-            [-size, size, size],
-            [size, size, size],
-            [size, -size, size],
-        ],
+        vertices=vertices,
         indices = [
             0, 1, 2,
             0, 2, 3,
