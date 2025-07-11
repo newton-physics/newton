@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import warp as wp
+from asv_runner.benchmarks.mark import skip_benchmark_if
 
 from newton.examples.example_cloth_self_contact import Example as ExampleClothSelfContact
 from newton.examples.example_robot_manipulating_cloth import Example as ExampleClothManipulation
@@ -21,7 +22,7 @@ from newton.examples.example_robot_manipulating_cloth import Example as ExampleC
 
 class VBDSpeedTestSelfContact:
     params = [
-        60,
+        300,
     ]
 
     number = 10
@@ -29,17 +30,21 @@ class VBDSpeedTestSelfContact:
     def setup(self, num_frames):
         wp.init()
 
-        with wp.ScopedDevice("cpu"):
-            self.example = ExampleClothSelfContact(stage_path=None, num_frames=num_frames)
+        if wp.get_cuda_device_count() > 0:
+            with wp.ScopedDevice("cuda"):
+                self.example = ExampleClothSelfContact(stage_path=None, num_frames=num_frames)
+        else:
+            self.example = None
 
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
     def time_run_example_cloth_self_contact(self, num_frames):
-        with wp.ScopedDevice("cpu"):
+        with wp.ScopedDevice("cuda"):
             self.example.run()
 
 
 class VBDSpeedClothManipulation:
     params = [
-        120,
+        1000,
     ]
 
     number = 10
@@ -47,9 +52,13 @@ class VBDSpeedClothManipulation:
     def setup(self, num_frames):
         wp.init()
 
-        with wp.ScopedDevice("cpu"):
-            self.example = ExampleClothManipulation(stage_path=None, num_frames=num_frames)
+        if wp.get_cuda_device_count() > 0:
+            with wp.ScopedDevice("cuda"):
+                self.example = ExampleClothManipulation(stage_path=None, num_frames=num_frames)
+        else:
+            self.example = None
 
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
     def time_run_example_cloth_manipulation(self, num_frames):
-        with wp.ScopedDevice("cpu"):
+        with wp.ScopedDevice("cuda"):
             self.example.run()
