@@ -651,52 +651,6 @@ class TriBvh(Bvh):
 
 
 ########################################################################################################################
-###################################################    Shape Bvh    ####################################################
-########################################################################################################################
-
-
-class ShapeBvh(Bvh):
-    """A BVH specialized for managing geometric shapes.
-
-    This class builds a BVH where each leaf node corresponds to a single shape.
-    It is typically used for accelerating spatial queries such as collision detection,
-    proximity queries, or visibility tests among a set of geometric primitives (e.g., spheres,
-    boxes, or capsules).
-    """
-
-    def __init__(self, shape_count: int, device: wp.context.Device):
-        super().__init__(shape_count, device)
-
-    # TODO
-
-
-########################################################################################################################
-##################################################    TwoLevel Bvh    ##################################################
-########################################################################################################################
-
-
-class TwoLevelBvh(Bvh):
-    """A two-level BVH structure, where each leaf node in the top-level BVH references a bottom-level BVH.
-
-    This is useful for organizing complex scenes or hierarchical data structures efficiently,
-    such as rigid instances, skinned meshes, or clustered geometry. The top-level BVH manages
-    the bounding boxes of bottom-level BVHs, while each bottom-level BVH manages the bounds of
-    its own primitives (e.g., triangles, edges, particles, etc.).
-
-    Key properties:
-        - Each leaf node in the top-level BVH corresponds to a sub-BVH.
-        - Queries are typically done in two stages: first against the top-level BVH, then into the
-          referenced bottom-level BVHs.
-        - Supports spatial acceleration of instancing or multi-object scenes.
-    """
-
-    def __init__(self, leaf_count, device: wp.context.Device):
-        super().__init__(leaf_count, device)
-
-    # TODO
-
-
-########################################################################################################################
 #####################################################    Tests    ######################################################
 ########################################################################################################################
 

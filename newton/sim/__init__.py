@@ -18,9 +18,7 @@ from .builder import ModelBuilder
 from .bvh import (
     Bvh,
     EdgeBvh,
-    ShapeBvh,
     TriBvh,
-    TwoLevelBvh,
 )
 from .collide import CollisionPipeline, count_rigid_contact_points
 from .contacts import Contacts
@@ -76,14 +74,12 @@ __all__ = [
     "EdgeBvh",
     "Model",
     "ModelBuilder",
-    "ShapeBvh",
     "ShapeGeometry",
     "ShapeMaterials",
     "State",
     "Style3DModel",
     "Style3DModelBuilder",
     "TriBvh",
-    "TwoLevelBvh",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",
