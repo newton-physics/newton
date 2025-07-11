@@ -478,12 +478,6 @@ class TriBvh(Bvh):
             device=self.device,
         )
 
-    def query_line_intersections(
-        self,
-    ):
-        # TODO
-        pass
-
     def vertex_triangle_collision_detection(
         self,
         query_radius: float,
