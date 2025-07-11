@@ -334,6 +334,7 @@ def parse_usd(
                 key=path,
                 armature=body_armature,
             )
+            builder.add_joint_free(b)
             path_body_map[path] = b
             return b
         else:
