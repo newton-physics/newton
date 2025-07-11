@@ -708,6 +708,7 @@ def update_geom_properties_kernel(
     shape_type: wp.array(dtype=wp.int32),
     shape_body: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array(dtype=wp.int32),
+    shape_incoming_xform: wp.array(dtype=wp.transform),
     up_axis: int,
     torsional_friction: float,
     rolling_friction: float,
@@ -755,15 +756,18 @@ def update_geom_properties_kernel(
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
     # update position and orientation
-    pos = wp.vec3f(shape_transform[shape_idx].p)
-    quat = shape_transform[shape_idx].q
+    tf = shape_transform[shape_idx]
+    incoming_xform = shape_incoming_xform[shape_idx]
+    tf = incoming_xform * tf
+    pos = tf.p
+    quat = tf.q
     # get shape type and body
     stype = shape_type[shape_idx]
     body_idx = shape_body[shape_idx]
     # apply shape-specific rotations (matching add_geoms logic)
     if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
         # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
-        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
+        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
         quat = quat * rot_y2z
     # special handling for static geoms with Z-up axis (matching add_geoms logic)
     if up_axis == 2 and body_idx == -1:
@@ -1370,6 +1374,8 @@ class MuJoCoSolver(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
         shape_mapping = {}
+        # mapping from Newton shape id to incoming transform
+        shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
         body_names = {}
@@ -1471,9 +1477,12 @@ class MuJoCoSolver(SolverBase):
                     convex_hull = getattr(mesh_src, "convex_hull", None)
                     # use convex hull if available, otherwise use original mesh
                     mesh_to_use = convex_hull if convex_hull is not None else mesh_src
+                    # apply scaling
+                    size = shape_size[shape]
+                    vertices = mesh_to_use.vertices * size
                     spec.add_mesh(
                         name=name,
-                        uservert=mesh_to_use.vertices.flatten(),
+                        uservert=vertices.flatten(),
                         userface=mesh_to_use.indices.flatten(),
                         maxhullvert=mesh_maxhullvert,
                     )
@@ -1486,6 +1495,7 @@ class MuJoCoSolver(SolverBase):
                     tf: wp.transform = incoming_xform * tf
                     q = tf.q
                     p = tf.p
+                    shape_incoming_xform[shape] = incoming_xform
                 if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
                     q = q * rot_y2z
@@ -1504,6 +1514,7 @@ class MuJoCoSolver(SolverBase):
                     size[size == 0.0] = nonzero
                     geom_params["size"] = size
                 else:
+                    assert stype == newton.GEO_PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
 
@@ -1807,6 +1818,7 @@ class MuJoCoSolver(SolverBase):
                 for geom_idx, shape_idx in reverse_shape_mapping.items():
                     to_newton_shape_array[geom_idx] = shape_idx
             model.to_newton_shape_index = wp.array(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            model.shape_incoming_xform = wp.array(shape_incoming_xform, dtype=wp.transform)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
             self.mjw_model.opt.graph_conditional = newton.utils.check_conditional_graph_support()
@@ -1827,7 +1839,6 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
 
-            # TODO: Also update shape properties once during initialization
             if model.shape_materials.mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
@@ -2041,6 +2052,7 @@ class MuJoCoSolver(SolverBase):
                 self.model.shape_geo.type,
                 self.model.shape_body,
                 self.model.to_newton_shape_index,
+                self.model.shape_incoming_xform,
                 self.model.up_axis,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,

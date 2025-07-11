@@ -46,7 +46,7 @@ Run basic examples:
     uv run newton/examples/example_quadruped.py
 
     # An example that requires extras
-    uv run --all-extras newton/examples/example_humanoid.py
+    uv run --extra dev newton/examples/example_humanoid.py
 
 When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile>`__
 (``uv.lock``) is used to resolve project dependencies
@@ -141,7 +141,7 @@ Pass ``--help`` to either runner to see all available flags.
         .. code-block:: console
 
             # install all extras and run tests
-            uv run --all-extras -m newton.tests
+            uv run --extra dev -m newton.tests
 
     .. tab-item:: venv
         :sync: venv
@@ -164,7 +164,7 @@ To generate a coverage report:
         .. code-block:: console
             
             # append the coverage flags:
-            uv run --all-extras -m newton.tests --coverage --coverage-html htmlcov
+            uv run --extra dev -m newton.tests --coverage --coverage-html htmlcov
 
     .. tab-item:: venv
         :sync: venv
@@ -277,10 +277,12 @@ documentation.
 
 Style Guide
 -----------
+
 - Follow PEP 8 for Python code.
 - Use Google-style docstrings (compatible with Napoleon extension).
 - Write clear, concise commit messages.
 - Keep pull requests focused on a single feature or bug fix.
+- Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
 
 Roadmap and Future Work
 -----------------------
@@ -292,6 +294,65 @@ Roadmap and Future Work
 - Expanded robotics examples
 
 See the `GitHub Discussions <https://github.com/newton-physics/newton/discussions>`__ for ongoing feature planning.
+
+Benchmarking with airspeed velocity
+-----------------------------------
+
+The Newton repository contains a benchmarking suite implemented using the `airspeed velocity <https://asv.readthedocs.io/en/latest/>`__ framework.
+The full set of benchmarks are intended to be run on a machine with a CUDA-capable GPU.
+
+To get started, install airspeed velocity from PyPI:
+
+.. code-block:: console
+
+    python -m pip install asv
+
+If airspeed velocity has not been previously run on the machine, it will need to be initialized with:
+
+.. code-block:: console
+
+    asv machine --yes
+
+To run the benchmarks, run the following command from the root of the repository:
+
+.. code-block:: console
+
+    asv run --launch-method spawn --append-samples main^!
+
+The benchmarks discovered by airspeed velocity are in the ``asv/benchmarks`` directory. This command runs the
+benchmark code from the ``asv/benchmarks`` directory against the code state of the ``main`` branch. Note that
+the benchmark definitions themselves are not checked out from different branches—only the code being
+benchmarked is.
+
+Tips for writing benchmarks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Rather than running the entire benchmark suite, use the ``--bench BENCH, -b BENCH`` flag to filter the benchmarks
+to just the ones under development:
+
+.. code-block:: console
+
+    asv run --launch-method spawn --append-samples main^! --bench example_anymal.PretrainedSimulate
+
+While airspeed velocity has built-in mechanisms to determine automatically how to collect measurements,
+it is often useful to manually specify benchmark attributes like ``repeat`` and ``number`` to control the
+number of times a benchmark is run and the number of times a benchmark is repeated.
+
+.. code-block:: python
+
+    class PretrainedSimulate:
+        repeat = 3
+        number = 1
+
+As the airspeed documentation on `benchmark attributes <https://asv.readthedocs.io/en/stable/writing_benchmarks.html#benchmark-attributes>`__ notes,
+the ``setup`` and ``teardown`` methods are not run between the ``number`` iterations that make up a sample.
+
+These benchmark attributes should be tuned to ensure that the benchmark runs in a reasonable amount of time while
+also ensuring that the benchmark is run a sufficient number of times to get a statistically meaningful result.
+
+The ``--durations all`` flag can be passed to the ``asv run`` command to show the durations of all benchmarks,
+which is helpful for ensuring that a single benchmark is not requiring an abnormally long amount of time compared
+to the other benchmarks.
 
 Contribution Guide
 ==================

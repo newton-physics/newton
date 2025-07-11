@@ -167,7 +167,7 @@ def compute_body_jacobian(
 class Example:
     def __init__(
         self,
-        stage_path: str = "example_robot_manipulating_cloth.usd",
+        stage_path: str | None = "example_robot_manipulating_cloth.usd",
         num_frames: int | None = None,
     ):
         self.stage_path = stage_path
@@ -599,13 +599,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_robot_manipulating_cloth.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument(
-        "--num_frames",
+        "--num-frames",
         type=lambda x: None if x == "None" else int(x),
         default=None,
         help="Total number of frames. If None, the number of frames will be determined automatically.",
