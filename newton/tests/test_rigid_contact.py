@@ -115,7 +115,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
             body=b,
             radius=0.1 * scale,
             half_height=0.3 * scale,
-            up_axis=newton.Axis.Y,
+            axis=newton.Axis.Y,
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
