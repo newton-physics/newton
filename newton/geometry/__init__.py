@@ -21,6 +21,7 @@ from .flags import (
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
 )
+from .gjk import build_ccd_generic
 from .inertia import compute_shape_inertia, transform_inertia
 from .types import (
     GEO_BOX,
@@ -94,6 +95,7 @@ __all__ = [
     "SHAPE_FLAG_COLLIDE_SHAPES",
     "SHAPE_FLAG_VISIBLE",
     "Mesh",
+    "build_ccd_generic",
     "compute_shape_inertia",
     "compute_shape_radius",
     "create_box",
