@@ -763,7 +763,6 @@ def update_geom_properties_kernel(
     quat = tf.q
     body_idx = shape_body[shape_idx]
     # apply shape-specific rotations (matching add_geoms logic)
-    # special handling for static geoms with Z-up axis (matching add_geoms logic)
     # handle up-axis conversion if needed
     if up_axis == 1:
         # MuJoCo uses Z-up, Newton Y-up requires conversion
