@@ -724,15 +724,6 @@ def update_geom_properties_kernel(
     stype = shape_type[shape_idx]
     body_idx = shape_body[shape_idx]
     # apply shape-specific rotations (matching add_geoms logic)
-    if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
-        # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
-        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-        quat = quat * rot_y2z
-    # special handling for static geoms with Z-up axis (matching add_geoms logic)
-    if up_axis == 2 and body_idx == -1:
-        # reverse rotation that aligned the z-axis with the y-axis
-        rot_z2y = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_z2y
     # handle up-axis conversion if needed
     if up_axis == 1:
         # MuJoCo uses Z-up, Newton Y-up requires conversion
