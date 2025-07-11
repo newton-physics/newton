@@ -757,19 +757,9 @@ def update_geom_properties_kernel(
     # update position and orientation
     pos = wp.vec3f(shape_transform[shape_idx].p)
     quat = shape_transform[shape_idx].q
-    # get shape type and body
-    stype = shape_type[shape_idx]
     body_idx = shape_body[shape_idx]
     # apply shape-specific rotations (matching add_geoms logic)
-    if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
-        # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
-        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-        quat = quat * rot_y2z
     # special handling for static geoms with Z-up axis (matching add_geoms logic)
-    if up_axis == 2 and body_idx == -1:
-        # reverse rotation that aligned the z-axis with the y-axis
-        rot_z2y = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_z2y
     # handle up-axis conversion if needed
     if up_axis == 1:
         # MuJoCo uses Z-up, Newton Y-up requires conversion
@@ -1489,12 +1479,6 @@ class MuJoCoSolver(SolverBase):
                     tf: wp.transform = incoming_xform * tf
                     q = tf.q
                     p = tf.p
-                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    q = q * rot_y2z
-                if model.up_axis == 2 and warp_body_id == -1:
-                    # reverse rotation that aligned the z-axis with the y-axis
-                    q = q * wp.quat_inverse(rot_y2z)
                 if perm_position:
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
                     p = wp.vec3(p[0], -p[2], p[1])
