@@ -1348,7 +1348,7 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
-def VBD_solve_trimesh_no_self_contact_tile(
+def solve_trimesh_no_self_contact_tile(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     prev_pos: wp.array(dtype=wp.vec3),
@@ -1500,7 +1500,7 @@ def VBD_solve_trimesh_no_self_contact_tile(
 
 
 @wp.kernel
-def VBD_solve_trimesh_no_self_contact(
+def solve_trimesh_no_self_contact(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     prev_pos: wp.array(dtype=wp.vec3),
@@ -1917,7 +1917,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
 
 
 @wp.kernel
-def VBD_solve_trimesh_with_self_contact_penetration_free(
+def solve_trimesh_with_self_contact_penetration_free(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
@@ -2041,7 +2041,7 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
 
 
 @wp.kernel
-def VBD_solve_trimesh_with_self_contact_penetration_free_tile(
+def solve_trimesh_with_self_contact_penetration_free_tile(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
@@ -2487,7 +2487,7 @@ class VBDSolver(SolverBase):
 
                 if self.tiled_solve:
                     wp.launch(
-                        kernel=VBD_solve_trimesh_no_self_contact_tile,
+                        kernel=solve_trimesh_no_self_contact_tile,
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
@@ -2518,7 +2518,7 @@ class VBDSolver(SolverBase):
                     )
                 else:
                     wp.launch(
-                        kernel=VBD_solve_trimesh_no_self_contact,
+                        kernel=solve_trimesh_no_self_contact,
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
@@ -2644,7 +2644,7 @@ class VBDSolver(SolverBase):
 
                 if self.tiled_solve:
                     wp.launch(
-                        kernel=VBD_solve_trimesh_with_self_contact_penetration_free_tile,
+                        kernel=solve_trimesh_with_self_contact_penetration_free_tile,
                         dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         inputs=[
@@ -2677,7 +2677,7 @@ class VBDSolver(SolverBase):
                     )
                 else:
                     wp.launch(
-                        kernel=VBD_solve_trimesh_with_self_contact_penetration_free,
+                        kernel=solve_trimesh_with_self_contact_penetration_free,
                         dim=self.model.particle_color_groups[color].size,
                         inputs=[
                             dt,
