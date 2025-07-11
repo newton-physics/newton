@@ -723,26 +723,6 @@ def update_geom_properties_kernel(
     tf = incoming_xform * tf
     pos = tf.p
     quat = tf.q
-    # get shape type and body
-    stype = shape_type[shape_idx]
-    # apply shape-specific rotations (matching add_geoms logic)
-    if (
-        stype == wp.static(newton.GEO_CAPSULE)
-        or stype == wp.static(newton.GEO_CYLINDER)
-        or stype == wp.static(newton.GEO_PLANE)
-    ):
-        # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
-        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_y2z
-    wp.printf(
-        "pos before: %.3f %.3f %.3f   after: %.3f %.3f %.3f\n",
-        geom_pos[worldid, geom_idx][0],
-        geom_pos[worldid, geom_idx][1],
-        geom_pos[worldid, geom_idx][2],
-        pos[0],
-        pos[1],
-        pos[2],
-    )
     geom_pos[worldid, geom_idx] = pos
     geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
@@ -1445,11 +1425,6 @@ class MuJoCoSolver(SolverBase):
                 if incoming_xform is not None:
                     # transform to world space
                     tf = incoming_xform * tf
-                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_PLANE):
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    # TODO(vreutskyy): Newton to use +Z for these shapes
-                    # https://github.com/newton-physics/newton/issues/365
-                    tf.q = tf.q * rot_y2z
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
