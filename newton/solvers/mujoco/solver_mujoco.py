@@ -670,10 +670,8 @@ def update_geom_properties_kernel(
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
     shape_type: wp.array(dtype=wp.int32),
-    shape_body: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array(dtype=wp.int32),
     shape_incoming_xform: wp.array(dtype=wp.transform),
-    up_axis: int,
     torsional_friction: float,
     rolling_friction: float,
     contact_stiffness_time_const: float,
@@ -727,25 +725,24 @@ def update_geom_properties_kernel(
     quat = tf.q
     # get shape type and body
     stype = shape_type[shape_idx]
-    body_idx = shape_body[shape_idx]
     # apply shape-specific rotations (matching add_geoms logic)
-    if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
+    if (
+        stype == wp.static(newton.GEO_CAPSULE)
+        or stype == wp.static(newton.GEO_CYLINDER)
+        or stype == wp.static(newton.GEO_PLANE)
+    ):
         # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
         rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
         quat = quat * rot_y2z
-    # special handling for static geoms with Z-up axis (matching add_geoms logic)
-    if up_axis == 2 and body_idx == -1:
-        # reverse rotation that aligned the z-axis with the y-axis
-        rot_z2y = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_z2y
-    # handle up-axis conversion if needed
-    if up_axis == 1:
-        # MuJoCo uses Z-up, Newton Y-up requires conversion
-        # for static geoms, position conversion is handled by perm_position flag in add_geoms
-        if body_idx == -1:
-            pos = wp.vec3f(pos[0], -pos[2], pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        quat = rot_y2z * quat
+    wp.printf(
+        "pos before: %.3f %.3f %.3f   after: %.3f %.3f %.3f\n",
+        geom_pos[worldid, geom_idx][0],
+        geom_pos[worldid, geom_idx][1],
+        geom_pos[worldid, geom_idx][2],
+        pos[0],
+        pos[1],
+        pos[2],
+    )
     geom_pos[worldid, geom_idx] = pos
     geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
@@ -1202,9 +1199,13 @@ class MuJoCoSolver(SolverBase):
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
             }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
 
-        def quat2mjc(q):
+        def quat_to_mjc(q):
             # convert from xyzw to wxyz
             return [q[3], q[0], q[1], q[2]]
+
+        def quat_from_mjc(q):
+            # convert from wxyz to xyzw
+            return [q[1], q[2], q[3], q[0]]
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
@@ -1329,7 +1330,10 @@ class MuJoCoSolver(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
         shape_mapping = {}
-        # mapping from Newton shape id to incoming transform
+        # mapping from Newton shape id to a corrective transform
+        # that maps from Newton's shape frame to MuJoCo's internal geom frame
+        # (this includes the shape transform due to the joint child transform
+        # and the transform MuJoCo does on mesh geoms)
         shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
@@ -1419,6 +1423,7 @@ class MuJoCoSolver(SolverBase):
                     "type": geom_type_mapping[stype],
                     "name": name,
                 }
+                tf = wp.transform(*shape_transform[shape])
                 if stype == newton.GEO_MESH:
                     mesh_src = model.shape_geo_src[shape]
                     # use mesh-specific maxhullvert or fall back to the default
@@ -1437,22 +1442,16 @@ class MuJoCoSolver(SolverBase):
                         maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
-                q = wp.quat(*shape_transform[shape, 3:])
-                p = wp.vec3(*shape_transform[shape, :3])
-                tf = wp.transform(p, q)
                 if incoming_xform is not None:
                     # transform to world space
-                    tf: wp.transform = incoming_xform * tf
-                    q = tf.q
-                    p = tf.p
-                    shape_incoming_xform[shape] = incoming_xform
+                    tf = incoming_xform * tf
                 if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_PLANE):
                     # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
                     # TODO(vreutskyy): Newton to use +Z for these shapes
                     # https://github.com/newton-physics/newton/issues/365
-                    q = q * rot_y2z
-                geom_params["pos"] = p
-                geom_params["quat"] = quat2mjc(q)
+                    tf.q = tf.q * rot_y2z
+                geom_params["pos"] = tf.p
+                geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
                 if np.any(size > 0.0):
                     # duplicate nonzero entries at places where size is 0
@@ -1527,7 +1526,7 @@ class MuJoCoSolver(SolverBase):
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
                 pos=tf.p,
-                quat=quat2mjc(tf.q),
+                quat=quat_to_mjc(tf.q),
                 mass=body_mass[child],
                 ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
@@ -1697,12 +1696,21 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        # now that the model is compiled, get the actual geom indices
+        # now that the model is compiled, get the actual geom indices and compute
+        # shape transform corrections
         shape_to_geom_idx = {}
         for shape, geom_name in shape_mapping.items():
             geom_idx = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
             if geom_idx >= 0:
                 shape_to_geom_idx[shape] = geom_idx
+                # compute the difference between the original shape transform
+                # and the transform after applying the joint child transform
+                # and the transform MuJoCo does on mesh geoms
+                original_tf = wp.transform(*shape_transform[shape])
+                mjc_p = self.mj_model.geom_pos[geom_idx]
+                mjc_q = self.mj_model.geom_quat[geom_idx]
+                mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                shape_incoming_xform[shape] = mjc_tf * wp.transform_inverse(original_tf)
         shape_mapping = shape_to_geom_idx  # Replace with actual indices
 
         self.mj_data = mujoco.MjData(self.mj_model)
@@ -1771,7 +1779,7 @@ class MuJoCoSolver(SolverBase):
 
             if model.shape_materials.mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
-            # self.notify_model_changed(flags)
+            self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
@@ -1980,10 +1988,8 @@ class MuJoCoSolver(SolverBase):
                 self.model.shape_geo.scale,
                 self.model.shape_transform,
                 self.model.shape_geo.type,
-                self.model.shape_body,
                 self.model.to_newton_shape_index,
                 self.model.shape_incoming_xform,
-                self.model.up_axis,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
                 self.contact_stiffness_time_const,
