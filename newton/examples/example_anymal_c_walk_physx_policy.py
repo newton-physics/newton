@@ -233,8 +233,10 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, headless=args.headless)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        policy_path = os.path.join(script_dir, "assets", "anymal_walking_policy_physx.pt")
+        
+        # Download the policy from the newton-assets repository
+        policy_asset_path = newton.utils.download_asset("anymal_c_policies")
+        policy_path = str(policy_asset_path / "anymal_walking_policy_physx.pt")
 
         example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
         example.joint_pos_initial = torch.tensor(
