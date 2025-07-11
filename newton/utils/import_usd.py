@@ -915,10 +915,10 @@ def parse_usd(
                         **shape_params,
                     )
                 elif key == UsdPhysics.ObjectType.PlaneShape:
-                    # Warp uses +Y convention for planes
-                    if shape_spec.axis != UsdPhysics.Axis.Y:
+                    # Warp uses +Z convention for planes
+                    if shape_spec.axis != UsdPhysics.Axis.Z:
                         xform = shape_params["xform"]
-                        axis_q = newton.core.spatial.quat_between_axes(Axis.Y, usd_axis_to_axis[shape_spec.axis])
+                        axis_q = newton.core.spatial.quat_between_axes(Axis.Z, usd_axis_to_axis[shape_spec.axis])
                         shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
                     shape_id = builder.add_shape_plane(
                         **shape_params,
