@@ -167,7 +167,7 @@ def compute_body_jacobian(
 class Example:
     def __init__(
         self,
-        stage_path: str = "example_robot_manipulating_cloth.usd",
+        stage_path: str | None = "example_robot_manipulating_cloth.usd",
         num_frames: int | None = None,
     ):
         self.stage_path = stage_path

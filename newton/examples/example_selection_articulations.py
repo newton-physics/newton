@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import warp as wp
 
 import newton
@@ -72,7 +74,9 @@ def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_env
 
 
 class Example:
-    def __init__(self, stage_path=None, num_envs=16, use_cuda_graph=True):
+    def __init__(
+        self, stage_path: str | None = "example_selection_articulations.usd", num_envs=16, use_cuda_graph=True
+    ):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z
@@ -107,9 +111,6 @@ class Example:
         self.model = builder.finalize()
 
         self.solver = newton.solvers.MuJoCoSolver(self.model)
-
-        # TODO: This line is needed or else this example will crash on some systems
-        self.solver.mjw_model.opt.graph_conditional = False
 
         self.renderer = None
         if stage_path:
@@ -319,7 +320,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_selection_ant.usd",
+        default="example_selection_articulations.usd",
         help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")

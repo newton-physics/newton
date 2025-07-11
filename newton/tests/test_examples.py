@@ -55,10 +55,8 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
     additional_options = []
 
     for key, value in test_options.items():
-        if key == "headless" and value:
-            additional_options.extend(["--headless"])
-        elif isinstance(value, bool):
-            # Fallback for other booleans
+        if isinstance(value, bool):
+            # Default behavior expecting argparse.BooleanOptionalAction support
             additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
         else:
             # Just add --key value
@@ -298,6 +296,33 @@ add_example_test(
 )
 
 
+class TestSelectionAPIExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestSelectionAPIExamples,
+    name="example_selection_articulations",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestSelectionAPIExamples,
+    name="example_selection_cartpole",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestSelectionAPIExamples,
+    name="example_selection_materials",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+
+
 class TestOtherExamples(unittest.TestCase):
     pass
 
@@ -310,25 +335,11 @@ add_example_test(
 )
 add_example_test(
     TestOtherExamples,
-    name="example_selection_articulations",
+    name="example_rigid_force",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
-    test_options_cpu={"num_frames": 10},
+    test_options={"headless": True},
 )
-add_example_test(
-    TestOtherExamples,
-    name="example_selection_cartpole",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
-    test_options_cpu={"num_frames": 10},
-)
-add_example_test(
-    TestOtherExamples,
-    name="example_selection_materials",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
-    test_options_cpu={"num_frames": 10},
-)
+
 
 if __name__ == "__main__":
     # force rebuild of all kernels

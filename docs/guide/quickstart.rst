@@ -1,6 +1,20 @@
 Quickstart
 ==========
 
+Requirements
+------------
+
+- Python 3.9 or higher
+- NVIDIA GPU with driver 525 or newer (545 or newer is recommended)
+- NVIDIA Warp from nightly build (see ``pyproject.toml`` for the current minimum version)
+
+A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
+See the :doc:`../development-guide` for more details on how to set up a development environment and install
+nightly builds.
+
+**Note:** NVIDIA GPU driver 545+ is required for Warp kernel compilation *during* CUDA graph capture. 
+Some examples using graph capture may fail with older drivers.
+
 Real-time Rendering
 -------------------
 
