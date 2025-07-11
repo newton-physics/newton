@@ -23,7 +23,6 @@
 #
 ###########################################################################
 
-import os
 
 import torch
 import warp as wp
@@ -233,7 +232,7 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, headless=args.headless)
-        
+
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anymal_c_policies")
         policy_path = str(policy_asset_path / "anymal_walking_policy_physx.pt")
