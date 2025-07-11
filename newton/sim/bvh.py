@@ -505,13 +505,13 @@ class TriBvh(Bvh):
         """
         This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
         record the collision data. This collision detector works both ways, i.e., it records vertices' colliding triangles to
-        `vertex_colliding_triangles`, and records each triangles colliding vertices to `triangle_colliding_vertices`.
+        `vertex_colliding_triangles`, and records each triangle's colliding vertices to `triangle_colliding_vertices`.
 
         This function assumes that all the vertices are on triangles, and can be indexed from the pos argument.
 
         Note:
 
-            The collision date buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
+            The collision data buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
             may not be enough. If the space is not enough to record all the collision information, the function will set a
             certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
             and vertex_colliding_triangles_count.
