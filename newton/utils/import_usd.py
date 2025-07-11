@@ -867,27 +867,27 @@ def parse_usd(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # shape_id = builder.add_shape_cylinder(
                     #     **shape_params,
                     #     radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                     #     half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                    #     up_axis=int(shape_spec.axis),
+                    #     axis=int(shape_spec.axis),
                     # )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     shape_id = builder.add_shape_cone(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
