@@ -21,44 +21,37 @@ from newton.examples.example_robot_manipulating_cloth import Example as ExampleC
 
 
 class VBDSpeedTestSelfContact:
-    params = [
-        300,
-    ]
+    numbers = 5
 
-    number = 10
-
-    def setup(self, num_frames):
+    def setup(self):
         wp.init()
 
         if wp.get_cuda_device_count() > 0:
             with wp.ScopedDevice("cuda"):
-                self.example = ExampleClothSelfContact(stage_path=None, num_frames=num_frames)
+                self.example = ExampleClothSelfContact(stage_path=None, num_frames=300)
         else:
             self.example = None
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
-    def time_run_example_cloth_self_contact(self, num_frames):
+    def time_run_example_cloth_self_contact(self):
         with wp.ScopedDevice("cuda"):
             self.example.run()
 
 
 class VBDSpeedClothManipulation:
-    params = [
-        1000,
-    ]
+    timeout = 180
+    numbers = 3
 
-    number = 10
-
-    def setup(self, num_frames):
+    def setup(self):
         wp.init()
 
         if wp.get_cuda_device_count() > 0:
             with wp.ScopedDevice("cuda"):
-                self.example = ExampleClothManipulation(stage_path=None, num_frames=num_frames)
+                self.example = ExampleClothManipulation(stage_path=None, num_frames=300)
         else:
             self.example = None
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
-    def time_run_example_cloth_manipulation(self, num_frames):
+    def time_run_example_cloth_manipulation(self):
         with wp.ScopedDevice("cuda"):
             self.example.run()
