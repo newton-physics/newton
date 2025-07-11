@@ -753,6 +753,11 @@ class ClothSim:
             if self.solver_name == "vbd":
                 wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
                 wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
+                wp.set_module_options(
+                    {"block_dim": newton.solvers.vbd.solver_vbd.TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE},
+                    newton.solvers.vbd.solver_vbd,
+                )
+                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
 
                 collide_module = importlib.import_module("newton.geometry.kernels")
                 # Also for some tile stuff
@@ -776,6 +781,7 @@ class ClothSim:
             wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
             wp.load_module(newton.solvers.solver, device=self.device)
             wp.load_module(device=self.device)
+
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph
