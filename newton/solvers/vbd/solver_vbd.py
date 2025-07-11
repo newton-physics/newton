@@ -182,13 +182,13 @@ def build_orthonormal_basis(n: wp.vec3):
 def calculate_triangle_deformation_gradient(
     face: int, tri_indices: wp.array(dtype=wp.int32, ndim=2), pos: wp.array(dtype=wp.vec3), tri_pose: wp.mat22
 ):
-    i0 = tri_indices[face, 0]
-    i1 = tri_indices[face, 1]
-    i2 = tri_indices[face, 2]
+    v0 = tri_indices[face, 0]  # vertex 0
+    v1 = tri_indices[face, 1]  # vertex 1
+    v2 = tri_indices[face, 2]  # vertex 2
 
-    x0 = pos[i0]
-    x01 = pos[i1] - x0
-    x02 = pos[i2] - x0
+    x0 = pos[v0]
+    x01 = pos[v1] - x0
+    x02 = pos[v2] - x0
 
     # Compute F columns directly: F = [x01, x02] * tri_pose
     f0 = x01 * tri_pose[0, 0] + x02 * tri_pose[1, 0]
