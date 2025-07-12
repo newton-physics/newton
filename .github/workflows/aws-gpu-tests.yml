@@ -11,23 +11,24 @@ env:
   AWS_ROLE_DURATION: 3600
   AWS_S3_BUCKET: newton-github-workflow-artifacts
 
-permissions:
-  id-token: write
-  contents: read
-
 on:
   pull_request_target:
   push:
-    branches:
-      - main
-      - release-*
-    tags:
-      - "v*"
+
+# Cancels in-progress runs of this workflow for the same pull request,
+# but allows parallel runs for pushes to the main branch.
+# This prevents redundant runs on PR branches while not affecting other triggers.
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   run-unit-tests-on-aws:
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    permissions:
+      id-token: write
+      contents: read
     if: github.repository == 'newton-physics/newton'
     outputs:
       instance_id: ${{ steps.launch.outputs.instance_id }}
@@ -47,6 +48,10 @@ jobs:
             --name /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id \
             --query "Parameter.Value" \
             --output text)
+          if [[ -z "$LATEST_AMI_ID" ]]; then
+            echo "❌ No AMI ID found. Exiting."
+            exit 1
+          fi
 
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "Launching EC2 instance..."
@@ -78,6 +83,7 @@ jobs:
           # A unique key for this run to avoid file collisions
           S3_KEY="reports/${{ github.run_id }}/${{ github.run_attempt }}"
           ssm_log_prefix="ssm-logs/${{ github.run_id }}/${{ github.run_attempt }}"
+          safe_branch=$(printf '%q' "${BRANCH_NAME_ENV}")
 
           # --- Step 1: Create the remote script locally ---
           cat << EOF > remote_script.sh
@@ -112,7 +118,7 @@ jobs:
 
           # These are expanded immediately on the GitHub runner
           REPO_URL="https://github.com/${{ github.repository }}.git"
-          BRANCH_NAME="${BRANCH_NAME_ENV}"
+          BRANCH_NAME="${safe_branch}"
           REPO_DIR="${{ github.event.repository.name }}"
 
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/tmp/uv-installation" sh
@@ -251,7 +257,10 @@ jobs:
     name: Cleanup EC2 Instance
     runs-on: ubuntu-latest
     needs: run-unit-tests-on-aws
-    if: always()
+    permissions:
+      id-token: write
+      contents: read
+    if: github.repository == 'newton-physics/newton' && always()
     steps:
       - name: Download instance ID artifact
         uses: actions/download-artifact@v4
