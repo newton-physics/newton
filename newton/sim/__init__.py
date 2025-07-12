@@ -15,6 +15,11 @@
 
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
+from .bvh import (
+    Bvh,
+    EdgeBvh,
+    TriBvh,
+)
 from .collide import CollisionPipeline, count_rigid_contact_points
 from .contacts import Contacts
 from .control import Control
@@ -62,9 +67,11 @@ __all__ = [
     "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
+    "Bvh",
     "CollisionPipeline",
     "Contacts",
     "Control",
+    "EdgeBvh",
     "Model",
     "ModelBuilder",
     "ShapeGeometry",
@@ -72,6 +79,7 @@ __all__ = [
     "State",
     "Style3DModel",
     "Style3DModelBuilder",
+    "TriBvh",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",

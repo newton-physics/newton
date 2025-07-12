@@ -17,7 +17,7 @@
 import numpy as np
 import warp as wp
 
-from newton.geometry.kernels import compute_edge_aabbs
+from newton.geometry.kernels import compute_edge_aabbs_kernel
 
 
 @wp.kernel
@@ -126,8 +126,8 @@ def create_trimesh_sew_springs(
     wp_edge_indices = wp.array(edge_indices, dtype=wp.int32, device="cpu")
     wp_vert_pos = wp.array(particle_q, dtype=wp.vec3, device="cpu")
     wp.launch(
-        kernel=compute_edge_aabbs,
-        inputs=[wp_vert_pos, wp_edge_indices],
+        kernel=compute_edge_aabbs_kernel,
+        inputs=[0.0, wp_vert_pos, wp_edge_indices],
         outputs=[lower_bounds_edges, upper_bounds_edges],
         dim=num_edge,
         device="cpu",
