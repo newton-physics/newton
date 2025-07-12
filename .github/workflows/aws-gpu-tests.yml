@@ -17,7 +17,6 @@ permissions:
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
   push:
     branches:
       - main
@@ -65,12 +64,14 @@ jobs:
 
           echo "Instance launched with ID: $INSTANCE_ID"
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
-          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo $INSTANCE_ID > instance_id.txt
 
           echo "Waiting for instance to be running..."
           aws ec2 wait instance-status-ok --instance-ids $INSTANCE_ID
 
       - name: Create and Run Remote Script
+        env:
+          BRANCH_NAME_ENV: ${{ github.head_ref || github.ref_name }}
         run: |
           # The name of the S3 bucket for storing results
           S3_BUCKET="${{ env.AWS_S3_BUCKET }}"
@@ -111,7 +112,7 @@ jobs:
 
           # These are expanded immediately on the GitHub runner
           REPO_URL="https://github.com/${{ github.repository }}.git"
-          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          BRANCH_NAME="${BRANCH_NAME_ENV}"
           REPO_DIR="${{ github.event.repository.name }}"
 
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/tmp/uv-installation" sh
@@ -239,20 +240,33 @@ jobs:
           flags: unittests
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Upload instance ID artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instance-id
+          path: instance_id.txt
+
   cleanup:
     name: Cleanup EC2 Instance
     runs-on: ubuntu-latest
     needs: run-unit-tests-on-aws
-    if: github.repository == 'newton-physics/newton' && always()
+    if: always()
     steps:
+      - name: Download instance ID artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: instance-id
+          path: .
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
 
-      - name: Terminate EC2 Instance
-        if: needs.run-unit-tests-on-aws.outputs.instance_id != ''
+      - name: Read instance ID and terminate EC2 Instance
         run: |
-          echo "Terminating instance: ${{ needs.run-unit-tests-on-aws.outputs.instance_id }}"
-          aws ec2 terminate-instances --instance-ids ${{ needs.run-unit-tests-on-aws.outputs.instance_id }}
+          INSTANCE_ID=$(cat instance_id.txt)
+          echo "Terminating instance: $INSTANCE_ID"
+          aws ec2 terminate-instances --instance-ids $INSTANCE_ID
