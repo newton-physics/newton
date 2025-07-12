@@ -238,7 +238,7 @@ jobs:
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d
         with:
-          env_vars: OS
+          env_vars: AWS_INSTANCE_TYPE
           files: ./coverage.xml
           flags: unittests
           token: ${{ secrets.CODECOV_TOKEN }}
