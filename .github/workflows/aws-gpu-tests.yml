@@ -141,18 +141,18 @@ jobs:
           uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback 2>&1 | tee /tmp/test_output.log
           EOF
 
-          echo "--- Generated script contents: ---"
-          cat remote_script.sh
-      - name: Run script on instance
-        env:
-          S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
-        run: |
           echo "--- Preparing SSM parameters ---"
           # Use jq to safely embed the script content into a valid JSON structure.
           # -n: read no input | --arg: set a variable | -R: read raw string | -s: slurp all input
           jq -n --arg script_body "$(cat remote_script.sh)" \
           '{ "commands": [$script_body] }' > ssm_params.json
 
+          echo "--- Generated script contents: ---"
+          cat remote_script.sh
+      - name: Run script on instance
+        env:
+          S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
+        run: |
           echo "--- Sending command to instance $INSTANCE_ID via SSM ---"
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
@@ -165,7 +165,6 @@ jobs:
             --output text)
 
           echo "SSM Command ID: $COMMAND_ID"
-          echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
 
           echo "--- Waiting for command to complete... ---"
           final_status="Success"
