@@ -235,11 +235,11 @@ jobs:
             echo "✅ Workflow completed successfully."
           fi
       - name: Test Summary
+        if: ${{ !cancelled() }}
         uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86
         with:
           paths: "rspec.xml"
           show: "fail"
-        if: always()
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@f2dba722c67b86c6caa034178c6e4d35335f6706
@@ -247,6 +247,7 @@ jobs:
           files: ./rspec.xml
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d
         with:
           env_vars: AWS_INSTANCE_TYPE
