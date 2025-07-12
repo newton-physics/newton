@@ -7,10 +7,9 @@ env:
   AWS_VOLUME_SIZE: 64
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
-  AWS_AMI_FILTER: "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) ????????"
-  AWS_AMI_OWNERS: amazon
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-github-actions-role-Role-GbdM0RBoT4xW
   AWS_ROLE_DURATION: 3600
+  AWS_S3_BUCKET: newton-github-workflow-artifacts
 
 permissions:
   id-token: write
@@ -44,11 +43,10 @@ jobs:
       - name: Launch EC2 instance with latest NVIDIA AMI
         id: launch
         run: |
-          echo "Finding the latest ${{ env.AWS_AMI_FILTER }}..."
-          LATEST_AMI_ID=$(aws ec2 describe-images --region ${{ env.AWS_REGION }} \
-            --owners ${{ env.AWS_AMI_OWNERS }} \
-            --filters "Name=name,Values=${{ env.AWS_AMI_FILTER }}" 'Name=state,Values=available' \
-            --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' \
+          echo "Finding the latest AWS Deep Learning Base GPU AMI..."
+          LATEST_AMI_ID=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} \
+            --name /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id \
+            --query "Parameter.Value" \
             --output text)
 
           echo "Latest AMI ID found: $LATEST_AMI_ID"
@@ -75,7 +73,7 @@ jobs:
       - name: Create and Run Remote Script
         run: |
           # The name of the S3 bucket for storing results
-          S3_BUCKET="newton-github-workflow-artifacts"
+          S3_BUCKET="${{ env.AWS_S3_BUCKET }}"
           # A unique key for this run to avoid file collisions
           S3_KEY="reports/${{ github.run_id }}/${{ github.run_attempt }}"
           ssm_log_prefix="ssm-logs/${{ github.run_id }}/${{ github.run_attempt }}"
@@ -168,8 +166,13 @@ jobs:
             if [[ "$STATUS" == "Success" ]]; then
               # final_status is already "Success"
               break
-            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
-              final_status="$STATUS" # Record the failure status
+            elif [[ "$STATUS" == "InProgress" || "$STATUS" == "Pending" ]]; then
+              # Continue waiting for these expected running statuses
+              :
+            else
+              # Catch all other statuses (failures and unexpected statuses)
+              final_status="$STATUS"
+              echo "SSM command failed or returned unexpected status: $STATUS"
               break
             fi
             
