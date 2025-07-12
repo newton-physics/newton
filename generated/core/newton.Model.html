@@ -1,0 +1,2035 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>newton.Model &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=3521d46b"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>window.MathJax = {"tex": {"packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "inlineMath": [["$", "$"], ["\\(", "\\)"]], "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEscapes": true, "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"processHtmlClass": "tex2jax_process|mathjax_process|math|output_area", "ignoreHtmlClass": "annotation"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'generated/core/newton.Model';</script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="newton.State" href="newton.State.html" />
+    <link rel="prev" title="Core" href="../../api_core.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.1.1.a2)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../conventions.html">
+    Conventions
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../conventions.html">Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../api.html">Overview</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../api_core.html">Core</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">newton.Model</a></li>
+<li class="toctree-l2"><a class="reference internal" href="newton.State.html">newton.State</a></li>
+<li class="toctree-l2"><a class="reference internal" href="newton.Control.html">newton.Control</a></li>
+<li class="toctree-l2"><a class="reference internal" href="newton.ModelBuilder.html">newton.ModelBuilder</a></li>
+<li class="toctree-l2"><a class="reference internal" href="newton.Mesh.html">newton.Mesh</a></li>
+<li class="toctree-l2"><a class="reference internal" href="newton.SDF.html">newton.SDF</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_solvers.html">Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_importers.html">Importers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_renderers.html">Renderers</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../changelog.html">Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../development-guide.html">Development Guide</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../api_core.html" class="nav-link">Core</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.Model</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="newton-model">
+<h1>newton.Model<a class="headerlink" href="#newton-model" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.Model">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Model</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model" title="Link to this definition">#</a></dt>
+<dd><p>Holds the definition of the simulation model</p>
+<p>This class holds the non-time varying description of the system, i.e.:
+all geometry, constraints, and parameters used to describe the simulation.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>It is strongly recommended to use the ModelBuilder to construct a
+simulation rather than creating your own Model object directly,
+however it is possible to do so if desired.</p>
+</div>
+<p class="rubric">Methods</p>
+<div class="pst-scrollable-table-container"><table class="autosummary longtable table">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.__init__" title="newton.Model.__init__"><code class="xref py py-obj docutils literal notranslate"><span class="pre">__init__</span></code></a>([device])</p></td>
+<td><p>Initializes the Model object.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.add_attribute" title="newton.Model.add_attribute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">add_attribute</span></code></a>(name, attrib, frequency)</p></td>
+<td><p>Add a custom attribute to the model</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-obj docutils literal notranslate"><span class="pre">collide</span></code></a>(state[, collision_pipeline, ...])</p></td>
+<td><p>Generates contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.control" title="newton.Model.control"><code class="xref py py-obj docutils literal notranslate"><span class="pre">control</span></code></a>([requires_grad, clone_variables])</p></td>
+<td><p>Returns a control object for the model.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.get_attribute_frequency" title="newton.Model.get_attribute_frequency"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_attribute_frequency</span></code></a>(name)</p></td>
+<td><p>Get the frequency of an attribute, e.g., &quot;body&quot;, &quot;joint&quot;, etc.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.state" title="newton.Model.state"><code class="xref py py-obj docutils literal notranslate"><span class="pre">state</span></code></a>([requires_grad])</p></td>
+<td><p>Returns a state object for the model</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p class="rubric">Attributes</p>
+<div class="pst-scrollable-table-container"><table class="autosummary longtable table">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.requires_grad" title="newton.Model.requires_grad"><code class="xref py py-obj docutils literal notranslate"><span class="pre">requires_grad</span></code></a></p></td>
+<td><p>Indicates whether the model was finalized (see <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.finalize()</span></code></a>) with gradient computation enabled.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.num_envs" title="newton.Model.num_envs"><code class="xref py py-obj docutils literal notranslate"><span class="pre">num_envs</span></code></a></p></td>
+<td><p>Number of articulation environments that were added to the ModelBuilder via <cite>add_builder</cite>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_q" title="newton.Model.particle_q"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_q</span></code></a></p></td>
+<td><p>Particle positions, shape [particle_count, 3], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_qd" title="newton.Model.particle_qd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_qd</span></code></a></p></td>
+<td><p>Particle velocities, shape [particle_count, 3], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_mass" title="newton.Model.particle_mass"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_mass</span></code></a></p></td>
+<td><p>Particle mass, shape [particle_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_inv_mass" title="newton.Model.particle_inv_mass"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_inv_mass</span></code></a></p></td>
+<td><p>Particle inverse mass, shape [particle_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_radius" title="newton.Model.particle_radius"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_radius</span></code></a></p></td>
+<td><p>Particle radius, shape [particle_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_max_radius" title="newton.Model.particle_max_radius"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_max_radius</span></code></a></p></td>
+<td><p>Maximum particle radius (useful for HashGrid construction).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_ke" title="newton.Model.particle_ke"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_ke</span></code></a></p></td>
+<td><p>Particle normal contact stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_kd" title="newton.Model.particle_kd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_kd</span></code></a></p></td>
+<td><p>Particle normal contact damping (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_kf" title="newton.Model.particle_kf"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_kf</span></code></a></p></td>
+<td><p>Particle friction force stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_mu" title="newton.Model.particle_mu"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_mu</span></code></a></p></td>
+<td><p>Particle friction coefficient.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_cohesion" title="newton.Model.particle_cohesion"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_cohesion</span></code></a></p></td>
+<td><p>Particle cohesion strength.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_adhesion" title="newton.Model.particle_adhesion"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_adhesion</span></code></a></p></td>
+<td><p>Particle adhesion strength.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_grid" title="newton.Model.particle_grid"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_grid</span></code></a></p></td>
+<td><p>HashGrid instance used for accelerated simulation of particle interactions.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_flags" title="newton.Model.particle_flags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_flags</span></code></a></p></td>
+<td><p>Particle enabled state, shape [particle_count], bool.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_max_velocity" title="newton.Model.particle_max_velocity"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_max_velocity</span></code></a></p></td>
+<td><p>Maximum particle velocity (to prevent instability).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_key" title="newton.Model.shape_key"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_key</span></code></a></p></td>
+<td><p>List of keys for each shape.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_transform" title="newton.Model.shape_transform"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_transform</span></code></a></p></td>
+<td><p>Rigid shape transforms, shape [shape_count, 7], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_body" title="newton.Model.shape_body"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_body</span></code></a></p></td>
+<td><p>Rigid shape body index, shape [shape_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_flags" title="newton.Model.shape_flags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_flags</span></code></a></p></td>
+<td><p>Rigid shape flags, shape [shape_count], uint32.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_shapes" title="newton.Model.body_shapes"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_shapes</span></code></a></p></td>
+<td><p>Mapping from body index to list of attached shape indices.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_materials" title="newton.Model.shape_materials"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_materials</span></code></a></p></td>
+<td><p>Rigid shape contact materials.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_geo" title="newton.Model.shape_geo"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_geo</span></code></a></p></td>
+<td><p>Shape geometry properties (geo type, scale, thickness, etc.).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_geo_src" title="newton.Model.shape_geo_src"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_geo_src</span></code></a></p></td>
+<td><p>List of source geometry objects (e.g., <cite>wp.Mesh</cite>, <cite>SDF</cite>) used for rendering and broadphase.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_collision_group" title="newton.Model.shape_collision_group"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_collision_group</span></code></a></p></td>
+<td><p>Collision group of each shape, shape [shape_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_collision_group_map" title="newton.Model.shape_collision_group_map"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_collision_group_map</span></code></a></p></td>
+<td><p>Mapping from collision group to list of shape indices.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_collision_filter_pairs" title="newton.Model.shape_collision_filter_pairs"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_collision_filter_pairs</span></code></a></p></td>
+<td><p>Pairs of shape indices that should not collide.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_collision_radius" title="newton.Model.shape_collision_radius"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_collision_radius</span></code></a></p></td>
+<td><p>Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.shape_contact_pairs" title="newton.Model.shape_contact_pairs"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_contact_pairs</span></code></a></p></td>
+<td><p>Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_contact_pair_count" title="newton.Model.shape_contact_pair_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_contact_pair_count</span></code></a></p></td>
+<td><p>Number of shape contact pairs.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.spring_indices" title="newton.Model.spring_indices"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_indices</span></code></a></p></td>
+<td><p>Particle spring indices, shape [spring_count*2], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.spring_rest_length" title="newton.Model.spring_rest_length"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_rest_length</span></code></a></p></td>
+<td><p>Particle spring rest length, shape [spring_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.spring_stiffness" title="newton.Model.spring_stiffness"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_stiffness</span></code></a></p></td>
+<td><p>Particle spring stiffness, shape [spring_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.spring_damping" title="newton.Model.spring_damping"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_damping</span></code></a></p></td>
+<td><p>Particle spring damping, shape [spring_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.spring_control" title="newton.Model.spring_control"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_control</span></code></a></p></td>
+<td><p>Particle spring activation, shape [spring_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.spring_constraint_lambdas" title="newton.Model.spring_constraint_lambdas"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_constraint_lambdas</span></code></a></p></td>
+<td><p>Lagrange multipliers for spring constraints (internal use).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tri_indices" title="newton.Model.tri_indices"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_indices</span></code></a></p></td>
+<td><p>Triangle element indices, shape [tri_count*3], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.tri_poses" title="newton.Model.tri_poses"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_poses</span></code></a></p></td>
+<td><p>Triangle element rest pose, shape [tri_count, 2, 2], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tri_activations" title="newton.Model.tri_activations"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_activations</span></code></a></p></td>
+<td><p>Triangle element activations, shape [tri_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.tri_materials" title="newton.Model.tri_materials"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_materials</span></code></a></p></td>
+<td><p>Triangle element materials, shape [tri_count, 5], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tri_areas" title="newton.Model.tri_areas"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_areas</span></code></a></p></td>
+<td><p>Triangle element rest areas, shape [tri_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.edge_indices" title="newton.Model.edge_indices"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_indices</span></code></a></p></td>
+<td><p>Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.edge_rest_angle" title="newton.Model.edge_rest_angle"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_rest_angle</span></code></a></p></td>
+<td><p>Bending edge rest angle, shape [edge_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.edge_rest_length" title="newton.Model.edge_rest_length"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_rest_length</span></code></a></p></td>
+<td><p>Bending edge rest length, shape [edge_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.edge_bending_properties" title="newton.Model.edge_bending_properties"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_bending_properties</span></code></a></p></td>
+<td><p>Bending edge stiffness and damping parameters, shape [edge_count, 2], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.edge_constraint_lambdas" title="newton.Model.edge_constraint_lambdas"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_constraint_lambdas</span></code></a></p></td>
+<td><p>Lagrange multipliers for edge constraints (internal use).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tet_indices" title="newton.Model.tet_indices"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tet_indices</span></code></a></p></td>
+<td><p>Tetrahedral element indices, shape [tet_count*4], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.tet_poses" title="newton.Model.tet_poses"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tet_poses</span></code></a></p></td>
+<td><p>Tetrahedral rest poses, shape [tet_count, 3, 3], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tet_activations" title="newton.Model.tet_activations"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tet_activations</span></code></a></p></td>
+<td><p>Tetrahedral volumetric activations, shape [tet_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.tet_materials" title="newton.Model.tet_materials"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tet_materials</span></code></a></p></td>
+<td><p>Tetrahedral elastic parameters in form <span class="math notranslate nohighlight">\(k_{mu}, k_{lambda}, k_{damp}\)</span>, shape [tet_count, 3].</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.muscle_start" title="newton.Model.muscle_start"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_start</span></code></a></p></td>
+<td><p>Start index of the first muscle point per muscle, shape [muscle_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.muscle_params" title="newton.Model.muscle_params"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_params</span></code></a></p></td>
+<td><p>Muscle parameters, shape [muscle_count, 5], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.muscle_bodies" title="newton.Model.muscle_bodies"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_bodies</span></code></a></p></td>
+<td><p>Body indices of the muscle waypoints, int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.muscle_points" title="newton.Model.muscle_points"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_points</span></code></a></p></td>
+<td><p>Local body offset of the muscle waypoints, float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.muscle_activations" title="newton.Model.muscle_activations"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_activations</span></code></a></p></td>
+<td><p>Muscle activations, shape [muscle_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.body_q" title="newton.Model.body_q"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_q</span></code></a></p></td>
+<td><p>Poses of rigid bodies used for state initialization, shape [body_count, 7], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_qd" title="newton.Model.body_qd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_qd</span></code></a></p></td>
+<td><p>Velocities of rigid bodies used for state initialization, shape [body_count, 6], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.body_com" title="newton.Model.body_com"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_com</span></code></a></p></td>
+<td><p>Rigid body center of mass (in local frame), shape [body_count, 3], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_inertia" title="newton.Model.body_inertia"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_inertia</span></code></a></p></td>
+<td><p>Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.body_inv_inertia" title="newton.Model.body_inv_inertia"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_inv_inertia</span></code></a></p></td>
+<td><p>Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_mass" title="newton.Model.body_mass"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_mass</span></code></a></p></td>
+<td><p>Rigid body mass, shape [body_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.body_inv_mass" title="newton.Model.body_inv_mass"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_inv_mass</span></code></a></p></td>
+<td><p>Rigid body inverse mass, shape [body_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_key" title="newton.Model.body_key"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_key</span></code></a></p></td>
+<td><p>Rigid body keys, shape [body_count], str.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_q" title="newton.Model.joint_q"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_q</span></code></a></p></td>
+<td><p>Generalized joint positions used for state initialization, shape [joint_coord_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_qd" title="newton.Model.joint_qd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_qd</span></code></a></p></td>
+<td><p>Generalized joint velocities used for state initialization, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_f" title="newton.Model.joint_f"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_f</span></code></a></p></td>
+<td><p>Generalized joint forces used for state initialization, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_target" title="newton.Model.joint_target"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_target</span></code></a></p></td>
+<td><p>Generalized joint target inputs, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_type" title="newton.Model.joint_type"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_type</span></code></a></p></td>
+<td><p>Joint type, shape [joint_count], int.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_parent" title="newton.Model.joint_parent"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_parent</span></code></a></p></td>
+<td><p>Joint parent body indices, shape [joint_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_child" title="newton.Model.joint_child"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_child</span></code></a></p></td>
+<td><p>Joint child body indices, shape [joint_count], int.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_ancestor" title="newton.Model.joint_ancestor"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_ancestor</span></code></a></p></td>
+<td><p>Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_X_p" title="newton.Model.joint_X_p"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_X_p</span></code></a></p></td>
+<td><p>Joint transform in parent frame, shape [joint_count, 7], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_X_c</span></code></a></p></td>
+<td><p>Joint mass frame in child frame, shape [joint_count, 7], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_axis" title="newton.Model.joint_axis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_axis</span></code></a></p></td>
+<td><p>Joint axis in child frame, shape [joint_dof_count, 3], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_armature</span></code></a></p></td>
+<td><p>Armature for each joint axis (used by <a class="reference internal" href="../solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver" title="newton.solvers.MuJoCoSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">MuJoCoSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a></p></td>
+<td><p>Joint stiffness, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a></p></td>
+<td><p>Joint damping, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a></p></td>
+<td><p>Joint effort (force/torque) limits, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_velocity_limit" title="newton.Model.joint_velocity_limit"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code></a></p></td>
+<td><p>Joint velocity limits, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_friction</span></code></a></p></td>
+<td><p>Joint friction coefficient, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_dof_dim" title="newton.Model.joint_dof_dim"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_dof_dim</span></code></a></p></td>
+<td><p>Number of linear and angular dofs per joint, shape [joint_count, 2], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_dof_mode" title="newton.Model.joint_dof_mode"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_dof_mode</span></code></a></p></td>
+<td><p>Control mode for each joint dof, shape [joint_dof_count], int.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_enabled" title="newton.Model.joint_enabled"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_enabled</span></code></a></p></td>
+<td><p>Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_limit_lower" title="newton.Model.joint_limit_lower"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_limit_lower</span></code></a></p></td>
+<td><p>Joint lower position limits, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_limit_upper" title="newton.Model.joint_limit_upper"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_limit_upper</span></code></a></p></td>
+<td><p>Joint upper position limits, shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a></p></td>
+<td><p>Joint position limit stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a></p></td>
+<td><p>Joint position limit damping (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_twist_lower" title="newton.Model.joint_twist_lower"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_twist_lower</span></code></a></p></td>
+<td><p>Joint lower twist limit, shape [joint_count], float.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_twist_upper" title="newton.Model.joint_twist_upper"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_twist_upper</span></code></a></p></td>
+<td><p>Joint upper twist limit, shape [joint_count], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_q_start" title="newton.Model.joint_q_start"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_q_start</span></code></a></p></td>
+<td><p>Start index of the first position coordinate per joint (note the last value is an additional sentinel entry to allow for querying the q dimensionality of joint i via <code class="docutils literal notranslate"><span class="pre">joint_q_start[i+1]</span> <span class="pre">-</span> <span class="pre">joint_q_start[i]</span></code>), shape [joint_count + 1], int.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_qd_start" title="newton.Model.joint_qd_start"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_qd_start</span></code></a></p></td>
+<td><p>Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via <code class="docutils literal notranslate"><span class="pre">joint_qd_start[i+1]</span> <span class="pre">-</span> <span class="pre">joint_qd_start[i]</span></code>), shape [joint_count + 1], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_key" title="newton.Model.joint_key"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_key</span></code></a></p></td>
+<td><p>Joint keys, shape [joint_count], str.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.articulation_start" title="newton.Model.articulation_start"><code class="xref py py-obj docutils literal notranslate"><span class="pre">articulation_start</span></code></a></p></td>
+<td><p>Articulation start index, shape [articulation_count], int.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.articulation_key" title="newton.Model.articulation_key"><code class="xref py py-obj docutils literal notranslate"><span class="pre">articulation_key</span></code></a></p></td>
+<td><p>Articulation keys, shape [articulation_count], str.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.soft_contact_ke" title="newton.Model.soft_contact_ke"><code class="xref py py-obj docutils literal notranslate"><span class="pre">soft_contact_ke</span></code></a></p></td>
+<td><p>Stiffness of soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.soft_contact_kd" title="newton.Model.soft_contact_kd"><code class="xref py py-obj docutils literal notranslate"><span class="pre">soft_contact_kd</span></code></a></p></td>
+<td><p>Damping of soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.soft_contact_kf" title="newton.Model.soft_contact_kf"><code class="xref py py-obj docutils literal notranslate"><span class="pre">soft_contact_kf</span></code></a></p></td>
+<td><p>Stiffness of friction force in soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.soft_contact_mu" title="newton.Model.soft_contact_mu"><code class="xref py py-obj docutils literal notranslate"><span class="pre">soft_contact_mu</span></code></a></p></td>
+<td><p>Friction coefficient of soft contacts.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.soft_contact_restitution" title="newton.Model.soft_contact_restitution"><code class="xref py py-obj docutils literal notranslate"><span class="pre">soft_contact_restitution</span></code></a></p></td>
+<td><p>Restitution coefficient of soft contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.rigid_contact_max" title="newton.Model.rigid_contact_max"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rigid_contact_max</span></code></a></p></td>
+<td><p>Number of potential contact points between rigid bodies.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.rigid_contact_torsional_friction" title="newton.Model.rigid_contact_torsional_friction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rigid_contact_torsional_friction</span></code></a></p></td>
+<td><p>Torsional friction coefficient for rigid body contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.rigid_contact_rolling_friction" title="newton.Model.rigid_contact_rolling_friction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rigid_contact_rolling_friction</span></code></a></p></td>
+<td><p>Rolling friction coefficient for rigid body contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.up_vector" title="newton.Model.up_vector"><code class="xref py py-obj docutils literal notranslate"><span class="pre">up_vector</span></code></a></p></td>
+<td><p>Up vector of the world, shape [3], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.up_axis" title="newton.Model.up_axis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">up_axis</span></code></a></p></td>
+<td><p>Up axis, 0 for x, 1 for y, 2 for z.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.gravity" title="newton.Model.gravity"><code class="xref py py-obj docutils literal notranslate"><span class="pre">gravity</span></code></a></p></td>
+<td><p>Gravity vector, shape [3], float.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_count" title="newton.Model.particle_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_count</span></code></a></p></td>
+<td><p>Total number of particles in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.body_count" title="newton.Model.body_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">body_count</span></code></a></p></td>
+<td><p>Total number of bodies in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.shape_count" title="newton.Model.shape_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">shape_count</span></code></a></p></td>
+<td><p>Total number of shapes in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_count" title="newton.Model.joint_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_count</span></code></a></p></td>
+<td><p>Total number of joints in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.tri_count" title="newton.Model.tri_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tri_count</span></code></a></p></td>
+<td><p>Total number of triangles in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.tet_count" title="newton.Model.tet_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">tet_count</span></code></a></p></td>
+<td><p>Total number of tetrahedra in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.edge_count" title="newton.Model.edge_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">edge_count</span></code></a></p></td>
+<td><p>Total number of edges in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.spring_count" title="newton.Model.spring_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spring_count</span></code></a></p></td>
+<td><p>Total number of springs in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.muscle_count" title="newton.Model.muscle_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">muscle_count</span></code></a></p></td>
+<td><p>Total number of muscles in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.articulation_count" title="newton.Model.articulation_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">articulation_count</span></code></a></p></td>
+<td><p>Total number of articulations in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.joint_dof_count" title="newton.Model.joint_dof_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_dof_count</span></code></a></p></td>
+<td><p>Total number of velocity degrees of freedom of all joints in the system.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.joint_coord_count" title="newton.Model.joint_coord_count"><code class="xref py py-obj docutils literal notranslate"><span class="pre">joint_coord_count</span></code></a></p></td>
+<td><p>Total number of position degrees of freedom of all joints in the system.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.particle_color_groups" title="newton.Model.particle_color_groups"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_color_groups</span></code></a></p></td>
+<td><p>The coloring of all the particles, used by <a class="reference internal" href="../solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver" title="newton.solvers.VBDSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">VBDSolver</span></code></a> for Gauss-Seidel iteration.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.particle_colors" title="newton.Model.particle_colors"><code class="xref py py-obj docutils literal notranslate"><span class="pre">particle_colors</span></code></a></p></td>
+<td><p>Contains the color assignment for every particle.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.Model.device" title="newton.Model.device"><code class="xref py py-obj docutils literal notranslate"><span class="pre">device</span></code></a></p></td>
+<td><p>Device on which the Model was allocated.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.Model.attribute_frequency" title="newton.Model.attribute_frequency"><code class="xref py py-obj docutils literal notranslate"><span class="pre">attribute_frequency</span></code></a></p></td>
+<td><p>Classify each attribute as per body, per joint, per DOF, etc.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.__init__" title="Link to this definition">#</a></dt>
+<dd><p>Initializes the Model object.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>device</strong> (<em>wp.Device</em>) – Device on which the Model’s data will be allocated.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.requires_grad">
+<span class="sig-name descname"><span class="pre">requires_grad</span></span><a class="headerlink" href="#newton.Model.requires_grad" title="Link to this definition">#</a></dt>
+<dd><p>Indicates whether the model was finalized (see <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.finalize()</span></code></a>) with gradient computation enabled.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.num_envs">
+<span class="sig-name descname"><span class="pre">num_envs</span></span><a class="headerlink" href="#newton.Model.num_envs" title="Link to this definition">#</a></dt>
+<dd><p>Number of articulation environments that were added to the ModelBuilder via <cite>add_builder</cite>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_q">
+<span class="sig-name descname"><span class="pre">particle_q</span></span><a class="headerlink" href="#newton.Model.particle_q" title="Link to this definition">#</a></dt>
+<dd><p>Particle positions, shape [particle_count, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_qd">
+<span class="sig-name descname"><span class="pre">particle_qd</span></span><a class="headerlink" href="#newton.Model.particle_qd" title="Link to this definition">#</a></dt>
+<dd><p>Particle velocities, shape [particle_count, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_mass">
+<span class="sig-name descname"><span class="pre">particle_mass</span></span><a class="headerlink" href="#newton.Model.particle_mass" title="Link to this definition">#</a></dt>
+<dd><p>Particle mass, shape [particle_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_inv_mass">
+<span class="sig-name descname"><span class="pre">particle_inv_mass</span></span><a class="headerlink" href="#newton.Model.particle_inv_mass" title="Link to this definition">#</a></dt>
+<dd><p>Particle inverse mass, shape [particle_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_radius">
+<span class="sig-name descname"><span class="pre">particle_radius</span></span><a class="headerlink" href="#newton.Model.particle_radius" title="Link to this definition">#</a></dt>
+<dd><p>Particle radius, shape [particle_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_max_radius">
+<span class="sig-name descname"><span class="pre">particle_max_radius</span></span><a class="headerlink" href="#newton.Model.particle_max_radius" title="Link to this definition">#</a></dt>
+<dd><p>Maximum particle radius (useful for HashGrid construction).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_ke">
+<span class="sig-name descname"><span class="pre">particle_ke</span></span><a class="headerlink" href="#newton.Model.particle_ke" title="Link to this definition">#</a></dt>
+<dd><p>Particle normal contact stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>). Default is 1.0e3.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_kd">
+<span class="sig-name descname"><span class="pre">particle_kd</span></span><a class="headerlink" href="#newton.Model.particle_kd" title="Link to this definition">#</a></dt>
+<dd><p>Particle normal contact damping (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>). Default is 1.0e2.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_kf">
+<span class="sig-name descname"><span class="pre">particle_kf</span></span><a class="headerlink" href="#newton.Model.particle_kf" title="Link to this definition">#</a></dt>
+<dd><p>Particle friction force stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a>). Default is 1.0e2.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_mu">
+<span class="sig-name descname"><span class="pre">particle_mu</span></span><a class="headerlink" href="#newton.Model.particle_mu" title="Link to this definition">#</a></dt>
+<dd><p>Particle friction coefficient. Default is 0.5.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_cohesion">
+<span class="sig-name descname"><span class="pre">particle_cohesion</span></span><a class="headerlink" href="#newton.Model.particle_cohesion" title="Link to this definition">#</a></dt>
+<dd><p>Particle cohesion strength. Default is 0.0.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_adhesion">
+<span class="sig-name descname"><span class="pre">particle_adhesion</span></span><a class="headerlink" href="#newton.Model.particle_adhesion" title="Link to this definition">#</a></dt>
+<dd><p>Particle adhesion strength. Default is 0.0.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_grid">
+<span class="sig-name descname"><span class="pre">particle_grid</span></span><a class="headerlink" href="#newton.Model.particle_grid" title="Link to this definition">#</a></dt>
+<dd><p>HashGrid instance used for accelerated simulation of particle interactions.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_flags">
+<span class="sig-name descname"><span class="pre">particle_flags</span></span><a class="headerlink" href="#newton.Model.particle_flags" title="Link to this definition">#</a></dt>
+<dd><p>Particle enabled state, shape [particle_count], bool.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_max_velocity">
+<span class="sig-name descname"><span class="pre">particle_max_velocity</span></span><a class="headerlink" href="#newton.Model.particle_max_velocity" title="Link to this definition">#</a></dt>
+<dd><p>Maximum particle velocity (to prevent instability). Default is 1e5.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_key">
+<span class="sig-name descname"><span class="pre">shape_key</span></span><a class="headerlink" href="#newton.Model.shape_key" title="Link to this definition">#</a></dt>
+<dd><p>List of keys for each shape.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_transform">
+<span class="sig-name descname"><span class="pre">shape_transform</span></span><a class="headerlink" href="#newton.Model.shape_transform" title="Link to this definition">#</a></dt>
+<dd><p>Rigid shape transforms, shape [shape_count, 7], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_body">
+<span class="sig-name descname"><span class="pre">shape_body</span></span><a class="headerlink" href="#newton.Model.shape_body" title="Link to this definition">#</a></dt>
+<dd><p>Rigid shape body index, shape [shape_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_flags">
+<span class="sig-name descname"><span class="pre">shape_flags</span></span><a class="headerlink" href="#newton.Model.shape_flags" title="Link to this definition">#</a></dt>
+<dd><p>Rigid shape flags, shape [shape_count], uint32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_shapes">
+<span class="sig-name descname"><span class="pre">body_shapes</span></span><a class="headerlink" href="#newton.Model.body_shapes" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from body index to list of attached shape indices.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_materials">
+<span class="sig-name descname"><span class="pre">shape_materials</span></span><a class="headerlink" href="#newton.Model.shape_materials" title="Link to this definition">#</a></dt>
+<dd><p>Rigid shape contact materials.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_geo">
+<span class="sig-name descname"><span class="pre">shape_geo</span></span><a class="headerlink" href="#newton.Model.shape_geo" title="Link to this definition">#</a></dt>
+<dd><p>Shape geometry properties (geo type, scale, thickness, etc.).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_geo_src">
+<span class="sig-name descname"><span class="pre">shape_geo_src</span></span><a class="headerlink" href="#newton.Model.shape_geo_src" title="Link to this definition">#</a></dt>
+<dd><p>List of source geometry objects (e.g., <cite>wp.Mesh</cite>, <cite>SDF</cite>) used for rendering and broadphase.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_group">
+<span class="sig-name descname"><span class="pre">shape_collision_group</span></span><a class="headerlink" href="#newton.Model.shape_collision_group" title="Link to this definition">#</a></dt>
+<dd><p>Collision group of each shape, shape [shape_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_group_map">
+<span class="sig-name descname"><span class="pre">shape_collision_group_map</span></span><a class="headerlink" href="#newton.Model.shape_collision_group_map" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from collision group to list of shape indices.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_filter_pairs">
+<span class="sig-name descname"><span class="pre">shape_collision_filter_pairs</span></span><a class="headerlink" href="#newton.Model.shape_collision_filter_pairs" title="Link to this definition">#</a></dt>
+<dd><p>Pairs of shape indices that should not collide.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_radius">
+<span class="sig-name descname"><span class="pre">shape_collision_radius</span></span><a class="headerlink" href="#newton.Model.shape_collision_radius" title="Link to this definition">#</a></dt>
+<dd><p>Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_contact_pairs">
+<span class="sig-name descname"><span class="pre">shape_contact_pairs</span></span><a class="headerlink" href="#newton.Model.shape_contact_pairs" title="Link to this definition">#</a></dt>
+<dd><p>Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_contact_pair_count">
+<span class="sig-name descname"><span class="pre">shape_contact_pair_count</span></span><a class="headerlink" href="#newton.Model.shape_contact_pair_count" title="Link to this definition">#</a></dt>
+<dd><p>Number of shape contact pairs.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_indices">
+<span class="sig-name descname"><span class="pre">spring_indices</span></span><a class="headerlink" href="#newton.Model.spring_indices" title="Link to this definition">#</a></dt>
+<dd><p>Particle spring indices, shape [spring_count*2], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_rest_length">
+<span class="sig-name descname"><span class="pre">spring_rest_length</span></span><a class="headerlink" href="#newton.Model.spring_rest_length" title="Link to this definition">#</a></dt>
+<dd><p>Particle spring rest length, shape [spring_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_stiffness">
+<span class="sig-name descname"><span class="pre">spring_stiffness</span></span><a class="headerlink" href="#newton.Model.spring_stiffness" title="Link to this definition">#</a></dt>
+<dd><p>Particle spring stiffness, shape [spring_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_damping">
+<span class="sig-name descname"><span class="pre">spring_damping</span></span><a class="headerlink" href="#newton.Model.spring_damping" title="Link to this definition">#</a></dt>
+<dd><p>Particle spring damping, shape [spring_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_control">
+<span class="sig-name descname"><span class="pre">spring_control</span></span><a class="headerlink" href="#newton.Model.spring_control" title="Link to this definition">#</a></dt>
+<dd><p>Particle spring activation, shape [spring_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_constraint_lambdas">
+<span class="sig-name descname"><span class="pre">spring_constraint_lambdas</span></span><a class="headerlink" href="#newton.Model.spring_constraint_lambdas" title="Link to this definition">#</a></dt>
+<dd><p>Lagrange multipliers for spring constraints (internal use).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_indices">
+<span class="sig-name descname"><span class="pre">tri_indices</span></span><a class="headerlink" href="#newton.Model.tri_indices" title="Link to this definition">#</a></dt>
+<dd><p>Triangle element indices, shape [tri_count*3], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_poses">
+<span class="sig-name descname"><span class="pre">tri_poses</span></span><a class="headerlink" href="#newton.Model.tri_poses" title="Link to this definition">#</a></dt>
+<dd><p>Triangle element rest pose, shape [tri_count, 2, 2], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_activations">
+<span class="sig-name descname"><span class="pre">tri_activations</span></span><a class="headerlink" href="#newton.Model.tri_activations" title="Link to this definition">#</a></dt>
+<dd><p>Triangle element activations, shape [tri_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_materials">
+<span class="sig-name descname"><span class="pre">tri_materials</span></span><a class="headerlink" href="#newton.Model.tri_materials" title="Link to this definition">#</a></dt>
+<dd><p>Triangle element materials, shape [tri_count, 5], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_areas">
+<span class="sig-name descname"><span class="pre">tri_areas</span></span><a class="headerlink" href="#newton.Model.tri_areas" title="Link to this definition">#</a></dt>
+<dd><p>Triangle element rest areas, shape [tri_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_indices">
+<span class="sig-name descname"><span class="pre">edge_indices</span></span><a class="headerlink" href="#newton.Model.edge_indices" title="Link to this definition">#</a></dt>
+<dd><p>Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_rest_angle">
+<span class="sig-name descname"><span class="pre">edge_rest_angle</span></span><a class="headerlink" href="#newton.Model.edge_rest_angle" title="Link to this definition">#</a></dt>
+<dd><p>Bending edge rest angle, shape [edge_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_rest_length">
+<span class="sig-name descname"><span class="pre">edge_rest_length</span></span><a class="headerlink" href="#newton.Model.edge_rest_length" title="Link to this definition">#</a></dt>
+<dd><p>Bending edge rest length, shape [edge_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_bending_properties">
+<span class="sig-name descname"><span class="pre">edge_bending_properties</span></span><a class="headerlink" href="#newton.Model.edge_bending_properties" title="Link to this definition">#</a></dt>
+<dd><p>Bending edge stiffness and damping parameters, shape [edge_count, 2], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_constraint_lambdas">
+<span class="sig-name descname"><span class="pre">edge_constraint_lambdas</span></span><a class="headerlink" href="#newton.Model.edge_constraint_lambdas" title="Link to this definition">#</a></dt>
+<dd><p>Lagrange multipliers for edge constraints (internal use).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tet_indices">
+<span class="sig-name descname"><span class="pre">tet_indices</span></span><a class="headerlink" href="#newton.Model.tet_indices" title="Link to this definition">#</a></dt>
+<dd><p>Tetrahedral element indices, shape [tet_count*4], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tet_poses">
+<span class="sig-name descname"><span class="pre">tet_poses</span></span><a class="headerlink" href="#newton.Model.tet_poses" title="Link to this definition">#</a></dt>
+<dd><p>Tetrahedral rest poses, shape [tet_count, 3, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tet_activations">
+<span class="sig-name descname"><span class="pre">tet_activations</span></span><a class="headerlink" href="#newton.Model.tet_activations" title="Link to this definition">#</a></dt>
+<dd><p>Tetrahedral volumetric activations, shape [tet_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tet_materials">
+<span class="sig-name descname"><span class="pre">tet_materials</span></span><a class="headerlink" href="#newton.Model.tet_materials" title="Link to this definition">#</a></dt>
+<dd><p>Tetrahedral elastic parameters in form <span class="math notranslate nohighlight">\(k_{mu}, k_{lambda}, k_{damp}\)</span>, shape [tet_count, 3].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_start">
+<span class="sig-name descname"><span class="pre">muscle_start</span></span><a class="headerlink" href="#newton.Model.muscle_start" title="Link to this definition">#</a></dt>
+<dd><p>Start index of the first muscle point per muscle, shape [muscle_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_params">
+<span class="sig-name descname"><span class="pre">muscle_params</span></span><a class="headerlink" href="#newton.Model.muscle_params" title="Link to this definition">#</a></dt>
+<dd><p>Muscle parameters, shape [muscle_count, 5], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_bodies">
+<span class="sig-name descname"><span class="pre">muscle_bodies</span></span><a class="headerlink" href="#newton.Model.muscle_bodies" title="Link to this definition">#</a></dt>
+<dd><p>Body indices of the muscle waypoints, int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_points">
+<span class="sig-name descname"><span class="pre">muscle_points</span></span><a class="headerlink" href="#newton.Model.muscle_points" title="Link to this definition">#</a></dt>
+<dd><p>Local body offset of the muscle waypoints, float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_activations">
+<span class="sig-name descname"><span class="pre">muscle_activations</span></span><a class="headerlink" href="#newton.Model.muscle_activations" title="Link to this definition">#</a></dt>
+<dd><p>Muscle activations, shape [muscle_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_q">
+<span class="sig-name descname"><span class="pre">body_q</span></span><a class="headerlink" href="#newton.Model.body_q" title="Link to this definition">#</a></dt>
+<dd><p>Poses of rigid bodies used for state initialization, shape [body_count, 7], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_qd">
+<span class="sig-name descname"><span class="pre">body_qd</span></span><a class="headerlink" href="#newton.Model.body_qd" title="Link to this definition">#</a></dt>
+<dd><p>Velocities of rigid bodies used for state initialization, shape [body_count, 6], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_com">
+<span class="sig-name descname"><span class="pre">body_com</span></span><a class="headerlink" href="#newton.Model.body_com" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body center of mass (in local frame), shape [body_count, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_inertia">
+<span class="sig-name descname"><span class="pre">body_inertia</span></span><a class="headerlink" href="#newton.Model.body_inertia" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_inv_inertia">
+<span class="sig-name descname"><span class="pre">body_inv_inertia</span></span><a class="headerlink" href="#newton.Model.body_inv_inertia" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_mass">
+<span class="sig-name descname"><span class="pre">body_mass</span></span><a class="headerlink" href="#newton.Model.body_mass" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body mass, shape [body_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_inv_mass">
+<span class="sig-name descname"><span class="pre">body_inv_mass</span></span><a class="headerlink" href="#newton.Model.body_inv_mass" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body inverse mass, shape [body_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_key">
+<span class="sig-name descname"><span class="pre">body_key</span></span><a class="headerlink" href="#newton.Model.body_key" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body keys, shape [body_count], str.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_q">
+<span class="sig-name descname"><span class="pre">joint_q</span></span><a class="headerlink" href="#newton.Model.joint_q" title="Link to this definition">#</a></dt>
+<dd><p>Generalized joint positions used for state initialization, shape [joint_coord_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_qd">
+<span class="sig-name descname"><span class="pre">joint_qd</span></span><a class="headerlink" href="#newton.Model.joint_qd" title="Link to this definition">#</a></dt>
+<dd><p>Generalized joint velocities used for state initialization, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_f">
+<span class="sig-name descname"><span class="pre">joint_f</span></span><a class="headerlink" href="#newton.Model.joint_f" title="Link to this definition">#</a></dt>
+<dd><p>Generalized joint forces used for state initialization, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_target">
+<span class="sig-name descname"><span class="pre">joint_target</span></span><a class="headerlink" href="#newton.Model.joint_target" title="Link to this definition">#</a></dt>
+<dd><p>Generalized joint target inputs, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_type">
+<span class="sig-name descname"><span class="pre">joint_type</span></span><a class="headerlink" href="#newton.Model.joint_type" title="Link to this definition">#</a></dt>
+<dd><p>Joint type, shape [joint_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_parent">
+<span class="sig-name descname"><span class="pre">joint_parent</span></span><a class="headerlink" href="#newton.Model.joint_parent" title="Link to this definition">#</a></dt>
+<dd><p>Joint parent body indices, shape [joint_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_child">
+<span class="sig-name descname"><span class="pre">joint_child</span></span><a class="headerlink" href="#newton.Model.joint_child" title="Link to this definition">#</a></dt>
+<dd><p>Joint child body indices, shape [joint_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_ancestor">
+<span class="sig-name descname"><span class="pre">joint_ancestor</span></span><a class="headerlink" href="#newton.Model.joint_ancestor" title="Link to this definition">#</a></dt>
+<dd><p>Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_X_p">
+<span class="sig-name descname"><span class="pre">joint_X_p</span></span><a class="headerlink" href="#newton.Model.joint_X_p" title="Link to this definition">#</a></dt>
+<dd><p>Joint transform in parent frame, shape [joint_count, 7], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_X_c">
+<span class="sig-name descname"><span class="pre">joint_X_c</span></span><a class="headerlink" href="#newton.Model.joint_X_c" title="Link to this definition">#</a></dt>
+<dd><p>Joint mass frame in child frame, shape [joint_count, 7], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_axis">
+<span class="sig-name descname"><span class="pre">joint_axis</span></span><a class="headerlink" href="#newton.Model.joint_axis" title="Link to this definition">#</a></dt>
+<dd><p>Joint axis in child frame, shape [joint_dof_count, 3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_armature">
+<span class="sig-name descname"><span class="pre">joint_armature</span></span><a class="headerlink" href="#newton.Model.joint_armature" title="Link to this definition">#</a></dt>
+<dd><p>Armature for each joint axis (used by <a class="reference internal" href="../solvers/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver" title="newton.solvers.MuJoCoSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">MuJoCoSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_target_ke">
+<span class="sig-name descname"><span class="pre">joint_target_ke</span></span><a class="headerlink" href="#newton.Model.joint_target_ke" title="Link to this definition">#</a></dt>
+<dd><p>Joint stiffness, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_target_kd">
+<span class="sig-name descname"><span class="pre">joint_target_kd</span></span><a class="headerlink" href="#newton.Model.joint_target_kd" title="Link to this definition">#</a></dt>
+<dd><p>Joint damping, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_effort_limit">
+<span class="sig-name descname"><span class="pre">joint_effort_limit</span></span><a class="headerlink" href="#newton.Model.joint_effort_limit" title="Link to this definition">#</a></dt>
+<dd><p>Joint effort (force/torque) limits, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_velocity_limit">
+<span class="sig-name descname"><span class="pre">joint_velocity_limit</span></span><a class="headerlink" href="#newton.Model.joint_velocity_limit" title="Link to this definition">#</a></dt>
+<dd><p>Joint velocity limits, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_friction">
+<span class="sig-name descname"><span class="pre">joint_friction</span></span><a class="headerlink" href="#newton.Model.joint_friction" title="Link to this definition">#</a></dt>
+<dd><p>Joint friction coefficient, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_dof_dim">
+<span class="sig-name descname"><span class="pre">joint_dof_dim</span></span><a class="headerlink" href="#newton.Model.joint_dof_dim" title="Link to this definition">#</a></dt>
+<dd><p>Number of linear and angular dofs per joint, shape [joint_count, 2], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_dof_mode">
+<span class="sig-name descname"><span class="pre">joint_dof_mode</span></span><a class="headerlink" href="#newton.Model.joint_dof_mode" title="Link to this definition">#</a></dt>
+<dd><p>Control mode for each joint dof, shape [joint_dof_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_enabled">
+<span class="sig-name descname"><span class="pre">joint_enabled</span></span><a class="headerlink" href="#newton.Model.joint_enabled" title="Link to this definition">#</a></dt>
+<dd><p>Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_limit_lower">
+<span class="sig-name descname"><span class="pre">joint_limit_lower</span></span><a class="headerlink" href="#newton.Model.joint_limit_lower" title="Link to this definition">#</a></dt>
+<dd><p>Joint lower position limits, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_limit_upper">
+<span class="sig-name descname"><span class="pre">joint_limit_upper</span></span><a class="headerlink" href="#newton.Model.joint_limit_upper" title="Link to this definition">#</a></dt>
+<dd><p>Joint upper position limits, shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_limit_ke">
+<span class="sig-name descname"><span class="pre">joint_limit_ke</span></span><a class="headerlink" href="#newton.Model.joint_limit_ke" title="Link to this definition">#</a></dt>
+<dd><p>Joint position limit stiffness (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_limit_kd">
+<span class="sig-name descname"><span class="pre">joint_limit_kd</span></span><a class="headerlink" href="#newton.Model.joint_limit_kd" title="Link to this definition">#</a></dt>
+<dd><p>Joint position limit damping (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>), shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_twist_lower">
+<span class="sig-name descname"><span class="pre">joint_twist_lower</span></span><a class="headerlink" href="#newton.Model.joint_twist_lower" title="Link to this definition">#</a></dt>
+<dd><p>Joint lower twist limit, shape [joint_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_twist_upper">
+<span class="sig-name descname"><span class="pre">joint_twist_upper</span></span><a class="headerlink" href="#newton.Model.joint_twist_upper" title="Link to this definition">#</a></dt>
+<dd><p>Joint upper twist limit, shape [joint_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_q_start">
+<span class="sig-name descname"><span class="pre">joint_q_start</span></span><a class="headerlink" href="#newton.Model.joint_q_start" title="Link to this definition">#</a></dt>
+<dd><p>Start index of the first position coordinate per joint (note the last value is an additional sentinel entry to allow for querying the q dimensionality of joint i via <code class="docutils literal notranslate"><span class="pre">joint_q_start[i+1]</span> <span class="pre">-</span> <span class="pre">joint_q_start[i]</span></code>), shape [joint_count + 1], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_qd_start">
+<span class="sig-name descname"><span class="pre">joint_qd_start</span></span><a class="headerlink" href="#newton.Model.joint_qd_start" title="Link to this definition">#</a></dt>
+<dd><p>Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via <code class="docutils literal notranslate"><span class="pre">joint_qd_start[i+1]</span> <span class="pre">-</span> <span class="pre">joint_qd_start[i]</span></code>), shape [joint_count + 1], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_key">
+<span class="sig-name descname"><span class="pre">joint_key</span></span><a class="headerlink" href="#newton.Model.joint_key" title="Link to this definition">#</a></dt>
+<dd><p>Joint keys, shape [joint_count], str.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.articulation_start">
+<span class="sig-name descname"><span class="pre">articulation_start</span></span><a class="headerlink" href="#newton.Model.articulation_start" title="Link to this definition">#</a></dt>
+<dd><p>Articulation start index, shape [articulation_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.articulation_key">
+<span class="sig-name descname"><span class="pre">articulation_key</span></span><a class="headerlink" href="#newton.Model.articulation_key" title="Link to this definition">#</a></dt>
+<dd><p>Articulation keys, shape [articulation_count], str.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.soft_contact_ke">
+<span class="sig-name descname"><span class="pre">soft_contact_ke</span></span><a class="headerlink" href="#newton.Model.soft_contact_ke" title="Link to this definition">#</a></dt>
+<dd><p>Stiffness of soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>). Default is 1.0e3.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.soft_contact_kd">
+<span class="sig-name descname"><span class="pre">soft_contact_kd</span></span><a class="headerlink" href="#newton.Model.soft_contact_kd" title="Link to this definition">#</a></dt>
+<dd><p>Damping of soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>). Default is 10.0.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.soft_contact_kf">
+<span class="sig-name descname"><span class="pre">soft_contact_kf</span></span><a class="headerlink" href="#newton.Model.soft_contact_kf" title="Link to this definition">#</a></dt>
+<dd><p>Stiffness of friction force in soft contacts (used by <a class="reference internal" href="../solvers/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver" title="newton.solvers.SemiImplicitSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">SemiImplicitSolver</span></code></a> and <a class="reference internal" href="../solvers/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver" title="newton.solvers.FeatherstoneSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">FeatherstoneSolver</span></code></a>). Default is 1.0e3.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.soft_contact_mu">
+<span class="sig-name descname"><span class="pre">soft_contact_mu</span></span><a class="headerlink" href="#newton.Model.soft_contact_mu" title="Link to this definition">#</a></dt>
+<dd><p>Friction coefficient of soft contacts. Default is 0.5.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.soft_contact_restitution">
+<span class="sig-name descname"><span class="pre">soft_contact_restitution</span></span><a class="headerlink" href="#newton.Model.soft_contact_restitution" title="Link to this definition">#</a></dt>
+<dd><p>Restitution coefficient of soft contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>). Default is 0.0.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.rigid_contact_max">
+<span class="sig-name descname"><span class="pre">rigid_contact_max</span></span><a class="headerlink" href="#newton.Model.rigid_contact_max" title="Link to this definition">#</a></dt>
+<dd><p>Number of potential contact points between rigid bodies.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.rigid_contact_torsional_friction">
+<span class="sig-name descname"><span class="pre">rigid_contact_torsional_friction</span></span><a class="headerlink" href="#newton.Model.rigid_contact_torsional_friction" title="Link to this definition">#</a></dt>
+<dd><p>Torsional friction coefficient for rigid body contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.rigid_contact_rolling_friction">
+<span class="sig-name descname"><span class="pre">rigid_contact_rolling_friction</span></span><a class="headerlink" href="#newton.Model.rigid_contact_rolling_friction" title="Link to this definition">#</a></dt>
+<dd><p>Rolling friction coefficient for rigid body contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">XPBDSolver</span></code>).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.up_vector">
+<span class="sig-name descname"><span class="pre">up_vector</span></span><a class="headerlink" href="#newton.Model.up_vector" title="Link to this definition">#</a></dt>
+<dd><p>Up vector of the world, shape [3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.up_axis">
+<span class="sig-name descname"><span class="pre">up_axis</span></span><a class="headerlink" href="#newton.Model.up_axis" title="Link to this definition">#</a></dt>
+<dd><p>Up axis, 0 for x, 1 for y, 2 for z.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.gravity">
+<span class="sig-name descname"><span class="pre">gravity</span></span><a class="headerlink" href="#newton.Model.gravity" title="Link to this definition">#</a></dt>
+<dd><p>Gravity vector, shape [3], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_count">
+<span class="sig-name descname"><span class="pre">particle_count</span></span><a class="headerlink" href="#newton.Model.particle_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of particles in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.body_count">
+<span class="sig-name descname"><span class="pre">body_count</span></span><a class="headerlink" href="#newton.Model.body_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of bodies in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_count">
+<span class="sig-name descname"><span class="pre">shape_count</span></span><a class="headerlink" href="#newton.Model.shape_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of shapes in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_count">
+<span class="sig-name descname"><span class="pre">joint_count</span></span><a class="headerlink" href="#newton.Model.joint_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of joints in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tri_count">
+<span class="sig-name descname"><span class="pre">tri_count</span></span><a class="headerlink" href="#newton.Model.tri_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of triangles in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.tet_count">
+<span class="sig-name descname"><span class="pre">tet_count</span></span><a class="headerlink" href="#newton.Model.tet_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of tetrahedra in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.edge_count">
+<span class="sig-name descname"><span class="pre">edge_count</span></span><a class="headerlink" href="#newton.Model.edge_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of edges in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.spring_count">
+<span class="sig-name descname"><span class="pre">spring_count</span></span><a class="headerlink" href="#newton.Model.spring_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of springs in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.muscle_count">
+<span class="sig-name descname"><span class="pre">muscle_count</span></span><a class="headerlink" href="#newton.Model.muscle_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of muscles in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.articulation_count">
+<span class="sig-name descname"><span class="pre">articulation_count</span></span><a class="headerlink" href="#newton.Model.articulation_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of articulations in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_dof_count">
+<span class="sig-name descname"><span class="pre">joint_dof_count</span></span><a class="headerlink" href="#newton.Model.joint_dof_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of velocity degrees of freedom of all joints in the system. Equals the number of joint axes.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_coord_count">
+<span class="sig-name descname"><span class="pre">joint_coord_count</span></span><a class="headerlink" href="#newton.Model.joint_coord_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of position degrees of freedom of all joints in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_color_groups">
+<span class="sig-name descname"><span class="pre">particle_color_groups</span></span><a class="headerlink" href="#newton.Model.particle_color_groups" title="Link to this definition">#</a></dt>
+<dd><p>The coloring of all the particles, used by <a class="reference internal" href="../solvers/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver" title="newton.solvers.VBDSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">VBDSolver</span></code></a> for Gauss-Seidel iteration. Each array contains indices of particles sharing the same color.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.particle_colors">
+<span class="sig-name descname"><span class="pre">particle_colors</span></span><a class="headerlink" href="#newton.Model.particle_colors" title="Link to this definition">#</a></dt>
+<dd><p>Contains the color assignment for every particle.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.device">
+<span class="sig-name descname"><span class="pre">device</span></span><a class="headerlink" href="#newton.Model.device" title="Link to this definition">#</a></dt>
+<dd><p>Device on which the Model was allocated.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.attribute_frequency">
+<span class="sig-name descname"><span class="pre">attribute_frequency</span></span><a class="headerlink" href="#newton.Model.attribute_frequency" title="Link to this definition">#</a></dt>
+<dd><p>Classify each attribute as per body, per joint, per DOF, etc.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.state">
+<span class="sig-name descname"><span class="pre">state</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.state" title="Link to this definition">#</a></dt>
+<dd><p>Returns a state object for the model</p>
+<p>The returned state will be initialized with the initial configuration given in
+the model description.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Manual overwrite whether the state variables should have <cite>requires_grad</cite> enabled (defaults to <cite>None</cite> to use the model’s setting <a class="reference internal" href="#newton.Model.requires_grad" title="newton.Model.requires_grad"><code class="xref py py-attr docutils literal notranslate"><span class="pre">requires_grad</span></code></a>)</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The state object</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="newton.State.html#newton.State" title="newton.State">State</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.control">
+<span class="sig-name descname"><span class="pre">control</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clone_variables</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.control" title="Link to this definition">#</a></dt>
+<dd><p>Returns a control object for the model.</p>
+<p>The returned control object will be initialized with the control inputs given in the model description.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Manual overwrite whether the control variables should have <cite>requires_grad</cite> enabled (defaults to <cite>None</cite> to use the model’s setting <a class="reference internal" href="#newton.Model.requires_grad" title="newton.Model.requires_grad"><code class="xref py py-attr docutils literal notranslate"><span class="pre">requires_grad</span></code></a>)</p></li>
+<li><p><strong>clone_variables</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Whether to clone the control inputs or use the original data</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The control object</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="newton.Control.html#newton.Control" title="newton.Control">Control</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.collide">
+<span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collision_pipeline</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_max_per_pair</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">edge_sdf_iter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterate_mesh_vertices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.collide" title="Link to this definition">#</a></dt>
+<dd><p>Generates contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The current state of the model.</p></li>
+<li><p><strong>collision_pipeline</strong> (<em>CollisionPipeline</em><em>, </em><em>optional</em>) – Collision pipeline to use for contact generation. If not provided, a new one will be created if it hasn’t been constructed before for this model.</p></li>
+<li><p><strong>rigid_contact_max_per_pair</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Maximum number of rigid contacts per shape pair. If None, a kernel is launched to count the number of possible contacts.</p></li>
+<li><p><strong>rigid_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><em>optional</em>) – Margin for rigid contact generation. Default is 0.01.</p></li>
+<li><p><strong>soft_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Maximum number of soft contacts. If None, a kernel is launched to count the number of possible contacts.</p></li>
+<li><p><strong>soft_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><em>optional</em>) – Margin for soft contact generation. Default is 0.01.</p></li>
+<li><p><strong>edge_sdf_iter</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Number of search iterations for finding closest contact points between edges and SDF. Default is 10.</p></li>
+<li><p><strong>iterate_mesh_vertices</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box &lt;&gt; mesh collision). Default is True.</p></li>
+<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Whether to duplicate contact arrays for gradient computation. If None, uses <a class="reference internal" href="#newton.Model.requires_grad" title="newton.Model.requires_grad"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.requires_grad</span></code></a>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The contact object containing collision information.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Contacts</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.add_attribute">
+<span class="sig-name descname"><span class="pre">add_attribute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">attrib</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frequency</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.add_attribute" title="Link to this definition">#</a></dt>
+<dd><p>Add a custom attribute to the model</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.get_attribute_frequency">
+<span class="sig-name descname"><span class="pre">get_attribute_frequency</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.get_attribute_frequency" title="Link to this definition">#</a></dt>
+<dd><p>Get the frequency of an attribute, e.g., “body”, “joint”, etc.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model"><code class="docutils literal notranslate"><span class="pre">Model</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.__init__"><code class="docutils literal notranslate"><span class="pre">Model.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.requires_grad"><code class="docutils literal notranslate"><span class="pre">Model.requires_grad</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.num_envs"><code class="docutils literal notranslate"><span class="pre">Model.num_envs</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_q"><code class="docutils literal notranslate"><span class="pre">Model.particle_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_qd"><code class="docutils literal notranslate"><span class="pre">Model.particle_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_mass"><code class="docutils literal notranslate"><span class="pre">Model.particle_mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_inv_mass"><code class="docutils literal notranslate"><span class="pre">Model.particle_inv_mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_radius"><code class="docutils literal notranslate"><span class="pre">Model.particle_radius</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_max_radius"><code class="docutils literal notranslate"><span class="pre">Model.particle_max_radius</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_ke"><code class="docutils literal notranslate"><span class="pre">Model.particle_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_kd"><code class="docutils literal notranslate"><span class="pre">Model.particle_kd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_kf"><code class="docutils literal notranslate"><span class="pre">Model.particle_kf</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_mu"><code class="docutils literal notranslate"><span class="pre">Model.particle_mu</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_cohesion"><code class="docutils literal notranslate"><span class="pre">Model.particle_cohesion</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_adhesion"><code class="docutils literal notranslate"><span class="pre">Model.particle_adhesion</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_grid"><code class="docutils literal notranslate"><span class="pre">Model.particle_grid</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_flags"><code class="docutils literal notranslate"><span class="pre">Model.particle_flags</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_max_velocity"><code class="docutils literal notranslate"><span class="pre">Model.particle_max_velocity</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_key"><code class="docutils literal notranslate"><span class="pre">Model.shape_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_transform"><code class="docutils literal notranslate"><span class="pre">Model.shape_transform</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_body"><code class="docutils literal notranslate"><span class="pre">Model.shape_body</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_flags"><code class="docutils literal notranslate"><span class="pre">Model.shape_flags</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_shapes"><code class="docutils literal notranslate"><span class="pre">Model.body_shapes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_materials"><code class="docutils literal notranslate"><span class="pre">Model.shape_materials</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_geo"><code class="docutils literal notranslate"><span class="pre">Model.shape_geo</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_geo_src"><code class="docutils literal notranslate"><span class="pre">Model.shape_geo_src</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_group"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_group</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_group_map"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_group_map</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_filter_pairs</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_radius"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_radius</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pairs"><code class="docutils literal notranslate"><span class="pre">Model.shape_contact_pairs</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pair_count"><code class="docutils literal notranslate"><span class="pre">Model.shape_contact_pair_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_indices"><code class="docutils literal notranslate"><span class="pre">Model.spring_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_rest_length"><code class="docutils literal notranslate"><span class="pre">Model.spring_rest_length</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_stiffness"><code class="docutils literal notranslate"><span class="pre">Model.spring_stiffness</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_damping"><code class="docutils literal notranslate"><span class="pre">Model.spring_damping</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_control"><code class="docutils literal notranslate"><span class="pre">Model.spring_control</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_constraint_lambdas"><code class="docutils literal notranslate"><span class="pre">Model.spring_constraint_lambdas</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_indices"><code class="docutils literal notranslate"><span class="pre">Model.tri_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_poses"><code class="docutils literal notranslate"><span class="pre">Model.tri_poses</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_activations"><code class="docutils literal notranslate"><span class="pre">Model.tri_activations</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_materials"><code class="docutils literal notranslate"><span class="pre">Model.tri_materials</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_areas"><code class="docutils literal notranslate"><span class="pre">Model.tri_areas</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_indices"><code class="docutils literal notranslate"><span class="pre">Model.edge_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_rest_angle"><code class="docutils literal notranslate"><span class="pre">Model.edge_rest_angle</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_rest_length"><code class="docutils literal notranslate"><span class="pre">Model.edge_rest_length</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_bending_properties"><code class="docutils literal notranslate"><span class="pre">Model.edge_bending_properties</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_constraint_lambdas"><code class="docutils literal notranslate"><span class="pre">Model.edge_constraint_lambdas</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tet_indices"><code class="docutils literal notranslate"><span class="pre">Model.tet_indices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tet_poses"><code class="docutils literal notranslate"><span class="pre">Model.tet_poses</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tet_activations"><code class="docutils literal notranslate"><span class="pre">Model.tet_activations</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tet_materials"><code class="docutils literal notranslate"><span class="pre">Model.tet_materials</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_start"><code class="docutils literal notranslate"><span class="pre">Model.muscle_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_params"><code class="docutils literal notranslate"><span class="pre">Model.muscle_params</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_bodies"><code class="docutils literal notranslate"><span class="pre">Model.muscle_bodies</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_points"><code class="docutils literal notranslate"><span class="pre">Model.muscle_points</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_activations"><code class="docutils literal notranslate"><span class="pre">Model.muscle_activations</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_q"><code class="docutils literal notranslate"><span class="pre">Model.body_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_qd"><code class="docutils literal notranslate"><span class="pre">Model.body_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_com"><code class="docutils literal notranslate"><span class="pre">Model.body_com</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inertia"><code class="docutils literal notranslate"><span class="pre">Model.body_inertia</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inv_inertia"><code class="docutils literal notranslate"><span class="pre">Model.body_inv_inertia</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_mass"><code class="docutils literal notranslate"><span class="pre">Model.body_mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inv_mass"><code class="docutils literal notranslate"><span class="pre">Model.body_inv_mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_key"><code class="docutils literal notranslate"><span class="pre">Model.body_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_q"><code class="docutils literal notranslate"><span class="pre">Model.joint_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_qd"><code class="docutils literal notranslate"><span class="pre">Model.joint_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_f"><code class="docutils literal notranslate"><span class="pre">Model.joint_f</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target"><code class="docutils literal notranslate"><span class="pre">Model.joint_target</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_type"><code class="docutils literal notranslate"><span class="pre">Model.joint_type</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_parent"><code class="docutils literal notranslate"><span class="pre">Model.joint_parent</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_child"><code class="docutils literal notranslate"><span class="pre">Model.joint_child</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_ancestor"><code class="docutils literal notranslate"><span class="pre">Model.joint_ancestor</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_p"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_c"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_axis"><code class="docutils literal notranslate"><span class="pre">Model.joint_axis</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_armature"><code class="docutils literal notranslate"><span class="pre">Model.joint_armature</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_ke"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_kd"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_kd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_effort_limit"><code class="docutils literal notranslate"><span class="pre">Model.joint_effort_limit</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_velocity_limit"><code class="docutils literal notranslate"><span class="pre">Model.joint_velocity_limit</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_friction"><code class="docutils literal notranslate"><span class="pre">Model.joint_friction</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_dof_dim"><code class="docutils literal notranslate"><span class="pre">Model.joint_dof_dim</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_dof_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_dof_mode</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_enabled"><code class="docutils literal notranslate"><span class="pre">Model.joint_enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_lower"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_lower</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_upper"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_upper</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_ke"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_kd"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_kd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_twist_lower"><code class="docutils literal notranslate"><span class="pre">Model.joint_twist_lower</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_twist_upper"><code class="docutils literal notranslate"><span class="pre">Model.joint_twist_upper</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_q_start"><code class="docutils literal notranslate"><span class="pre">Model.joint_q_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_qd_start"><code class="docutils literal notranslate"><span class="pre">Model.joint_qd_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_key"><code class="docutils literal notranslate"><span class="pre">Model.joint_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_start"><code class="docutils literal notranslate"><span class="pre">Model.articulation_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_key"><code class="docutils literal notranslate"><span class="pre">Model.articulation_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_ke"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_kd"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_kd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_kf"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_kf</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_mu"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_mu</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_restitution"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_restitution</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.rigid_contact_max"><code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_max</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.rigid_contact_torsional_friction"><code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_torsional_friction</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.rigid_contact_rolling_friction"><code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_rolling_friction</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.up_vector"><code class="docutils literal notranslate"><span class="pre">Model.up_vector</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.up_axis"><code class="docutils literal notranslate"><span class="pre">Model.up_axis</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.gravity"><code class="docutils literal notranslate"><span class="pre">Model.gravity</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_count"><code class="docutils literal notranslate"><span class="pre">Model.particle_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_count"><code class="docutils literal notranslate"><span class="pre">Model.body_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_count"><code class="docutils literal notranslate"><span class="pre">Model.shape_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_count"><code class="docutils literal notranslate"><span class="pre">Model.joint_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tri_count"><code class="docutils literal notranslate"><span class="pre">Model.tri_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.tet_count"><code class="docutils literal notranslate"><span class="pre">Model.tet_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_count"><code class="docutils literal notranslate"><span class="pre">Model.edge_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.spring_count"><code class="docutils literal notranslate"><span class="pre">Model.spring_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.muscle_count"><code class="docutils literal notranslate"><span class="pre">Model.muscle_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_count"><code class="docutils literal notranslate"><span class="pre">Model.articulation_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_dof_count"><code class="docutils literal notranslate"><span class="pre">Model.joint_dof_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_coord_count"><code class="docutils literal notranslate"><span class="pre">Model.joint_coord_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_color_groups"><code class="docutils literal notranslate"><span class="pre">Model.particle_color_groups</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_colors"><code class="docutils literal notranslate"><span class="pre">Model.particle_colors</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.device"><code class="docutils literal notranslate"><span class="pre">Model.device</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.attribute_frequency"><code class="docutils literal notranslate"><span class="pre">Model.attribute_frequency</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.state"><code class="docutils literal notranslate"><span class="pre">Model.state()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.control"><code class="docutils literal notranslate"><span class="pre">Model.control()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.collide"><code class="docutils literal notranslate"><span class="pre">Model.collide()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.add_attribute"><code class="docutils literal notranslate"><span class="pre">Model.add_attribute()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.get_attribute_frequency"><code class="docutils literal notranslate"><span class="pre">Model.get_attribute_frequency()</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
