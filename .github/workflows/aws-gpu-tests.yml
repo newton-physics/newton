@@ -22,9 +22,10 @@ concurrency:
   group: ${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# github.repository == 'newton-physics/newton'
+
 jobs:
   run-unit-tests-on-aws:
-    if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
