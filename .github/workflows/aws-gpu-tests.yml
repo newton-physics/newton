@@ -32,15 +32,14 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
-      - name: Launch EC2 instance with latest NVIDIA AMI
-        id: launch
+      - name: Launch EC2 instance
         run: |
           echo "Finding the latest AWS Deep Learning Base GPU AMI..."
           LATEST_AMI_ID=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} \
@@ -72,18 +71,20 @@ jobs:
           echo "Waiting for instance to be running..."
           aws ec2 wait instance-status-ok --instance-ids $INSTANCE_ID
 
-      - name: Create and Run Remote Script
+      - name: Generate script to run on instance
         env:
           BRANCH_NAME_ENV: ${{ github.head_ref || github.ref_name }}
+          S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
         run: |
-          # The name of the S3 bucket for storing results
-          S3_BUCKET="${{ env.AWS_S3_BUCKET }}"
           # A unique key for this run to avoid file collisions
           S3_KEY="reports/${{ github.run_id }}/${{ github.run_attempt }}"
-          ssm_log_prefix="ssm-logs/${{ github.run_id }}/${{ github.run_attempt }}"
-          safe_branch=$(printf '%q' "${BRANCH_NAME_ENV}")
+          SSM_LOG_PREFIX="ssm-logs/${{ github.run_id }}/${{ github.run_attempt }}"
+          SAFE_BRANCH=$(printf '%q' "${BRANCH_NAME_ENV}")
 
-          # --- Step 1: Create the remote script locally ---
+          echo "S3_KEY=${S3_KEY}" >> "$GITHUB_ENV"
+          echo "SSM_LOG_PREFIX=${SSM_LOG_PREFIX}" >> "$GITHUB_ENV"
+          echo "SAFE_BRANCH=${SAFE_BRANCH}" >> "$GITHUB_ENV"
+
           cat << EOF > remote_script.sh
           #!/bin/bash
           set -e
@@ -116,7 +117,7 @@ jobs:
 
           # These are expanded immediately on the GitHub runner
           REPO_URL="https://github.com/${{ github.repository }}.git"
-          BRANCH_NAME="${safe_branch}"
+          BRANCH_NAME="${SAFE_BRANCH}"
           REPO_DIR="${{ github.event.repository.name }}"
 
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/tmp/uv-installation" sh
@@ -131,9 +132,10 @@ jobs:
           echo "Running Newton test suite..."
           uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback 2>&1 | tee /tmp/test_output.log
           EOF
-
-          # --- Step 2: Send the command, reading the script from the file ---
-
+      - name: Run script on instance
+        env:
+          S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
+        run: |
           echo "--- Preparing SSM parameters ---"
           # Use jq to safely embed the script content into a valid JSON structure.
           # -n: read no input | --arg: set a variable | -R: read raw string | -s: slurp all input
@@ -147,16 +149,15 @@ jobs:
             --comment "Running Newton GPU unit tests" \
             --parameters file://ssm_params.json \
             --output-s3-bucket-name "$S3_BUCKET" \
-            --output-s3-key-prefix "$ssm_log_prefix" \
+            --output-s3-key-prefix "$SSM_LOG_PREFIX" \
             --query "Command.CommandId" \
             --output text)
 
           echo "SSM Command ID: $COMMAND_ID"
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
 
-          # --- Step 3: Wait for the command to complete ---
           echo "--- Waiting for command to complete... ---"
-          final_status="Success" # Assume success initially
+          final_status="Success"
           TIMEOUT=3600
           INTERVAL=30
           elapsed_time=0
@@ -186,12 +187,10 @@ jobs:
             echo "Current status: $STATUS. Waited $elapsed_time seconds..."
           done
 
-          # Check if the loop exited due to a timeout
           if [ $elapsed_time -ge $TIMEOUT ]; then
             final_status="Timeout"
           fi
 
-          # --- Step 4: Always download and display artifacts ---
           echo "--- Downloading artifacts from S3 ---"
           aws s3 cp "s3://${S3_BUCKET}/${S3_KEY}/" . --recursive
 
@@ -203,7 +202,7 @@ jobs:
           fi
           echo "--- End of test_output.log ---"
 
-          # --- Step 5: Final status check ---
+          # --- Final status check ---
           # Only check the artifacts if the SSM command was successful.
           if [[ "$final_status" == "Success" ]]; then
             if [ ! -f "status.txt" ]; then
@@ -217,7 +216,7 @@ jobs:
             fi
           fi
 
-          # Now, check the final overall status and exit if not successful
+          # Now, check the final overall status
           if [[ "$final_status" != "Success" ]]; then
             echo "❌ Workflow failed with status: $final_status"
             exit 1
