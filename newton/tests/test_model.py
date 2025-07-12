@@ -221,7 +221,7 @@ class TestModel(unittest.TestCase):
             )
 
         self.assertEqual(
-            np.sum(np.array(builder.edge_indices) == -1),
+            np.sum(np.array(builder.edge_indices) == 1),
             builder_open_edge_count + num_envs * env_builder_open_edge_count,
             "builder does not have the expected number of open edges",
         )
