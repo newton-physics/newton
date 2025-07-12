@@ -22,7 +22,6 @@ Please ensure the migration guide for **warp.sim** users is up-to-date with the 
 ## Before your PR is "Ready for review"
 
 - [ ] All commits are [signed-off](https://git-scm.com/docs/git-commit#Documentation/git-commit.txt--s) to indicate that your contribution adheres to the [Developer Certificate of Origin](https://developercertificate.org/) requirements
-- [ ] I understand that **GitHub** does not perform any GPU testing of this pull request
-- [ ] Necessary tests have been added
+- [ ] Necessary tests have been added and new examples are tested (see `newton/tests/test_examples.py`)
 - [ ] Documentation is up-to-date
 - [ ] Code passes formatting and linting checks with `pre-commit run -a`
