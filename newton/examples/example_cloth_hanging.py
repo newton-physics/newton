@@ -117,7 +117,7 @@ class Example:
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
-                "tri_kd": 1.0e-5,
+                "tri_kd": 1.0e-1,
             }
 
         builder.add_cloth_grid(**common_params, **solver_params)

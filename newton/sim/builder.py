@@ -494,6 +494,9 @@ class ModelBuilder:
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
         """
 
+        if builder.up_axis != self.up_axis:
+            raise ValueError("Cannot add a builder with a different up axis.")
+
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
         transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
@@ -675,9 +678,6 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
-
-        self.up_axis = builder.up_axis
-        self.gravity = builder.gravity
 
         if update_num_env_count:
             self.num_envs += 1
