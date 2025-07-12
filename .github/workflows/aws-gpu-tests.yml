@@ -70,9 +70,15 @@ jobs:
           fi
 
           # --- Define all tags ---
-          TAGS="[{Key=Name,Value=newton-github-workflow-runner},{Key=created-by,Value=github-actions-newton-role}]"
-          TAGS="$TAGS,[{Key=GitHub-Repository,Value='${{ github.repository }}'}]"
-          TAGS="$TAGS,$EVENT_TYPE_TAG" # Add the conditional tag
+          TAGS="{Key=Name,Value=newton-github-workflow-runner},{Key=created-by,Value=github-actions-newton-role}"
+          TAGS="$TAGS,{Key=GitHub-Repository,Value='${{ github.repository }}'}"
+
+          # Add the conditional tag
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            TAGS="$TAGS,{Key=Source-Event,Value=Pull-Request}"
+          else
+            TAGS="$TAGS,{Key=Source-Event,Value=Push}"
+          fi
 
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id $LATEST_AMI_ID \
