@@ -62,6 +62,18 @@ jobs:
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "Launching EC2 instance..."
 
+          # --- Conditional Tagging Logic ---
+          if [ "${{ github.event_name }}" == "pull_request_target" ]; then
+            EVENT_TYPE_TAG="[{Key=Source-Event,Value=Pull-Request}]"
+          else
+            EVENT_TYPE_TAG="[{Key=Source-Event,Value=Push}]"
+          fi
+
+          # --- Define all tags ---
+          TAGS="[{Key=Name,Value=newton-github-workflow-runner},{Key=created-by,Value=github-actions-newton-role}]"
+          TAGS="$TAGS,[{Key=GitHub-Repository,Value='${{ github.repository }}'}]"
+          TAGS="$TAGS,$EVENT_TYPE_TAG" # Add the conditional tag
+
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id $LATEST_AMI_ID \
             --region ${{ env.AWS_REGION }} \
@@ -69,7 +81,7 @@ jobs:
             --security-group-ids ${{ env.AWS_SECURITY_GROUP_IDS }} \
             --iam-instance-profile Name="NewtonEC2InstanceRole" \
             --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${{ env.AWS_VOLUME_SIZE }},VolumeType=${{ env.AWS_VOLUME_TYPE }}}" \
-            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=newton-github-workflow-runner},{Key=created-by,Value=github-actions-newton-role}]' \
+            --tag-specifications "ResourceType=instance,Tags=[$TAGS]" \
             --query 'Instances[0].InstanceId' \
             --output text)
 
