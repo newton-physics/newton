@@ -1,4 +1,4 @@
-name: GPU Unit Tests on AWS
+name: GPU Unit Tests on AWS EC2
 
 # Workflow configuration variables
 env:
