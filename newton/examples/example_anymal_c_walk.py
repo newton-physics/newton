@@ -230,7 +230,7 @@ class Example:
             limit_kd=1.0e1,
         )
         builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 5.0e2
+        builder.default_shape_cfg.kd = 7.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 

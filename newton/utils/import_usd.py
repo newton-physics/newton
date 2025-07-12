@@ -867,27 +867,27 @@ def parse_usd(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # shape_id = builder.add_shape_cylinder(
                     #     **shape_params,
                     #     radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                     #     half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                    #     up_axis=int(shape_spec.axis),
+                    #     axis=int(shape_spec.axis),
                     # )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     shape_id = builder.add_shape_cone(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        up_axis=int(shape_spec.axis),
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
@@ -915,10 +915,10 @@ def parse_usd(
                         **shape_params,
                     )
                 elif key == UsdPhysics.ObjectType.PlaneShape:
-                    # Warp uses +Y convention for planes
-                    if shape_spec.axis != UsdPhysics.Axis.Y:
+                    # Warp uses +Z convention for planes
+                    if shape_spec.axis != UsdPhysics.Axis.Z:
                         xform = shape_params["xform"]
-                        axis_q = newton.core.spatial.quat_between_axes(Axis.Y, usd_axis_to_axis[shape_spec.axis])
+                        axis_q = newton.core.spatial.quat_between_axes(Axis.Z, usd_axis_to_axis[shape_spec.axis])
                         shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
                     shape_id = builder.add_shape_plane(
                         **shape_params,

@@ -158,7 +158,7 @@ def parse_urdf(
                     xform=tf,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    up_axis=up_axis,
+                    axis=up_axis,
                     cfg=shape_cfg,
                 )
                 shapes.append(s)
@@ -169,7 +169,7 @@ def parse_urdf(
                     xform=tf,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
-                    up_axis=up_axis,
+                    axis=up_axis,
                     cfg=shape_cfg,
                 )
                 shapes.append(s)

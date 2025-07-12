@@ -768,17 +768,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Apply shape-specific rotations (matching update_geom_properties_kernel logic)
                 shape_body = shape_bodies[shape_idx]
 
-                # Capsules and cylinders need rotation from Y-axis to Z-axis
-                if shape_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = expected_quat * rot_y2z
-
-                # Special handling for static geoms with Z-up axis
-                if self.model.up_axis == 2 and shape_body == -1:
-                    # Reverse rotation that aligned the z-axis with the y-axis
-                    rot_z2y = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = expected_quat * rot_z2y
-
                 # Handle up-axis conversion if needed
                 if self.model.up_axis == 1:  # Y-up to Z-up conversion
                     # For static geoms, position conversion
@@ -821,7 +810,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_types = self.model.shape_geo.type.numpy()
         shape_incoming_xform = self.model.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
@@ -895,7 +883,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     continue
 
                 tested_count += 1
-                shape_type = shape_types[shape_idx]
 
                 # Verify 1: Friction updated
                 expected_mu = new_mu[shape_idx]
@@ -989,16 +976,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 # Apply same transformations as in the kernel
                 shape_body = self.model.shape_body.numpy()[shape_idx]
-
-                # Capsules and cylinders need rotation from Y-axis to Z-axis
-                if shape_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = expected_quat * rot_y2z
-
-                # Special handling for static geoms with Z-up axis
-                if self.model.up_axis == 2 and shape_body == -1:
-                    rot_z2y = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = expected_quat * rot_z2y
 
                 # Handle up-axis conversion if needed
                 if self.model.up_axis == 1:  # Y-up to Z-up conversion
