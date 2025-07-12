@@ -140,6 +140,9 @@ jobs:
           echo "Running Newton test suite..."
           uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback 2>&1 | tee /tmp/test_output.log
           EOF
+
+          echo "--- Generated script contents: ---"
+          cat remote_script.sh
       - name: Run script on instance
         env:
           S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
