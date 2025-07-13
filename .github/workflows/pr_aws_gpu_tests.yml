@@ -30,6 +30,7 @@ jobs:
   check-author-membership:
     name: Check Author Membership
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       membership_status: ${{ steps.check_org.outputs.membership_status }}
     steps:
