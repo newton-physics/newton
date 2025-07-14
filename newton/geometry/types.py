@@ -99,8 +99,8 @@ class Mesh:
         self,
         vertices: Sequence[Vec3],
         indices: Sequence[int],
-        compute_inertia=True,
-        is_solid=True,
+        compute_inertia: bool = True,
+        is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
         convex_hull: "Mesh | None" = None,
     ):
@@ -120,13 +120,14 @@ class Mesh:
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
-        self.vertices = np.array(vertices).reshape(-1, 3)
-        self.indices = np.array(indices, dtype=np.int32).flatten()
+        self._vertices = np.array(vertices).reshape(-1, 3)
+        self._indices = np.array(indices, dtype=np.int32).flatten()
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
         self.maxhullvert = maxhullvert
         self.convex_hull = convex_hull
+        self._cached_hash = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -134,6 +135,28 @@ class Mesh:
             self.I = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @property
+    def vertices(self):
+        """Get the mesh vertices."""
+        return self._vertices
+
+    @vertices.setter
+    def vertices(self, value):
+        """Set the mesh vertices and invalidate the cached hash."""
+        self._vertices = np.array(value).reshape(-1, 3)
+        self._cached_hash = None
+
+    @property
+    def indices(self):
+        """Get the mesh indices."""
+        return self._indices
+
+    @indices.setter
+    def indices(self, value):
+        """Set the mesh indices and invalidate the cached hash."""
+        self._indices = np.array(value, dtype=np.int32).flatten()
+        self._cached_hash = None
 
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
@@ -184,5 +207,10 @@ class Mesh:
     def __hash__(self) -> int:
         """
         Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
+        Uses cached hash if available, otherwise computes and caches the hash.
         """
-        return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid)
+            )
+        return self._cached_hash
