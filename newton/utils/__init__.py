@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import warp as wp
+from warp.context import assert_conditional_graph_support
 
 from .download_assets import clear_git_cache, download_asset
 from .import_mjcf import parse_mjcf
@@ -101,11 +102,20 @@ def vec_abs(a: wp.vec3):
     return wp.vec3(wp.abs(a[0]), wp.abs(a[1]), wp.abs(a[2]))
 
 
+def check_conditional_graph_support():
+    try:
+        assert_conditional_graph_support()
+    except Exception:
+        return False
+    return True
+
+
 __all__ = [
     "SimRenderer",
     "SimRendererOpenGL",
     "SimRendererUsd",
     "boltzmann",
+    "check_conditional_graph_support",
     "clear_git_cache",
     "download_asset",
     "leaky_max",

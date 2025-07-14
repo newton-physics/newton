@@ -920,7 +920,7 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
+        tri_ke=1e3, tri_kd=1e-2, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -939,11 +939,11 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     test.assertTrue(max_difference <= 0.1, f"Maximum angle difference {max_difference:.3f} rad exceeds 0.1 rad")
 
 
-# Bending damping should not affect free-fall behavior.
-def test_cloth_bending_damping_with_free_fall(test, device, solver):
+# Internal forces and damping should not affect free-fall behavior.
+def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
+        tri_ke=5e1, tri_kd=1e-1, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison
@@ -1060,7 +1060,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
     "semi_implicit": [
@@ -1070,7 +1070,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
     "vbd": [
@@ -1081,7 +1081,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
 }

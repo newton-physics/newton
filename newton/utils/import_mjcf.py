@@ -376,7 +376,7 @@ def parse_mjcf(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        up_axis=geom_up_axis,
+                        axis=geom_up_axis,
                         **shape_kwargs,
                     )
                     shapes.append(s)
@@ -385,7 +385,7 @@ def parse_mjcf(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        up_axis=geom_up_axis,
+                        axis=geom_up_axis,
                         **shape_kwargs,
                     )
                     shapes.append(s)

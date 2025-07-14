@@ -195,7 +195,7 @@ class TestImportUrdf(unittest.TestCase):
         assert builder.shape_geo_scale[0][0] == 0.5
         assert builder.shape_geo_scale[0][1] == 0.5  # half height
         assert_np_equal(
-            np.array(builder.shape_transform[0][:]), np.array([1.0, 2.0, 3.0, 0.7071068, 0.0, 0.0, 0.7071068]), tol=1e-6
+            np.array(builder.shape_transform[0][:]), np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]), tol=1e-6
         )
 
         # Check inertial parameters

@@ -69,8 +69,8 @@ class Example:
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
             tri_ke=5.0e1,
-            tri_ka=0.0,
-            tri_kd=0.0,
+            tri_ka=5.0e1,
+            tri_kd=1.0e-1,
             edge_ke=1.0e1,
             edge_kd=1.0e0,
         )
@@ -152,12 +152,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_cloth_bending.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
 
     args = parser.parse_known_args()[0]
 

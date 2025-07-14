@@ -12,13 +12,14 @@
   "results_dir": "asv/results",
   "html_dir": "asv/html",
   "build_cache_size": 20,
-  "default_benchmark_timeout": 120,
+  "default_benchmark_timeout": 360,
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
     "python -m pip install -U numpy",
-    "python -m pip install -U --pre warp-lang --index-url=https://pypi.nvidia.com/",
-    "python -m pip install mujoco --pre --upgrade -f https://py.mujoco.org/",
-    "python -m pip install git+https://github.com/google-deepmind/mujoco_warp.git@main",
-    "in-dir={env_dir} python -m pip install {wheel_file}"
+    "python -m pip install -U --pre warp-lang==1.9.0.dev20250708 --index-url=https://pypi.nvidia.com/",
+    "python -m pip install -U --pre mujoco==3.3.4.dev778924297 -f https://py.mujoco.org/",
+    "python -m pip install -U torch==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
+    "python -m pip install git+https://github.com/google-deepmind/mujoco_warp.git@8e1b3b0ffb1ab6b9df3123b136bd30837fc31eab",
+    "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
   ]
 }

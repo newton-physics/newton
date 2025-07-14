@@ -27,7 +27,7 @@ from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_style3d.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_style3d.usd", num_frames=3000):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -178,7 +178,7 @@ class Example:
             self.render()
 
             if self.renderer is None:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
+                print(f"[{frame_idx:4d}/{self.num_frames}]")
 
     def render(self):
         if self.renderer is not None:
@@ -193,12 +193,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_cloth_style3d.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=3000, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=3000, help="Total number of frames.")
 
     args = parser.parse_known_args()[0]
 

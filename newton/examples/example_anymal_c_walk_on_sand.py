@@ -18,12 +18,19 @@
 #
 # Shows Anymal C with a pretrained policy coupled with implicit mpm sand.
 #
+# Example usage:
+# uv run --extra cu12 newton/examples/example_anymal_c_walk_on_sand.py
 ###########################################################################
+
+import sys
 
 import numpy as np
 import warp as wp
 
 import newton
+import newton.solvers.euler.kernels  # For graph capture on CUDA <12.3
+import newton.solvers.euler.particles  # For graph capture on CUDA <12.3
+import newton.solvers.solver  # For graph capture on CUDA <12.3
 import newton.utils
 from newton.examples.example_anymal_c_walk import AnymalController
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
@@ -56,7 +63,7 @@ def update_collider_mesh(
 class Example:
     def __init__(
         self,
-        stage_path="example_anymal_c_walk_in_sand.usd",
+        stage_path="example_anymal_c_walk_on_sand.usd",
         voxel_size=0.05,
         particles_per_cell=3,
         tolerance=1.0e-5,
@@ -202,9 +209,15 @@ class Example:
 
         self.control = self.model.control()
         self.controller = AnymalController(self.model, self.device)
+        self.controller.get_control(self.state_0)
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
+            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
+            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
+            wp.load_module(newton.solvers.euler.particles, device=wp.get_device())
+            wp.load_module(newton.solvers.solver, device=wp.get_device())
+
             with wp.ScopedCapture() as capture:
                 self.simulate_robot()
             self.robot_graph = capture.graph
@@ -215,6 +228,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            self.controller.assign_control(self.control, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -231,7 +245,7 @@ class Example:
                 self.simulate_robot()
 
             self.simulate_sand()
-            self.controller.get_control(self.state_0, self.control)
+            self.controller.get_control(self.state_0)
 
         self.sim_time += self.frame_dt
 
@@ -320,15 +334,25 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument("--num_frames", type=int, default=10000, help="Total number of frames.")
-    parser.add_argument("--voxel_size", "-dx", type=float, default=0.03)
-    parser.add_argument("--particles_per_cell", "-ppc", type=float, default=3.0)
-    parser.add_argument("--sand_friction", "-mu", type=float, default=0.48)
+    parser.add_argument(
+        "--stage-path",
+        type=lambda x: None if x == "None" else str(x),
+        default="example_anymal_c_walk_on_sand.usd",
+        help="Path to the output USD file.",
+    )
+    parser.add_argument("--num-frames", type=int, default=10000, help="Total number of frames.")
+    parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
+    parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
+    parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--dynamic_grid", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dynamic-grid", action=argparse.BooleanOptionalAction, default=True)
 
     args = parser.parse_known_args()[0]
+
+    if wp.get_device(args.device).is_cpu:
+        print("Error: This example requires a GPU device.")
+        sys.exit(1)
 
     with wp.ScopedDevice(args.device):
         example = Example(

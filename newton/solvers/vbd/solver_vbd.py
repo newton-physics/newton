@@ -48,15 +48,7 @@ VBD_DEBUG_PRINTING_OPTIONS = {
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
 
-class mat66(matrix(shape=(6, 6), dtype=float32)):
-    pass
-
-
 class mat32(matrix(shape=(3, 2), dtype=float32)):
-    pass
-
-
-class mat43(matrix(shape=(4, 3), dtype=float32)):
     pass
 
 
@@ -190,41 +182,19 @@ def build_orthonormal_basis(n: wp.vec3):
 def calculate_triangle_deformation_gradient(
     face: int, tri_indices: wp.array(dtype=wp.int32, ndim=2), pos: wp.array(dtype=wp.vec3), tri_pose: wp.mat22
 ):
-    F = mat32()
-    v1 = pos[tri_indices[face, 1]] - pos[tri_indices[face, 0]]
-    v2 = pos[tri_indices[face, 2]] - pos[tri_indices[face, 0]]
+    v0 = tri_indices[face, 0]  # vertex 0
+    v1 = tri_indices[face, 1]  # vertex 1
+    v2 = tri_indices[face, 2]  # vertex 2
 
-    F[0, 0] = v1[0]
-    F[1, 0] = v1[1]
-    F[2, 0] = v1[2]
-    F[0, 1] = v2[0]
-    F[1, 1] = v2[1]
-    F[2, 1] = v2[2]
+    x0 = pos[v0]
+    x01 = pos[v1] - x0
+    x02 = pos[v2] - x0
 
-    F = F * tri_pose
-    return F
+    # Compute F columns directly: F = [x01, x02] * tri_pose
+    f0 = x01 * tri_pose[0, 0] + x02 * tri_pose[1, 0]
+    f1 = x01 * tri_pose[0, 1] + x02 * tri_pose[1, 1]
 
-
-@wp.func
-def green_strain(F: mat32):
-    return 0.5 * (wp.transpose(F) * F - wp.identity(n=2, dtype=float))
-
-
-@wp.func
-def assemble_membrane_hessian(h: mat66, m1: float, m2: float):
-    h_vert = wp.mat33(
-        m1 * (h[0, 0] * m1 + h[3, 0] * m2) + m2 * (h[0, 3] * m1 + h[3, 3] * m2),
-        m1 * (h[0, 1] * m1 + h[3, 1] * m2) + m2 * (h[0, 4] * m1 + h[3, 4] * m2),
-        m1 * (h[0, 2] * m1 + h[3, 2] * m2) + m2 * (h[0, 5] * m1 + h[3, 5] * m2),
-        m1 * (h[1, 0] * m1 + h[4, 0] * m2) + m2 * (h[1, 3] * m1 + h[4, 3] * m2),
-        m1 * (h[1, 1] * m1 + h[4, 1] * m2) + m2 * (h[1, 4] * m1 + h[4, 4] * m2),
-        m1 * (h[1, 2] * m1 + h[4, 2] * m2) + m2 * (h[1, 5] * m1 + h[4, 5] * m2),
-        m1 * (h[2, 0] * m1 + h[5, 0] * m2) + m2 * (h[2, 3] * m1 + h[5, 3] * m2),
-        m1 * (h[2, 1] * m1 + h[5, 1] * m2) + m2 * (h[2, 4] * m1 + h[5, 4] * m2),
-        m1 * (h[2, 2] * m1 + h[5, 2] * m2) + m2 * (h[2, 5] * m1 + h[5, 5] * m2),
-    )
-
-    return h_vert
+    return f0, f1
 
 
 @wp.func
@@ -232,126 +202,217 @@ def evaluate_stvk_force_hessian(
     face: int,
     v_order: int,
     pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     tri_indices: wp.array(dtype=wp.int32, ndim=2),
     tri_pose: wp.mat22,
     area: float,
     mu: float,
     lmbd: float,
     damping: float,
+    dt: float,
 ):
-    D2W_DFDF = mat66()
-    F = calculate_triangle_deformation_gradient(face, tri_indices, pos, tri_pose)
-    G = green_strain(F)
+    # StVK energy density: psi = mu * ||G||_F^2 + 0.5 * lambda * (trace(G))^2
 
-    S = 2.0 * mu * G + lmbd * (G[0, 0] + G[1, 1]) * wp.identity(n=2, dtype=float)
+    # Deformation gradient F = [f0, f1] (3x2 matrix as two 3D column vectors)
+    f0, f1 = calculate_triangle_deformation_gradient(face, tri_indices, pos, tri_pose)
 
-    F12 = -area * F * S * wp.transpose(tri_pose)
+    # Green strain tensor: G = 0.5(F^T F - I) = [[G00, G01], [G01, G11]] (symmetric 2x2)
+    f0_dot_f0 = wp.dot(f0, f0)
+    f1_dot_f1 = wp.dot(f1, f1)
+    f0_dot_f1 = wp.dot(f0, f1)
 
-    Dm_inv1_1 = tri_pose[0, 0]
-    Dm_inv2_1 = tri_pose[1, 0]
-    Dm_inv1_2 = tri_pose[0, 1]
-    Dm_inv2_2 = tri_pose[1, 1]
+    G00 = 0.5 * (f0_dot_f0 - 1.0)
+    G11 = 0.5 * (f1_dot_f1 - 1.0)
+    G01 = 0.5 * f0_dot_f1
 
-    F1_1 = F[0, 0]
-    F2_1 = F[1, 0]
-    F3_1 = F[2, 0]
-    F1_2 = F[0, 1]
-    F2_2 = F[1, 1]
-    F3_2 = F[2, 1]
+    # Frobenius norm squared of Green strain: ||G||_F^2 = G00^2 + G11^2 + 2 * G01^2
+    G_frobenius_sq = G00 * G00 + G11 * G11 + 2.0 * G01 * G01
+    if G_frobenius_sq < 1.0e-20:
+        return wp.vec3(0.0), wp.mat33(0.0)
 
-    F1_1_sqr = F1_1 * F1_1
-    F2_1_sqr = F2_1 * F2_1
-    F3_1_sqr = F3_1 * F3_1
-    F1_2_sqr = F1_2 * F1_2
-    F2_2_sqr = F2_2 * F2_2
-    F3_2_sqr = F3_2 * F3_2
+    # FG = [FG_col0, FG_col1] (3x2)
+    FG_col0 = f0 * G00 + f1 * G01
+    FG_col1 = f0 * G01 + f1 * G11
 
-    e_uu = G[0, 0]
-    e_vv = G[1, 1]
-    e_uv = G[0, 1]
-    e_uuvvSum = e_uu + e_vv
+    # First Piola-Kirchhoff stress tensor (StVK model)
+    # PK1 = 2*mu*F*G + lambda*trace(G)*F = [PK1_col0, PK1_col1] (3x2)
+    trace_G = G00 + G11
+    PK1_col0 = 2.0 * mu * FG_col0 + lmbd * trace_G * f0
+    PK1_col1 = 2.0 * mu * FG_col1 + lmbd * trace_G * f1
 
-    D2W_DFDF[0, 0] = F1_1 * (F1_1 * lmbd + 2.0 * F1_1 * mu) + 2.0 * mu * e_uu + lmbd * (e_uuvvSum) + F1_2_sqr * mu
+    DmInv00 = tri_pose[0, 0]
+    DmInv01 = tri_pose[0, 1]
+    DmInv10 = tri_pose[1, 0]
+    DmInv11 = tri_pose[1, 1]
 
-    D2W_DFDF[1, 0] = F1_1 * (F2_1 * lmbd + 2.0 * F2_1 * mu) + F1_2 * F2_2 * mu
-    D2W_DFDF[0, 1] = D2W_DFDF[1, 0]
+    s0 = DmInv00 + DmInv10
+    s1 = DmInv01 + DmInv11
 
-    D2W_DFDF[2, 0] = F1_1 * (F3_1 * lmbd + 2.0 * F3_1 * mu) + F1_2 * F3_2 * mu
-    D2W_DFDF[0, 2] = D2W_DFDF[2, 0]
+    # Triangle vertex indexing: x0 = (d0,d1,d2), x1 = (d3,d4,d5), x2 = (d6,d7,d8)
 
-    D2W_DFDF[3, 0] = 2.0 * mu * e_uv + F1_1 * F1_2 * lmbd + F1_1 * F1_2 * mu
-    D2W_DFDF[0, 3] = D2W_DFDF[3, 0]
+    # Deformation gradient Jacobian: dF/dd_i for each vertex coordinate
+    # vertex0: dF_dd0 = (-s0, 0, 0, -s1, 0, 0),         dF_dd1 = (0, -s0, 0, 0, -s1, 0),         dF_dd2 = (0, 0, -s0, 0, 0, -s1)
+    # vertex1: dF_dd3 = (DmInv00, 0, 0, DmInv01, 0, 0), dF_dd4 = (0, DmInv00, 0, 0, DmInv01, 0), dF_dd5 = (0, 0, DmInv00, 0, 0, DmInv01)
+    # vertex2: dF_dd6 = (DmInv10, 0, 0, DmInv11, 0, 0), dF_dd7 = (0, DmInv10, 0, 0, DmInv11, 0), dF_dd8 = (0, 0, DmInv10, 0, 0, DmInv11)
 
-    D2W_DFDF[4, 0] = F1_1 * F2_2 * lmbd + F1_2 * F2_1 * mu
-    D2W_DFDF[0, 4] = D2W_DFDF[4, 0]
+    # Energy density gradients via chain rule: dpsi/dd_i = (dpsi/dF) : (dF/dd_i) where : is double contraction
+    dpsi_dx0 = -(s0 * PK1_col0 + s1 * PK1_col1)  # vertex0
+    dpsi_dx1 = DmInv00 * PK1_col0 + DmInv01 * PK1_col1  # vertex1
+    dpsi_dx2 = DmInv10 * PK1_col0 + DmInv11 * PK1_col1  # vertex2
 
-    D2W_DFDF[5, 0] = F1_1 * F3_2 * lmbd + F1_2 * F3_1 * mu
-    D2W_DFDF[0, 5] = D2W_DFDF[5, 0]
+    # First Cauchy-Green invariant: Ic = tr(F^T F)
+    Ic = f0_dot_f0 + f1_dot_f1
 
-    D2W_DFDF[1, 1] = F2_1 * (F2_1 * lmbd + 2.0 * F2_1 * mu) + 2.0 * mu * e_uu + lmbd * (e_uuvvSum) + F2_2_sqr * mu
+    # Gradient of Ic w.r.t. F (vectorized): grad_Ic = [2*f0; 2*f1] (6x1)
+    # Hessian of Ic w.r.t. F: H_Ic = diag(2*I3, 2*I3) (6x6 block diagonal)
+    I33 = wp.identity(n=3, dtype=float)
+    H_Ic_diag_block = 2.0 * I33  # Diagonal blocks of H_Ic
 
-    D2W_DFDF[2, 1] = F2_1 * (F3_1 * lmbd + 2.0 * F3_1 * mu) + F2_2 * F3_2 * mu
-    D2W_DFDF[1, 2] = D2W_DFDF[2, 1]
+    # Second Cauchy-Green invariant: IIc = ||F^T F||_F^2
+    # Gradient: grad_IIc = 4FF^TF (6x1 vectorized), Hessian: H_IIc (6x6)
 
-    D2W_DFDF[3, 1] = F1_2 * F2_1 * lmbd + F1_1 * F2_2 * mu
-    D2W_DFDF[1, 3] = D2W_DFDF[3, 1]
+    # Outer products for Hessian computation
+    f0_outer_f0 = wp.outer(f0, f0)
+    f1_outer_f1 = wp.outer(f1, f1)
+    f0_outer_f1 = wp.outer(f0, f1)
+    f1_outer_f0 = wp.outer(f1, f0)
 
-    D2W_DFDF[4, 1] = 2.0 * mu * e_uv + F2_1 * F2_2 * lmbd + F2_1 * F2_2 * mu
-    D2W_DFDF[1, 4] = D2W_DFDF[4, 1]
+    # Hessian blocks: H_IIc = [[H00, H01], [H10, H11]] where each block is 3x3
+    H_IIc00 = 4.0 * (f0_dot_f0 * I33 + 2.0 * f0_outer_f0 + f1_outer_f1)
+    H_IIc11 = 4.0 * (f1_dot_f1 * I33 + 2.0 * f1_outer_f1 + f0_outer_f0)
+    H_IIc01 = 4.0 * (f0_dot_f1 * I33 + f1_outer_f0)
 
-    D2W_DFDF[5, 1] = F2_1 * F3_2 * lmbd + F2_2 * F3_1 * mu
-    D2W_DFDF[1, 5] = D2W_DFDF[5, 1]
+    # Energy density in terms of invariants: psi = mu*(0.25*IIc - 0.5*Ic + 0.5) + lambda/8 * (Ic^2 - 4*Ic + 4)
+    dpsi_dIc = -0.5 * mu + (0.25 * Ic - 0.5) * lmbd
+    d2psi_dIc2 = 0.25 * lmbd
+    dpsi_dIIc = 0.25 * mu
 
-    D2W_DFDF[2, 2] = F3_1 * (F3_1 * lmbd + 2.0 * F3_1 * mu) + 2.0 * mu * e_uu + lmbd * (e_uuvvSum) + F3_2_sqr * mu
+    # Chain rule for Hessian: d2psi/dF2 = sum_I (d2psi/dI2 * outer(dI/dF, dI/dF) + dpsi/dI * d2I/dF2) for I in {Ic, IIc}.
+    d2E_dF2_flattened00 = (
+        d2psi_dIc2 * 4.0 * f0_outer_f0 + dpsi_dIc * H_Ic_diag_block + dpsi_dIIc * H_IIc00
+    )  # d2psi/df0df0
+    d2E_dF2_flattened01 = d2psi_dIc2 * 4.0 * f0_outer_f1 + dpsi_dIIc * H_IIc01  # d2psi/df0df1
+    d2E_dF2_flattened11 = (
+        d2psi_dIc2 * 4.0 * f1_outer_f1 + dpsi_dIc * H_Ic_diag_block + dpsi_dIIc * H_IIc11
+    )  # d2psi/df1df1
 
-    D2W_DFDF[3, 2] = F1_2 * F3_1 * lmbd + F1_1 * F3_2 * mu
-    D2W_DFDF[2, 3] = D2W_DFDF[3, 2]
+    # Compute force and deformation gradient derivatives
+    mask0 = float(v_order == 0)
+    mask1 = float(v_order == 1)
+    mask2 = float(v_order == 2)
 
-    D2W_DFDF[4, 2] = F2_2 * F3_1 * lmbd + F2_1 * F3_2 * mu
-    D2W_DFDF[2, 4] = D2W_DFDF[4, 2]
+    # Select force vector for current vertex without branching
+    force = -(mask0 * dpsi_dx0 + mask1 * dpsi_dx1 + mask2 * dpsi_dx2) * area
 
-    D2W_DFDF[5, 2] = 2.0 * mu * e_uv + F3_1 * F3_2 * lmbd + F3_1 * F3_2 * mu
-    D2W_DFDF[2, 5] = D2W_DFDF[5, 2]
+    # Derivatives of deformation gradient columns w.r.t. current vertex position
+    # vertex 0: (-s0, -s1), vertex 1: (DmInv00, DmInv01), vertex 2: (DmInv10, DmInv11)
+    df0_dx = mask0 * (-s0) + mask1 * DmInv00 + mask2 * DmInv10  # df0/dx for current vertex
+    df1_dx = mask0 * (-s1) + mask1 * DmInv01 + mask2 * DmInv11  # df1/dx for current vertex
 
-    D2W_DFDF[3, 3] = F1_2 * (F1_2 * lmbd + 2.0 * F1_2 * mu) + 2.0 * mu * e_vv + lmbd * (e_uuvvSum) + F1_1_sqr * mu
+    df0_dx_sq = df0_dx * df0_dx
+    df1_dx_sq = df1_dx * df1_dx
+    df0_df1_cross = df0_dx * df1_dx
 
-    D2W_DFDF[4, 3] = F1_2 * (F2_2 * lmbd + 2.0 * F2_2 * mu) + F1_1 * F2_1 * mu
-    D2W_DFDF[3, 4] = D2W_DFDF[4, 3]
+    # Chain rule applied: d2E/ddi_ddj = (dF/ddi)^T * (d2E/dF2) * (dF/ddj)
+    # Diagonal elements (xx, yy, zz components)
+    H_00 = (
+        df0_dx_sq * d2E_dF2_flattened00[0, 0]
+        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[0, 0]
+        + df1_dx_sq * d2E_dF2_flattened11[0, 0]
+    )
 
-    D2W_DFDF[5, 3] = F1_2 * (F3_2 * lmbd + 2.0 * F3_2 * mu) + F1_1 * F3_1 * mu
-    D2W_DFDF[3, 5] = D2W_DFDF[5, 3]
+    H_11 = (
+        df0_dx_sq * d2E_dF2_flattened00[1, 1]
+        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[1, 1]
+        + df1_dx_sq * d2E_dF2_flattened11[1, 1]
+    )
 
-    D2W_DFDF[4, 4] = F2_2 * (F2_2 * lmbd + 2.0 * F2_2 * mu) + 2.0 * mu * e_vv + lmbd * (e_uuvvSum) + F2_1_sqr * mu
+    H_22 = (
+        df0_dx_sq * d2E_dF2_flattened00[2, 2]
+        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[2, 2]
+        + df1_dx_sq * d2E_dF2_flattened11[2, 2]
+    )
 
-    D2W_DFDF[5, 4] = F2_2 * (F3_2 * lmbd + 2.0 * F3_2 * mu) + F2_1 * F3_1 * mu
-    D2W_DFDF[4, 5] = D2W_DFDF[5, 4]
+    # Off-diagonal elements (xy, xz, yz components)
+    H_01 = (
+        df0_dx_sq * d2E_dF2_flattened00[0, 1]
+        + df0_df1_cross * (d2E_dF2_flattened01[0, 1] + d2E_dF2_flattened01[1, 0])
+        + df1_dx_sq * d2E_dF2_flattened11[0, 1]
+    )
 
-    D2W_DFDF[5, 5] = F3_2 * (F3_2 * lmbd + 2.0 * F3_2 * mu) + 2.0 * mu * e_vv + lmbd * (e_uuvvSum) + F3_1_sqr * mu
+    H_02 = (
+        df0_dx_sq * d2E_dF2_flattened00[0, 2]
+        + df0_df1_cross * (d2E_dF2_flattened01[0, 2] + d2E_dF2_flattened01[2, 0])
+        + df1_dx_sq * d2E_dF2_flattened11[0, 2]
+    )
 
-    D2W_DFDF = D2W_DFDF * area
+    H_12 = (
+        df0_dx_sq * d2E_dF2_flattened00[1, 2]
+        + df0_df1_cross * (d2E_dF2_flattened01[1, 2] + d2E_dF2_flattened01[2, 1])
+        + df1_dx_sq * d2E_dF2_flattened11[1, 2]
+    )
 
-    # m1s = wp.vec3(-Dm_inv1_1 - Dm_inv2_1, Dm_inv1_1, Dm_inv2_1)
-    # m2s = wp.vec3(-Dm_inv1_2 - Dm_inv2_2, Dm_inv1_2, Dm_inv2_2)
-    #
-    # m1 = m1s[v_order]
-    # m2 = m2s[v_order]
+    # Assemble symmetric 3x3 Hessian: [[H_00, H_01, H_02], [H_01, H_11, H_12], [H_02, H_12, H_22]]
+    # Scale by triangle area to get total element contribution
+    hessian = area * wp.mat33(H_00, H_01, H_02, H_01, H_11, H_12, H_02, H_12, H_22)
 
-    if v_order == 0:
-        m1 = -Dm_inv1_1 - Dm_inv2_1
-        m2 = -Dm_inv1_2 - Dm_inv2_2
-        f = wp.vec3(-F12[0, 0] - F12[0, 1], -F12[1, 0] - F12[1, 1], -F12[2, 0] - F12[2, 1])
-    elif v_order == 1:
-        m1 = Dm_inv1_1
-        m2 = Dm_inv1_2
-        f = wp.vec3(F12[0, 0], F12[1, 0], F12[2, 0])
-    else:
-        m1 = Dm_inv2_1
-        m2 = Dm_inv2_2
-        f = wp.vec3(F12[0, 1], F12[1, 1], F12[2, 1])
+    if damping > 0.0:
+        inv_dt = 1.0 / dt
 
-    h = assemble_membrane_hessian(D2W_DFDF, m1, m2)
+        # F_prev = [f0_prev, f1_prev]
+        f0_prev, f1_prev = calculate_triangle_deformation_gradient(face, tri_indices, pos_prev, tri_pose)
+        df0_dt = (f0 - f0_prev) * inv_dt
+        df1_dt = (f1 - f1_prev) * inv_dt
 
-    return f, h
+        # First constraint: Cmu = ||G||_F (Frobenius norm of Green strain)
+        Cmu = wp.sqrt(G_frobenius_sq)
+        inv_Cmu = 1.0 / Cmu
+
+        G00_normalized = G00 * inv_Cmu
+        G01_normalized = G01 * inv_Cmu
+        G11_normalized = G11 * inv_Cmu
+
+        # Time derivative of Green strain: dG/dt = 0.5 * (F^T * dF/dt + (dF/dt)^T * F)
+        dG_dt_00 = wp.dot(f0, df0_dt)  # dG00/dt
+        dG_dt_11 = wp.dot(f1, df1_dt)  # dG11/dt
+        dG_dt_01 = 0.5 * (wp.dot(f0, df1_dt) + wp.dot(f1, df0_dt))  # dG01/dt
+
+        # Time derivative of first constraint: dCmu/dt = (1/||G||_F) * (G : dG/dt)
+        dCmu_dt = G00_normalized * dG_dt_00 + G11_normalized * dG_dt_11 + 2.0 * G01_normalized * dG_dt_01
+
+        # Gradient of first constraint w.r.t. deformation gradient: dCmu/dF = (G/||G||_F) * F
+        dCmu_dF_col0 = G00_normalized * f0 + G01_normalized * f1  # dCmu/df0
+        dCmu_dF_col1 = G01_normalized * f0 + G11_normalized * f1  # dCmu/df1
+
+        # Gradient of constraint w.r.t. vertex position: dCmu/dx = (dCmu/dF) : (dF/dx)
+        dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
+
+        # Damping force from first constraint: -mu * damping * area * (dCmu/dt) * (dCmu/dx)
+        kd_mu = mu * damping * area
+        force += -kd_mu * dCmu_dt * dCmu_dx
+
+        # Damping Hessian: mu * damping * area * (1/dt) * (dCmu/dx) x (dCmu/dx)
+        hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
+
+        # Second constraint: Clmbd = trace(G) = G00 + G11 (trace of Green strain)
+        # Time derivative of second constraint: dClmbd/dt = trace(dG/dt)
+        dClmbd_dt = dG_dt_00 + dG_dt_11
+
+        # Gradient of second constraint w.r.t. deformation gradient: dClmbd/dF = F
+        dClmbd_dF_col0 = f0  # dClmbd/df0
+        dClmbd_dF_col1 = f1  # dClmbd/df1
+
+        # Gradient of Clmbd w.r.t. vertex position: dClmbd/dx = (dClmbd/dF) : (dF/dx)
+        dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
+
+        # Damping force from second constraint: -lambda * damping * area * (dClmbd/dt) * (dClmbd/dx)
+        kd_lmbd = lmbd * damping * area
+        force += -kd_lmbd * dClmbd_dt * dClmbd_dx
+
+        # Damping Hessian from second constraint: lambda * damping * area * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
+        hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
+
+    return force, hessian
 
 
 @wp.func
@@ -1401,21 +1462,18 @@ def solve_trimesh_no_self_contact(
             tri_id,
             particle_order,
             pos,
+            prev_pos,
             tri_indices,
             tri_poses[tri_id],
             tri_areas[tri_id],
             tri_materials[tri_id, 0],
             tri_materials[tri_id, 1],
             tri_materials[tri_id, 2],
+            dt,
         )
-        # compute damping
-        k_d = tri_materials[tri_id, 2]
-        h_d = h_tri * (k_d / dt)
 
-        f_d = h_d * (prev_pos[particle_index] - pos[particle_index])
-
-        f = f + f_tri + f_d
-        h = h + h_tri + h_d
+        f = f + f_tri
+        h = h + h_tri
 
         # fmt: off
         if wp.static("elasticity_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
@@ -1774,7 +1832,6 @@ def solve_trimesh_with_self_contact_penetration_free(
 
     particle_index = particle_ids_in_color[t_id]
     particle_pos = pos[particle_index]
-    particle_prev_pos = pos_prev[particle_index]
 
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
         pos_new[particle_index] = particle_pos
@@ -1818,21 +1875,18 @@ def solve_trimesh_with_self_contact_penetration_free(
             tri_index,
             vertex_order,
             pos,
+            pos_prev,
             tri_indices,
             tri_poses[tri_index],
             tri_areas[tri_index],
             tri_materials[tri_index, 0],
             tri_materials[tri_index, 1],
             tri_materials[tri_index, 2],
+            dt,
         )
-        # compute damping
-        k_d = tri_materials[tri_index, 2]
-        h_d = h_tri * (k_d / dt)
 
-        f_d = h_d * (particle_prev_pos - particle_pos)
-
-        f = f + f_tri + f_d
-        h = h + h_tri + h_d
+        f = f + f_tri
+        h = h + h_tri
 
 
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
