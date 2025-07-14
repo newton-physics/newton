@@ -499,3 +499,6 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def eval_contact_sensors(self, contact_info):
+        self.contact_sensor_manager.eval_contact_sensors(contact_info)

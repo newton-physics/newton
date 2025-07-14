@@ -3402,42 +3402,158 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
+            m.contact_reporter = None
             if self.contact_queries:
-                from newton.utils.contact_reporter import ContactReporter  # noqa: PLC0415
-
-                m.contact_reporter = ContactReporter(m)
-                for entity_pattern, filter_pattern, match_fun in self.contact_queries:
-                    if match_fun is None:
-                        match_fun = fnmatch  # noqa: PLW2901
-                    elif match_fun == "re":
-
-                        def match_fun(name, pat):
-                            return re.match(pat, name)
-
-                    # Get entities matching the pattern
-                    entity_a, entity_a_keys = self._get_entities(entity_pattern, match_fun, m)
-                    if not entity_a_keys:
-                        raise KeyError(
-                            f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}."
-                        )
-
-                    if filter_pattern is not None:
-                        entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun, m)
-                        if not entity_b_keys:
-                            raise KeyError(
-                                f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}."
-                            )
-                    else:
-                        raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
-
-                    # Add entity keys and groups to contact reporter
-                    m.contact_reporter.add_query_keys(entity_a_keys, entity_b_keys)
-                    m.contact_reporter.add_entity_group_pair(entity_a, entity_b)
-                m.contact_reporter.finalize()
-            else:
-                m.contact_reporter = None
+                self._build_contact_sensors(m)
 
             return m
+
+    def create_contact_reporter(self):
+        # Get entities matching the pattern
+        entity_a, entity_a_keys = self._get_entities(match_fun, m, shape_pattern=entity_pattern)
+        if not entity_a_keys:
+            raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
+
+        if filter_pattern is not None:
+            entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun, m)
+            if not entity_b_keys:
+                raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
+        else:
+            raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
+
+        # Add entity keys and groups to contact reporter
+        contact_reporter.add_query_keys(entity_a_keys, entity_b_keys)
+        contact_reporter.add_entity_group_pair(entity_a, entity_b)
+        return contact_reporter
+
+    def add_contact_sensor(
+        self,
+        sensor_shape: str | None = None,
+        sensor_body: str | None = None,
+        contact_partners_shape: str | None = None,
+        contact_partners_body: str | None = None,
+        match_fun: Callable[[str, str], bool] | None = None,
+        include_total: bool = True,
+        prune_noncolliding: bool = False,
+        verbose: bool | None = None,
+    ):
+        """Add a contact sensor view to the model. Return a ContactView.
+        Exactly one of `sensor_shape` or `sensor_body` must be specified to define the sensor. If contact partners
+        are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
+        the total contact force; if contact partners are.
+
+        Args:
+            sensor_shape: pattern to match sensor shape names; one entity per matching shape.
+            sensor_body: pattern to match sensor body names; one entity per matching body.
+            contact_partners_shape: pattern to match contact partner shape names; one entity per matching shape.
+            contact_partners_body: pattern to match contact partner body names; one entity per matching body.
+            match_fun: function taking a name and a pattern and returning true if the name matches the pattern;
+            defaults to fnmatch. Accepts "re" for `re.match()`.
+            include_total: If contact partners are defined, include a sensor reading for the total contact force.
+            prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
+            verbose: print details
+        """
+
+        from newton.utils.contact_reporter import ContactView  # noqa: PLC0415
+
+        if match_fun is None:
+            match_fun = fnmatch  # noqa: PLW2901
+        elif match_fun == "re":
+
+            def match_fun(name, pat):
+                return re.match(pat, name)
+
+        query_args = {
+            "sensor_shape": sensor_shape,
+            "sensor_body": sensor_body,
+            "contact_partners_shape": contact_partners_shape,
+            "contact_partners_body": contact_partners_body,
+            "match_fun": match_fun,
+            "include_total": include_total,
+            "prune_noncolliding": prune_noncolliding,
+            "verbose": verbose if verbose is not None else wp.config.verbose,
+        }
+
+        query_id = len(self.contact_queries)
+        contact_view = ContactView(
+            query_id,
+            query_args,
+        )
+        self.contact_queries.append(contact_view)
+        if verbose:
+            print(f"Added contact query #{query_id}: {query_args}")
+        return contact_view
+
+    def _create_sensor(
+        self,
+        contact_sensor_manager,
+        contact_view,
+        sensor_shape,
+        sensor_body,
+        contact_partners_shape,
+        contact_partners_body,
+        match_fun,
+        include_total,
+        prune_noncolliding,
+        verbose,
+    ):
+        """Create the list of individual sensors for a query and add the query to the manager."""
+        if verbose:
+            print("Finding entities")
+        m = contact_sensor_manager.model
+        # Get entities matching the pattern
+        sensor_entities, sensor_entity_keys = self._get_entities(
+            match_fun, m, shape_pattern=sensor_shape, body_pattern=sensor_body
+        )
+        if verbose:
+            print(f"Sensor entities found: {sensor_entities}")
+            print(f"                 keys: {sensor_entity_keys}")
+
+        if not sensor_entities:
+            raise KeyError(
+                f"No matching bodies (with shapes) or shapes for sensor pattern {sensor_body or sensor_shape}."
+            )
+
+        if contact_partners_body or contact_partners_shape:
+            select_entities, select_entity_keys = self._get_entities(
+                match_fun, m, shape_pattern=contact_partners_shape, body_pattern=contact_partners_body
+            )
+            if not select_entity_keys:
+                raise KeyError(
+                    f"No matching bodies (with shapes) or shapes for contact partner pattern {sensor_body or sensor_shape}."
+                )
+            if include_total:
+                select_entities = (None, *select_entities)
+                select_entity_keys = (None, *select_entity_keys)
+        else:
+            select_entities = (None,)
+            select_entity_keys = (None,)
+
+        if verbose:
+            print(f"Contact partner entities found: {select_entities}")
+            print(f"                          keys: {select_entity_keys}")
+
+        n_select = len(select_entities)
+
+        # build the matrix
+        sensor_matrix = [
+            (sensor_idx, tuple(range(n_select))) for sensor_idx, sensor_entity in enumerate(sensor_entities)
+        ]
+
+        if prune_noncolliding:
+            # FIXME: prune noncolliding
+            pass
+        contact_sensor_manager.add_contact_query(contact_view, sensor_entities, select_entities, sensor_matrix)
+
+    def _build_contact_sensors(self, model: Model):
+        from newton.utils.contact_reporter import ContactSensorManager  # noqa: PLC0415
+
+        # contact_reporter = ContactReporter(model)
+        model.contact_sensor_manager = ContactSensorManager(model)
+        for query in self.contact_queries:
+            self._create_sensor(model.contact_sensor_manager, query, **query.args)
+
+        model.contact_sensor_manager.finalize()
 
     def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
@@ -3471,22 +3587,29 @@ class ModelBuilder:
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
 
-    def _get_entities(self, pattern: str, match_fn, model: Model):
+    def _get_entities(self, match_fn, model: Model, shape_pattern: str | None = None, body_pattern: str | None = None):
+        """Find shapes or bodies matching the pattern. Return matching shapes in individual tuples, and matching bodies
+        as tuples including all their shapes."""
         entities = []
         entity_keys = []
+        assert (shape_pattern is None) != (body_pattern is None), (
+            "Exactly one of shape_pattern or body_pattern must be specified"
+        )
 
-        for body_id, body_key in enumerate(model.body_key):
-            if fnmatch(body_key, pattern):
-                body_shapes = tuple(model.body_shapes[body_id])
-                if not body_shapes:
-                    continue
-                entities.append(body_shapes)
-                entity_keys.append(body_key)
+        if body_pattern is not None:
+            for body_id, body_key in enumerate(model.body_key):
+                if match_fn(body_key, body_pattern):
+                    body_shapes = tuple(model.body_shapes[body_id])
+                    if not body_shapes:
+                        continue
+                    entities.append(body_shapes)
+                    entity_keys.append(body_key)
 
-        for shape_id, shape_key in enumerate(model.shape_key):
-            if fnmatch(shape_key, pattern):
-                entities.append((shape_id,))
-                entity_keys.append(shape_key)
+        if shape_pattern is not None:
+            for shape_id, shape_key in enumerate(model.shape_key):
+                if match_fn(shape_key, shape_pattern):
+                    entities.append((shape_id,))
+                    entity_keys.append(shape_key)
 
         if not entities:
             return None, None

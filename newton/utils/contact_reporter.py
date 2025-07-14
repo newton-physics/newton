@@ -13,44 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
+from collections.abc import Iterable
 import itertools
-from typing import Any
 
 import numpy as np
 import warp as wp
 
 from newton import Model
-from newton.sim.contacts import ContactInfo
+from newton.sim.contacts import ContactInfo, Contacts
 from newton.solvers import MuJoCoSolver, SolverBase
 
 NUM_THREADS = 8192
-
-
-def _normalize_pair(pair: tuple[int, int]) -> tuple[bool, tuple[int, int]]:
-    """Normalize a pair by sorting the values, and return if the pair was flipped along with the new pair"""
-    return (pair, False) if pair[0] <= pair[1] else ((pair[1], pair[0]), True)
-
-
-def _sort_into(directory: dict[tuple], iterable, normalize_fn=None, filter_fn=None):
-    """Given a directory and an iterable, for each element:
-    - normalize it with `normalize_fn`
-    - test if it passes `filter_fn`
-    - find it in the directory, or create a new entry in the directory
-    - return it along with extra output from the normalize function
-    """
-    n = len(directory)
-    for element in iterable:
-        norm_info = []
-        if normalize_fn is not None:
-            element, *norm_info = normalize_fn(element)  # noqa: PLW2901
-        if filter_fn is not None and not (filter_fn(element)):
-            continue
-        pair_idx = directory.get(element, None)
-        if pair_idx is None:
-            pair_idx = n
-            directory[element] = n
-            n += 1
-        yield pair_idx, *norm_info
 
 
 @wp.func
@@ -75,13 +49,13 @@ def bisect_shape_pairs(
 # Binning function determines the existence and index of appropriate bin
 @wp.func
 def bin_contact_shape_pair(
-    contact_geom: wp.array(dtype=wp.vec2i),
+    contact_shape: wp.array(dtype=wp.vec2i),
     num_shape_pairs: wp.int32,
     shape_pairs_sorted: wp.array(dtype=wp.vec2i),
     contact_idx: wp.int32,
 ) -> tuple[bool, wp.int32]:
     """Find the bin index, if it exists, based on the contact's shape_pair."""
-    geom = contact_geom[contact_idx]
+    geom = contact_shape[contact_idx]
 
     if geom[0] == -1 or geom[1] == -1:
         return False, 0
@@ -97,505 +71,216 @@ def bin_contact_shape_pair(
 
 
 @wp.kernel
-def select_bin_contacts(
-    # inputs
-    contact_geom: wp.array(dtype=wp.vec2i),
-    contact_dist: wp.array(dtype=wp.float32),
-    shape_pairs: wp.array(dtype=wp.vec2i),
-    num_shape_pairs: wp.int32,
+def select_aggregate_net_force(
     num_contacts: wp.array(dtype=wp.int32),
-    bin_start: wp.array(dtype=wp.int32),
-    # outputs
-    bin_contacts: wp.array(dtype=wp.int32),
-    bin_count: wp.array(dtype=wp.int32),
-    bin_contacts_dist: wp.array(dtype=wp.float32),
+    sp_sorted: wp.array(dtype=wp.vec2i),
+    num_sp: int,
+    sp_ep: wp.array(dtype=wp.vec2i),
+    sp_ep_offset: wp.array(dtype=wp.int32),
+    sp_ep_count: wp.array(dtype=wp.int32),
+    contact_pair: wp.array(dtype=wp.vec2i),
+    contact_normal: wp.array(dtype=wp.vec3f),
+    contact_force: wp.array(dtype=wp.float32),
+    # output
+    net_force: wp.array(dtype=wp.vec3),
 ):
-    n_contacts = num_contacts[0]
-    n_blocks = (n_contacts + NUM_THREADS - 1) // NUM_THREADS
+    ncon = num_contacts[0]
+    n_blocks = (ncon + NUM_THREADS - 1) // NUM_THREADS
     for b in range(n_blocks):
-        contact_idx = wp.tid() + NUM_THREADS * b
-        if contact_idx >= n_contacts:
+        con_idx = wp.tid() + NUM_THREADS * b
+        if con_idx >= ncon:
             return
 
-        # TODO: implement binning based on entity pair
-        keep, bin_idx = bin_contact_shape_pair(contact_geom, num_shape_pairs, shape_pairs, contact_idx)
+        pair = contact_pair[con_idx]
 
-        if not keep:
-            continue
+        # Find the entity pairs
+        smin, smax = wp.min(pair[0], pair[1]), wp.max(pair[0], pair[1])
 
-        i = wp.atomic_add(bin_count, bin_idx, 1)
-        contact_start = bin_start[bin_idx]
+        # add contribution for shape pair
+        normalized_pair = wp.vec2i(smin, smax)
+        sp_flip = not (normalized_pair == pair)
+        # sp_flip = normalized_pair[0] != pair[0]
+        sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
-        bin_contacts[contact_start + i] = contact_idx
-        bin_contacts_dist[contact_start + i] = contact_dist[contact_idx]
+        force = contact_force[con_idx] * contact_normal[con_idx]
+        if sp_ord < num_sp and sp_sorted[sp_ord] == normalized_pair:
+            # add the force to the pair's force accumulators
+            offset = sp_ep_offset[sp_ord]
+            for i in range(sp_ep_count[sp_ord]):
+                ep = sp_ep[offset + i]
+                force_acc, flip = ep[0], ep[1]
+                wp.atomic_add(net_force, force_acc, wp.where(sp_flip != flip, -force, force))
 
+        # add contribution for shape a and b
+        for i in range(2):
+            mono_sp = wp.vec2i(-1, pair[i])
+            mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
 
-@wp.kernel
-def aggregate_entity_pair_maxdepth(
-    # inputs
-    contact_normal: wp.array(dtype=wp.vec3f),
-    n_entity_pairs: wp.int32,
-    ep_sp_ord: wp.array(dtype=wp.int32),
-    ep_sp_start: wp.array(dtype=wp.int32),
-    ep_sp_num: wp.array(dtype=wp.int32),
-    ep_sp_flip: wp.array(dtype=wp.int32),
-    bin_start: wp.array(dtype=wp.int32),
-    bin_contacts: wp.array(dtype=wp.int32),
-    bin_dist: wp.array(dtype=wp.float32),
-    bin_count: wp.array(dtype=wp.int32),
-    # outputs
-    entity_pair_contact: wp.array(dtype=wp.int32),
-    entity_pair_dist: wp.array(dtype=wp.float32),
-    entity_pair_normal: wp.array(dtype=wp.vec3),
-):
-    entity_pair_idx = wp.tid()
-    if entity_pair_idx >= n_entity_pairs:
-        return
-
-    start = ep_sp_start[entity_pair_idx]
-    n_shape_pairs = ep_sp_num[entity_pair_idx]
-
-    # track deepest contact
-    best_dist = wp.float32(wp.inf)
-    best_contact = wp.int32(-1)
-    best_flip = wp.int32(0)
-
-    for i in range(n_shape_pairs):
-        sp_ord = ep_sp_ord[start + i]
-        n_bin_contacts = bin_count[sp_ord]
-        contacts_start = bin_start[sp_ord]
-
-        for j in range(n_bin_contacts):
-            contact_idx = bin_contacts[contacts_start + j]
-            dist = bin_dist[contacts_start + j]
-
-            if dist < best_dist:
-                best_dist = dist
-                best_contact = contact_idx
-                best_flip = ep_sp_flip[start + i]
-
-    entity_pair_normal[entity_pair_idx] = wp.where(best_flip, -1.0, 1.0) * contact_normal[best_contact]
-    entity_pair_contact[entity_pair_idx] = best_contact
-    entity_pair_dist[entity_pair_idx] = best_dist
+            # for shape vs all, only one accumulator is supported and flip is trivially true
+            if mono_ord < num_sp and sp_sorted[mono_ord] == mono_sp:
+                force_acc = sp_ep[sp_ep_offset[mono_ord]][0]
+                wp.atomic_add(net_force, force_acc, wp.where(bool(i), -force, force))
 
 
-@wp.kernel
-def aggregate_entity_pair_net_force(
-    # inputs
-    contact_normal: wp.array(dtype=wp.vec3f),
-    n_entity_pairs: wp.int32,
-    ep_sp_ord: wp.array(dtype=wp.int32),
-    ep_sp_start: wp.array(dtype=wp.int32),
-    ep_sp_num: wp.array(dtype=wp.int32),
-    ep_sp_flip: wp.array(dtype=wp.int32),
-    bin_start: wp.array(dtype=wp.int32),
-    bin_contacts: wp.array(dtype=wp.int32),
-    contact_force: wp.array(dtype=wp.float32),
-    bin_count: wp.array(dtype=wp.int32),
-    # outputs
-    entity_pair_net_force: wp.array(dtype=wp.vec3),
-):
-    entity_pair_idx = wp.tid()
-    if entity_pair_idx >= n_entity_pairs:
-        return
-
-    start = ep_sp_start[entity_pair_idx]
-    n_shape_pairs = ep_sp_num[entity_pair_idx]
-
-    # track deepest contact
-    net_force = wp.vec3(0.0)
-
-    for i in range(n_shape_pairs):
-        sp_ord = ep_sp_ord[start + i]
-        n_bin_contacts = bin_count[sp_ord]
-        contacts_start = bin_start[sp_ord]
-
-        flip = ep_sp_flip[start + i]
-        for j in range(n_bin_contacts):
-            contact_idx = bin_contacts[contacts_start + j]
-            force = contact_force[contact_idx]
-            net_force += wp.where(flip, -1.0, 1.0) * contact_normal[contact_idx] * force
-
-    entity_pair_net_force[entity_pair_idx] = net_force
-
-
-@wp.kernel
-def fill_contact_matrix(
-    # inputs
-    q_ep: wp.array(dtype=wp.int32),
-    q_ep_mat_idx: wp.array(dtype=wp.vec2i),
-    data: wp.array(dtype=Any),
-    query_flip: wp.array(dtype=wp.int32),
-    flip: bool,
-    matrix: wp.array2d(dtype=Any),
-):
-    """Fill a contact matrix with data for a query.
-    Args:
-        q_ep: Entity pair indices for the query.
-        q_ep_mat_idx: Matrix indices for the query, shape [n_entity_pairs].
-        data: Data to fill the matrix with, shape [n_entity_pairs].
-        query_flip: flatterned array with flags whether the enditites were flipped.
-        flip: for force and normal reporting do the flip if entities were flipped
-        matrix: Matrix to fill from data.
+def _lol_to_arrays(list_of_lists: list[list], dtype) -> tuple[wp.array, wp.array, wp.array]:
+    """Convert a list of lists to three warp arrays containing the values, offsets and counts.
+    Does nothing and returns None, None, None if the list is empty.
     """
-    qep_idx = wp.tid()
-    if qep_idx >= q_ep.shape[0]:
-        return
-    ep_idx = q_ep[qep_idx]
+    if not list_of_lists:
+        return None, None, None
+    a = wp.array([el for l in list_of_lists for el in l], dtype=dtype)
+    count_list = list(map(len, list_of_lists))
+    offset = wp.array(np.cumsum([0, *count_list[:-1]]), dtype=wp.int32)
+    count = wp.array(count_list, dtype=wp.int32)
+    return a, offset, count
 
-    mat_idx = q_ep_mat_idx[qep_idx]
-    row, col = mat_idx.x, mat_idx.y
-    if flip and query_flip[qep_idx] == 1:
-        matrix[row, col] = -data[ep_idx]
-    else:
-        matrix[row, col] = data[ep_idx]
+
+class ContactView:
+    """A view for querying contacts between entities in the simulation."""
+
+    def __init__(self, query_id: int, args: dict):
+        # self.contact_reporter = contact_reporter
+        self.query_id = query_id
+        self.args = args
+        self.finalized = False
+        self.shape = None
+
+        self.net_force = None  # force matrix, aliased to contact reducer
+        self.entity_pairs = None  # entity pair matrix
+
+
+def convert_contact_info(
+    model: Model,
+    contact_info: ContactInfo,
+    solver: SolverBase | None = None,
+    contacts: Contacts | None = None,
+):
+    """Populate ContactInfo object from the solver or from the Contacts object."""
+    if solver is not None:
+        if isinstance(solver, MuJoCoSolver):
+            solver.update_newton_contacts(model, solver.mjw_data, contact_info)
+        else:
+            raise NotImplementedError("Contact conversion not yet implemented this solver")
+
+
+class ContactSensorManager:
+    def __init__(self, model):
+        self.sensors = []
+        self.contact_queries = []
+        self.contact_views = []
+        self.contact_reporter = None
+        self.model = model
+
+    def finalize(self):
+        self.entity_pairs = self.build_entity_pair_list()
+        self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
+        for offset, count, view, shape in zip(
+            self.query_offset, self.query_count, self.contact_views, self.query_shape
+        ):
+            view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
+
+    def add_contact_query(
+        self,
+        contact_view: ContactView,
+        sensor_entities: list[tuple[int, ...]],
+        select_entities: list[tuple[int, ...] | None],
+        sensor_matrix: list[tuple[int, tuple[int, ...]]],
+    ):
+        self.contact_queries.append((sensor_entities, select_entities, sensor_matrix))
+        self.contact_views.append(contact_view)
+
+    def build_entity_pair_list(self):
+        query_to_eps = []
+        entity_pair_list = []
+        query_len = []
+        query_shape = []
+
+        # TODO: generalize to support partial sensor matrix
+        for sensor_entities, select_entities, sensor_matrix in self.contact_queries:
+            n_query_sensors = len(sensor_matrix)
+            n_query_selects = max(len(partners) for _, partners in sensor_matrix)
+            print(f"Sensors in query: {n_query_sensors}\t Max selects: {n_query_selects}")
+            query_eps = [
+                (sensor_entities[sensor], select_entities[select])
+                for sensor, selects in sensor_matrix
+                for select in selects
+            ]
+            query_to_eps.append(query_to_eps)
+            query_len.append(n_query_sensors * n_query_selects)
+            query_shape.append((n_query_sensors, n_query_selects))
+            print(f"query_to_eps: {query_to_eps}")
+            entity_pair_list.extend(query_eps)
+
+        self.query_count = query_len
+        self.query_offset = [0, *np.cumsum(query_len[:-1]).tolist()]
+        self.query_shape = query_shape
+        return entity_pair_list
+
+    def eval_contact_sensors(self, contact_info):
+        self.contact_reporter._select_aggregate_net_force(contact_info)
 
 
 class ContactReporter:
-    """Filter and aggregate contacts by the pair of entities between which they occur.
-    An entity is a set of shapes.
-    Currently, a shape pair may not appear in multiple entity pairs.
+    """Aggregates contacts per entity pair"""
 
-    Initialized with a list of entities and a list of entity pairs.
-    """
-
-    # class is concerned only with shapes, collections of shapes, and their contacts.
-
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, entity_pairs: list[tuple[tuple[int, ...], tuple[int, ...]]]):
         self.model = model
 
-        # results for deepest contact query
-        self.entity_pair_contact = None
-        """Index of deepest contact for each entity pair, shape [n_entity_pairs], int"""
-        self.entity_pair_dist = None
-        """Distance of deepest contact for each entity pair, shape [n_entity_pairs], float"""
-        self.entity_pair_normal = None
-        """Normal of deepest contact for each entity pair, shape [n_entity_pairs], vec3"""
-
-        # results for net contact force query
-        self.entity_pair_force = None
-        """Net contact force between each entity pair, shape [n_entity_pairs], int"""
-
-        # intermediate, static data
-        self.n_entity_pairs = 0
-        """Number of entity pairs, int"""
-        self.entity_pairs = None
-        """Pairs of entities whose contacts are of interest, shape [n_entity_pairs], vec2i"""
-        self.n_shape_pairs = 0
-        """Number of shape pairs, int"""
-        self.shape_pairs = None  # sorted lexicographically
-        """Pairs of shapes whose contacts are of interest, shape [n_entity_pairs], vec2i"""
-        self.bin_start = None
-        """Start index of contacts for each bin, shape [n_shape_pairs], int"""
-        self.bin_start_sorted = None
-        """Start index of contacts for each bin, sorted by shape pair ordinal, shape [n_shape_pairs], int"""
-
-        # entity and shape pair mapping
-        self.entities = None
-        """Dictionary mapping entity tuples to entity indices"""
-        self.query_to_entity_pair = None
-        """List mapping query indices to entity pair data"""
-        self.entity_p_shape_p_map = None
-        """Dictionary mapping entity pairs to their shape pairs"""
-
-        # entity pair to shape pair mapping arrays
-        self.ep_sp_start = None
-        """Start index of shape pairs for each entity pair, shape [n_entity_pairs], int"""
-        self.ep_sp_num = None
-        """Number of shape pairs for each entity pair, shape [n_entity_pairs], int"""
-        self.ep_sp_ord = None
-        """Shape pair ordinals for entity pairs, shape [total_shape_pairs], int"""
-        self.ep_sp_flip = None
-        """Shape pair flip flags for entity pairs, shape [total_shape_pairs], int"""
-
-        # intermediate, variable data
-
-        self.bin_contacts = None
-        """Contact index component of bins (shape pair), shape [n_shape_pairs, n_pair_contact_max], int"""
-
-        self.bin_count = None
-        """Number of contacts in each bin, shape [n_shape_pairs], int"""
-
-        # inputs to aggregation
-        self.bin_contacts_dist = None
-        """Contact distance component of bins, shape [n_shape_pairs, n_pair_contact_max], float"""
-
-        # query result matrices
-        self.query_dist_matrices = None
-        """List of distance matrices for each query"""
-        self.query_idx_matrices = None
-        """List of contact index matrices for each query"""
-        self.query_entities = None
-        """List of entity mappings for each query"""
-
-        # setup data
-        self.entity_group_pairs: list[tuple[list[tuple[int, ...]], list[tuple[int, ...]]]] = []
-        self.query_keys: list[tuple[list[str], list[str]]] = []
-
-    def add_entity_group_pair(self, entity_group_a: list[tuple[int, ...]], entity_group_b: list[tuple[int, ...]]):
-        """Add a pair of entity groups (aka query) to the contact reporter."""
-        self.entity_group_pairs.append((entity_group_a, entity_group_b))
-
-    def add_query_keys(self, entity_a_keys: list[str], entity_b_keys: list[str]):
-        """Add entity keys (names) for a contact query."""
-        self.query_keys.append((entity_a_keys, entity_b_keys))
-
-    def finalize(self):
-        # TODO: speed up entity pair filtering by finding collision groups per entity
-        # simplify entity groups
-
-        def normalize_entity(entity_shapes):
-            return tuple(sorted(set(entity_shapes))), None
-
-        # create a directory of entities and reference entities by id from the queries
-        entities = {}
-        self.entities = entities
-        entity_group_pairs = []
-        for entity_group_a, entity_group_b in self.entity_group_pairs:
-            group_a = tuple(e for e, _ in _sort_into(entities, entity_group_a, normalize_entity))
-            group_b = tuple(e for e, _ in _sort_into(entities, entity_group_b, normalize_entity))
-            entity_group_pairs.append((group_a, group_b))
-
-        # create a directory of entity pairs and reference them by id from the queries
-        entity_pairs = {}
-        query_to_entity_pair = []
-        for e_group_a, e_group_b in entity_group_pairs:
-            query_entity_pairs = _sort_into(
-                entity_pairs,
-                itertools.product(e_group_a, e_group_b),
-                normalize_fn=_normalize_pair,
-                filter_fn=lambda pair: pair[0] != pair[1],
-            )
-            query_to_entity_pair.append(list(query_entity_pairs))
-
-        self.query_to_entity_pair = query_to_entity_pair
-        self.entity_pairs = list(entity_pairs)
-
+        # initialize mapping from sp to eps & flips
         self.n_entity_pairs = len(entity_pairs)
+        self._create_sp_ep_arrays(entity_pairs)
+        # net force (1 vec3 per entity pair)
+        self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
 
-        # TODO: use natural ordering of shape pairs
+        return
 
-        # create a directory of shape pairs and reference them by id from the entity pairs
-        shape_pairs = {}
-        entity_p_shape_p_map = {}
-        entity_list = list(entities.keys())
+    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[tuple[int, ...], tuple[int, ...] | None]]):
+        """Build a mapping from shape pairs to entity pairs ordered by shape pair."""
+        sp_ep_map = defaultdict(list)
+        for ep_idx, (e1, e2) in enumerate(entity_pairs):
+            assert e1 is not None, "Sensor cannot be attached to wildcard entity"
 
-        for e_a, e_b in entity_pairs:
-            # TODO: ensure that two entities don't overlap
-            if e_a == e_b:
-                continue
-            entity_shape_pairs = itertools.product(entity_list[e_a], entity_list[e_b])
-            entity_p_shape_p_map[e_a, e_b] = list(
-                _sort_into(
-                    shape_pairs,
-                    entity_shape_pairs,
-                    normalize_fn=_normalize_pair,
-                    filter_fn=lambda pair: pair[0] != pair[1],
-                )
-            )
+            # pair e1 shapes with e2 shapes, or with -1 if e2 is None
+            shape_pairs = itertools.product(e1, (-1,) if e2 is None else e2)
+            for sp in shape_pairs:
+                flip_pair = sp[0] > sp[1]
+                if flip_pair:
+                    sp = sp[1], sp[0]  # noqa
+                # print(f"Adding shape pair {sp} to entity pair {ep_idx} (flip={flip_pair})")
 
-        self.n_shape_pairs = len(shape_pairs)
+                sp_ep_map[sp].append((ep_idx, flip_pair))
 
-        # for each bin(shape pair), allocate the necessary space
-        def shape_pair_maxcontacts(shape_pair):
-            return 24  # TODO
+        # sort by shape pair for fast retrieval
+        sp_sorted = sorted(sp_ep_map)
+        sp_ep = [sp_ep_map[sp] for sp in sp_sorted]
 
-        bin_size = list(map(shape_pair_maxcontacts, shape_pairs))
-        bin_start = np.cumsum([0, *bin_size[:-1]])  # Cumulative sum for start indices
+        # store for debugging
+        self.sp_sorted_list = sp_sorted
+        self.sp_ep_list = sp_ep
 
-        total_bin_size = sum(bin_size)  # Total size for linearized arrays
+        self.n_shape_pairs = len(sp_sorted)
 
-        self.entity_p_shape_p_map = entity_p_shape_p_map
+        # TODO: ensure no symmetric pairs
 
-        # sort shape pairs, bin start and bin size according to shape pair ordinal
-        shape_pairs_sorted, shape_pairs_position, bin_size, bin_start_sorted = zip(
-            *sorted(zip(shape_pairs, itertools.count(), bin_size, bin_start))
-        )
+        # initialize warp arrays
+        self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i)
+        self.sp_ep, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_ep, wp.vec2i)
 
-        shape_pairs_id_to_ord = np.argsort(shape_pairs_position)
-
-        ep_sp_ord = []
-        ep_sp_num = []
-        ep_sp_flip = []
-
-        for _ep, sps in entity_p_shape_p_map.items():
-            for sp_idx, flip in sps:
-                ep_sp_ord.append(shape_pairs_id_to_ord[sp_idx])
-                ep_sp_flip.append(flip)
-            ep_sp_num.append(len(sps))
-        ep_sp_start = np.cumsum([0, *ep_sp_num[:-1]])
-
-        n_bins = self.n_shape_pairs
-
-        with wp.ScopedDevice(self.model.device):
-            self.shape_pairs = wp.array(shape_pairs_sorted, dtype=wp.vec2i)
-            self.bin_start = wp.array(bin_start, dtype=wp.int32)
-            self.bin_start_sorted = wp.array(bin_start_sorted, dtype=wp.int32)
-            self.bin_count = wp.zeros(n_bins, dtype=wp.int32)
-
-            # TODO: skip reordering of shape pairs
-            self.ep_sp_num = wp.array(ep_sp_num, dtype=wp.int32)
-            self.ep_sp_start = wp.array(ep_sp_start, dtype=wp.int32)
-            self.ep_sp_ord = wp.array(ep_sp_ord, dtype=wp.int32)
-            self.ep_sp_flip = wp.array(ep_sp_flip, dtype=wp.int32)
-
-            self.bin_contacts = wp.empty(total_bin_size, dtype=wp.int32)
-            self.bin_contacts_dist = wp.empty(total_bin_size, dtype=wp.float32)
-
-            self.entity_pair_contact = wp.empty(self.n_entity_pairs, dtype=wp.int32)
-            self.entity_pair_dist = wp.empty(self.n_entity_pairs, dtype=wp.float32)
-            self.entity_pair_normal = wp.empty(self.n_entity_pairs, dtype=wp.vec3)
-            self.entity_pair_force = wp.empty(self.n_entity_pairs, dtype=wp.vec3)
-
-            # Pre-initialize contact matrices for each query
-            self.query_entities = []
-
-            self.query_entity_pairs = []
-            self.query_entity_pair_mat_idx = []
-
-            self.query_dist_matrix = []
-            self.query_force_matrix = []
-            self.query_normal_matrix = []
-            self.query_idx_matrix = []
-            self.query_flip = []
-
-            for query_idx in range(len(self.entity_group_pairs)):
-                query_pairs = self.query_to_entity_pair[query_idx]
-                entity_pairs = [
-                    self.entity_pairs[query_pair][::-1] if flip else self.entity_pairs[query_pair]
-                    for query_pair, flip in query_pairs
-                ]
-                row_entities, col_entities = zip(*entity_pairs)
-                row_indices = {row: i for i, row in enumerate(sorted(set(row_entities)))}
-                col_indices = {col: i for i, col in enumerate(sorted(set(col_entities)))}
-
-                # Store entities mapping for this query
-                entities = (row_indices, col_indices)
-                self.query_entities.append(entities)
-
-                query_ep_idx, _query_flip = zip(*query_pairs)
-
-                self.query_entity_pairs.append(wp.array(query_ep_idx, dtype=wp.int32))
-                self.query_flip.append(wp.array(_query_flip, dtype=wp.int32))
-                q_ep_mat_idx = [(row_indices[row], col_indices[col]) for row, col in entity_pairs]
-
-                self.query_entity_pair_mat_idx.append(wp.array(q_ep_mat_idx, dtype=wp.vec2i))
-                m, n = len(row_indices), len(col_indices)
-                self.query_dist_matrix.append(wp.full((m, n), wp.inf, dtype=wp.float32))
-                self.query_force_matrix.append(wp.full((m, n), 0, dtype=wp.vec3))
-                self.query_normal_matrix.append(wp.full((m, n), 0, dtype=wp.vec3))
-                self.query_idx_matrix.append(wp.full((m, n), -1, dtype=wp.int32))
-
-    def reset(self):
-        """Clear intermediate data"""
-        self.bin_count.zero_()
-
-    def select_aggregate(
-        self,
-        contact: ContactInfo,
-        num_contacts: wp.array(dtype=wp.int32),
-        solver: SolverBase | None = None,
-    ):
-        self.reset()
-
-        if solver is not None:
-            if isinstance(solver, MuJoCoSolver):
-                solver.update_newton_contacts(self.model, solver.mjw_data, contact)
-
+    def _select_aggregate_net_force(self, contact: ContactInfo):
+        self.net_force.zero_()
         wp.launch(
-            select_bin_contacts,
+            select_aggregate_net_force,
             dim=NUM_THREADS,
             inputs=[
-                contact.pair,
-                contact.separation,
-                self.shape_pairs,
+                contact.n_contacts,
+                self.sp_sorted,
                 self.n_shape_pairs,
-                num_contacts,
-                self.bin_start_sorted,
-            ],
-            outputs=[
-                self.bin_contacts,
-                self.bin_count,
-                self.bin_contacts_dist,
-            ],
-        )
-
-        wp.launch(
-            aggregate_entity_pair_maxdepth,
-            dim=self.n_entity_pairs,
-            inputs=[
+                self.sp_ep,
+                self.sp_ep_offset,
+                self.sp_ep_count,
+                contact.pair,
                 contact.normal,
-                self.n_entity_pairs,
-                self.ep_sp_ord,
-                self.ep_sp_start,
-                self.ep_sp_num,
-                self.ep_sp_flip,
-                self.bin_start_sorted,
-                self.bin_contacts,
-                self.bin_contacts_dist,
-                self.bin_count,
+                contact.force,
             ],
-            outputs=[
-                self.entity_pair_contact,
-                self.entity_pair_dist,
-                self.entity_pair_normal,
-            ],
+            outputs=[self.net_force],
         )
-
-        if contact.force is not None:
-            wp.launch(
-                aggregate_entity_pair_net_force,
-                dim=self.n_entity_pairs,
-                inputs=[
-                    contact.normal,
-                    self.n_entity_pairs,
-                    self.ep_sp_ord,
-                    self.ep_sp_start,
-                    self.ep_sp_num,
-                    self.ep_sp_flip,
-                    self.bin_start_sorted,
-                    self.bin_contacts,
-                    contact.force,
-                    self.bin_count,
-                ],
-                outputs=[
-                    self.entity_pair_force,
-                ],
-            )
-
-    def fill_contact_matrix(self, query_idx: int, data, matrix, query_flip, flip):
-        wp.launch(
-            fill_contact_matrix,
-            dim=self.query_entity_pairs[query_idx].shape[0],
-            inputs=[
-                self.query_entity_pairs[query_idx],
-                self.query_entity_pair_mat_idx[query_idx],
-                data,
-                query_flip[query_idx],
-                flip,
-            ],
-            outputs=[matrix],
-        )
-
-    def get_dist(self, query_idx: int):
-        matrix = self.query_dist_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_dist, matrix, self.query_flip, False)
-        return self.query_entities[query_idx], matrix
-
-    def get_force(self, query_idx: int):
-        matrix = self.query_force_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_force, matrix, self.query_flip, True)
-        return self.query_entities[query_idx], matrix
-
-    def get_normal(self, query_idx: int):
-        matrix = self.query_normal_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_normal, matrix, self.query_flip, True)
-        return self.query_entities[query_idx], matrix
-
-    def get_idx(self, query_idx: int):
-        matrix = self.query_idx_matrix[query_idx]
-        self.fill_contact_matrix(query_idx, self.entity_pair_contact, matrix, self.query_flip, False)
-        return self.query_entities[query_idx], matrix
-
-    def get_query_keys(self, query_idx: int):
-        return self.query_keys[query_idx]
