@@ -1718,7 +1718,6 @@ class MuJoCoSolver(SolverBase):
             model.shape_incoming_xform = wp.array(shape_incoming_xform, dtype=wp.transform)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
-            self.mjw_model.opt.graph_conditional = newton.utils.check_conditional_graph_support()
 
             if separate_envs_to_worlds:
                 nworld = model.num_envs

@@ -5,3 +5,6 @@ coverage:
 
 comment:
   layout: "diff, flags, files"
+
+fixes:
+  - "/var/snap/amazon-ssm-agent/[0-9]+/::"
