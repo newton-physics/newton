@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from newton.core.types import Devicelike, Vec3, override
+from newton.core.types import Devicelike, Vec3, nparray, override
 
 # Shape geometry types
 GEO_SPHERE = wp.constant(0)
@@ -97,8 +97,8 @@ class Mesh:
 
     def __init__(
         self,
-        vertices: Sequence[Vec3],
-        indices: Sequence[int],
+        vertices: Sequence[Vec3] | nparray,
+        indices: Sequence[int] | nparray,
         compute_inertia: bool = True,
         is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
@@ -144,7 +144,7 @@ class Mesh:
     @vertices.setter
     def vertices(self, value):
         """Set the mesh vertices and invalidate the cached hash."""
-        self._vertices = np.array(value).reshape(-1, 3)
+        self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
 
     @property
@@ -186,7 +186,7 @@ class Mesh:
         """
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
-        hull_vertices, hull_faces = remesh_convex_hull(self.vertices)
+        hull_vertices, hull_faces = remesh_convex_hull(self.vertices, maxhullvert=self.maxhullvert)
 
         # create a new mesh for the convex hull
         hull_mesh = Mesh(hull_vertices, hull_faces, compute_inertia=False)
