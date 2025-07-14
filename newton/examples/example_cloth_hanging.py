@@ -117,7 +117,7 @@ class Example:
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
-                "tri_kd": 1.0e-5,
+                "tri_kd": 1.0e-1,
             }
 
         builder.add_cloth_grid(**common_params, **solver_params)
@@ -202,12 +202,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_cloth_hanging.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument(
         "--solver",
         help="Type of solver",

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import warp as wp
 
 import newton
@@ -45,7 +47,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, stage_path=None, num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path: str | None = "example_selection_cartpole.usd", num_envs=16, use_cuda_graph=True):
         self.num_envs = num_envs
 
         up_axis = newton.Axis.Z
@@ -192,14 +194,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_selection_cartpole.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=16, help="Total number of simulated environments.")
-    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
+    parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
+    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 

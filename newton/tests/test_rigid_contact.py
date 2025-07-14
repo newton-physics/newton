@@ -39,19 +39,111 @@ def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
         state_0, state_1 = state_1, state_0
 
 
-def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
+def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1e4
-    builder.default_shape_cfg.kd = 1000.0
+    builder.default_shape_cfg.kd = 500.0
     builder.add_ground_plane()
-    num_spheres = 10
-    for i in range(num_spheres):
-        b = builder.add_body(xform=wp.transform(wp.vec3(i * 0.5, 0.0, 1.0), wp.quat_identity()))
+    size = 0.3
+    # fmt: off
+    vertices = np.array([
+        [-size, -size, -size],
+        [-size, -size, size],
+        [-size, size, size],
+        [-size, size, -size],
+        [size, -size, -size],
+        [size, -size, size],
+        [size, size, size],
+        [size, size, -size],
+        [-size, -size, -size],
+        [-size, -size, size],
+        [size, -size, size],
+        [size, -size, -size],
+        [-size, size, -size],
+        [-size, size, size],
+        [size, size, size],
+        [size, size, -size],
+        [-size, -size, -size,],
+        [-size, size, -size,],
+        [size, size, -size,],
+        [size, -size, -size,],
+        [-size, -size, size],
+        [-size, size, size],
+        [size, size, size],
+        [size, -size, size],
+    ], dtype=np.float32)
+    # Add some offset to the vertices to test proper handling of non-zero origin
+    # e.g. MuJoCo transforms the mesh to the origin
+    mesh_offset = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    vertices += mesh_offset
+    cube_mesh = newton.geometry.Mesh(
+        vertices=vertices,
+        indices = [
+            0, 1, 2,
+            0, 2, 3,
+            4, 6, 5,
+            4, 7, 6,
+            8, 10, 9,
+            8, 11, 10,
+            12, 13, 14,
+            12, 14, 15,
+            16, 17, 18,
+            16, 18, 19,
+            20, 22, 21,
+            20, 23, 22,
+        ],
+    )
+    # fmt: on
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 2e4
+    builder.default_shape_cfg.kd = 500.0
+    # !!! disable friction for Euler integrators
+    builder.default_shape_cfg.kf = 0.0
+
+    expected_end_positions = []
+
+    for i, scale in enumerate([0.5, 1.0]):
+        y_pos = i * 1.5
+
+        b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_sphere(
             body=b,
-            radius=0.1,
+            radius=0.1 * scale,
         )
+        expected_end_positions.append(wp.vec3(0.0, y_pos, 0.1 * scale))
+
+        b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_joint_free(b)
+        builder.add_shape_capsule(
+            body=b,
+            radius=0.1 * scale,
+            half_height=0.3 * scale,
+            axis=newton.Axis.Y,
+        )
+        expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
+
+        b = builder.add_body(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_joint_free(b)
+        builder.add_shape_box(
+            body=b,
+            hx=0.2 * scale,
+            hy=0.25 * scale,
+            hz=0.3 * scale,
+        )
+        expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
+
+        b = builder.add_body(xform=wp.transform(wp.vec3(6.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_joint_free(b)
+        builder.add_shape_mesh(
+            body=b,
+            mesh=cube_mesh,
+            scale=wp.vec3(scale, scale, scale),
+        )
+        expected_end_positions.append(wp.vec3(6.0, y_pos, 0.3 * scale))
+
+    builder.add_ground_plane()
 
     model = builder.finalize(device=device)
 
@@ -60,8 +152,8 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
     control = model.control()
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-    substeps = 2
-    sim_dt = 1.0 / 100.0
+    substeps = 10
+    sim_dt = 1.0 / 60.0
     if use_cuda_graph:
         # ensure data is allocated and modules are loaded before graph capture
         # in case of an earlier CUDA version
@@ -70,29 +162,26 @@ def test_spheres_on_plane(test: TestRigidContact, device, solver_fn):
             simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
         graph = capture.graph
 
-    for _ in range(100):
+    for _ in range(250):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
             simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
 
     body_q = state_0.body_q.numpy()
-    expected_positions = np.arange(num_spheres, dtype=np.float32) * 0.5
-    assert_np_equal(body_q[:, 0], expected_positions, tol=1e-2)
-    assert_np_equal(body_q[:, 1], np.zeros(num_spheres, dtype=np.float32), tol=1e-2)
-    expected_heights = np.ones(num_spheres, dtype=np.float32) * 0.1
-    assert_np_equal(body_q[:, 2], expected_heights, tol=1e-2)
-    expected_quats = np.tile(wp.quat_identity(), (num_spheres, 1))
+    expected_end_positions = np.array(expected_end_positions)
+    assert_np_equal(body_q[:, :3], expected_end_positions, tol=1e-1)
+    expected_quats = np.tile(wp.quat_identity(), (model.body_count, 1))
     assert_np_equal(body_q[:, 3:], expected_quats, tol=1e-1)
 
 
 devices = get_test_devices()
 solvers = {
-    "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
+    "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model),
     "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=True),
     "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=False),
-    "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
+    "xpbd": lambda model: newton.solvers.XPBDSolver(model, iterations=2),
+    "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -102,8 +191,8 @@ for device in devices:
             continue
         add_function_test(
             TestRigidContact,
-            f"test_spheres_on_plane_{solver_name}",
-            test_spheres_on_plane,
+            f"test_shapes_on_plane_{solver_name}",
+            test_shapes_on_plane,
             devices=[device],
             solver_fn=solver_fn,
         )

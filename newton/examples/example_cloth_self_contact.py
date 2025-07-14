@@ -123,7 +123,7 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=600):
+    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=300):
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -166,7 +166,7 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=2.0e-6,
+            tri_kd=2.0e-4,
             edge_ke=10,
         )
         builder.color()
@@ -304,12 +304,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_cloth_self_contact.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
 
     args = parser.parse_known_args()[0]
 

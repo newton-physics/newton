@@ -96,7 +96,6 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-        # self.model.rigid_contact_max = 1204*128
 
         self.control = self.model.control()
         # self.solver = newton.solvers.FeatherstoneSolver(self.model)
@@ -175,23 +174,44 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_g1.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num_frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
-    parser.add_argument("--use_cuda_graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
+    parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument(
+        "--show-mujoco-viewer",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Toggle MuJoCo viewer next to Newton renderer when MuJoCoSolver is active.",
+    )
+    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
+        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
+        if show_mujoco_viewer:
+            import mujoco
+            import mujoco.viewer
+            import mujoco_warp
+
+            mjm, mjd = example.solver.mj_model, example.solver.mj_data
+            m, d = example.solver.mjw_model, example.solver.mjw_data
+            viewer = mujoco.viewer.launch_passive(mjm, mjd)
+
         for _ in range(args.num_frames):
             example.step()
             example.render()
+
+            if show_mujoco_viewer:
+                if not example.solver.use_mujoco:
+                    mujoco_warp.get_data_into(mjd, mjm, d)
+                viewer.sync()
 
         if example.renderer:
             example.renderer.save()
