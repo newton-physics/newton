@@ -14,11 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim G1
+# Example using MuJoCo solver
 #
-# Shows how to set up a simulation of a rigid-body humanoid articulation
-# from a xml using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
+# This script allows us to choose between several predefined robots and
+# provides a large range of customizable options.
+# The simulation runs with MuJoCo solver.
+#
+# Future improvements:
+# - Add options to run with a pre-trained policy
+# - Add the Ant environment
+# - Add the Anymal environment
+# - Fix the use_mujoco option (currently crash)
+# - Fix the render_contact option (currently does not render)
 ###########################################################################
 
 
