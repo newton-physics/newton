@@ -17,27 +17,71 @@ on:
       - "docs/**"
       - "**.md"
       - ".gitlab-ci.yml"
-  push:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".gitlab-ci.yml"
+      - ".github/**"
+      - ".gitignore"
 
 # Cancels in-progress runs of this workflow for the same pull request,
 # but allows parallel runs for pushes to the main branch.
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}
+  group: ${{ github.head_ref }}
   cancel-in-progress: true
 
 jobs:
+  check-author-membership:
+    name: Check Author Membership
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      membership_status: ${{ steps.check_org.outputs.membership_status }}
+    steps:
+      - name: Check user's organization membership
+        id: check_org
+        run: |
+          ASSOCIATION="${{ github.event.pull_request.author_association }}"
+          echo "Author's association with the repository: ${ASSOCIATION}"
+
+          if [[ "${ASSOCIATION}" == "MEMBER" || "${ASSOCIATION}" == "OWNER" || "${ASSOCIATION}" == "COLLABORATOR" ]]; then
+            echo "Author is a recognized member, owner, or collaborator."
+            echo "membership_status=CONFIRMED_MEMBER" >> "$GITHUB_OUTPUT"
+          else
+            # Set the output for other jobs to use
+            echo "membership_status=NOT_MEMBER" >> "$GITHUB_OUTPUT"
+
+            # Print a message explaining the status and its impact on workflows.
+            echo "--------------------------------------------------------------------------------" >&2
+            echo "Thank you for your contribution!" >&2
+            echo "This is the expected status for community contributors. Certain automated" >&2
+            echo "workflows are reserved for verified organization members." >&2
+            echo "" >&2
+            echo "--------------------------------------------------------------------------------" >&2
+            echo "❓ Are you a member of the 'newton-physics' organization and believe this is an error?" >&2
+            echo "" >&2
+            echo "This can happen if your organization membership is set to 'Private'. To fix this," >&2
+            echo "please make your membership 'Public' to enable all workflow triggers:" >&2
+            echo "" >&2
+            echo "1. Go to the organization's People page: https://github.com/orgs/newton-physics/people" >&2
+            echo "2. Find your username in the list." >&2
+            echo "3. Click the dropdown next to your name and change your visibility from 'Private' to 'Public'." >&2
+            echo "" >&2
+            echo "After updating your visibility, push a new commit to this PR to re-run the check." >&2
+            echo "--------------------------------------------------------------------------------" >&2
+          fi
+
   run-unit-tests-on-aws:
     if: github.repository == 'newton-physics/newton'
+    needs: check-author-membership
+    environment:
+      name: ${{ needs.check-author-membership.outputs.membership_status != 'CONFIRMED_MEMBER' && 'external-pr-approval' || '' }}
+      url: ${{ github.event.pull_request.html_url }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
         with:
@@ -63,13 +107,7 @@ jobs:
           # --- Define all tags ---
           TAGS="{Key=Name,Value=newton-github-workflow-runner},{Key=created-by,Value=github-actions-newton-role}"
           TAGS="$TAGS,{Key=GitHub-Repository,Value=${{ github.repository }}}"
-
-          # Add the event-specific tag
-          if [ "${{ github.event_name }}" == "pull_request_target" ]; then
-            TAGS="$TAGS,{Key=Source-Event,Value=Pull-Request}"
-          else
-            TAGS="$TAGS,{Key=Source-Event,Value=Push}"
-          fi
+          TAGS="$TAGS,{Key=Source-Event,Value=Pull-Request}"
 
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id $LATEST_AMI_ID \
@@ -98,7 +136,7 @@ jobs:
 
       - name: Generate script to run on instance
         env:
-          BRANCH_NAME_ENV: ${{ github.head_ref || github.ref_name }}
+          BRANCH_NAME_ENV: ${{ github.head_ref }}
           S3_BUCKET: ${{ env.AWS_S3_BUCKET }}
           PR_NUMBER: ${{ github.event.number }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
@@ -153,17 +191,12 @@ jobs:
           cd "\$REPO_DIR"
 
           # --- Checkout correct commit ---
-          if [ "${{ github.event_name }}" == "pull_request_target" ]; then
-            if [ "${IS_FORK}" == "true" ]; then
-              echo "Pull request from a forked repository. Fetching and checking out PR head."
-              git fetch origin pull/${PR_NUMBER}/head
-              git checkout FETCH_HEAD
-            else
-              echo "Pull request from the same repository. Checking out the branch directly."
-              git checkout "${SAFE_BRANCH}"
-            fi
+          if [ "${IS_FORK}" == "true" ]; then
+            echo "Pull request from a forked repository. Fetching and checking out PR head."
+            git fetch origin pull/${PR_NUMBER}/head
+            git checkout FETCH_HEAD
           else
-            echo "Push event. Checking out the branch directly."
+            echo "Pull request from the same repository. Checking out the branch directly."
             git checkout "${SAFE_BRANCH}"
           fi
 
@@ -265,13 +298,6 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
 
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@f2dba722c67b86c6caa034178c6e4d35335f6706
-        with:
-          files: ./rspec.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
-
       - name: Upload coverage reports to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d
@@ -287,7 +313,7 @@ jobs:
     name: Cleanup EC2 Instance
     runs-on: ubuntu-latest
     needs: run-unit-tests-on-aws
-    if: always()
+    if: always() && github.repository == 'newton-physics/newton'
     permissions:
       id-token: write
       contents: read
