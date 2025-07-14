@@ -276,7 +276,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use-mujoco", default=False, action=argparse.BooleanOptionalAction, help="Use Mujoco C (Not yet supported)."
     )
-    parser.add_argument("--render-contact", default=False, action=argparse.BooleanOptionalAction, help="Render contact (Not yet supported).")
+    parser.add_argument(
+        "--render-contact",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Render contact (Not yet supported).",
+    )
     parser.add_argument(
         "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
     )
