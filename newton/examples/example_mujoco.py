@@ -33,8 +33,22 @@ wp.config.enable_backward = False
 
 
 class Example:
-    def __init__(self, robot="humanoid", stage_path=None, num_envs=1, use_cuda_graph=True, render_contact=False, randomize=False, headless=False,
-        actuation="None", solver=None, integrator=None, solver_iteration=None, ls_iteration=None, njmax=None, nconmax=None
+    def __init__(
+        self,
+        robot="humanoid",
+        stage_path=None,
+        num_envs=1,
+        use_cuda_graph=True,
+        render_contact=False,
+        randomize=False,
+        headless=False,
+        actuation="None",
+        solver=None,
+        integrator=None,
+        solver_iteration=None,
+        ls_iteration=None,
+        njmax=None,
+        nconmax=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -54,120 +68,119 @@ class Example:
             stage_path = "example_" + robot + ".usd"
 
         articulation_builder = newton.ModelBuilder()
-        match robot:
-            case "humanoid":
-                newton.utils.parse_mjcf(
-                    newton.examples.get_asset("nv_humanoid.xml"),
-                    articulation_builder,
-                    ignore_names=["floor", "ground"],
-                    up_axis="Z",
-                )
+        if robot == "humanoid":
+            newton.utils.parse_mjcf(
+                newton.examples.get_asset("nv_humanoid.xml"),
+                articulation_builder,
+                ignore_names=["floor", "ground"],
+                up_axis="Z",
+            )
 
-                # Setting root pose
-                root_dofs = 7
-                articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
+            # Setting root pose
+            root_dofs = 7
+            articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
 
-                # Setting mujoco_warp parameters
-                solver = solver if solver is not None else "newton"
-                integrator = integrator if integrator is not None else "euler"
-                solver_iteration = solver_iteration if solver_iteration is not None else 10
-                ls_iteration = ls_iteration if ls_iteration is not None else 5
-                njmax = njmax if njmax is not None else 100
-                nconmax = nconmax if nconmax is not None else 50
-            case "g1":
-                asset_path = newton.utils.download_asset("g1_description")
+            # Setting mujoco_warp parameters
+            solver = solver if solver is not None else "newton"
+            integrator = integrator if integrator is not None else "euler"
+            solver_iteration = solver_iteration if solver_iteration is not None else 10
+            ls_iteration = ls_iteration if ls_iteration is not None else 5
+            njmax = njmax if njmax is not None else 100
+            nconmax = nconmax if nconmax is not None else 50
+        elif robot == "g1":
+            asset_path = newton.utils.download_asset("g1_description")
 
-                newton.utils.parse_mjcf(
-                    str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
-                    articulation_builder,
-                    collapse_fixed_joints=True,
-                    up_axis="Z",
-                    enable_self_collisions=False,
-                )
-                simplified_meshes = {}
-                try:
-                    import tqdm  # noqa: PLC0415
+            newton.utils.parse_mjcf(
+                str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
+                articulation_builder,
+                collapse_fixed_joints=True,
+                up_axis="Z",
+                enable_self_collisions=False,
+            )
+            simplified_meshes = {}
+            try:
+                import tqdm  # noqa: PLC0415
 
-                    meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
-                except ImportError:
-                    meshes = articulation_builder.shape_geo_src
-                for i, m in enumerate(meshes):
-                    if m is None:
-                        continue
-                    hash_m = hash(m)
-                    if hash_m in simplified_meshes:
-                        articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
-                    else:
-                        simplified = newton.geometry.utils.remesh_mesh(
-                            m, visualize=False, method="convex_hull", recompute_inertia=False
-                        )
-                        articulation_builder.shape_geo_src[i] = simplified
-                        simplified_meshes[hash_m] = simplified
+                meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
+            except ImportError:
+                meshes = articulation_builder.shape_geo_src
+            for i, m in enumerate(meshes):
+                if m is None:
+                    continue
+                hash_m = hash(m)
+                if hash_m in simplified_meshes:
+                    articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
+                else:
+                    simplified = newton.geometry.utils.remesh_mesh(
+                        m, visualize=False, method="convex_hull", recompute_inertia=False
+                    )
+                    articulation_builder.shape_geo_src[i] = simplified
+                    simplified_meshes[hash_m] = simplified
 
-                root_dofs = 7
+            root_dofs = 7
 
-                # Setting mujoco_warp parameters
-                solver = solver if solver is not None else "newton"
-                integrator = integrator if integrator is not None else "euler"
-                solver_iteration = solver_iteration if solver_iteration is not None else 5
-                ls_iteration = ls_iteration if ls_iteration is not None else 5
-                njmax = njmax if njmax is not None else 300
-                nconmax = nconmax if nconmax is not None else 150
-            case "cartpole":
-                articulation_builder.default_shape_cfg.density = 100.0
-                articulation_builder.default_joint_cfg.armature = 0.1
-                articulation_builder.default_body_armature = 0.1
+            # Setting mujoco_warp parameters
+            solver = solver if solver is not None else "newton"
+            integrator = integrator if integrator is not None else "euler"
+            solver_iteration = solver_iteration if solver_iteration is not None else 5
+            ls_iteration = ls_iteration if ls_iteration is not None else 5
+            njmax = njmax if njmax is not None else 300
+            nconmax = nconmax if nconmax is not None else 150
+        elif robot == "cartpole":
+            articulation_builder.default_shape_cfg.density = 100.0
+            articulation_builder.default_joint_cfg.armature = 0.1
+            articulation_builder.default_body_armature = 0.1
 
-                newton.utils.parse_urdf(
-                    newton.examples.get_asset("cartpole.urdf"),
-                    articulation_builder,
-                    floating=False,
-                    enable_self_collisions=False,
-                    collapse_fixed_joints=True,
-                )
+            newton.utils.parse_urdf(
+                newton.examples.get_asset("cartpole.urdf"),
+                articulation_builder,
+                floating=False,
+                enable_self_collisions=False,
+                collapse_fixed_joints=True,
+            )
 
-                # Setting root pose
-                root_dofs = 3
-                articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
+            # Setting root pose
+            root_dofs = 3
+            articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
 
-                # Setting mujoco_warp parameters
-                solver = solver if solver is not None else "newton"
-                integrator = integrator if integrator is not None else "euler"
-                solver_iteration = solver_iteration if solver_iteration is not None else 10
-                ls_iteration = ls_iteration if ls_iteration is not None else 5
-                njmax = njmax if njmax is not None else 50
-                nconmax = nconmax if nconmax is not None else 50
-            case "quadruped":
-                articulation_builder = newton.ModelBuilder()
-                articulation_builder.default_body_armature = 0.01
-                articulation_builder.default_joint_cfg.armature = 0.01
-                articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
-                articulation_builder.default_joint_cfg.target_ke = 2000.0
-                articulation_builder.default_joint_cfg.target_kd = 1.0
-                articulation_builder.default_shape_cfg.ke = 1.0e4
-                articulation_builder.default_shape_cfg.kd = 1.0e2
-                articulation_builder.default_shape_cfg.kf = 1.0e2
-                articulation_builder.default_shape_cfg.mu = 1.0
-                newton.utils.parse_urdf(
-                    newton.examples.get_asset("quadruped.urdf"),
-                    articulation_builder,
-                    xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
-                    floating=True,
-                    enable_self_collisions=False,
-                )
+            # Setting mujoco_warp parameters
+            solver = solver if solver is not None else "newton"
+            integrator = integrator if integrator is not None else "euler"
+            solver_iteration = solver_iteration if solver_iteration is not None else 10
+            ls_iteration = ls_iteration if ls_iteration is not None else 5
+            njmax = njmax if njmax is not None else 50
+            nconmax = nconmax if nconmax is not None else 50
+        elif robot == "quadruped":
+            articulation_builder = newton.ModelBuilder()
+            articulation_builder.default_body_armature = 0.01
+            articulation_builder.default_joint_cfg.armature = 0.01
+            articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
+            articulation_builder.default_joint_cfg.target_ke = 2000.0
+            articulation_builder.default_joint_cfg.target_kd = 1.0
+            articulation_builder.default_shape_cfg.ke = 1.0e4
+            articulation_builder.default_shape_cfg.kd = 1.0e2
+            articulation_builder.default_shape_cfg.kf = 1.0e2
+            articulation_builder.default_shape_cfg.mu = 1.0
+            newton.utils.parse_urdf(
+                newton.examples.get_asset("quadruped.urdf"),
+                articulation_builder,
+                xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+                floating=True,
+                enable_self_collisions=False,
+            )
 
-                root_dofs = 7
+            root_dofs = 7
 
-                # Setting mujoco_warp parameters
-                solver = solver if solver is not None else "newton"
-                integrator = integrator if integrator is not None else "euler"
-                solver_iteration = solver_iteration if solver_iteration is not None else 10
-                ls_iteration = ls_iteration if ls_iteration is not None else 5
-                njmax = njmax if njmax is not None else 50
-                nconmax = nconmax if nconmax is not None else 50
-            case _:
-                print("Name of the provided robot not recognized: ", robot)
-                return
+            # Setting mujoco_warp parameters
+            solver = solver if solver is not None else "newton"
+            integrator = integrator if integrator is not None else "euler"
+            solver_iteration = solver_iteration if solver_iteration is not None else 10
+            ls_iteration = ls_iteration if ls_iteration is not None else 5
+            njmax = njmax if njmax is not None else 50
+            nconmax = nconmax if nconmax is not None else 50
+        else:
+            print("Name of the provided robot not recognized: ", robot)
+            return
 
         builder = newton.ModelBuilder()
         offsets = newton.examples.compute_env_offsets(self.num_envs)
@@ -261,7 +274,9 @@ if __name__ == "__main__":
     parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument("--render-contact", default=False, help="Render contact.")
-    parser.add_argument("--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode.")
+    parser.add_argument(
+        "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
+    )
     parser.add_argument(
         "--show-mujoco-viewer",
         default=False,
@@ -269,11 +284,23 @@ if __name__ == "__main__":
         help="Toggle MuJoCo viewer next to Newton renderer when MuJoCoSolver is active.",
     )
 
-    parser.add_argument("--random-init", default=False, action=argparse.BooleanOptionalAction, help="Randomize initial pose.")
-    parser.add_argument("--actuation", type=str, default="None", choices=["None", "random"], help="Type of action to apply at each step.")
+    parser.add_argument(
+        "--random-init", default=False, action=argparse.BooleanOptionalAction, help="Randomize initial pose."
+    )
+    parser.add_argument(
+        "--actuation",
+        type=str,
+        default="None",
+        choices=["None", "random"],
+        help="Type of action to apply at each step.",
+    )
 
-    parser.add_argument("--solver", type=str, default=None, choices=["cg", "newton"], help="Mujoco model constraint solver used.")
-    parser.add_argument("--integrator", type=str, default=None, choices=["euler", "rk4", "implicit"], help="Mujoco integrator used.")
+    parser.add_argument(
+        "--solver", type=str, default=None, choices=["cg", "newton"], help="Mujoco model constraint solver used."
+    )
+    parser.add_argument(
+        "--integrator", type=str, default=None, choices=["euler", "rk4", "implicit"], help="Mujoco integrator used."
+    )
     parser.add_argument("--solver-iteration", type=int, default=None, help="Number of solver iterations.")
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
@@ -283,9 +310,20 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(
-            robot=args.robot, stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph, render_contact=args.render_contact,
-            randomize=args.random_init, headless=args.headless, actuation=args.actuation, solver=args.solver, integrator=args.integrator,
-            solver_iteration=args.solver_iteration, ls_iteration=args.ls_iteration, njmax=args.njmax, nconmax=args.nconmax
+            robot=args.robot,
+            stage_path=args.stage_path,
+            num_envs=args.num_envs,
+            use_cuda_graph=args.use_cuda_graph,
+            render_contact=args.render_contact,
+            randomize=args.random_init,
+            headless=args.headless,
+            actuation=args.actuation,
+            solver=args.solver,
+            integrator=args.integrator,
+            solver_iteration=args.solver_iteration,
+            ls_iteration=args.ls_iteration,
+            njmax=args.njmax,
+            nconmax=args.nconmax,
         )
 
         show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
