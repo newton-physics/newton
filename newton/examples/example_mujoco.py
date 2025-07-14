@@ -25,7 +25,6 @@
 # - Add the Ant environment
 # - Add the Anymal environment
 # - Fix the use_mujoco option (currently crash)
-# - Fix the render_contact option (currently does not render)
 ###########################################################################
 
 
@@ -61,7 +60,7 @@ ROBOT_CONFIGS = {
     "quadruped": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 50,
+        "njmax": 75,
         "nconmax": 50,
     },
 }
@@ -163,7 +162,6 @@ class Example:
         num_envs=1,
         use_cuda_graph=True,
         use_mujoco=False,
-        render_contact=False,
         randomize=False,
         headless=False,
         actuation="None",
@@ -178,11 +176,11 @@ class Example:
         self.sim_time = 0.0
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 10
+        self.contacts = None
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.num_envs = num_envs
         self.use_cuda_graph = use_cuda_graph
         self.use_mujoco = use_mujoco
-        self.render_contact = render_contact
         self.actuation = actuation
         solver_iteration = solver_iteration if solver_iteration is not None else 100
         ls_iteration = ls_iteration if ls_iteration is not None else 50
@@ -258,32 +256,27 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", synchronize=True):
-            if self.actuation == "random":
-                joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
-                wp.copy(self.control.joint_target, joint_target)
+        if self.actuation == "random":
+            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
+            wp.copy(self.control.joint_target, joint_target)
 
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        if self.use_cuda_graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
         if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            if self.render_contact:
-                self.renderer.render_contacts(self.state_0, self.contacts, contact_point_radius=1e-2)
-            self.renderer.end_frame()
+        self.renderer.begin_frame(self.sim_time)
+        self.renderer.render(self.state_0)
+        self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -303,12 +296,6 @@ if __name__ == "__main__":
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument(
         "--use-mujoco", default=False, action=argparse.BooleanOptionalAction, help="Use Mujoco C (Not yet supported)."
-    )
-    parser.add_argument(
-        "--render-contact",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Render contact (Not yet supported).",
     )
     parser.add_argument(
         "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
@@ -347,9 +334,6 @@ if __name__ == "__main__":
     if args.use_mujoco:
         args.use_mujoco = False
         print("The option ``use_mujoco`` is not yet supported. Disabling it.")
-    if args.render_contact:
-        args.render_contact = False
-        print("The option ``render_contact`` is not yet supported. Disabling it.")
 
     with wp.ScopedDevice(args.device):
         example = Example(
@@ -358,7 +342,6 @@ if __name__ == "__main__":
             num_envs=args.num_envs,
             use_cuda_graph=args.use_cuda_graph,
             use_mujoco=args.use_mujoco,
-            render_contact=args.render_contact,
             randomize=args.random_init,
             headless=args.headless,
             actuation=args.actuation,
@@ -380,7 +363,7 @@ if __name__ == "__main__":
             m, d = example.solver.mjw_model, example.solver.mjw_data
             viewer = mujoco.viewer.launch_passive(mjm, mjd)
 
-        for frame_idx in range(args.num_frames):
+        for _ in range(args.num_frames):
             example.step()
             example.render()
 
@@ -388,9 +371,6 @@ if __name__ == "__main__":
                 if not example.solver.use_mujoco:
                     mujoco_warp.get_data_into(mjd, mjm, d)
                 viewer.sync()
-
-            if example.renderer is None:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
 
         if example.renderer:
             example.renderer.save()
