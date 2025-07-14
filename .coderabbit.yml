@@ -11,5 +11,8 @@ reviews:
   auto_review:
     enabled: true
     drafts: true
+  tools:
+    github-checks:
+      timeout_ms: 900000
 chat:
   auto_reply: true

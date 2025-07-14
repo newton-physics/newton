@@ -69,8 +69,8 @@ class Example:
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
             tri_ke=5.0e1,
-            tri_ka=0.0,
-            tri_kd=0.0,
+            tri_ka=5.0e1,
+            tri_kd=1.0e-1,
             edge_ke=1.0e1,
             edge_kd=1.0e0,
         )

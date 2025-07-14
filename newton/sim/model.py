@@ -348,6 +348,9 @@ class Model:
         self.attribute_frequency["joint_limit_upper"] = "joint_dof"
         self.attribute_frequency["joint_limit_ke"] = "joint_dof"
         self.attribute_frequency["joint_limit_kd"] = "joint_dof"
+        self.attribute_frequency["joint_effort_limit"] = "joint_dof"
+        self.attribute_frequency["joint_friction"] = "joint_dof"
+        self.attribute_frequency["joint_velocity_limit"] = "joint_dof"
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = "shape"
