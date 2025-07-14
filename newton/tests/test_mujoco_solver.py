@@ -810,6 +810,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
+        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step

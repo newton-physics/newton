@@ -706,20 +706,11 @@ def update_geom_properties_kernel(
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
     # update position and orientation
-    pos = wp.vec3f(shape_transform[shape_idx].p)
-    quat = shape_transform[shape_idx].q
-    # get shape type and body
-    stype = shape_type[shape_idx]
-    body_idx = shape_body[shape_idx]
-    # apply shape-specific rotations (matching add_geoms logic)
-    # handle up-axis conversion if needed
-    if up_axis == 1:
-        # MuJoCo uses Z-up, Newton Y-up requires conversion
-        # for static geoms, position conversion is handled by perm_position flag in add_geoms
-        if body_idx == -1:
-            pos = wp.vec3f(pos[0], -pos[2], pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        quat = rot_y2z * quat
+    tf = shape_transform[shape_idx]
+    incoming_xform = shape_incoming_xform[shape_idx]
+    tf = incoming_xform * tf
+    pos = tf.p
+    quat = tf.q
     geom_pos[worldid, geom_idx] = pos
     geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
@@ -1417,20 +1408,9 @@ class MuJoCoSolver(SolverBase):
                     geom_params["meshname"] = name
                 if incoming_xform is not None:
                     # transform to world space
-                    tf: wp.transform = incoming_xform * tf
-                    q = tf.q
-                    p = tf.p
-                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    q = q * rot_y2z
-                if model.up_axis == 2 and warp_body_id == -1:
-                    # reverse rotation that aligned the z-axis with the y-axis
-                    q = q * wp.quat_inverse(rot_y2z)
-                if perm_position:
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    p = wp.vec3(p[0], -p[2], p[1])
-                geom_params["pos"] = p
-                geom_params["quat"] = quat2mjc(q)
+                    tf = incoming_xform * tf
+                geom_params["pos"] = tf.p
+                geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
                 if np.any(size > 0.0):
                     # duplicate nonzero entries at places where size is 0
