@@ -67,7 +67,8 @@ jobs:
             echo "--------------------------------------------------------------------------------" >&2
           fi
 
-  run-unit-tests-on-aws:
+  aws-unit-tests-pr:
+    name: Run GPU Unit Tests on AWS EC2 (Pull Request)
     if: github.repository == 'newton-physics/newton'
     needs: check-author-membership
     environment:
@@ -324,7 +325,7 @@ jobs:
     # main job's runner fails unexpectedly. This prevents orphaned EC2 instances.
     name: Cleanup EC2 Instance
     runs-on: ubuntu-latest
-    needs: run-unit-tests-on-aws
+    needs: aws-unit-tests-pr
     if: always() && github.repository == 'newton-physics/newton'
     permissions:
       id-token: write

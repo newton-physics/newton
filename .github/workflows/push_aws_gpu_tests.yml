@@ -20,7 +20,8 @@ on:
       - ".gitignore"
 
 jobs:
-  run-unit-tests-on-aws:
+  aws-unit-tests-push:
+    name: Run GPU Unit Tests on AWS EC2 (Push)
     if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -272,7 +273,7 @@ jobs:
     # main job's runner fails unexpectedly. This prevents orphaned EC2 instances.
     name: Cleanup EC2 Instance
     runs-on: ubuntu-latest
-    needs: run-unit-tests-on-aws
+    needs: aws-unit-tests-push
     if: always() && github.repository == 'newton-physics/newton'
     permissions:
       id-token: write
