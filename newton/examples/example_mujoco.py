@@ -39,6 +39,7 @@ class Example:
         stage_path=None,
         num_envs=1,
         use_cuda_graph=True,
+        use_mujoco=False,
         render_contact=False,
         randomize=False,
         headless=False,
@@ -57,6 +58,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.num_envs = num_envs
         self.use_cuda_graph = use_cuda_graph
+        self.use_mujoco = use_mujoco
         self.render_contact = render_contact
         self.actuation = actuation
 
@@ -151,7 +153,6 @@ class Example:
             njmax = njmax if njmax is not None else 50
             nconmax = nconmax if nconmax is not None else 50
         elif robot == "quadruped":
-            articulation_builder = newton.ModelBuilder()
             articulation_builder.default_body_armature = 0.01
             articulation_builder.default_joint_cfg.armature = 0.01
             articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
@@ -179,8 +180,7 @@ class Example:
             njmax = njmax if njmax is not None else 50
             nconmax = nconmax if nconmax is not None else 50
         else:
-            print("Name of the provided robot not recognized: ", robot)
-            return
+            raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
         builder = newton.ModelBuilder()
         offsets = newton.examples.compute_env_offsets(self.num_envs)
@@ -198,7 +198,7 @@ class Example:
 
         self.solver = newton.solvers.MuJoCoSolver(
             self.model,
-            use_mujoco=False,
+            use_mujoco=use_mujoco,
             solver=solver,
             integrator=integrator,
             iterations=solver_iteration,
@@ -273,7 +273,10 @@ if __name__ == "__main__":
     parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
     parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
-    parser.add_argument("--render-contact", default=False, help="Render contact.")
+    parser.add_argument(
+        "--use-mujoco", default=False, action=argparse.BooleanOptionalAction, help="Use Mujoco C (Not yet supported)."
+    )
+    parser.add_argument("--render-contact", default=False, action=argparse.BooleanOptionalAction, help="Render contact (Not yet supported).")
     parser.add_argument(
         "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
     )
@@ -308,12 +311,20 @@ if __name__ == "__main__":
 
     args = parser.parse_known_args()[0]
 
+    if args.use_mujoco:
+        args.use_mujoco = False
+        print("The option ``use_mujoco`` is not yet supported. Disabling it.")
+    if args.render_contact:
+        args.render_contact = False
+        print("The option ``render_contact`` is not yet supported. Disabling it.")
+
     with wp.ScopedDevice(args.device):
         example = Example(
             robot=args.robot,
             stage_path=args.stage_path,
             num_envs=args.num_envs,
             use_cuda_graph=args.use_cuda_graph,
+            use_mujoco=args.use_mujoco,
             render_contact=args.render_contact,
             randomize=args.random_init,
             headless=args.headless,
