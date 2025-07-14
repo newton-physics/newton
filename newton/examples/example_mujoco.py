@@ -39,6 +39,122 @@ import newton.utils
 wp.config.enable_backward = False
 
 
+ROBOT_CONFIGS = {
+    "humanoid": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 100,
+        "nconmax": 50,
+    },
+    "g1": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 400,
+        "nconmax": 150,
+    },
+    "cartpole": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 50,
+        "nconmax": 50,
+    },
+    "quadruped": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 50,
+        "nconmax": 50,
+    },
+}
+
+
+def _setup_humanoid(articulation_builder):
+    newton.utils.parse_mjcf(
+        newton.examples.get_asset("nv_humanoid.xml"),
+        articulation_builder,
+        ignore_names=["floor", "ground"],
+        up_axis="Z",
+    )
+
+    # Setting root pose
+    root_dofs = 7
+    articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
+
+    return root_dofs
+
+
+def _setup_g1(articulation_builder):
+    asset_path = newton.utils.download_asset("g1_description")
+
+    newton.utils.parse_mjcf(
+        str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
+        articulation_builder,
+        collapse_fixed_joints=True,
+        up_axis="Z",
+        enable_self_collisions=False,
+    )
+    simplified_meshes = {}
+    try:
+        import tqdm  # noqa: PLC0415
+
+        meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
+    except ImportError:
+        meshes = articulation_builder.shape_geo_src
+    for i, m in enumerate(meshes):
+        if m is None:
+            continue
+        hash_m = hash(m)
+        if hash_m in simplified_meshes:
+            articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
+        else:
+            simplified = newton.geometry.utils.remesh_mesh(
+                m, visualize=False, method="convex_hull", recompute_inertia=False
+            )
+            articulation_builder.shape_geo_src[i] = simplified
+            simplified_meshes[hash_m] = simplified
+    root_dofs = 7
+
+    return root_dofs
+
+
+def _setup_cartpole(articulation_builder):
+    articulation_builder.default_shape_cfg.density = 100.0
+    articulation_builder.default_joint_cfg.armature = 0.1
+    articulation_builder.default_body_armature = 0.1
+
+    newton.utils.parse_urdf(
+        newton.examples.get_asset("cartpole.urdf"),
+        articulation_builder,
+        floating=False,
+        enable_self_collisions=False,
+        collapse_fixed_joints=True,
+    )
+
+    # Setting root pose
+    root_dofs = 3
+    articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
+
+    return root_dofs
+
+
+def _setup_quadruped(articulation_builder):
+    articulation_builder.default_body_armature = 0.01
+    articulation_builder.default_joint_cfg.armature = 0.01
+    articulation_builder.default_shape_cfg.ke = 1.0e4
+    articulation_builder.default_shape_cfg.kd = 1.0e2
+    articulation_builder.default_shape_cfg.kf = 1.0e2
+    articulation_builder.default_shape_cfg.mu = 1.0
+    newton.utils.parse_urdf(
+        newton.examples.get_asset("quadruped.urdf"),
+        articulation_builder,
+        xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+        floating=True,
+        enable_self_collisions=False,
+    )
+    root_dofs = 7
+
+    return root_dofs
+
+
 class Example:
     def __init__(
         self,
@@ -68,6 +184,8 @@ class Example:
         self.use_mujoco = use_mujoco
         self.render_contact = render_contact
         self.actuation = actuation
+        solver_iteration = solver_iteration if solver_iteration is not None else 100
+        ls_iteration = ls_iteration if ls_iteration is not None else 50
 
         # set numpy random seed
         self.seed = 123
@@ -78,114 +196,13 @@ class Example:
 
         articulation_builder = newton.ModelBuilder()
         if robot == "humanoid":
-            newton.utils.parse_mjcf(
-                newton.examples.get_asset("nv_humanoid.xml"),
-                articulation_builder,
-                ignore_names=["floor", "ground"],
-                up_axis="Z",
-            )
-
-            # Setting root pose
-            root_dofs = 7
-            articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
-
-            # Setting mujoco_warp parameters
-            solver = solver if solver is not None else "newton"
-            integrator = integrator if integrator is not None else "euler"
-            solver_iteration = solver_iteration if solver_iteration is not None else 10
-            ls_iteration = ls_iteration if ls_iteration is not None else 5
-            njmax = njmax if njmax is not None else 100
-            nconmax = nconmax if nconmax is not None else 50
+            root_dofs = _setup_humanoid(articulation_builder)
         elif robot == "g1":
-            asset_path = newton.utils.download_asset("g1_description")
-
-            newton.utils.parse_mjcf(
-                str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
-                articulation_builder,
-                collapse_fixed_joints=True,
-                up_axis="Z",
-                enable_self_collisions=False,
-            )
-            simplified_meshes = {}
-            try:
-                import tqdm  # noqa: PLC0415
-
-                meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
-            except ImportError:
-                meshes = articulation_builder.shape_geo_src
-            for i, m in enumerate(meshes):
-                if m is None:
-                    continue
-                hash_m = hash(m)
-                if hash_m in simplified_meshes:
-                    articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
-                else:
-                    simplified = newton.geometry.utils.remesh_mesh(
-                        m, visualize=False, method="convex_hull", recompute_inertia=False
-                    )
-                    articulation_builder.shape_geo_src[i] = simplified
-                    simplified_meshes[hash_m] = simplified
-
-            root_dofs = 7
-
-            # Setting mujoco_warp parameters
-            solver = solver if solver is not None else "newton"
-            integrator = integrator if integrator is not None else "euler"
-            solver_iteration = solver_iteration if solver_iteration is not None else 5
-            ls_iteration = ls_iteration if ls_iteration is not None else 5
-            njmax = njmax if njmax is not None else 300
-            nconmax = nconmax if nconmax is not None else 150
+            root_dofs = _setup_g1(articulation_builder)
         elif robot == "cartpole":
-            articulation_builder.default_shape_cfg.density = 100.0
-            articulation_builder.default_joint_cfg.armature = 0.1
-            articulation_builder.default_body_armature = 0.1
-
-            newton.utils.parse_urdf(
-                newton.examples.get_asset("cartpole.urdf"),
-                articulation_builder,
-                floating=False,
-                enable_self_collisions=False,
-                collapse_fixed_joints=True,
-            )
-
-            # Setting root pose
-            root_dofs = 3
-            articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
-
-            # Setting mujoco_warp parameters
-            solver = solver if solver is not None else "newton"
-            integrator = integrator if integrator is not None else "euler"
-            solver_iteration = solver_iteration if solver_iteration is not None else 10
-            ls_iteration = ls_iteration if ls_iteration is not None else 5
-            njmax = njmax if njmax is not None else 50
-            nconmax = nconmax if nconmax is not None else 50
+            root_dofs = _setup_cartpole(articulation_builder)
         elif robot == "quadruped":
-            articulation_builder.default_body_armature = 0.01
-            articulation_builder.default_joint_cfg.armature = 0.01
-            articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
-            articulation_builder.default_joint_cfg.target_ke = 2000.0
-            articulation_builder.default_joint_cfg.target_kd = 1.0
-            articulation_builder.default_shape_cfg.ke = 1.0e4
-            articulation_builder.default_shape_cfg.kd = 1.0e2
-            articulation_builder.default_shape_cfg.kf = 1.0e2
-            articulation_builder.default_shape_cfg.mu = 1.0
-            newton.utils.parse_urdf(
-                newton.examples.get_asset("quadruped.urdf"),
-                articulation_builder,
-                xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
-                floating=True,
-                enable_self_collisions=False,
-            )
-
-            root_dofs = 7
-
-            # Setting mujoco_warp parameters
-            solver = solver if solver is not None else "newton"
-            integrator = integrator if integrator is not None else "euler"
-            solver_iteration = solver_iteration if solver_iteration is not None else 10
-            ls_iteration = ls_iteration if ls_iteration is not None else 5
-            njmax = njmax if njmax is not None else 50
-            nconmax = nconmax if nconmax is not None else 50
+            root_dofs = _setup_quadruped(articulation_builder)
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
@@ -203,6 +220,10 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
+        solver = solver if solver is not None else ROBOT_CONFIGS[robot]["solver"]
+        integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
+        njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
+        nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         self.solver = newton.solvers.MuJoCoSolver(
             self.model,
             use_mujoco=use_mujoco,
@@ -242,7 +263,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
+        with wp.ScopedTimer("step", synchronize=True):
             if self.actuation == "random":
                 joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
                 wp.copy(self.control.joint_target, joint_target)
