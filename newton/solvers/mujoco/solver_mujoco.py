@@ -1254,6 +1254,7 @@ class MuJoCoSolver(SolverBase):
             ],
             device=model.device,
         )
+        contact_info.n_contacts = mj_data.ncon
 
     def convert_to_mjc(
         self,

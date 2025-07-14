@@ -88,6 +88,8 @@ class ContactInfo:
     """Holds the contact information necessary for contact sensors."""
 
     def __init__(self):
+        self.n_contacts: wp.array(dtype=wp.int32) | None = None
+        """Number of active contacts, shape [1]"""
         self.pair: wp.array(dtype=wp.vec2i) | None = None
         """Contact pair geometry indices, shape [n_contacts], vec2i"""
         self.position: wp.array(dtype=wp.vec3f) | None = None

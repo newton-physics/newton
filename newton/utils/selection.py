@@ -129,43 +129,35 @@ class ContactView:
     before model finalization.
     """
 
-    def __init__(self, model: Model, query_idx: int):
-        """Initialize a ContactView for a specific contact query.
+    def __init__(self, query_id: int):
+        # self.contact_reporter = contact_reporter
+        self.query_id = query_id
+        self.finalized = False
+        self.shape = None
+        # if model.contact_reporter is None:
+        #     raise RuntimeError(
+        #         "No contact queries were registered during model building. "
+        #         "Use ModelBuilder.add_contact_query() before calling finalize()."
+        #     )
 
-        Args:
-            model: The simulation model
-            query_idx: Index of the contact query (returned by ModelBuilder.add_contact_query())
-        """
-        if model.contact_reporter is None:
-            raise RuntimeError(
-                "No contact queries were registered during model building. "
-                "Use ModelBuilder.add_contact_query() before calling finalize()."
-            )
+        # if query_idx >= len(model.contact_reporter.entity_pair_contact):
+        #     raise IndexError(
+        #         f"Contact query index {query_idx} is out of range. "
+        #         f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered."
+        #     )
 
-        if query_idx >= len(model.contact_reporter.entity_pair_contact):
-            raise IndexError(
-                f"Contact query index {query_idx} is out of range. "
-                f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered."
-            )
-
-        self.contact_reporter = model.contact_reporter
-        self.query_idx = query_idx
-
-    def get_contact_dist(self):
-        """Get the deepest contact distance between entity pairs."""
-        return self.contact_reporter.get_dist(self.query_idx)
+    def _finalize(self):
+        # prepare array slice
+        self.finalized = True
 
     def get_contact_force(self):
         """Get the net contact force between entity pairs."""
-        return self.contact_reporter.get_force(self.query_idx)
+        if not self.finalized:
+            raise ValueError("Contact View has not been finalized")
 
-    def get_contact_normals(self):
-        """Get the net contact normal between entity pairs."""
-        return self.contact_reporter.get_normal(self.query_idx)
-
-    def get_contact_idx(self):
-        """Get the contact indices between entity pairs."""
-        return self.contact_reporter.get_idx(self.query_idx)
+    def entities(self):
+        """Get the entities"""
+        return self.entities
 
     @property
     def query_keys(self):
