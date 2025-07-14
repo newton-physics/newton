@@ -255,6 +255,18 @@ jobs:
           flags: unittests
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Save test artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: ignore
+          name: test-artifacts
+          path: |
+            rspec.xml
+            coverage.xml
+            test_output.log
+            status.txt
+
   cleanup:
     # This runs as a separate job to ensure cleanup always occurs, even if the
     # main job's runner fails unexpectedly. This prevents orphaned EC2 instances.
