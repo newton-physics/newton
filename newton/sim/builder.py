@@ -173,11 +173,11 @@ class ModelBuilder:
         def flags(self, value: int):
             """Sets the flags for the shape."""
 
-            self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
-            self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-            self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
+            self.is_visible = bool(value & int(SHAPE_FLAG_VISIBLE))
+            self.has_shape_collision = bool(value & int(SHAPE_FLAG_COLLIDE_SHAPES))
+            self.has_particle_collision = bool(value & int(SHAPE_FLAG_COLLIDE_PARTICLES))
 
-        def copy(self) -> ShapeConfig:
+        def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
 
     class JointDofConfig:
@@ -2128,6 +2128,58 @@ class ModelBuilder:
             src=sdf,
             key=key,
         )
+
+    def simplify_meshes(self):
+        import coacd
+
+        decompositions = {}
+
+        for shape, stype in enumerate(self.shape_geo_type):
+            if stype == GEO_MESH:
+                mesh = self.shape_geo_src[shape]
+                hash_m = hash(mesh)
+                if hash_m in decompositions:
+                    decomposition = decompositions[hash_m]
+                else:
+                    cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                    decomposition = coacd.run_coacd(
+                        cmesh,
+                        threshold=0.5,
+                        mcts_nodes=20,
+                        mcts_iterations=5,
+                        mcts_max_depth=1,
+                        merge=False,
+                    )
+                    decompositions[hash_m] = decomposition
+                if len(decomposition) == 0:
+                    continue
+                self.shape_geo_src[shape].vertices = decomposition[0][0].reshape(-1, 3)
+                self.shape_geo_src[shape].indices = decomposition[0][1].flatten()
+                if len(decomposition) > 1:
+                    body = self.shape_body[shape]
+                    xform = self.shape_transform[shape]
+                    cfg = ModelBuilder.ShapeConfig(
+                        density=0.0,  # do not add extra mass / inertia
+                        ke=self.shape_material_ke[shape],
+                        kd=self.shape_material_kd[shape],
+                        kf=self.shape_material_kf[shape],
+                        ka=self.shape_material_ka[shape],
+                        mu=self.shape_material_mu[shape],
+                        restitution=self.shape_material_restitution[shape],
+                        thickness=self.shape_geo_thickness[shape],
+                        is_solid=self.shape_geo_is_solid[shape],
+                        collision_group=self.shape_collision_group[shape],
+                        collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                    )
+                    cfg.flags = self.shape_flags[shape]
+                    for i in range(1, len(decomposition)):
+                        self.add_shape_mesh(
+                            body=body,
+                            xform=xform,
+                            cfg=cfg,
+                            mesh=Mesh(decomposition[i][0], decomposition[i][1]),
+                            key=f"{self.shape_key[shape]}_convex_{i}",
+                        )
 
     # endregion
 
