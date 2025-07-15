@@ -65,13 +65,15 @@ def compute_contact_points(
 
 
 def CreateSimRenderer(renderer):
+    """A factory function to create a simulation renderer class."""
+
     class SimRenderer(renderer):
         use_unique_colors = True
 
         def __init__(
             self,
-            model: newton.Model,
-            path: str,
+            model: newton.Model | None = None,
+            path: str = "No path specified",
             scaling: float = 1.0,
             fps: int = 60,
             up_axis: newton.AxisType | None = None,
@@ -79,8 +81,23 @@ def CreateSimRenderer(renderer):
             show_particles: bool = True,
             **render_kwargs,
         ):
+            """
+            Initializes the simulation renderer.
+            Args:
+                model (newton.Model, optional): The simulation model to render. Defaults to None.
+                path (str, optional): The path for the rendered output (e.g., filename for USD, window title for OpenGL).
+                scaling (float, optional): Scaling factor for the rendered output. Defaults to 1.0.
+                fps (int, optional): Frames per second for the rendered output. Defaults to 60.
+                up_axis (newton.AxisType, optional): The up-axis for the scene. If not provided, it's inferred from the model, or defaults to "Z" if no model is given. Defaults to None.
+                show_joints (bool, optional): Whether to visualize joints. Defaults to False.
+                show_particles (bool, optional): Whether to visualize particles. Defaults to True.
+                **render_kwargs: Additional keyword arguments for the underlying renderer.
+            """
             if up_axis is None:
-                up_axis = model.up_axis
+                if model:
+                    up_axis = model.up_axis
+                else:
+                    up_axis = newton.Axis.Z
             up_axis = newton.Axis.from_any(up_axis)
             super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
             self.scaling = scaling
@@ -88,29 +105,31 @@ def CreateSimRenderer(renderer):
             self.show_joints = show_joints
             self.show_particles = show_particles
             self._instance_key_count = {}
-            self.populate(model)
+            if model:
+                self.populate(model)
 
             self._contact_points0 = None
             self._contact_points1 = None
 
         def populate(self, model: newton.Model):
+            """
+            Populates the renderer with objects from the simulation model.
+            This method sets up the rendering scene by creating visual representations
+            for all the bodies, shapes, and other components of the simulation model.
+            Args:
+                model (newton.Model): The simulation model containing the objects to populate.
+            """
             self.skip_rendering = False
 
             self.model = model
             self.num_envs = model.num_envs
             self.body_names = []
 
-            self.body_env = []  # mapping from body index to its environment index
-            env_id = 0
-            self.bodies_per_env = model.body_count // self.num_envs
-            # create rigid body nodes
-            for b in range(model.body_count):
-                body_name = f"body_{b}_{self.model.body_key[b].replace(' ', '_')}"
-                self.body_names.append(body_name)
-                self.register_body(body_name)
-                if b > 0 and b % self.bodies_per_env == 0:
-                    env_id += 1
-                self.body_env.append(env_id)
+            bodies_per_env = model.body_count // self.num_envs
+            self.body_env = []
+            self.body_names = self.populate_bodies(
+                self.model.body_key, bodies_per_env=bodies_per_env, body_env=self.body_env
+            )
 
             # create rigid shape children
             if self.model.shape_count:
@@ -122,202 +141,318 @@ def CreateSimRenderer(renderer):
                 self.body_name = {}  # mapping from body name to its body ID
                 self.body_shapes = defaultdict(list)  # mapping from body index to its shape IDs
 
-                shape_body = model.shape_body.numpy()
-                shape_geo_src = model.shape_geo_src
-                shape_geo_type = model.shape_geo.type.numpy()
-                shape_geo_scale = model.shape_geo.scale.numpy()
-                shape_geo_thickness = model.shape_geo.thickness.numpy()
-                shape_geo_is_solid = model.shape_geo.is_solid.numpy()
-                shape_transform = model.shape_transform.numpy()
-                shape_flags = model.shape_flags.numpy()
-
-                p = np.zeros(3, dtype=np.float32)
-                q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                color = (1.0, 1.0, 1.0)
-                # loop over shapes excluding the ground plane
-                for s in range(model.shape_count):
-                    scale = np.ones(3, dtype=np.float32)
-                    geo_type = shape_geo_type[s]
-                    geo_scale = [float(v) for v in shape_geo_scale[s]]
-                    geo_thickness = float(shape_geo_thickness[s])
-                    geo_is_solid = bool(shape_geo_is_solid[s])
-                    geo_src = shape_geo_src[s]
-                    name = model.shape_key[s]
-                    count = self._instance_key_count.get(name, 0)
-                    if count > 0:
-                        self._instance_key_count[name] += 1
-                        # ensure unique name for the shape instance
-                        name = f"{name}_{count + 1}"
-                    else:
-                        self._instance_key_count[name] = 1
-                    add_shape_instance = True
-
-                    # shape transform in body frame
-                    body = int(shape_body[s])
-                    if body >= 0 and body < len(self.body_names):
-                        body = self.body_names[body]
-                    else:
-                        body = None
-
-                    if self.use_unique_colors and body is not None:
-                        color = self._get_new_color()
-
-                    # shape transform in body frame
-                    X_bs = wp.transform_expand(shape_transform[s])
-                    # check whether we can instance an already created shape with the same geometry
-                    geo_hash = hash((int(geo_type), geo_src, *geo_scale, geo_thickness, geo_is_solid))
-                    if geo_hash in self.geo_shape:
-                        shape = self.geo_shape[geo_hash]
-                    else:
-                        if geo_type == newton.GEO_PLANE:
-                            # plane mesh
-                            width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
-                            length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
-
-                            if name == "ground_plane":
-                                normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 0.0, 1.0))
-                                offset = wp.dot(normal, X_bs.p)
-                                shape = self.render_ground(plane=[*normal, offset])
-                                add_shape_instance = False
-                            else:
-                                shape = self.render_plane(
-                                    name, p, q, width, length, color, parent_body=body, is_template=True
-                                )
-
-                        elif geo_type == newton.GEO_SPHERE:
-                            shape = self.render_sphere(
-                                name, p, q, geo_scale[0], parent_body=body, is_template=True, color=color
-                            )
-
-                        elif geo_type == newton.GEO_CAPSULE:
-                            shape = self.render_capsule(
-                                name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
-                            )
-
-                        elif geo_type == newton.GEO_CYLINDER:
-                            shape = self.render_cylinder(
-                                name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
-                            )
-
-                        elif geo_type == newton.GEO_CONE:
-                            shape = self.render_cone(
-                                name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
-                            )
-
-                        elif geo_type == newton.GEO_BOX:
-                            shape = self.render_box(
-                                name, p, q, geo_scale, parent_body=body, is_template=True, color=color
-                            )
-
-                        elif geo_type == newton.GEO_MESH:
-                            if not geo_is_solid:
-                                faces, vertices = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
-                            else:
-                                faces, vertices = geo_src.indices, geo_src.vertices
-                            shape = self.render_mesh(
-                                name,
-                                vertices,
-                                faces,
-                                pos=p,
-                                rot=q,
-                                scale=geo_scale,
-                                colors=color,
-                                parent_body=body,
-                                is_template=True,
-                            )
-                            scale = np.asarray(geo_scale, dtype=np.float32)
-
-                        elif geo_type == newton.GEO_SDF:
-                            continue
-
-                        self.geo_shape[geo_hash] = shape
-
-                    if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
-                        # TODO support dynamic visibility
-                        q_shape = X_bs.q
-                        if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
-                            q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
-                        self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
-                    self.instance_count += 1
+                self.instance_count = self.populate_shapes(
+                    self.body_names,
+                    self.geo_shape,
+                    model.shape_body.numpy(),
+                    model.shape_geo_src,
+                    model.shape_geo.type.numpy(),
+                    model.shape_geo.scale.numpy(),
+                    model.shape_geo.thickness.numpy(),
+                    model.shape_geo.is_solid.numpy(),
+                    model.shape_transform.numpy(),
+                    model.shape_flags.numpy(),
+                    self.model.shape_key,
+                    instance_count=self.instance_count,
+                    use_unique_colors=self.use_unique_colors,
+                )
 
                 if self.show_joints and model.joint_count:
-                    joint_type = model.joint_type.numpy()
-                    joint_axis = model.joint_axis.numpy()
-                    joint_qd_start = model.joint_qd_start.numpy()
-                    joint_dof_dim = model.joint_dof_dim.numpy()
-                    joint_parent = model.joint_parent.numpy()
-                    joint_child = model.joint_child.numpy()
-                    joint_tf = model.joint_X_p.numpy()
-                    shape_collision_radius = model.shape_collision_radius.numpy()
-                    y_axis = wp.vec3(0.0, 1.0, 0.0)
-                    color = (1.0, 0.0, 1.0)
-
-                    shape = self.render_arrow(
-                        "joint_arrow",
-                        None,
-                        None,
-                        base_radius=0.01,
-                        base_height=0.4,
-                        cap_radius=0.02,
-                        cap_height=0.1,
-                        parent_body=None,
-                        is_template=True,
-                        color=color,
+                    self.instance_count = self.populate_joints(
+                        self.body_names,
+                        model.joint_type.numpy(),
+                        model.joint_axis.numpy(),
+                        model.joint_qd_start.numpy(),
+                        model.joint_dof_dim.numpy(),
+                        model.joint_parent.numpy(),
+                        model.joint_child.numpy(),
+                        model.joint_X_p.numpy(),
+                        model.shape_collision_radius.numpy(),
+                        model.body_shapes,
+                        instance_count=self.instance_count,
                     )
-                    for i, t in enumerate(joint_type):
-                        if t not in {
-                            newton.JOINT_REVOLUTE,
-                            # newton.JOINT_PRISMATIC,
-                            newton.JOINT_D6,
-                        }:
-                            continue
-                        tf = joint_tf[i]
-                        body = int(joint_parent[i])
-                        if body >= 0 and body < len(self.body_names):
-                            body = self.body_names[body]
-                        else:
-                            body = None
-                        # if body == -1:
-                        #     continue
-                        num_linear_axes = int(joint_dof_dim[i][0])
-                        num_angular_axes = int(joint_dof_dim[i][1])
-
-                        # find a good scale for the arrow based on the average radius
-                        # of the shapes attached to the joint child body
-                        scale = np.ones(3, dtype=np.float32)
-                        child = int(joint_child[i])
-                        if child >= 0:
-                            radii = []
-                            bs = model.body_shapes.get(child, [])
-                            for s in bs:
-                                radii.append(shape_collision_radius[s])
-                            if len(radii) > 0:
-                                scale *= np.mean(radii) * 2.0
-
-                        for a in range(num_linear_axes, num_linear_axes + num_angular_axes):
-                            index = joint_qd_start[i] + a
-                            axis = joint_axis[index]
-                            if np.linalg.norm(axis) < 1e-6:
-                                continue
-                            p = wp.vec3(tf[:3])
-                            q = wp.quat(tf[3:])
-                            # compute rotation between axis and y
-                            axis = axis / np.linalg.norm(axis)
-                            q = q * wp.quat_between_vectors(wp.vec3(axis), y_axis)
-                            name = f"joint_{i}_{a}"
-                            self.add_shape_instance(name, shape, body, p, q, scale, color1=color, color2=color)
-                            self.instance_count += 1
 
             if hasattr(self, "complete_setup"):
                 self.complete_setup()
 
-        def _get_new_color(self):
-            return tab10_color_map(self.instance_count)
+        def populate_bodies(self, body_name_arr: list, bodies_per_env: int = -1, body_env: list | None = None) -> list:
+            """
+            Populates the renderer with body objects.
+
+            Args:
+                body_name_arr (list): List of body names from the model.
+                bodies_per_env (int, optional): Number of bodies per environment. If -1, all bodies belong to same environment. Defaults to -1.
+                body_env (list, optional): List to store environment IDs for each body. Defaults to None.
+
+            Returns:
+                list: List of generated unique body names in the format "body_{index}_{name}".
+            """
+            body_names = []
+            body_count = len(body_name_arr)
+
+            if body_env is not None:
+                body_env.clear()
+                env_id = 0
+
+            for b in range(body_count):
+                body_name = f"body_{b}_{body_name_arr[b].replace(' ', '_')}"
+                body_names.append(body_name)
+                self.register_body(body_name)
+                if body_env is not None and bodies_per_env > 0:
+                    if b > 0 and b % bodies_per_env == 0:
+                        env_id += 1
+                    body_env.append(env_id)
+
+            return body_names
+
+        def populate_shapes(
+            self,
+            body_names: list,
+            geo_shape: dict,
+            shape_body: np.ndarray,
+            shape_geo_src: list,
+            shape_geo_type: np.ndarray,
+            shape_geo_scale: np.ndarray,
+            shape_geo_thickness: np.ndarray,
+            shape_geo_is_solid: np.ndarray,
+            shape_transform: np.ndarray,
+            shape_flags: np.ndarray,
+            shape_key: list,
+            instance_count: int = 0,
+            use_unique_colors: bool = True,
+        ) -> int:
+            """
+            Populates the renderer with shapes for rigid bodies.
+            Args:
+                body_names (list): List of body names.
+                geo_shape (dict): A dictionary to cache geometry shapes.
+                shape_body (numpy.ndarray): Maps shape index to body index.
+                shape_geo_src (list): Source geometry for each shape.
+                shape_geo_type (numpy.ndarray): Type of each shape's geometry.
+                shape_geo_scale (numpy.ndarray): Scale of each shape's geometry.
+                shape_geo_thickness (numpy.ndarray): Thickness of each shape's geometry.
+                shape_geo_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
+                shape_transform (numpy.ndarray): Local transform of each shape.
+                shape_flags (numpy.ndarray): Visibility and other flags for each shape.
+                shape_key (list): List of shape names.
+                instance_count (int, optional): Initial instance count. Defaults to 0.
+                use_unique_colors (bool, optional): Whether to assign unique colors to shapes. Defaults to True.
+            Returns:
+                int: The updated instance count after adding shapes.
+            """
+            p = np.zeros(3, dtype=np.float32)
+            q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            color = (1.0, 1.0, 1.0)
+            shape_count = len(shape_body)
+            # loop over shapes
+            for s in range(shape_count):
+                scale = np.ones(3, dtype=np.float32)
+                geo_type = shape_geo_type[s]
+                geo_scale = [float(v) for v in shape_geo_scale[s]]
+                geo_thickness = float(shape_geo_thickness[s])
+                geo_is_solid = bool(shape_geo_is_solid[s])
+                geo_src = shape_geo_src[s]
+                name = shape_key[s]
+                count = self._instance_key_count.get(name, 0)
+                if count > 0:
+                    self._instance_key_count[name] += 1
+                    # ensure unique name for the shape instance
+                    name = f"{name}_{count + 1}"
+                else:
+                    self._instance_key_count[name] = 1
+                add_shape_instance = True
+
+                # shape transform in body frame
+                body = int(shape_body[s])
+                if body >= 0 and body < len(body_names):
+                    body = body_names[body]
+                else:
+                    body = None
+
+                if use_unique_colors and body is not None:
+                    color = self.get_new_color(instance_count)
+
+                # shape transform in body frame
+                X_bs = wp.transform_expand(shape_transform[s])
+                # check whether we can instance an already created shape with the same geometry
+                geo_hash = hash((int(geo_type), geo_src, *geo_scale, geo_thickness, geo_is_solid))
+                if geo_hash in geo_shape:
+                    shape = geo_shape[geo_hash]
+                else:
+                    if geo_type == newton.GEO_PLANE:
+                        # plane mesh
+                        width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
+                        length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
+
+                        if name == "ground_plane":
+                            normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 0.0, 1.0))
+                            offset = wp.dot(normal, X_bs.p)
+                            shape = self.render_ground(plane=[*normal, offset])
+                            add_shape_instance = False
+                        else:
+                            shape = self.render_plane(
+                                name, p, q, width, length, color, parent_body=body, is_template=True
+                            )
+
+                    elif geo_type == newton.GEO_SPHERE:
+                        shape = self.render_sphere(
+                            name, p, q, geo_scale[0], parent_body=body, is_template=True, color=color
+                        )
+
+                    elif geo_type == newton.GEO_CAPSULE:
+                        shape = self.render_capsule(
+                            name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
+                        )
+
+                    elif geo_type == newton.GEO_CYLINDER:
+                        shape = self.render_cylinder(
+                            name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
+                        )
+
+                    elif geo_type == newton.GEO_CONE:
+                        shape = self.render_cone(
+                            name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
+                        )
+
+                    elif geo_type == newton.GEO_BOX:
+                        shape = self.render_box(name, p, q, geo_scale, parent_body=body, is_template=True, color=color)
+
+                    elif geo_type == newton.GEO_MESH:
+                        if not geo_is_solid:
+                            faces, vertices = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
+                        else:
+                            faces, vertices = geo_src.indices, geo_src.vertices
+
+                        shape = self.render_mesh(
+                            name,
+                            vertices,
+                            faces,
+                            pos=p,
+                            rot=q,
+                            scale=geo_scale,
+                            colors=color,
+                            parent_body=body,
+                            is_template=True,
+                        )
+                        scale = np.asarray(geo_scale, dtype=np.float32)
+
+                    elif geo_type == newton.GEO_SDF:
+                        continue
+
+                    geo_shape[geo_hash] = shape
+
+                if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
+                    # TODO support dynamic visibility
+                    q_shape = X_bs.q
+                    if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
+                        q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
+                    self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
+                instance_count += 1
+            return instance_count
+
+        def populate_joints(
+            self,
+            body_names: list,
+            joint_type: np.ndarray,
+            joint_axis: np.ndarray,
+            joint_qd_start: np.ndarray,
+            joint_dof_dim: np.ndarray,
+            joint_parent: np.ndarray,
+            joint_child: np.ndarray,
+            joint_tf: np.ndarray,
+            shape_collision_radius: np.ndarray,
+            body_shapes: defaultdict,
+            instance_count: int = 0,
+        ) -> int:
+            """
+            Populates the renderer with joint visualizations.
+            Args:
+                body_names (list): List of body names.
+                joint_type (numpy.ndarray): Type of each joint.
+                joint_axis (numpy.ndarray): Axis of each joint.
+                joint_qd_start (numpy.ndarray): Start index for joint dofs.
+                joint_dof_dim (numpy.ndarray): Dimensions of joint dofs (linear and angular).
+                joint_parent (numpy.ndarray): Parent body index for each joint.
+                joint_child (numpy.ndarray): Child body index for each joint.
+                joint_tf (numpy.ndarray): Transform of each joint.
+                shape_collision_radius (numpy.ndarray): Collision radius of shapes, used for scaling joint arrows.
+                body_shapes (list): List of shapes attached to each body.
+                instance_count (int, optional): Initial instance count. Defaults to 0.
+            Returns:
+                int: The updated instance count after adding joint visualizations.
+            """
+            y_axis = wp.vec3(0.0, 1.0, 0.0)
+            color = (1.0, 0.0, 1.0)
+
+            shape = self.render_arrow(
+                "joint_arrow",
+                None,
+                None,
+                base_radius=0.01,
+                base_height=0.4,
+                cap_radius=0.02,
+                cap_height=0.1,
+                parent_body=None,
+                is_template=True,
+                color=color,
+            )
+            for i, t in enumerate(joint_type):
+                if t not in {
+                    newton.JOINT_REVOLUTE,
+                    # newton.JOINT_PRISMATIC,
+                    newton.JOINT_D6,
+                }:
+                    continue
+                tf = joint_tf[i]
+                body = int(joint_parent[i])
+                if body >= 0 and body < len(body_names):
+                    body = body_names[body]
+                else:
+                    body = None
+                # if body == -1:
+                #     continue
+                num_linear_axes = int(joint_dof_dim[i][0])
+                num_angular_axes = int(joint_dof_dim[i][1])
+
+                # find a good scale for the arrow based on the average radius
+                # of the shapes attached to the joint child body
+                scale = np.ones(3, dtype=np.float32)
+                child = int(joint_child[i])
+                if child >= 0:
+                    radii = []
+                    bs = body_shapes.get(child, [])
+                    for s in bs:
+                        radii.append(shape_collision_radius[s])
+                    if len(radii) > 0:
+                        scale *= np.mean(radii) * 2.0
+
+                for a in range(num_linear_axes, num_linear_axes + num_angular_axes):
+                    index = joint_qd_start[i] + a
+                    axis = joint_axis[index]
+                    if np.linalg.norm(axis) < 1e-6:
+                        continue
+                    p = wp.vec3(tf[:3])
+                    q = wp.quat(tf[3:])
+                    # compute rotation between axis and y
+                    axis = axis / np.linalg.norm(axis)
+                    q = q * wp.quat_between_vectors(wp.vec3(axis), y_axis)
+                    name = f"joint_{i}_{a}"
+                    self.add_shape_instance(name, shape, body, p, q, scale, color1=color, color2=color)
+                    instance_count += 1
+            return instance_count
+
+        def get_new_color(self, instance_count: int) -> tuple:
+            """Gets a new color from a predefined color map.
+            This method provides a new color based on the current instance count,
+            cycling through a predefined color map to ensure variety.
+            Returns:
+                tuple: A tuple representing the new color (e.g., in RGB format).
+            """
+            return tab10_color_map(instance_count)
 
         def render(self, state: newton.State):
             """
             Updates the renderer with the given simulation state.
-
             Args:
                 state (newton.State): The simulation state to render.
             """
@@ -325,81 +460,106 @@ def CreateSimRenderer(renderer):
                 return
 
             if self.model.particle_count:
-                particle_q = state.particle_q.numpy()
-
-                # render particles
-                if self.show_particles:
-                    self.render_points(
-                        "particles", particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
-                    )
-
-                # render tris
-                if self.model.tri_count:
-                    self.render_mesh(
-                        "surface",
-                        particle_q,
-                        self.model.tri_indices.numpy().flatten(),
-                        colors=(0.75, 0.25, 0.0),
-                    )
-
-                # render springs
-                if self.model.spring_count:
-                    self.render_line_list(
-                        "springs", particle_q, self.model.spring_indices.numpy().flatten(), (0.25, 0.5, 0.25), 0.02
-                    )
+                self.render_particles_and_springs(
+                    particle_q=state.particle_q.numpy(),
+                    particle_radius=self.model.particle_radius.numpy(),
+                    tri_indices=self.model.tri_indices.numpy() if self.model.tri_count else None,
+                    spring_indices=self.model.spring_indices.numpy() if self.model.spring_count else None,
+                )
 
             # render muscles
             if self.model.muscle_count:
-                body_q = state.body_q.numpy()
-
-                muscle_start = self.model.muscle_start.numpy()
-                muscle_links = self.model.muscle_bodies.numpy()
-                muscle_points = self.model.muscle_points.numpy()
-                muscle_activation = self.model.muscle_activation.numpy()
-
-                # for s in self.skeletons:
-
-                #     # for mesh, link in s.mesh_map.items():
-
-                #     #     if link != -1:
-                #     #         X_sc = wp.transform_expand(self.state.body_X_sc[link].tolist())
-
-                #     #         #self.renderer.add_mesh(mesh, "../assets/snu/OBJ/" + mesh + ".usd", X_sc, 1.0, self.render_time)
-                #     #         self.renderer.add_mesh(mesh, "../assets/snu/OBJ/" + mesh + ".usd", X_sc, 1.0, self.render_time)
-
-                for m in range(self.model.muscle_count):
-                    start = int(muscle_start[m])
-                    end = int(muscle_start[m + 1])
-
-                    points = []
-
-                    for w in range(start, end):
-                        link = muscle_links[w]
-                        point = muscle_points[w]
-
-                        X_sc = wp.transform_expand(body_q[link][0])
-
-                        points.append(wp.transform_point(X_sc, point).tolist())
-
-                    self.render_line_strip(
-                        name=f"muscle_{m}", vertices=points, radius=0.0075, color=(muscle_activation[m], 0.2, 0.5)
-                    )
+                self.render_muscles(
+                    body_q=state.body_q.numpy(),
+                    muscle_start=self.model.muscle_start.numpy(),
+                    muscle_links=self.model.muscle_bodies.numpy(),
+                    muscle_points=self.model.muscle_points.numpy(),
+                    muscle_activation=self.model.muscle_activation.numpy(),
+                )
 
             # update bodies
             if self.model.body_count:
                 self.update_body_transforms(state.body_q)
 
+        def render_particles_and_springs(
+            self,
+            particle_q: np.ndarray,
+            particle_radius: np.ndarray,
+            tri_indices: np.ndarray | None = None,
+            spring_indices: np.ndarray | None = None,
+        ):
+            """Renders particles, mesh surface, and springs.
+            Args:
+                particle_q (numpy.ndarray): Array of particle positions.
+                particle_radius (float): Radius of the particles.
+                tri_indices (numpy.ndarray, optional): Triangle indices for the surface mesh. Defaults to None.
+                spring_indices (numpy.ndarray, optional): Spring indices. Defaults to None.
+            """
+            # render particles
+            if self.show_particles:
+                self.render_points("particles", particle_q, radius=particle_radius, colors=(0.8, 0.3, 0.2))
+
+            # render tris
+            if tri_indices is not None:
+                self.render_mesh(
+                    "surface",
+                    particle_q,
+                    tri_indices.flatten(),
+                    colors=(0.75, 0.25, 0.0),
+                )
+
+            # render springs
+            if spring_indices is not None:
+                self.render_line_list("springs", particle_q, spring_indices.flatten(), (0.25, 0.5, 0.25), 0.02)
+
+        def render_muscles(
+            self,
+            body_q: np.ndarray,
+            muscle_start: np.ndarray,
+            muscle_links: np.ndarray,
+            muscle_points: np.ndarray,
+            muscle_activation: np.ndarray,
+        ):
+            """Renders muscles as line strips.
+            Args:
+                body_q (numpy.ndarray): Array of body transformations.
+                muscle_start (numpy.ndarray): Start indices for muscles in other muscle arrays.
+                muscle_links (numpy.ndarray): Body indices for each muscle point.
+                muscle_points (numpy.ndarray): Local positions of muscle attachment points.
+                muscle_activation (numpy.ndarray): Activation level for each muscle, used for color.
+            """
+            muscle_count = (len(muscle_start) - 1) if muscle_start is not None else 0
+            for m in range(muscle_count):
+                start = int(muscle_start[m])
+                end = int(muscle_start[m + 1])
+
+                points = []
+
+                for w in range(start, end):
+                    link = muscle_links[w]
+                    point = muscle_points[w]
+
+                    X_sc = wp.transform_expand(body_q[link][0])
+
+                    points.append(wp.transform_point(X_sc, point).tolist())
+
+                self.render_line_strip(
+                    name=f"muscle_{m}",
+                    vertices=points,
+                    radius=0.0075,
+                    color=(muscle_activation[m], 0.2, 0.5),
+                )
+
         def render_contacts(
             self,
-            state: newton.State,
+            body_q: wp.array,
             contacts: newton.Contacts,
             contact_point_radius: float = 1e-3,
         ):
             """
             Render contact points between rigid bodies.
-
             Args:
-                state (newton.State): The simulation state.
+                body_q (wp.array): Array of body transformations.
                 contacts (newton.Contacts): The contacts to render.
                 contact_point_radius (float, optional): The radius of the contact points.
             """
@@ -415,7 +575,7 @@ def CreateSimRenderer(renderer):
                 kernel=compute_contact_points,
                 dim=contacts.rigid_contact_max,
                 inputs=[
-                    state.body_q,
+                    body_q,
                     self.model.shape_body,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -489,8 +649,8 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
     def __init__(
         self,
         model: newton.Model,
-        stage,
-        source_stage=None,
+        stage: str | Usd.Stage,
+        source_stage: str | Usd.Stage | None = None,
         scaling: float = 1.0,
         fps: int = 60,
         up_axis: newton.AxisType | None = None,
@@ -509,7 +669,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             source_stage (str | Usd.Stage, optional): The USD stage to use as a source for the output stage.
             scaling (float, optional): Scaling factor for the rendered objects. Defaults to 1.0.
             fps (int, optional): Frames per second for the animation. Defaults to 60.
-            up_axis (newton.AxisType, optional): Up axis for the scene. If None, uses model's up axis.
+            up_axis (newton.AxisType, optional): Up axis for the scene. If None, uses model's up axis. Defaults to None.
             show_joints (bool, optional): Whether to show joint visualizations.  Defaults to False.
             path_body_map (dict, optional): A dictionary mapping prim paths to body IDs.
             path_body_relative_transform (dict, optional): A dictionary mapping prim paths to relative transformations.
@@ -577,7 +737,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
                 full_xform = self._apply_parents_inverse_xform(full_xform, prim_path)
                 self._update_usd_prim_xform(prim_path, full_xform)
 
-    def _apply_parents_inverse_xform(self, full_xform, prim_path):
+    def _apply_parents_inverse_xform(self, full_xform: wp.transform, prim_path: str) -> wp.transform:
         """
         Transformation in Warp sim consists of translation and pure rotation: trnslt and quat.
         Transformations of bodies are stored in body_q in simulation state.
@@ -631,7 +791,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
 
         return wp.transform(prim_translate, prim_quat)
 
-    def _update_usd_prim_xform(self, prim_path, warp_xform):
+    def _update_usd_prim_xform(self, prim_path: str, warp_xform: wp.transform):
         from pxr import Gf, Sdf, UsdGeom  # noqa: PLC0415
 
         prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -649,7 +809,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
 
     # TODO: if _compute_parents_inverses turns to be too slow, then we should consider using a UsdGeomXformCache as described here:
     # https://openusd.org/release/api/class_usd_geom_imageable.html#a4313664fa692f724da56cc254bce70fc
-    def _compute_parents_inverses(self, prim_path, time):
+    def _compute_parents_inverses(self, prim_path: str, time: Usd.TimeCode) -> tuple[wp.vec3, wp.mat33, wp.quat]:
         from pxr import Gf, Sdf, UsdGeom  # noqa: PLC0415
 
         prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
@@ -676,12 +836,13 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
         return translate_parent_world, inv_Rpw, inv_Rpwn
 
     def _precompute_parents_xform_inverses(self):
-        from pxr import Sdf, Usd  # noqa: PLC0415
-
         """
         Convention: prefix c is for **current** prim.
         Prefix p is for **parent** prim.
         """
+
+        from pxr import Sdf, Usd  # noqa: PLC0415
+
         if self.path_body_map is None:
             raise ValueError("self.path_body_map must be set before calling _precompute_parents_xform_inverses")
 
@@ -721,7 +882,7 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
             prim = self.stage.GetPrimAtPath(Sdf.Path(prim_path))
             SimRendererUsd._xform_to_tqs(prim)
 
-    def _create_output_stage(self, source_stage, output_stage) -> Usd.Stage:
+    def _create_output_stage(self, source_stage: str | Usd.Stage, output_stage: str | Usd.Stage) -> Usd.Stage:
         from pxr import Usd  # noqa: PLC0415
 
         if isinstance(output_stage, str):
@@ -740,7 +901,8 @@ class SimRendererUsd(CreateSimRenderer(renderer=UsdRenderer)):
 
     @staticmethod
     def _xform_to_tqs(prim: Usd.Prim, time: Usd.TimeCode | None = None):
-        """Update the transformation stack of a primitive to translate/orient/scale format.
+        """
+        Update the transformation stack of a primitive to translate/orient/scale format.
 
         The original transformation stack is assumed to be a rigid transformation.
         """
@@ -798,8 +960,7 @@ class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
         scaling (float, optional): Scaling factor for the rendered objects.
             Defaults to 1.0.
         fps (int, optional): Target frames per second. Defaults to 60.
-        up_axis (newton.AxisType, optional): Up axis for the scene. If None,
-            uses model's up axis.
+        up_axis (newton.AxisType, optional): Up axis for the scene. If None, uses model's up axis. Defaults to None.
         show_rigid_contact_points (bool, optional): Whether to show contact
             points. Defaults to False.
         contact_points_radius (float, optional): Radius of contact point
