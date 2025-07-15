@@ -46,30 +46,6 @@ def bisect_shape_pairs(
     return lo
 
 
-# Binning function determines the existence and index of appropriate bin
-@wp.func
-def bin_contact_shape_pair(
-    contact_shape: wp.array(dtype=wp.vec2i),
-    num_shape_pairs: wp.int32,
-    shape_pairs_sorted: wp.array(dtype=wp.vec2i),
-    contact_idx: wp.int32,
-) -> tuple[bool, wp.int32]:
-    """Find the bin index, if it exists, based on the contact's shape_pair."""
-    geom = contact_shape[contact_idx]
-
-    if geom[0] == -1 or geom[1] == -1:
-        return False, 0
-
-    ga = wp.min(geom[0], geom[1])
-    gb = wp.max(geom[0], geom[1])
-
-    normalized_pair = wp.vec2i(ga, gb)
-    pair_ord = bisect_shape_pairs(shape_pairs_sorted, num_shape_pairs, normalized_pair)
-    if pair_ord < num_shape_pairs and shape_pairs_sorted[pair_ord] == normalized_pair:
-        return True, pair_ord
-    return False, 0
-
-
 @wp.kernel
 def select_aggregate_net_force(
     num_contacts: wp.array(dtype=wp.int32),
