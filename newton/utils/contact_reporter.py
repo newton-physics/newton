@@ -147,14 +147,6 @@ class ContactSensorManager:
         self.contact_reporter = None
         self.model = model
 
-    def finalize(self):
-        self.entity_pairs = self.build_entity_pair_list()
-        self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
-        for offset, count, view, shape in zip(
-            self.query_offset, self.query_count, self.contact_views, self.query_shape
-        ):
-            view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
-
     def add_contact_query(
         self,
         contact_view: ContactView,
@@ -164,6 +156,9 @@ class ContactSensorManager:
     ):
         self.contact_queries.append((sensor_entities, select_entities, sensor_matrix))
         self.contact_views.append(contact_view)
+
+    def eval_contact_sensors(self, contact_info):
+        self.contact_reporter._select_aggregate_net_force(contact_info)
 
     def build_entity_pair_list(self):
         query_to_eps = []
@@ -192,8 +187,13 @@ class ContactSensorManager:
         self.query_shape = query_shape
         return entity_pair_list
 
-    def eval_contact_sensors(self, contact_info):
-        self.contact_reporter._select_aggregate_net_force(contact_info)
+    def finalize(self):
+        self.entity_pairs = self.build_entity_pair_list()
+        self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
+        for offset, count, view, shape in zip(
+            self.query_offset, self.query_count, self.contact_views, self.query_shape
+        ):
+            view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
 
 
 class ContactReporter:
