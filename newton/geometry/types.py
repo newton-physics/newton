@@ -135,23 +135,19 @@ class Mesh:
 
     @property
     def vertices(self):
-        """Get the mesh vertices."""
         return self._vertices
 
     @vertices.setter
     def vertices(self, value):
-        """Set the mesh vertices and invalidate the cached hash."""
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
 
     @property
     def indices(self):
-        """Get the mesh indices."""
         return self._indices
 
     @indices.setter
     def indices(self, value):
-        """Set the mesh indices and invalidate the cached hash."""
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
 
