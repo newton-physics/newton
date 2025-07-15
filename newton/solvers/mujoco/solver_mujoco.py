@@ -760,6 +760,7 @@ class MuJoCoSolver(SolverBase):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         contact_stiffness_time_const: float = 0.02,
+        ls_parallel: bool = False,
     ):
         """
         Args:
@@ -781,6 +782,7 @@ class MuJoCoSolver(SolverBase):
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
+            ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
 
         """
         super().__init__(model)
@@ -812,6 +814,7 @@ class MuJoCoSolver(SolverBase):
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
+                ls_parallel=ls_parallel,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1117,6 +1120,7 @@ class MuJoCoSolver(SolverBase):
         skip_visual_only_geoms: bool = True,
         add_axes: bool = False,
         maxhullvert: int = MESH_MAXHULLVERT,
+        ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.

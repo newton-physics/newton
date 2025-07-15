@@ -446,7 +446,7 @@ class ArticulationView:
     # Generic attribute API
 
     @functools.lru_cache(maxsize=None)  # noqa
-    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | None = None):
+    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
         # support structured attributes (e.g., "shape_materials.mu")
         name_components = name.split(".")
         name = name_components[0]
@@ -475,8 +475,10 @@ class ArticulationView:
 
         if _slice is None:
             _slice = self._frequency_slices.get(frequency)
-        else:
+        elif isinstance(_slice, Slice):
             _slice = _slice.get()
+        elif not isinstance(_slice, int):
+            raise TypeError(f"Invalid slice type: expected Slice or int, got {type(_slice)}")
 
         if _slice is not None:
             # create strided array
@@ -562,7 +564,7 @@ class ArticulationView:
             attrib_slice = Slice(self._arti_joint_coord_begin, self._arti_joint_coord_begin + 7)
             attrib = self._get_attribute_values("joint_q", source, _slice=attrib_slice)
         else:
-            attrib_slice = Slice(self._arti_joint_begin, self._arti_joint_begin + 1)
+            attrib_slice = self._arti_joint_begin
             attrib = self._get_attribute_values("joint_X_p", self.model, _slice=attrib_slice)
 
         if attrib.dtype is wp.transform:
@@ -584,7 +586,7 @@ class ArticulationView:
             attrib_slice = Slice(self._arti_joint_coord_begin, self._arti_joint_coord_begin + 7)
             self._set_attribute_values("joint_q", target, values, mask=mask, _slice=attrib_slice)
         else:
-            attrib_slice = Slice(self._arti_joint_begin, self._arti_joint_begin + 1)
+            attrib_slice = self._arti_joint_begin
             self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=attrib_slice)
 
     def get_root_velocities(self, source: Model | State):
