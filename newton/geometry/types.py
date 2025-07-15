@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from newton.core.types import Devicelike, Vec3, override
+from newton.core.types import Devicelike, Vec3, nparray, override
 
 # Shape geometry types
 GEO_SPHERE = wp.constant(0)
@@ -97,10 +97,10 @@ class Mesh:
 
     def __init__(
         self,
-        vertices: Sequence[Vec3],
-        indices: Sequence[int],
-        compute_inertia=True,
-        is_solid=True,
+        vertices: Sequence[Vec3] | nparray,
+        indices: Sequence[int] | nparray,
+        compute_inertia: bool = True,
+        is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
     ):
         """Construct a Mesh object from a triangle mesh
@@ -118,13 +118,12 @@ class Mesh:
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
-        self.vertices = np.array(vertices).reshape(-1, 3)
-        self.indices = np.array(indices, dtype=np.int32).flatten()
+        self._vertices = np.array(vertices).reshape(-1, 3)
+        self._indices = np.array(indices, dtype=np.int32).flatten()
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
         self.maxhullvert = maxhullvert
-        self.convex_hull = convex_hull
         self._cached_hash = None
 
         if compute_inertia:
@@ -133,6 +132,28 @@ class Mesh:
             self.I = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @property
+    def vertices(self):
+        """Get the mesh vertices."""
+        return self._vertices
+
+    @vertices.setter
+    def vertices(self, value):
+        """Set the mesh vertices and invalidate the cached hash."""
+        self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
+        self._cached_hash = None
+
+    @property
+    def indices(self):
+        """Get the mesh indices."""
+        return self._indices
+
+    @indices.setter
+    def indices(self, value):
+        """Set the mesh indices and invalidate the cached hash."""
+        self._indices = np.array(value, dtype=np.int32).flatten()
+        self._cached_hash = None
 
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
@@ -163,16 +184,29 @@ class Mesh:
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
         hull_vertices, hull_faces = remesh_convex_hull(self.vertices, maxhullvert=self.maxhullvert)
-
-        # create a new mesh for the convex hull
-        hull_mesh = Mesh(hull_vertices, hull_faces, compute_inertia=False)
-        hull_mesh.maxhullvert = self.maxhullvert  # preserve maxhullvert setting
-
-        return hull_mesh
+        if replace:
+            self.vertices = hull_vertices
+            self.indices = hull_faces
+            return self
+        else:
+            # create a new mesh for the convex hull
+            hull_mesh = Mesh(hull_vertices, hull_faces, compute_inertia=False)
+            hull_mesh.maxhullvert = self.maxhullvert  # preserve maxhullvert setting
+            hull_mesh.is_solid = self.is_solid
+            hull_mesh.has_inertia = self.has_inertia
+            hull_mesh.mass = self.mass
+            hull_mesh.com = self.com
+            hull_mesh.I = self.I
+            return hull_mesh
 
     @override
     def __hash__(self) -> int:
         """
         Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
+        Uses cached hash if available, otherwise computes and caches the hash.
         """
-        return hash((tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid))
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid)
+            )
+        return self._cached_hash
