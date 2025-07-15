@@ -102,7 +102,6 @@ class Mesh:
         compute_inertia=True,
         is_solid=True,
         maxhullvert: int = MESH_MAXHULLVERT,
-        convex_hull: "Mesh | None" = None,
     ):
         """Construct a Mesh object from a triangle mesh
 
@@ -116,7 +115,6 @@ class Mesh:
             compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
             is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
             maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
-            convex_hull: Pre-computed convex hull mesh (optional)
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -127,6 +125,7 @@ class Mesh:
         self.mesh = None
         self.maxhullvert = maxhullvert
         self.convex_hull = convex_hull
+        self._cached_hash = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -154,7 +153,7 @@ class Mesh:
             self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
             return self.mesh.id
 
-    def compute_convex_hull(self) -> "Mesh":
+    def compute_convex_hull(self, replace: bool = False) -> "Mesh":
         """
         Computes and returns the convex hull of this mesh.
 
@@ -163,22 +162,13 @@ class Mesh:
         """
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
-        hull_vertices, hull_faces = remesh_convex_hull(self.vertices)
+        hull_vertices, hull_faces = remesh_convex_hull(self.vertices, maxhullvert=self.maxhullvert)
 
         # create a new mesh for the convex hull
         hull_mesh = Mesh(hull_vertices, hull_faces, compute_inertia=False)
         hull_mesh.maxhullvert = self.maxhullvert  # preserve maxhullvert setting
 
         return hull_mesh
-
-    def set_convex_hull(self, hull: "Mesh | None") -> None:
-        """
-        Sets a pre-computed convex hull for this mesh.
-
-        Args:
-            hull: The pre-computed convex hull mesh
-        """
-        self.convex_hull = hull
 
     @override
     def __hash__(self) -> int:

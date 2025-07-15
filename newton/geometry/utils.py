@@ -16,10 +16,12 @@
 import contextlib
 import os
 from collections import defaultdict
+from typing import Literal
 
 import numpy as np
 import warp as wp
 
+from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
     GEO_BOX,
@@ -31,7 +33,6 @@ from .types import (
     GEO_SPHERE,
     SDF,
     Mesh,
-    Vec3,
 )
 
 
@@ -334,8 +335,9 @@ def remesh_convex_hull(vertices):
 
     return verts, faces
 
+RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull"]
 
-def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwargs):
+def remesh(vertices, faces, method: RemeshingMethod="quadratic", visualize=False, **remeshing_kwargs) -> tuple[nparray, nparray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
 
@@ -372,8 +374,19 @@ def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwa
     return new_vertices, new_faces
 
 
-def remesh_mesh(mesh: Mesh, recompute_inertia=False, **remeshing_kwargs):
-    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), **remeshing_kwargs)
+def remesh_mesh(mesh: Mesh, method: RemeshingMethod="quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
+    """Remesh a mesh using the specified method.
+    Args:
+        mesh: The mesh to remesh.
+        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
+        recompute_inertia: Whether to recompute the inertia of the mesh.
+        **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+    Returns:
+        The remeshed mesh.
+    """
+    if method == "convex_hull":
+        remeshing_kwargs["maxhullvert"] = mesh.maxhullvert
+    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
     mesh.indices = mesh.indices.flatten()
     if recompute_inertia:
         mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, mesh.vertices, mesh.indices, is_solid=mesh.is_solid)
