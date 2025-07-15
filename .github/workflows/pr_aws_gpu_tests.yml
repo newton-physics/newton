@@ -13,12 +13,6 @@ env:
 
 on:
   pull_request_target:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".gitlab-ci.yml"
-      - ".github/**"
-      - ".gitignore"
 
 # Cancels in-progress runs of this workflow for the same pull request,
 # but allows parallel runs for pushes to the main branch.
