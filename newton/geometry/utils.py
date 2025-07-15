@@ -341,9 +341,13 @@ def remesh_convex_hull(vertices, maxhullvert: int = 0):
 
     return verts, faces
 
+
 RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull"]
 
-def remesh(vertices, faces, method: RemeshingMethod="quadratic", visualize=False, **remeshing_kwargs) -> tuple[nparray, nparray]:
+
+def remesh(
+    vertices, faces, method: RemeshingMethod = "quadratic", visualize=False, **remeshing_kwargs
+) -> tuple[nparray, nparray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
 
@@ -380,7 +384,7 @@ def remesh(vertices, faces, method: RemeshingMethod="quadratic", visualize=False
     return new_vertices, new_faces
 
 
-def remesh_mesh(mesh: Mesh, method: RemeshingMethod="quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
+def remesh_mesh(mesh: Mesh, method: RemeshingMethod = "quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
     """Remesh a mesh using the specified method.
     Args:
         mesh: The mesh to remesh.
