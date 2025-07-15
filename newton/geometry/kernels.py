@@ -235,79 +235,79 @@ def box_sdf_grad(upper: wp.vec3, p: wp.vec3):
 
 @wp.func
 def capsule_sdf(radius: float, half_height: float, p: wp.vec3):
-    if p[1] > half_height:
-        return wp.length(wp.vec3(p[0], p[1] - half_height, p[2])) - radius
+    if p[2] > half_height:
+        return wp.length(wp.vec3(p[0], p[1], p[2] - half_height)) - radius
 
-    if p[1] < -half_height:
-        return wp.length(wp.vec3(p[0], p[1] + half_height, p[2])) - radius
+    if p[2] < -half_height:
+        return wp.length(wp.vec3(p[0], p[1], p[2] + half_height)) - radius
 
-    return wp.length(wp.vec3(p[0], 0.0, p[2])) - radius
+    return wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
 
 
 @wp.func
 def capsule_sdf_grad(radius: float, half_height: float, p: wp.vec3):
-    if p[1] > half_height:
-        return wp.normalize(wp.vec3(p[0], p[1] - half_height, p[2]))
+    if p[2] > half_height:
+        return wp.normalize(wp.vec3(p[0], p[1], p[2] - half_height))
 
-    if p[1] < -half_height:
-        return wp.normalize(wp.vec3(p[0], p[1] + half_height, p[2]))
+    if p[2] < -half_height:
+        return wp.normalize(wp.vec3(p[0], p[1], p[2] + half_height))
 
-    return wp.normalize(wp.vec3(p[0], 0.0, p[2]))
+    return wp.normalize(wp.vec3(p[0], p[1], 0.0))
 
 
 @wp.func
 def cylinder_sdf(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], 0.0, p[2])) - radius
-    dy = wp.abs(p[1]) - half_height
+    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
+    dy = wp.abs(p[2]) - half_height
     return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
 
 
 @wp.func
 def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], 0.0, p[2])) - radius
-    dy = wp.abs(p[1]) - half_height
+    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
+    dy = wp.abs(p[2]) - half_height
     if dx > dy:
-        return wp.normalize(wp.vec3(p[0], 0.0, p[2]))
-    return wp.vec3(0.0, wp.sign(p[1]), 0.0)
+        return wp.normalize(wp.vec3(p[0], p[1], 0.0))
+    return wp.vec3(0.0, 0.0, wp.sign(p[2]))
 
 
 @wp.func
 def cone_sdf(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], 0.0, p[2])) - radius * (p[1] + half_height) / (2.0 * half_height)
-    dy = wp.abs(p[1]) - half_height
+    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius * (p[2] + half_height) / (2.0 * half_height)
+    dy = wp.abs(p[2]) - half_height
     return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
 
 
 @wp.func
 def cone_sdf_grad(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], 0.0, p[2])) - radius * (p[1] + half_height) / (2.0 * half_height)
-    dy = wp.abs(p[1]) - half_height
+    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius * (p[2] + half_height) / (2.0 * half_height)
+    dy = wp.abs(p[2]) - half_height
     if dy < 0.0 or dx == 0.0:
-        return wp.vec3(0.0, wp.sign(p[1]), 0.0)
-    return wp.normalize(wp.vec3(p[0], 0.0, p[2])) + wp.vec3(0.0, radius / (2.0 * half_height), 0.0)
+        return wp.vec3(0.0, 0.0, wp.sign(p[2]))
+    return wp.normalize(wp.vec3(p[0], p[1], 0.0)) + wp.vec3(0.0, 0.0, radius / (2.0 * half_height))
 
 
 @wp.func
 def plane_sdf(width: float, length: float, p: wp.vec3):
-    # SDF for a quad in the xz plane
+    # SDF for a quad in the xy plane
     if width > 0.0 and length > 0.0:
-        d = wp.max(wp.abs(p[0]) - width, wp.abs(p[2]) - length)
-        return wp.max(d, wp.abs(p[1]))
-    return p[1]
+        d = wp.max(wp.abs(p[0]) - width, wp.abs(p[1]) - length)
+        return wp.max(d, wp.abs(p[2]))
+    return p[2]
 
 
 @wp.func
 def closest_point_plane(width: float, length: float, point: wp.vec3):
-    # projects the point onto the quad in the xz plane (if width and length > 0.0, otherwise the plane is infinite)
+    # projects the point onto the quad in the xy plane (if width and length > 0.0, otherwise the plane is infinite)
     if width > 0.0:
         x = wp.clamp(point[0], -width, width)
     else:
         x = point[0]
     if length > 0.0:
-        z = wp.clamp(point[2], -length, length)
+        y = wp.clamp(point[1], -length, length)
     else:
-        z = point[2]
-    return wp.vec3(x, 0.0, z)
+        y = point[1]
+    return wp.vec3(x, y, 0.0)
 
 
 @wp.func
@@ -381,14 +381,14 @@ def get_box_edge(edge_id: int, upper: wp.vec3):
 def get_plane_edge(edge_id: int, plane_width: float, plane_length: float):
     # get the edge of the plane given its ID (0-3)
     p0x = (2.0 * float(edge_id % 2) - 1.0) * plane_width
-    p0z = (2.0 * float(edge_id // 2) - 1.0) * plane_length
+    p0y = (2.0 * float(edge_id // 2) - 1.0) * plane_length
     if edge_id == 0 or edge_id == 3:
         p1x = p0x
-        p1z = -p0z
+        p1y = -p0y
     else:
         p1x = -p0x
-        p1z = p0z
-    return wp.spatial_vector(wp.vec3(p0x, 0.0, p0z), wp.vec3(p1x, 0.0, p1z))
+        p1y = p0y
+    return wp.spatial_vector(wp.vec3(p0x, p0y, 0.0), wp.vec3(p1x, p1y, 0.0))
 
 
 @wp.func
@@ -744,7 +744,7 @@ def create_soft_contacts(
 
     if geo_type == GEO_PLANE:
         d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
-        n = wp.vec3(0.0, 1.0, 0.0)
+        n = wp.vec3(0.0, 0.0, 1.0)
 
     if d < margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
@@ -1203,7 +1203,7 @@ def handle_contact_pairs(
             return
         diff = p_a_world - p_b_world
         if geo_type_b == GEO_PLANE:
-            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
         else:
             normal = wp.normalize(diff)
         distance = wp.dot(diff, normal)
@@ -1261,7 +1261,7 @@ def handle_contact_pairs(
             p_b_body = closest_point_plane(plane_width, plane_length, query_b)
             p_b_world = wp.transform_point(X_ws_b, p_b_body)
             diff = p_a_world - p_b_world
-            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
             if plane_width > 0.0 and plane_length > 0.0:
                 if wp.abs(query_b[0]) > plane_width or wp.abs(query_b[2]) > plane_length:
                     # skip, we will evaluate the plane edge contact with the box later
@@ -1299,7 +1299,7 @@ def handle_contact_pairs(
                 # the COM is outside the plane
                 normal = wp.normalize(com_a - p_b_world)
             else:
-                normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+                normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
             distance = wp.dot(diff, normal)
 
     elif geo_type_a == GEO_CAPSULE and geo_type_b == GEO_CAPSULE:
@@ -1386,7 +1386,7 @@ def handle_contact_pairs(
             # vertex-based collision
             half_height_a = geo_scale_a[1]
             side = float(point_id) * 2.0 - 1.0
-            p_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, side * half_height_a, 0.0))
+            p_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, 0.0, side * half_height_a))
             query_b = wp.transform_point(X_sw_b, p_a_world)
             p_b_body = closest_point_plane(geo_scale_b[0], geo_scale_b[1], query_b)
             p_b_world = wp.transform_point(X_ws_b, p_b_body)
@@ -1394,7 +1394,7 @@ def handle_contact_pairs(
             if geo_scale_b[0] > 0.0 and geo_scale_b[1] > 0.0:
                 normal = wp.normalize(diff)
             else:
-                normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+                normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
             distance = wp.dot(diff, normal)
         else:
             # contact between capsule A and edges of finite plane B
@@ -1411,11 +1411,11 @@ def handle_contact_pairs(
 
             # find closest point + contact normal on capsule A
             half_height_a = geo_scale_a[1]
-            p0_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, half_height_a, 0.0))
-            p1_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, -half_height_a, 0.0))
+            p0_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, 0.0, half_height_a))
+            p1_a_world = wp.transform_point(X_ws_a, wp.vec3(0.0, 0.0, -half_height_a))
             p_a_world = closest_point_line_segment(p0_a_world, p1_a_world, p_b_world)
             diff = p_a_world - p_b_world
-            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
             # normal = wp.normalize(diff)
             distance = wp.dot(diff, normal)
 
@@ -1504,9 +1504,9 @@ def handle_contact_pairs(
 
         # if the plane is infinite or the point is within the plane we fix the normal to prevent intersections
         if (geo_scale_b[0] == 0.0 and geo_scale_b[1] == 0.0) or (
-            wp.abs(query_b[0]) < geo_scale_b[0] and wp.abs(query_b[2]) < geo_scale_b[1]
+            wp.abs(query_b[0]) < geo_scale_b[0] and wp.abs(query_b[1]) < geo_scale_b[1]
         ):
-            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 1.0, 0.0))
+            normal = wp.transform_vector(X_ws_b, wp.vec3(0.0, 0.0, 1.0))
             distance = wp.dot(diff, normal)
         else:
             normal = wp.normalize(diff)

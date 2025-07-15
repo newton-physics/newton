@@ -175,7 +175,7 @@ def CreateSimRenderer(renderer):
                             length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
 
                             if name == "ground_plane":
-                                normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 1.0, 0.0))
+                                normal = wp.quat_rotate(X_bs.q, wp.vec3(0.0, 0.0, 1.0))
                                 offset = wp.dot(normal, X_bs.p)
                                 shape = self.render_ground(plane=[*normal, offset])
                                 add_shape_instance = False
@@ -234,7 +234,10 @@ def CreateSimRenderer(renderer):
 
                     if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                         # TODO support dynamic visibility
-                        self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
+                        q_shape = X_bs.q
+                        if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
+                            q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
+                        self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
                     self.instance_count += 1
 
                 if self.show_joints and model.joint_count:
