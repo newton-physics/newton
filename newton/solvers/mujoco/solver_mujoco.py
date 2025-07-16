@@ -753,6 +753,8 @@ class MuJoCoSolver(SolverBase):
         ls_iterations: int = 10,
         solver: int | str = "cg",
         integrator: int | str = "euler",
+        cone: int | str = "pyramidal",
+        impratio: float = 1.0,
         use_mujoco: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -774,6 +776,8 @@ class MuJoCoSolver(SolverBase):
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
+            cone (int | str): Cone type. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
+            impratio (float): Implicit ratio for the cone.
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -1102,7 +1106,7 @@ class MuJoCoSolver(SolverBase):
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
         timestep: float = 0.01,
-        cone: int = 0,
+        cone: int | str = 0,
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
         # these numbers come from the cartpole.xml model
@@ -1170,6 +1174,12 @@ class MuJoCoSolver(SolverBase):
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
             }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
 
+        if isinstance(cone, str):
+            cone = {
+                "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
+                "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
+            }.get(cone.lower(), mujoco.mjtCone.mjCONE_PYRAMIDAL)
+
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
             return [q[3], q[0], q[1], q[2]]
@@ -1186,6 +1196,8 @@ class MuJoCoSolver(SolverBase):
         spec.option.integrator = integrator
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
+        spec.option.cone = cone
+        spec.option.impratio = impratio
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
