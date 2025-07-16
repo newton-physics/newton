@@ -225,7 +225,11 @@ class TestContactSensorManager(unittest.TestCase):
 
         entity_a = (0,)
         entity_b = (1,)
-        cm.add_contact_query([(entity_a, None), ])
+        cm.add_contact_query(
+            [
+                (entity_a, None),
+            ]
+        )
 
 
 if __name__ == "__main__":
