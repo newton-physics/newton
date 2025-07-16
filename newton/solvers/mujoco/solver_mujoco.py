@@ -813,6 +813,8 @@ class MuJoCoSolver(SolverBase):
                 ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
+                cone=cone,
+                impratio=impratio,
                 solver=solver,
                 integrator=integrator,
                 default_actuator_gear=default_actuator_gear,
