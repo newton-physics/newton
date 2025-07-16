@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import os
 from collections import defaultdict
 from typing import Literal
@@ -20,8 +21,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
-from ..core.types import Quat, Vec3, nparray
-from ..utils import silence_stdio
+from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
     GEO_BOX,
@@ -66,7 +66,7 @@ def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
     return min_coords, max_coords
 
 
-def compute_obb(vertices: nparray) -> tuple[Vec3, Vec3, Quat]:
+def compute_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
     """Compute the oriented bounding box of a set of vertices.
 
     Args:
@@ -74,12 +74,11 @@ def compute_obb(vertices: nparray) -> tuple[Vec3, Vec3, Quat]:
 
     Returns:
         A tuple containing:
-        - center: The center of the oriented bounding box
+        - transform: The transform of the oriented bounding box
         - extents: The half-extents of the box along its principal axes
-        - orientation: The quaternion defining the orientation of the box
     """
     if len(vertices) == 0:
-        return np.zeros(3), np.zeros(3), wp.quat(1.0, 0.0, 0.0, 0.0)
+        return wp.transform_identity(), wp.vec3(0.0, 0.0, 0.0)
 
     # Center the vertices
     center = np.mean(vertices, axis=0)
@@ -108,19 +107,21 @@ def compute_obb(vertices: nparray) -> tuple[Vec3, Vec3, Quat]:
     max_coords = np.max(projected, axis=0)
     extents = (max_coords - min_coords) / 2.0
 
-    # Adjust center to account for the new coordinate system
+    # Calculate the center in the projected coordinate system
     center_offset = (max_coords + min_coords) / 2.0
+    # Transform the center offset back to the original coordinate system
     center = center + center_offset @ eigenvectors.T
 
     # Convert rotation matrix to quaternion
-    # The rotation matrix is eigenvectors.T (3x3)
-    rotation_matrix = eigenvectors.T
+    # The rotation matrix should transform from the original coordinate system to the principal axes
+    # eigenvectors is the rotation matrix from original to principal axes
+    rotation_matrix = eigenvectors
 
     # Convert to quaternion using Warp's quat_from_matrix function
     # First convert numpy array to Warp matrix
-    orientation = wp.quat_from_matrix(wp.mat33(rotation_matrix.flatten()))
+    orientation = wp.quat_from_matrix(wp.mat33(rotation_matrix))
 
-    return center, extents, orientation
+    return wp.transform(wp.vec3(center), orientation), wp.vec3(extents)
 
 
 def load_mesh(filename: str, method: str | None = None):
@@ -237,6 +238,34 @@ def visualize_meshes(
     if show_plot:
         plt.show()
     return fig
+
+
+@contextlib.contextmanager
+def silence_stdio():
+    """
+    Redirect *both* Python-level and C-level stdout/stderr to os.devnull
+    for the duration of the with-block.
+    """
+    devnull = open(os.devnull, "w")
+    # Duplicate the real fds so we can restore them later
+    old_stdout_fd = os.dup(1)
+    old_stderr_fd = os.dup(2)
+
+    try:
+        # Point fds 1 and 2 at /dev/null
+        os.dup2(devnull.fileno(), 1)
+        os.dup2(devnull.fileno(), 2)
+
+        # Also patch the Python objects that wrap those fds
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
+    finally:
+        # Restore original fds
+        os.dup2(old_stdout_fd, 1)
+        os.dup2(old_stderr_fd, 2)
+        os.close(old_stdout_fd)
+        os.close(old_stderr_fd)
+        devnull.close()
 
 
 def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbose=False):
