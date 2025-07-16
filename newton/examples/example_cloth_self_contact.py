@@ -241,7 +241,7 @@ class Example:
                 {"block_dim": newton.solvers.vbd.solver_vbd.TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE},
                 newton.solvers.vbd.solver_vbd,
             )
-            wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
+            wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
             wp.set_module_options({"block_dim": 16}, newton.geometry.kernels)
             wp.load_module(newton.geometry.kernels, device=wp.get_device())
 
