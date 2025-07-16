@@ -1073,6 +1073,61 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(model.shape_geo_src[1].maxhullvert, 128)
 
 
+class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
+    def setUp(self):
+        """Set up a simple model with a sphere and a plane."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+
+        self.sphere_radius = 0.5
+        sphere_body_idx = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_joint_free(sphere_body_idx)
+        builder.add_shape_sphere(
+            body=sphere_body_idx,
+            radius=self.sphere_radius,
+        )
+
+        self.model = builder.finalize()
+        self.state_in = self.model.state()
+        self.state_out = self.model.state()
+        self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_in)
+        self.sphere_body_idx = sphere_body_idx
+
+    def test_sphere_on_plane_with_newton_contacts(self):
+        """Test that a sphere correctly collides with a plane using Newton contacts."""
+        try:
+            solver = MuJoCoSolver(self.model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+            return
+
+        sim_dt = 1.0 / 240.0
+        num_steps = 120  # Simulate for 0.5 seconds to ensure it settles
+
+        for _ in range(num_steps):
+            self.contacts = self.model.collide(self.state_in)
+            solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
+            self.state_in, self.state_out = self.state_out, self.state_in
+
+        final_pos = self.state_in.body_q.numpy()[self.sphere_body_idx, :3]
+        final_height = final_pos[2]  # Z-up in MuJoCo
+
+        # The sphere should settle on the plane, with its center at its radius's height
+        self.assertGreater(
+            final_height,
+            self.sphere_radius * 0.9,
+            f"Sphere fell through the plane. Final height: {final_height}",
+        )
+        self.assertLess(
+            final_height,
+            self.sphere_radius * 1.2,
+            f"Sphere is floating above the plane. Final height: {final_height}",
+        )
+
+
 class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes(self):
         builder = newton.ModelBuilder()
