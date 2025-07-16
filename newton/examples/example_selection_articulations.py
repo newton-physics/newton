@@ -113,7 +113,11 @@ class Example:
             sensor_body="*arm", contact_partners_shape="ground_plane", verbose=True
         )
         self.foot_arm_contact_sensor = builder.add_contact_sensor(
-            sensor_body="*foot", contact_partners_shape="*arm", include_total=False, verbose=True
+            sensor_body="*foot",
+            contact_partners_shape="*arm",
+            include_total=False,
+            verbose=True,
+            prune_noncolliding=True,
         )
 
         # finalize model

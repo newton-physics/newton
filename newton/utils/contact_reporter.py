@@ -27,6 +27,15 @@ from newton.solvers import MuJoCoSolver, SolverBase
 NUM_THREADS = 8192
 
 
+class SentinelMeta(type):
+    def __repr__(cls):
+        return f"<{cls.__name__}>"
+
+
+class MatchAny(metaclass=SentinelMeta):
+    """Sentinel class matching all contact partners."""
+
+
 @wp.func
 def bisect_shape_pairs(
     # inputs
@@ -111,20 +120,6 @@ def _lol_to_arrays(list_of_lists: list[list], dtype) -> tuple[wp.array, wp.array
     return a, offset, count
 
 
-class ContactView:
-    """A view for querying contacts between entities in the simulation."""
-
-    def __init__(self, query_id: int, args: dict):
-        # self.contact_reporter = contact_reporter
-        self.query_id = query_id
-        self.args = args
-        self.finalized = False
-        self.shape = None
-
-        self.net_force = None  # force matrix, aliased to contact reducer
-        self.entity_pairs = None  # entity pair matrix
-
-
 def convert_contact_info(
     model: Model,
     contact_info: ContactInfo,
@@ -139,6 +134,20 @@ def convert_contact_info(
             raise NotImplementedError("Contact conversion not yet implemented this solver")
 
 
+class ContactView:
+    """A view for querying contacts between entities in the simulation."""
+
+    def __init__(self, query_id: int, args: dict):
+        # self.contact_reporter = contact_reporter
+        self.query_id = query_id
+        self.args = args
+        self.finalized = False
+        self.shape = None
+
+        self.net_force = None  # force matrix, aliased to contact reducer
+        self.entity_pairs = None  # entity pair matrix
+
+
 class ContactSensorManager:
     def __init__(self, model):
         self.sensors = []
@@ -151,9 +160,24 @@ class ContactSensorManager:
         self,
         contact_view: ContactView,
         sensor_entities: list[tuple[int, ...]],
-        select_entities: list[tuple[int, ...] | None],
+        select_entities: list[tuple[int, ...] | MatchAny],
         sensor_matrix: list[tuple[int, tuple[int, ...]]],
     ):
+        """Add a contact query to track contact forces between specified entities.
+
+        Args:
+            contact_view: ContactView object that will reference the results of this query.
+            sensor_entities: List of entity tuples representing the sensor entities.
+                These are indexed by the first element of sensor_matrix tuples.
+            select_entities: List of entity tuples representing the contact partners.
+                These are indexed by the values in the second element of the sensor_matrix tuples.
+            sensor_matrix: List of tuples defining which sensors interact with which select entities.
+                Each tuple is (sensor_index, tuple of select_indices) where:
+                - sensor_index: Index into sensor_entities list.
+                - select_indices: Tuple of indices into select_entities list.
+                The resulting contact matrix will have shape (len(sensor_matrix), max_selects)
+                where max_selects is the maximum length of select_indices tuples.
+        """
         self.contact_queries.append((sensor_entities, select_entities, sensor_matrix))
         self.contact_views.append(contact_view)
 
@@ -171,11 +195,13 @@ class ContactSensorManager:
             n_query_sensors = len(sensor_matrix)
             n_query_selects = max(len(partners) for _, partners in sensor_matrix)
             print(f"Sensors in query: {n_query_sensors}\t Max selects: {n_query_selects}")
-            query_eps = [
-                (sensor_entities[sensor], select_entities[select])
-                for sensor, selects in sensor_matrix
-                for select in selects
-            ]
+            query_eps = []
+            for sensor, selects in sensor_matrix:
+                for i in range(n_query_selects):
+                    if i < len(selects):
+                        query_eps.append((sensor_entities[sensor], select_entities[selects[i]]))
+                    else:
+                        query_eps.append(None)
             query_to_eps.append(query_to_eps)
             query_len.append(n_query_sensors * n_query_selects)
             query_shape.append((n_query_sensors, n_query_selects))
@@ -190,10 +216,16 @@ class ContactSensorManager:
     def finalize(self):
         self.entity_pairs = self.build_entity_pair_list()
         self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
-        for offset, count, view, shape in zip(
-            self.query_offset, self.query_count, self.contact_views, self.query_shape
+        for offset, count, view, shape, eps in zip(
+            self.query_offset, self.query_count, self.contact_views, self.query_shape, self.entity_pairs
         ):
             view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
+            view.shape = shape
+            entity_pairs = self.entity_pairs[offset : offset + count]
+            n_sens, n_sel = shape
+            view.entity_pairs = [
+                [entity_pairs[sensor * n_sel + sel] for sel in range(n_sel)] for sensor in range(n_sens)
+            ]
 
 
 class ContactReporter:
@@ -210,14 +242,18 @@ class ContactReporter:
 
         return
 
-    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[tuple[int, ...], tuple[int, ...] | None]]):
-        """Build a mapping from shape pairs to entity pairs ordered by shape pair."""
+    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[tuple[int, ...], tuple[int, ...] | MatchAny] | None]):
+        """Build a mapping from shape pairs to entity pairs ordered by shape pair.
+        None is accepted as a filler value."""
         sp_ep_map = defaultdict(list)
-        for ep_idx, (e1, e2) in enumerate(entity_pairs):
-            assert e1 is not None, "Sensor cannot be attached to wildcard entity"
+        for ep_idx, entity_pair in enumerate(entity_pairs):
+            if entity_pair is None:
+                continue
+            e1, e2 = entity_pair
+            assert e1 is not MatchAny, "Sensor cannot be attached to wildcard entity"
 
-            # pair e1 shapes with e2 shapes, or with -1 if e2 is None
-            shape_pairs = itertools.product(e1, (-1,) if e2 is None else e2)
+            # pair e1 shapes with e2 shapes, or with -1 if e2 is MatchAll
+            shape_pairs = itertools.product(e1, ((-1,) if e2 is MatchAny else e2))
             for sp in shape_pairs:
                 flip_pair = sp[0] > sp[1]
                 if flip_pair:

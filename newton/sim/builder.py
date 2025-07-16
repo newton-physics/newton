@@ -3434,7 +3434,7 @@ class ModelBuilder:
         """Add a contact sensor view to the model. Return a ContactView.
         Exactly one of `sensor_shape` or `sensor_body` must be specified to define the sensor. If contact partners
         are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
-        the total contact force; if contact partners are.
+        the total contact force. MatchAll can be used to include a reading of the total contact force.
 
         Args:
             sensor_shape: pattern to match sensor shape names; one entity per matching shape.
@@ -3443,7 +3443,7 @@ class ModelBuilder:
             contact_partners_body: pattern to match contact partner body names; one entity per matching body.
             match_fun: function taking a name and a pattern and returning true if the name matches the pattern;
             defaults to fnmatch. Accepts "re" for `re.match()`.
-            include_total: If contact partners are defined, include a sensor reading for the total contact force.
+            include_total: If contact partners are defined, include the total contact force as the first reading of each sensor.
             prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
             verbose: print details
         """
@@ -3491,10 +3491,13 @@ class ModelBuilder:
         prune_noncolliding,
         verbose,
     ):
+        from newton.utils.contact_reporter import MatchAny  # noqa: PLC0415
+
         """Create the list of individual sensors for a query and add the query to the manager."""
         if verbose:
             print("Finding entities")
         m = contact_sensor_manager.model
+
         # Get entities matching the pattern
         sensor_entities, sensor_entity_keys = self._get_entities(
             match_fun, m, shape_pattern=sensor_shape, body_pattern=sensor_body
@@ -3517,26 +3520,34 @@ class ModelBuilder:
                     f"No matching bodies (with shapes) or shapes for contact partner pattern {sensor_body or sensor_shape}."
                 )
             if include_total:
-                select_entities = (None, *select_entities)
-                select_entity_keys = (None, *select_entity_keys)
+                select_entities = (MatchAny, *select_entities)
+                select_entity_keys = (MatchAny, *select_entity_keys)
         else:
-            select_entities = (None,)
-            select_entity_keys = (None,)
+            select_entities = (MatchAny,)
+            select_entity_keys = (MatchAny,)
 
         if verbose:
             print(f"Contact partner entities found: {select_entities}")
             print(f"                          keys: {select_entity_keys}")
 
-        n_select = len(select_entities)
+        def check_ep_can_collide(a, b) -> bool:
+            ep_sps = set((min(pair), max(pair)) for pair in itertools.product(a, b))
+            return not self.contact_pairs.isdisjoint(ep_sps)
 
         # build the matrix
-        sensor_matrix = [
-            (sensor_idx, tuple(range(n_select))) for sensor_idx, sensor_entity in enumerate(sensor_entities)
-        ]
+        sensor_matrix = []
+        for sensor_idx, sensor_entity in enumerate(sensor_entities):
+            if prune_noncolliding:
+                partner_indices = tuple(
+                    partner_idx
+                    for partner_idx, partner_entity in enumerate(select_entities)
+                    if check_ep_can_collide(sensor_entity, partner_entity)
+                )
+            else:
+                partner_indices = tuple(range(len(select_entities)))
+            sensor_matrix.append((sensor_idx, partner_indices))
+        breakpoint()
 
-        if prune_noncolliding:
-            # FIXME: prune noncolliding
-            pass
         contact_sensor_manager.add_contact_query(contact_view, sensor_entities, select_entities, sensor_matrix)
 
     def _build_contact_sensors(self, model: Model):
@@ -3578,6 +3589,8 @@ class ModelBuilder:
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
+
+        self.contact_pairs = set(contact_pairs)
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
 
