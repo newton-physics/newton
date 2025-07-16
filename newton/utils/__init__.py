@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+import os
+
 import warp as wp
 from warp.context import assert_conditional_graph_support
 
@@ -110,6 +113,34 @@ def check_conditional_graph_support():
     return True
 
 
+@contextlib.contextmanager
+def silence_stdio():
+    """
+    Redirect *both* Python-level and C-level stdout/stderr to os.devnull
+    for the duration of the with-block.
+    """
+    devnull = open(os.devnull, "w")
+    # Duplicate the real fds so we can restore them later
+    old_stdout_fd = os.dup(1)
+    old_stderr_fd = os.dup(2)
+
+    try:
+        # Point fds 1 and 2 at /dev/null
+        os.dup2(devnull.fileno(), 1)
+        os.dup2(devnull.fileno(), 2)
+
+        # Also patch the Python objects that wrap those fds
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
+    finally:
+        # Restore original fds
+        os.dup2(old_stdout_fd, 1)
+        os.dup2(old_stderr_fd, 2)
+        os.close(old_stdout_fd)
+        os.close(old_stderr_fd)
+        devnull.close()
+
+
 __all__ = [
     "SimRenderer",
     "SimRendererOpenGL",
@@ -123,6 +154,7 @@ __all__ = [
     "parse_mjcf",
     "parse_urdf",
     "parse_usd",
+    "silence_stdio",
     "smooth_max",
     "smooth_min",
     "topological_sort",
