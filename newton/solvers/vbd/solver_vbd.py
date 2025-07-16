@@ -2263,7 +2263,7 @@ class VBDSolver(SolverBase):
                 If set to a value < 0, collision detection is only performed once before the initialization step.
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
-            tiled_solve: whether to accelerate the solver using tile API. Only effective if the model.device is CUDA.
+            tiled_solve: whether to accelerate the solver using tile API
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to True, the rigid states should be integrated externally, with `state_in`
