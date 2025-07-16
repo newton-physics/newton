@@ -777,7 +777,7 @@ class MuJoCoSolver(SolverBase):
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
             cone (int | str): Cone type. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
-            impratio (float): Implicit ratio for the cone.
+            impratio (float): Frictional-to-normal constraint impedance ratio.
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
