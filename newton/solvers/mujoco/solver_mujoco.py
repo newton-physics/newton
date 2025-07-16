@@ -801,6 +801,8 @@ class MuJoCoSolver(SolverBase):
         ls_iterations: int = 10,
         solver: int | str = "cg",
         integrator: int | str = "euler",
+        cone: int | str = "pyramidal",
+        impratio: float = 1.0,
         use_mujoco: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -808,6 +810,7 @@ class MuJoCoSolver(SolverBase):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         contact_stiffness_time_const: float = 0.02,
+        ls_parallel: bool = False,
     ):
         """
         Args:
@@ -821,6 +824,8 @@ class MuJoCoSolver(SolverBase):
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
+            cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
+            impratio (float): Frictional-to-normal constraint impedance ratio.
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -829,6 +834,7 @@ class MuJoCoSolver(SolverBase):
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
+            ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
 
         """
         super().__init__(model)
@@ -855,11 +861,14 @@ class MuJoCoSolver(SolverBase):
                 ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
+                cone=cone,
+                impratio=impratio,
                 solver=solver,
                 integrator=integrator,
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
+                ls_parallel=ls_parallel,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1210,7 +1219,7 @@ class MuJoCoSolver(SolverBase):
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
         timestep: float = 0.01,
-        cone: int = 0,
+        cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
         # these numbers come from the cartpole.xml model
@@ -1228,6 +1237,7 @@ class MuJoCoSolver(SolverBase):
         skip_visual_only_geoms: bool = True,
         add_axes: bool = False,
         maxhullvert: int = MESH_MAXHULLVERT,
+        ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1277,6 +1287,12 @@ class MuJoCoSolver(SolverBase):
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
             }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
 
+        if isinstance(cone, str):
+            cone = {
+                "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
+                "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
+            }.get(cone.lower(), mujoco.mjtCone.mjCONE_PYRAMIDAL)
+
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
             return [q[3], q[0], q[1], q[2]]
@@ -1293,6 +1309,8 @@ class MuJoCoSolver(SolverBase):
         spec.option.integrator = integrator
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
+        spec.option.cone = cone
+        spec.option.impratio = impratio
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
@@ -1504,17 +1522,13 @@ class MuJoCoSolver(SolverBase):
                     mesh_src = model.shape_geo_src[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
-                    # check if mesh has a pre-computed convex hull
-                    convex_hull = getattr(mesh_src, "convex_hull", None)
-                    # use convex hull if available, otherwise use original mesh
-                    mesh_to_use = convex_hull if convex_hull is not None else mesh_src
                     # apply scaling
                     size = shape_size[shape]
-                    vertices = mesh_to_use.vertices * size
+                    vertices = mesh_src.vertices * size
                     spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),
-                        userface=mesh_to_use.indices.flatten(),
+                        userface=mesh_src.indices.flatten(),
                         maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
