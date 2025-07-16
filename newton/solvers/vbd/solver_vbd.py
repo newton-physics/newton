@@ -1482,21 +1482,21 @@ def solve_trimesh_no_self_contact_tile(
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
             + particle_hessians[particle_index]
         )
+        if abs(wp.determinant(h)) > 1e-5:
+            h_inv = wp.inverse(h_total)
+            # wp.printf(
+            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            #     particle_index,
+            #     f_total[0], f_total[1], f_total[2],
+            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
+            # )
+            f_total = (
+                f_total
+                + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+                + particle_forces[particle_index]
+            )
 
-        h_inv = wp.inverse(h_total)
-        # wp.printf(
-        #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
-        #     particle_index,
-        #     f_total[0], f_total[1], f_total[2],
-        #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
-        # )
-        f_total = (
-            f_total
-            + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
-            + particle_forces[particle_index]
-        )
-
-        pos_new[particle_index] = particle_pos + h_inv * f_total
+            pos_new[particle_index] = particle_pos + h_inv * f_total
 
 
 @wp.kernel
@@ -2263,7 +2263,7 @@ class VBDSolver(SolverBase):
                 If set to a value < 0, collision detection is only performed once before the initialization step.
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
-            tiled_solve: whether to accelerate the solver using tile API
+            tiled_solve: whether to accelerate the solver using tile API. Only effective if the model.device is CUDA.
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to True, the rigid states should be integrated externally, with `state_in`
@@ -2292,7 +2292,10 @@ class VBDSolver(SolverBase):
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
 
-        self.tiled_solve = tiled_solve
+        if model.device.is_cpu and tiled_solve:
+            wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+
+        self.tiled_solve = tiled_solve and model.device.is_cuda
 
         soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
