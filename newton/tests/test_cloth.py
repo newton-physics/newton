@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Many of these imports are mainly needed for graph capture to work on CUDA drivers < 12.3
-import importlib
 import unittest
 from functools import partial
 
@@ -22,12 +20,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.solvers.euler.kernels
-import newton.solvers.euler.particles
-import newton.solvers.euler.solver_euler
-import newton.solvers.solver
-import newton.solvers.vbd.solver_vbd
-import newton.solvers.xpbd.solver_xpbd
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -749,33 +741,6 @@ class ClothSim:
 
         self.graph = None
         if self.use_cuda_graph:
-            # We need to set block_dim to 256 here because CPU launches will set block_dim to 1
-            if self.solver_name == "vbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
-                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
-
-                collide_module = importlib.import_module("newton.geometry.kernels")
-                # Also for some tile stuff
-                wp.set_module_options({"block_dim": 16}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-                wp.set_module_options({"block_dim": 256}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-            elif self.solver_name == "xpbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.kernels)
-                wp.load_module(newton.solvers.xpbd.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
-                wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
-            elif self.solver_name == "semi_implicit":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.kernels)
-                wp.load_module(newton.solvers.euler.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.particles)
-                wp.load_module(newton.solvers.euler.particles, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
-                wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
-
-            wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
-            wp.load_module(newton.solvers.solver, device=self.device)
-            wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph

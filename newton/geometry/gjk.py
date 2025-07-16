@@ -18,9 +18,6 @@ from typing import Any
 
 import warp as wp
 
-# TODO(team): improve compile time to enable backward pass
-wp.config.enable_backward = False
-
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
 MINVAL = 1e-15

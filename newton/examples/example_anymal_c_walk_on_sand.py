@@ -28,9 +28,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.solvers.euler.kernels  # For graph capture on CUDA <12.3
-import newton.solvers.euler.particles  # For graph capture on CUDA <12.3
-import newton.solvers.solver  # For graph capture on CUDA <12.3
 import newton.utils
 from newton.examples.example_anymal_c_walk import AnymalController
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
@@ -213,11 +210,6 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
-            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
-            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
-            wp.load_module(newton.solvers.euler.particles, device=wp.get_device())
-            wp.load_module(newton.solvers.solver, device=wp.get_device())
-
             with wp.ScopedCapture() as capture:
                 self.simulate_robot()
             self.robot_graph = capture.graph

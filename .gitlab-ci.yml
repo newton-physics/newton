@@ -106,19 +106,22 @@ linting:
 linux-x86_64 test:
   image: ghcr.io/astral-sh/uv:bookworm
   extends:
-    - .omni_nvks_gpu
     - .test_common
+  tags:
+    - lnx-x86_64-gpu-1x-570.158.01
 
-windows-x86_64 test:
+# TODO: mujoco load dll often fails on Windows, disabling
+.windows-x86_64 test:
   extends:
-    - .runner-test-windows-x86_64-gpu
     - .test_common
   needs: []
   before_script:
     - powershell -ExecutionPolicy ByPass -c {$env:UV_INSTALL_DIR = "${env:CI_PROJECT_DIR}\uv-install";irm https://astral.sh/uv/install.ps1 | iex}
     - $env:Path = "${env:CI_PROJECT_DIR}\uv-install;$env:Path"
     - uv venv --managed-python
-  allow_failure: true # TODO: mujoco load dll often fails on Windows
+  allow_failure: true
+  tags:
+    - win-x86_64-gpu-1x-573.42
 
 # --- Stage: Build ---
 build_package:
@@ -169,10 +172,10 @@ doctest:
   stage: docs
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
-  extends:
-    - .omni_nvks_gpu
   script:
     - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+  tags:
+    - lnx-x86_64-gpu-1x-570.158.01
 
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.

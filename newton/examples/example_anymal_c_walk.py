@@ -31,7 +31,6 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.solvers.euler.kernels  # For graph capture on CUDA <12.3
 import newton.utils
 from newton.sim import Control, State
 
@@ -315,9 +314,6 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
-            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
-            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
-
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

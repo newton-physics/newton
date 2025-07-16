@@ -5,7 +5,7 @@ Requirements
 ------------
 
 - Python 3.9 or higher
-- NVIDIA GPU with driver 525 or newer (545 or newer is recommended)
+- NVIDIA GPU with driver 545 or newer (see note below)
 - NVIDIA Warp from nightly build (see ``pyproject.toml`` for the current minimum version)
 
 A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
