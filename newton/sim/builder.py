@@ -2132,7 +2132,7 @@ class ModelBuilder:
 
     def simplify_meshes(
         self,
-        method: Literal["coacd"] | RemeshingMethod = "convex_hull",
+        method: Literal["coacd", "vhacd"] | RemeshingMethod = "convex_hull",
         shape_indices: list[int] | None = None,
         **remeshing_kwargs,
     ):
@@ -2150,9 +2150,13 @@ class ModelBuilder:
                 if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
-        if method == "coacd":
-            # convex decomposition using CoACD
-            import coacd  # noqa: PLC0415
+        if method == "coacd" or method == "vhacd":
+            if method == "coacd":
+                # convex decomposition using CoACD
+                import coacd  # noqa: PLC0415
+            else:
+                # convex decomposition using V-HACD
+                import trimesh  # noqa: PLC0415
 
             decompositions = {}
 
@@ -2162,17 +2166,26 @@ class ModelBuilder:
                 if hash_m in decompositions:
                     decomposition = decompositions[hash_m]
                 else:
-                    cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                    coacd_settings = {
-                        "threshold": 0.5,
-                        "mcts_nodes": 20,
-                        "mcts_iterations": 5,
-                        "mcts_max_depth": 1,
-                        "merge": False,
-                        "max_convex_hull": mesh.maxhullvert,
-                    }
-                    coacd_settings.update(remeshing_kwargs)
-                    decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                    if method == "coacd":
+                        cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                        coacd_settings = {
+                            "threshold": 0.5,
+                            "mcts_nodes": 20,
+                            "mcts_iterations": 5,
+                            "mcts_max_depth": 1,
+                            "merge": False,
+                            "max_convex_hull": mesh.maxhullvert,
+                        }
+                        coacd_settings.update(remeshing_kwargs)
+                        decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                    else:
+                        tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                        vhacd_settings = {
+                            "maxNumVerticesPerCH": mesh.maxhullvert,
+                        }
+                        vhacd_settings.update(remeshing_kwargs)
+                        decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
+                        decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
                     decompositions[hash_m] = decomposition
                 if len(decomposition) == 0:
                     continue
