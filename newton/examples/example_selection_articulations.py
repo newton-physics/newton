@@ -21,9 +21,9 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView
-from newton.utils.contact_reporter import convert_contact_info
 from newton.sim.contacts import ContactInfo
+from newton.utils.contact_reporter import convert_contact_info
+from newton.utils.selection import ArticulationView
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
