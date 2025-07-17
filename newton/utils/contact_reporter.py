@@ -15,6 +15,7 @@
 
 from collections import defaultdict
 from collections.abc import Iterable
+from enum import Enum
 import itertools
 
 import numpy as np
@@ -34,6 +35,9 @@ class SentinelMeta(type):
 
 class MatchAny(metaclass=SentinelMeta):
     """Sentinel class matching all contact partners."""
+
+
+EntityKind = Enum("EntityKind", [("SHAPE", 1), ("BODY", 1)])
 
 
 @wp.func
@@ -146,6 +150,8 @@ class ContactView:
 
         self.net_force = None  # force matrix, aliased to contact reducer
         self.entity_pairs = None  # entity pair matrix
+        self.sensor_keys = None
+        self.contact_partner_keys = None
 
 
 class ContactSensorManager:
@@ -162,6 +168,8 @@ class ContactSensorManager:
         sensor_entities: list[tuple[int, ...]],
         select_entities: list[tuple[int, ...] | MatchAny],
         sensor_matrix: list[tuple[int, tuple[int, ...]]],
+        sensor_keys: list[tuple],
+        contact_partner_keys: list[tuple],
     ):
         """Add a contact query to track contact forces between specified entities.
 
@@ -178,7 +186,9 @@ class ContactSensorManager:
                 The resulting contact matrix will have shape (len(sensor_matrix), max_selects)
                 where max_selects is the maximum length of select_indices tuples.
         """
-        self.contact_queries.append((sensor_entities, select_entities, sensor_matrix))
+        self.contact_queries.append(
+            (sensor_entities, select_entities, sensor_matrix, sensor_keys, contact_partner_keys)
+        )
         self.contact_views.append(contact_view)
 
     def eval_contact_sensors(self, contact_info):
@@ -190,8 +200,7 @@ class ContactSensorManager:
         query_len = []
         query_shape = []
 
-        # TODO: generalize to support partial sensor matrix
-        for sensor_entities, select_entities, sensor_matrix in self.contact_queries:
+        for sensor_entities, select_entities, sensor_matrix, *_ in self.contact_queries:
             n_query_sensors = len(sensor_matrix)
             n_query_selects = max(len(partners) for _, partners in sensor_matrix)
             print(f"Sensors in query: {n_query_sensors}\t Max selects: {n_query_selects}")
@@ -216,11 +225,14 @@ class ContactSensorManager:
     def finalize(self):
         self.entity_pairs = self.build_entity_pair_list()
         self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
-        for offset, count, view, shape, eps in zip(
-            self.query_offset, self.query_count, self.contact_views, self.query_shape, self.entity_pairs
+        for offset, count, view, shape, query in zip(
+            self.query_offset, self.query_count, self.contact_views, self.query_shape, self.contact_queries
         ):
             view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
             view.shape = shape
+            view.sensor_keys = query[3]
+            view.contact_partner_keys = query[4]
+
             entity_pairs = self.entity_pairs[offset : offset + count]
             n_sens, n_sel = shape
             view.entity_pairs = [
