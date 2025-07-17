@@ -17,7 +17,6 @@ import os
 import tempfile
 import unittest
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -58,8 +57,6 @@ class TestTendonControl(unittest.TestCase):
                 f.write(mjcf_content)
 
             try:
-                import mujoco  # noqa: PLC0415
-                import mujoco_warp as mjwarp  # noqa: PLC0415
                 can_test = True
             except ImportError:
                 can_test = False
@@ -121,34 +118,27 @@ class TestTendonControl(unittest.TestCase):
     def test_control_initialization(self):
         """Test that tendon control arrays are properly initialized"""
         builder = newton.ModelBuilder()
-        
+
         # Add a simple model with tendons
         builder.add_body(xform=wp.transform())
         site1 = builder.add_site("site1", 0, wp.transform(wp.vec3(0, 0, 0)))
         site2 = builder.add_site("site2", 0, wp.transform(wp.vec3(1, 0, 0)))
-        
+
         tendon_id = builder.add_tendon(
-            name="test_tendon",
-            tendon_type="spatial",
-            site_ids=[site1, site2],
-            stiffness=100.0
+            name="test_tendon", tendon_type="spatial", site_ids=[site1, site2], stiffness=100.0
         )
-        
-        builder.add_tendon_actuator(
-            name="test_actuator",
-            tendon_id=tendon_id,
-            kp=50.0
-        )
-        
+
+        builder.add_tendon_actuator(name="test_actuator", tendon_id=tendon_id, kp=50.0)
+
         model = builder.finalize()
-        
+
         # Check control initialization
         control = model.control()
         self.assertIsNotNone(control.tendon_target)
         self.assertIsNotNone(control.tendon_f)
         self.assertEqual(len(control.tendon_target), 1)
         self.assertEqual(len(control.tendon_f), 1)
-        
+
         # Check initial values are zero
         self.assertEqual(control.tendon_target.numpy()[0], 0.0)
         self.assertEqual(control.tendon_f.numpy()[0], 0.0)
@@ -156,4 +146,4 @@ class TestTendonControl(unittest.TestCase):
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
-    unittest.main(verbosity=2) 
+    unittest.main(verbosity=2)

@@ -458,8 +458,12 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
             if self.tendon_actuator_count:
-                c.tendon_target = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
-                c.tendon_f = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
+                c.tendon_target = wp.zeros(
+                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+                )
+                c.tendon_f = wp.zeros(
+                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+                )
         else:
             c.joint_target = self.joint_target
             c.joint_f = self.joint_f
@@ -467,8 +471,12 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
             if self.tendon_actuator_count:
-                c.tendon_target = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
-                c.tendon_f = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
+                c.tendon_target = wp.zeros(
+                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+                )
+                c.tendon_f = wp.zeros(
+                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+                )
         return c
 
     def collide(

@@ -1740,12 +1740,12 @@ class ModelBuilder:
         """
         if xform is None:
             xform = wp.transform()
-        
+
         i = len(self.site_name)
         self.site_name.append(name)
         self.site_body.append(body)
         self.site_xform.append(xform)
-        
+
         return i
 
     def add_tendon(
@@ -1778,7 +1778,7 @@ class ModelBuilder:
         self.tendon_damping.append(damping)
         self.tendon_stiffness.append(stiffness)
         self.tendon_rest_length.append(rest_length if rest_length is not None else 0.0)
-        
+
         return i
 
     def add_tendon_actuator(
@@ -1803,15 +1803,15 @@ class ModelBuilder:
             The index of the tendon actuator
         """
         if force_range is None:
-            force_range = (-float('inf'), float('inf'))
-        
+            force_range = (-float("inf"), float("inf"))
+
         i = len(self.tendon_actuator_name)
         self.tendon_actuator_tendon_id.append(tendon_id)
         self.tendon_actuator_name.append(name)
         self.tendon_actuator_kp.append(kp)
         self.tendon_actuator_kv.append(kv)
         self.tendon_actuator_force_range.append(force_range)
-        
+
         return i
 
     # region shapes
@@ -3512,19 +3512,29 @@ class ModelBuilder:
             m.site_name = self.site_name
             m.site_body = wp.array(self.site_body, dtype=wp.int32) if self.site_body else None
             m.site_xform = wp.array(self.site_xform, dtype=wp.transform) if self.site_xform else None
-            
+
             m.tendon_name = self.tendon_name
             m.tendon_type = self.tendon_type
             m.tendon_site_ids = self.tendon_site_ids
             m.tendon_damping = wp.array(self.tendon_damping, dtype=wp.float32) if self.tendon_damping else None
             m.tendon_stiffness = wp.array(self.tendon_stiffness, dtype=wp.float32) if self.tendon_stiffness else None
-            m.tendon_rest_length = wp.array(self.tendon_rest_length, dtype=wp.float32) if self.tendon_rest_length else None
-            
-            m.tendon_actuator_tendon_id = wp.array(self.tendon_actuator_tendon_id, dtype=wp.int32) if self.tendon_actuator_tendon_id else None
+            m.tendon_rest_length = (
+                wp.array(self.tendon_rest_length, dtype=wp.float32) if self.tendon_rest_length else None
+            )
+
+            m.tendon_actuator_tendon_id = (
+                wp.array(self.tendon_actuator_tendon_id, dtype=wp.int32) if self.tendon_actuator_tendon_id else None
+            )
             m.tendon_actuator_name = self.tendon_actuator_name
-            m.tendon_actuator_kp = wp.array(self.tendon_actuator_kp, dtype=wp.float32) if self.tendon_actuator_kp else None
-            m.tendon_actuator_kv = wp.array(self.tendon_actuator_kv, dtype=wp.float32) if self.tendon_actuator_kv else None
-            m.tendon_actuator_force_range = wp.array(self.tendon_actuator_force_range, dtype=wp.vec2) if self.tendon_actuator_force_range else None
+            m.tendon_actuator_kp = (
+                wp.array(self.tendon_actuator_kp, dtype=wp.float32) if self.tendon_actuator_kp else None
+            )
+            m.tendon_actuator_kv = (
+                wp.array(self.tendon_actuator_kv, dtype=wp.float32) if self.tendon_actuator_kv else None
+            )
+            m.tendon_actuator_force_range = (
+                wp.array(self.tendon_actuator_force_range, dtype=wp.vec2) if self.tendon_actuator_force_range else None
+            )
 
             # --------------------------------------
             # rigid bodies

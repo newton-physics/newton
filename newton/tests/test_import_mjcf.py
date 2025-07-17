@@ -117,7 +117,6 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertEqual(meshes[1].maxhullvert, 128)
                 self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
 
-
     def test_site_parsing(self):
         """Test that sites are parsed from MJCF files"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -147,19 +146,19 @@ class TestImportMjcf(unittest.TestCase):
             # Check sites were parsed
             self.assertEqual(model.site_count, 3)
             self.assertEqual(len(model.site_name), 3)
-            
+
             # Check site names
             self.assertIn("world_site", model.site_name)
             self.assertIn("body_site1", model.site_name)
             self.assertIn("body_site2", model.site_name)
-            
+
             # Check site bodies (world is -1, body1 is 0)
             site_bodies = model.site_body.numpy() if model.site_body is not None else []
             world_site_idx = model.site_name.index("world_site")
             body_site1_idx = model.site_name.index("body_site1")
-            
+
             self.assertEqual(site_bodies[world_site_idx], -1)  # worldbody
-            self.assertEqual(site_bodies[body_site1_idx], 0)   # first body
+            self.assertEqual(site_bodies[body_site1_idx], 0)  # first body
 
     def test_tendon_parsing(self):
         """Test that spatial tendons are parsed from MJCF files"""
@@ -174,7 +173,7 @@ class TestImportMjcf(unittest.TestCase):
             <site name="site2" pos="0.2 0 0"/>
         </body>
     </worldbody>
-    
+
     <tendon>
         <spatial name="tendon1" damping="0.5" stiffness="100">
             <site site="site0"/>
@@ -202,22 +201,22 @@ class TestImportMjcf(unittest.TestCase):
             # Check tendons were parsed
             self.assertEqual(model.tendon_count, 2)
             self.assertEqual(len(model.tendon_name), 2)
-            
+
             # Check tendon names
             self.assertIn("tendon1", model.tendon_name)
             self.assertIn("tendon2", model.tendon_name)
-            
+
             # Check tendon properties
             tendon1_idx = model.tendon_name.index("tendon1")
             self.assertEqual(model.tendon_type[tendon1_idx], "spatial")
-            
+
             if model.tendon_damping is not None:
                 damping_values = model.tendon_damping.numpy()
                 self.assertAlmostEqual(damping_values[tendon1_idx], 0.5)
             if model.tendon_stiffness is not None:
                 stiffness_values = model.tendon_stiffness.numpy()
                 self.assertAlmostEqual(stiffness_values[tendon1_idx], 100.0)
-            
+
             # Check tendon site connections
             self.assertEqual(len(model.tendon_site_ids[tendon1_idx]), 2)  # 2 sites
             self.assertEqual(len(model.tendon_site_ids[1]), 3)  # 3 sites for tendon2
@@ -234,14 +233,14 @@ class TestImportMjcf(unittest.TestCase):
             <site name="site1" pos="0.1 0 0"/>
         </body>
     </worldbody>
-    
+
     <tendon>
         <spatial name="tendon1">
             <site site="site0"/>
             <site site="site1"/>
         </spatial>
     </tendon>
-    
+
     <actuator>
         <position name="tendon_act1" tendon="tendon1" kp="300" kv="10" forcerange="-50 50"/>
         <motor name="joint_act1" joint="joint1" gear="10"/>
@@ -262,10 +261,10 @@ class TestImportMjcf(unittest.TestCase):
             # Check tendon actuator was parsed
             self.assertEqual(model.tendon_actuator_count, 1)
             self.assertEqual(len(model.tendon_actuator_name), 1)
-            
+
             # Check actuator name
             self.assertEqual(model.tendon_actuator_name[0], "tendon_act1")
-            
+
             # Check actuator properties
             if model.tendon_actuator_kp is not None:
                 kp_values = model.tendon_actuator_kp.numpy()
@@ -277,7 +276,7 @@ class TestImportMjcf(unittest.TestCase):
                 force_range = model.tendon_actuator_force_range.numpy()
                 self.assertAlmostEqual(force_range[0][0], -50.0)
                 self.assertAlmostEqual(force_range[0][1], 50.0)
-            
+
             # Check actuator references correct tendon
             tendon_ids = model.tendon_actuator_tendon_id.numpy()
             tendon_id = tendon_ids[0]

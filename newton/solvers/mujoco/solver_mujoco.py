@@ -1242,23 +1242,29 @@ class MuJoCoSolver(SolverBase):
                 ],
                 device=model.device,
             )
-            
+
             # Apply tendon control if available
-            if hasattr(control, 'tendon_target') and control.tendon_target is not None and model.tendon_actuator_count > 0:
+            if (
+                hasattr(control, "tendon_target")
+                and control.tendon_target is not None
+                and model.tendon_actuator_count > 0
+            ):
                 # Use the tendon actuator mapping to set control values
                 tendon_targets = control.tendon_target.numpy()
-                tendon_mapping = model.mjc_tendon_actuator_to_actuator.numpy() if hasattr(model, 'mjc_tendon_actuator_to_actuator') else None
-                
+                tendon_mapping = (
+                    model.mjc_tendon_actuator_to_actuator.numpy()
+                    if hasattr(model, "mjc_tendon_actuator_to_actuator")
+                    else None
+                )
+
                 if tendon_mapping is not None:
                     if is_mjwarp:
                         # For MuJoCo-Warp, we need to handle multi-world case
                         ctrl_numpy = ctrl.numpy()
-                        actuators_per_world = ctrl_numpy.shape[1]
                         for world_idx in range(nworld):
                             for tendon_idx in range(model.tendon_actuator_count):
                                 mj_actuator_idx = tendon_mapping[tendon_idx]
                                 if mj_actuator_idx >= 0:  # Valid mapping
-                                    ctrl_idx = world_idx * actuators_per_world + mj_actuator_idx
                                     ctrl_numpy[world_idx, mj_actuator_idx] = tendon_targets[tendon_idx]
                         wp.copy(ctrl, wp.array(ctrl_numpy, dtype=wp.float32, device=model.device))
                     else:
@@ -2040,25 +2046,25 @@ class MuJoCoSolver(SolverBase):
 
         # -----------------------
         # add sites to MuJoCo bodies
-        
-        if hasattr(model, 'site_name') and model.site_count > 0:
+
+        if hasattr(model, "site_name") and model.site_count > 0:
             site_name = model.site_name
             site_body = model.site_body.numpy() if model.site_body is not None else []
             site_xform_array = model.site_xform.numpy() if model.site_xform is not None else []
-            
+
             for site_idx in range(model.site_count):
                 body_idx = site_body[site_idx]
                 # Extract transform components from numpy array
                 site_tf_data = site_xform_array[site_idx]
                 site_pos = site_tf_data[:3]  # First 3 elements are position
                 site_quat = site_tf_data[3:7]  # Next 4 elements are quaternion (xyzw)
-                
+
                 # Find the MuJoCo body to attach the site to
                 if body_idx == -1:  # Worldbody
                     mj_body = spec.worldbody
                 else:
                     mj_body = mj_bodies[body_mapping[body_idx]]
-                
+
                 # Add the site to the MuJoCo body
                 mj_body.add_site(
                     name=site_name[site_idx],
@@ -2068,21 +2074,21 @@ class MuJoCoSolver(SolverBase):
 
         # -----------------------
         # add tendons to MuJoCo model
-        
-        if hasattr(model, 'tendon_name') and model.tendon_count > 0:
+
+        if hasattr(model, "tendon_name") and model.tendon_count > 0:
             for tendon_idx in range(model.tendon_count):
                 tendon_name = model.tendon_name[tendon_idx]
                 tendon_type = model.tendon_type[tendon_idx]
-                
+
                 if tendon_type == "spatial":
                     # Add tendon using the correct API
                     tendon = spec.add_tendon(name=tendon_name)
-                    
+
                     # Add sites to the tendon using wrap_site
                     site_ids = model.tendon_site_ids[tendon_idx]
                     for site_id in site_ids:
                         tendon.wrap_site(model.site_name[site_id])
-                    
+
                     # Set tendon properties if available
                     if model.tendon_damping is not None:
                         tendon.damping = float(model.tendon_damping.numpy()[tendon_idx])
@@ -2091,13 +2097,15 @@ class MuJoCoSolver(SolverBase):
 
         # -----------------------
         # add tendon actuators
-        
-        if hasattr(model, 'tendon_actuator_name') and model.tendon_actuator_count > 0:
-            tendon_actuator_ids = model.tendon_actuator_tendon_id.numpy() if model.tendon_actuator_tendon_id is not None else []
+
+        if hasattr(model, "tendon_actuator_name") and model.tendon_actuator_count > 0:
+            tendon_actuator_ids = (
+                model.tendon_actuator_tendon_id.numpy() if model.tendon_actuator_tendon_id is not None else []
+            )
             for act_idx in range(model.tendon_actuator_count):
                 tendon_id = int(tendon_actuator_ids[act_idx])
                 tendon_name = model.tendon_name[tendon_id]
-                
+
                 # Create actuator args
                 act_args = {
                     "name": model.tendon_actuator_name[act_idx],
