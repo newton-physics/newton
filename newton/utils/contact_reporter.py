@@ -13,12 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 from collections import defaultdict
 from collections.abc import Iterable
 from enum import Enum
-import itertools
 
-import numpy as np
 import warp as wp
 
 from newton import Model

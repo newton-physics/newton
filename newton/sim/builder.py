@@ -3651,7 +3651,9 @@ class ModelBuilder:
                 partner_indices = tuple(range(len(select_entities)))
             sensor_matrix.append((sensor_idx, partner_indices))
 
-        contact_sensor_manager.add_contact_query(contact_view, sensor_entities, select_entities, sensor_matrix, sensor_keys, select_keys)
+        contact_sensor_manager.add_contact_query(
+            contact_view, sensor_entities, select_entities, sensor_matrix, sensor_keys, select_keys
+        )
 
     def _build_contact_sensors(self, model: Model):
         from newton.utils.contact_reporter import ContactSensorManager  # noqa: PLC0415
