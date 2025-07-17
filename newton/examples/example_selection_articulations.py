@@ -120,6 +120,9 @@ class Example:
             prune_noncolliding=True,
         )
 
+        # stores contact info required by contact sensors
+        self.contact_info = ContactInfo()
+
         # finalize model
         self.model = builder.finalize()
 
@@ -257,9 +260,8 @@ class Example:
             else:
                 self.simulate()
 
-        contact_info = ContactInfo()
-        convert_contact_info(self.model, contact_info, self.solver)
-        self.model.eval_contact_sensors(contact_info)
+        convert_contact_info(self.model, self.contact_info, self.solver)
+        self.model.eval_contact_sensors(self.contact_info)
         print(f"Torso net forces: {self.torso_all_contact_sensor.net_force}")
 
         self.sim_time += self.frame_dt

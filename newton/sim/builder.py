@@ -82,6 +82,16 @@ from .joints import (
 from .model import Model
 
 
+class EntityNotFoundError(Exception):
+    def __init__(self, message: str = "", pattern: str = "", match_type: str | None = None):
+        self.message = message
+        self.pattern = pattern
+        self.match_type = match_type
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -482,11 +492,6 @@ class ModelBuilder:
         # articulations are automatically 'closed' when calling finalize
         self.articulation_start.append(self.joint_count)
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
-
-    def add_contact_query(self, entity_pattern: str, filter_pattern: str | None = None, match_fun=None) -> int:
-        query_idx = len(self.contact_queries)
-        self.contact_queries.append((entity_pattern, filter_pattern, match_fun))
-        return query_idx
 
     def add_builder(
         self,
@@ -3491,24 +3496,6 @@ class ModelBuilder:
 
             return m
 
-    def create_contact_reporter(self):
-        # Get entities matching the pattern
-        entity_a, entity_a_keys = self._get_entities(match_fun, m, shape_pattern=entity_pattern)
-        if not entity_a_keys:
-            raise KeyError(f"No matching bodies (with shapes) or shapes for entity_pattern {entity_pattern}.")
-
-        if filter_pattern is not None:
-            entity_b, entity_b_keys = self._get_entities(filter_pattern, match_fun, m)
-            if not entity_b_keys:
-                raise KeyError(f"No matching bodies (with shapes) or shapes for filter_pattern {filter_pattern}.")
-        else:
-            raise NotImplementedError("Empty entity_b (filter path) is not yet implemented")
-
-        # Add entity keys and groups to contact reporter
-        contact_reporter.add_query_keys(entity_a_keys, entity_b_keys)
-        contact_reporter.add_entity_group_pair(entity_a, entity_b)
-        return contact_reporter
-
     def add_contact_sensor(
         self,
         sensor_shape: str | None = None,
@@ -3596,18 +3583,33 @@ class ModelBuilder:
             print(f"                 keys: {sensor_entity_keys}")
 
         if not sensor_entities:
-            raise KeyError(
-                f"No matching bodies (with shapes) or shapes for sensor pattern {sensor_body or sensor_shape}."
-            )
+            if sensor_shape:
+                raise EntityNotFoundError(
+                    f'No matching shapes for sensor shape pattern "{sensor_shape}".', sensor_shape, "shape"
+                )
+            else:
+                raise EntityNotFoundError(
+                    f'No matching bodies (with shapes) for sensor body pattern "{sensor_body}".', sensor_body, "body"
+                )
 
         if contact_partners_body or contact_partners_shape:
             select_entities, select_entity_keys = self._get_entities(
                 match_fun, m, shape_pattern=contact_partners_shape, body_pattern=contact_partners_body
             )
             if not select_entity_keys:
-                raise KeyError(
-                    f"No matching bodies (with shapes) or shapes for contact partner pattern {sensor_body or sensor_shape}."
-                )
+                if contact_partners_shape:
+                    raise EntityNotFoundError(
+                        f'No matching shapes for contact partners shape pattern "{contact_partners_shape}".',
+                        contact_partners_shape,
+                        "shape",
+                    )
+                else:
+                    raise EntityNotFoundError(
+                        f'No matching bodies (with shapes) for contact partners body pattern "{contact_partners_body}".',
+                        contact_partners_body,
+                        "body",
+                    )
+
             if include_total:
                 select_entities = (MatchAny, *select_entities)
                 select_entity_keys = (MatchAny, *select_entity_keys)
@@ -3635,7 +3637,6 @@ class ModelBuilder:
             else:
                 partner_indices = tuple(range(len(select_entities)))
             sensor_matrix.append((sensor_idx, partner_indices))
-        breakpoint()
 
         contact_sensor_manager.add_contact_query(contact_view, sensor_entities, select_entities, sensor_matrix)
 
