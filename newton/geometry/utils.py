@@ -79,25 +79,37 @@ def compute_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
     """
     if len(vertices) == 0:
         return wp.transform_identity(), wp.vec3(0.0, 0.0, 0.0)
+    if len(vertices) == 1:
+        return wp.transform(wp.vec3(vertices[0]), wp.quat_identity()), wp.vec3(0.0, 0.0, 0.0)
 
     # Center the vertices
     center = np.mean(vertices, axis=0)
     centered_vertices = vertices - center
 
-    # Compute covariance matrix
-    cov_matrix = np.cov(centered_vertices.T)
+    # Compute covariance matrix with handling for degenerate cases
+    if len(vertices) < 3:
+        # For 2 points, create a line-aligned OBB
+        direction = centered_vertices[1] if len(vertices) > 1 else np.array([1, 0, 0])
+        direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 1e-6 else np.array([1, 0, 0])
+        # Create orthogonal basis
+        if abs(direction[0]) < 0.9:
+            perpendicular = np.cross(direction, [1, 0, 0])
+        else:
+            perpendicular = np.cross(direction, [0, 1, 0])
+        perpendicular = perpendicular / np.linalg.norm(perpendicular)
+        third = np.cross(direction, perpendicular)
+        eigenvectors = np.column_stack([direction, perpendicular, third])
+    else:
+        cov_matrix = np.cov(centered_vertices.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+        # Sort by eigenvalues in descending order
+        sorted_indices = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sorted_indices]
+        eigenvectors = eigenvectors[:, sorted_indices]
 
-    # Compute eigenvalues and eigenvectors
-    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-
-    # Sort by eigenvalues in descending order
-    sorted_indices = np.argsort(eigenvalues)[::-1]
-    eigenvalues = eigenvalues[sorted_indices]
-    eigenvectors = eigenvectors[:, sorted_indices]
-
-    # Ensure right-handed coordinate system
-    if np.linalg.det(eigenvectors) < 0:
-        eigenvectors[:, 2] *= -1
+        # Ensure right-handed coordinate system
+        if np.linalg.det(eigenvectors) < 0:
+            eigenvectors[:, 2] *= -1
 
     # Project vertices onto principal axes
     projected = centered_vertices @ eigenvectors
