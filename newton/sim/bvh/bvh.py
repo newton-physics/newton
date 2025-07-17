@@ -177,7 +177,15 @@ class Bvh:
         wp.launch(
             aabb_vs_line_kernel,
             dim=edge_indices.shape[0],
-            inputs=[self.bvh.id, query_results.shape[0], ignore_self_hits, vertices, edge_indices],
+            inputs=[
+                self.bvh.id,
+                query_results.shape[0],
+                ignore_self_hits,
+                vertices,
+                edge_indices,
+                self.lower_bounds,
+                self.upper_bounds,
+            ],
             outputs=[query_results],
             device=self.device,
         )
@@ -228,8 +236,9 @@ class EdgeBvh(Bvh):
 
         Args:
             pos (wp.array): Vertex positions (wp.vec3).
-            edge_indices (wp.array): Integer array of shape (M, 4), where each row [i2, i3] defines an edge
-                                    connecting vertices pos[i2] and pos[i3].
+            edge_indices (wp.array): Integer array of shape (M, 4), where columns 2 and 3 of each row
+                                    contain the vertex indices defining an edge (i.e., edge i connects
+                                    vertices pos[edge_indices[i, 2]] and pos[edge_indices[i, 3]]).
             enlarge (float): Optional padding value to expand each edge's bounding box (default is 0.0).
 
         Warning:

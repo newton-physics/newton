@@ -21,6 +21,31 @@ from newton.geometry.kernels import (
 )
 
 
+@wp.func
+def line_intersects_aabb(v0: wp.vec3, v1: wp.vec3, lower: wp.vec3, upper: wp.vec3):
+    # Slab method
+    dir = v1 - v0
+    tmin = 0.0
+    tmax = 1.0
+
+    for i in range(3):
+        if wp.abs(dir[i]) < 1.0e-8:
+            # Segment is parallel to slab. Reject if origin not within slab
+            if v0[i] < lower[i] or v0[i] > upper[i]:
+                return False
+        else:
+            invD = 1.0 / dir[i]
+            t1 = (lower[i] - v0[i]) * invD
+            t2 = (upper[i] - v0[i]) * invD
+
+            tmin = wp.max(tmin, wp.min(t1, t2))
+            tmax = wp.min(tmax, wp.max(t1, t2))
+            if tmax < tmin:
+                return False
+
+    return True
+
+
 @wp.kernel
 def compute_tri_aabbs_kernel(
     enlarge: float,
@@ -95,6 +120,8 @@ def aabb_vs_line_kernel(
     ignore_self_hits: bool,
     vertices: wp.array(dtype=wp.vec3),
     edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    lower_bounds: wp.array(dtype=wp.vec3),
+    upper_bounds: wp.array(dtype=wp.vec3),
     # outputs
     query_results: wp.array(dtype=int, ndim=2),
 ):
@@ -106,11 +133,11 @@ def aabb_vs_line_kernel(
     query_index = wp.int32(-1)
     query = wp.bvh_query_ray(bvh_id, v1, v2 - v1)
 
-    # TODO
     while (query_count < query_list_rows - 1) and wp.bvh_query_next(query, query_index):
         if not (ignore_self_hits and query_index == eid):
-            query_results[query_count + 1, eid] = query_index
-            query_count += 1
+            if line_intersects_aabb(v1, v2, lower_bounds[query_index], upper_bounds[query_index]):
+                query_results[query_count + 1, eid] = query_index
+                query_count += 1
 
     query_results[0, eid] = query_count
 
