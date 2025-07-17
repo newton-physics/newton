@@ -16,10 +16,12 @@
 import contextlib
 import os
 from collections import defaultdict
+from typing import Literal
 
 import numpy as np
 import warp as wp
 
+from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
     GEO_BOX,
@@ -31,7 +33,6 @@ from .types import (
     GEO_SPHERE,
     SDF,
     Mesh,
-    Vec3,
 )
 
 
@@ -267,7 +268,7 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
     return new_vertices, new_faces
 
 
-def remesh_alphashape(vertices, alpha=3.0):
+def remesh_alphashape(vertices, alpha: float = 3.0):
     """Remesh a 3D triangular surface mesh using the alpha shape algorithm.
 
     Args:
@@ -304,13 +305,14 @@ def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, *
     return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
 
 
-def remesh_convex_hull(vertices):
+def remesh_convex_hull(vertices, maxhullvert: int = 0):
     """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
 
     Uses ``scipy.spatial.ConvexHull`` to compute the convex hull.
 
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        maxhullvert: The maximum number of vertices for the convex hull. If 0, no limit is applied.
 
     Returns:
         A tuple (verts, faces) where:
@@ -320,7 +322,12 @@ def remesh_convex_hull(vertices):
 
     from scipy.spatial import ConvexHull  # noqa: PLC0415
 
-    hull = ConvexHull(vertices)
+    qhull_options = "Qt"
+    if maxhullvert > 0:
+        # qhull "TA" actually means "number of vertices added after the initial simplex"
+        # from mujoco's user_mesh.cc
+        qhull_options += f" TA{maxhullvert - 4}"
+    hull = ConvexHull(vertices, qhull_options=qhull_options)
     verts = hull.points.copy().astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
@@ -335,7 +342,12 @@ def remesh_convex_hull(vertices):
     return verts, faces
 
 
-def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwargs):
+RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull"]
+
+
+def remesh(
+    vertices, faces, method: RemeshingMethod = "quadratic", visualize=False, **remeshing_kwargs
+) -> tuple[nparray, nparray]:
     """
     Remeshes a 3D triangular surface mesh using the specified method.
 
@@ -356,7 +368,7 @@ def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwa
     elif method == "quadratic":
         new_vertices, new_faces = remesh_quadratic(vertices, faces, **remeshing_kwargs)
     elif method == "convex_hull":
-        new_vertices, new_faces = remesh_convex_hull(vertices)
+        new_vertices, new_faces = remesh_convex_hull(vertices, **remeshing_kwargs)
     else:
         raise ValueError(f"Unknown remeshing method: {method}")
 
@@ -372,8 +384,19 @@ def remesh(vertices, faces, method="quadratic", visualize=False, **remeshing_kwa
     return new_vertices, new_faces
 
 
-def remesh_mesh(mesh: Mesh, recompute_inertia=False, **remeshing_kwargs):
-    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), **remeshing_kwargs)
+def remesh_mesh(mesh: Mesh, method: RemeshingMethod = "quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
+    """Remesh a mesh using the specified method.
+    Args:
+        mesh: The mesh to remesh.
+        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
+        recompute_inertia: Whether to recompute the inertia of the mesh.
+        **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+    Returns:
+        The remeshed mesh.
+    """
+    if method == "convex_hull":
+        remeshing_kwargs["maxhullvert"] = mesh.maxhullvert
+    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
     mesh.indices = mesh.indices.flatten()
     if recompute_inertia:
         mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, mesh.vertices, mesh.indices, is_solid=mesh.is_solid)

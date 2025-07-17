@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Many of these imports are mainly needed for graph capture to work on CUDA drivers < 12.3
-import importlib
 import unittest
 from functools import partial
 
@@ -22,12 +20,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.solvers.euler.kernels
-import newton.solvers.euler.particles
-import newton.solvers.euler.solver_euler
-import newton.solvers.solver
-import newton.solvers.vbd.solver_vbd
-import newton.solvers.xpbd.solver_xpbd
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -750,39 +742,6 @@ class ClothSim:
 
         self.graph = None
         if self.use_cuda_graph:
-            # We need to set block_dim to 256 here because CPU launches will set block_dim to 1
-            if self.solver_name == "vbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
-                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
-                wp.set_module_options(
-                    {"block_dim": newton.solvers.vbd.solver_vbd.TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE},
-                    newton.solvers.vbd.solver_vbd,
-                )
-                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
-
-                collide_module = importlib.import_module("newton.geometry.kernels")
-                # Also for some tile stuff
-                wp.set_module_options({"block_dim": 16}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-                wp.set_module_options({"block_dim": 256}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-            elif self.solver_name == "xpbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.kernels)
-                wp.load_module(newton.solvers.xpbd.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
-                wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
-            elif self.solver_name == "semi_implicit":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.kernels)
-                wp.load_module(newton.solvers.euler.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.particles)
-                wp.load_module(newton.solvers.euler.particles, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
-                wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
-
-            wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
-            wp.load_module(newton.solvers.solver, device=self.device)
-            wp.load_module(device=self.device)
-
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -927,7 +886,7 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
+        tri_ke=1e3, tri_kd=1e-2, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -946,11 +905,11 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     test.assertTrue(max_difference <= 0.1, f"Maximum angle difference {max_difference:.3f} rad exceeds 0.1 rad")
 
 
-# Bending damping should not affect free-fall behavior.
-def test_cloth_bending_damping_with_free_fall(test, device, solver):
+# Internal forces and damping should not affect free-fall behavior.
+def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e4, tri_kd=0.0, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
+        tri_ke=5e1, tri_kd=1e-1, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison
@@ -1067,7 +1026,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
     "semi_implicit": [
@@ -1077,7 +1036,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
     "vbd": [
@@ -1088,7 +1047,7 @@ tests_to_run = {
         test_cloth_bending_consistent_angle_computation,
         test_cloth_bending_non_zero_rest_angle_bending,
         test_cloth_bending_with_complex_rest_angles,
-        test_cloth_bending_damping_with_free_fall,
+        test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
     ],
 }

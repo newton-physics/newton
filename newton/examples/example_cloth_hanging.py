@@ -26,8 +26,6 @@ from enum import Enum
 import warp as wp
 
 import newton
-import newton.geometry.kernels
-import newton.solvers.vbd.solver_vbd
 import newton.utils
 
 
@@ -117,7 +115,7 @@ class Example:
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
-                "tri_kd": 1.0e-5,
+                "tri_kd": 1.0e-1,
             }
 
         builder.add_cloth_grid(**common_params, **solver_params)
@@ -155,13 +153,6 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
-            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
-            if self.solver_type == SolverType.VBD:
-                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
-                wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
-            wp.set_module_options({"block_dim": 256}, newton.geometry.kernels)
-            wp.load_module(newton.geometry.kernels, device=wp.get_device())
-
             with wp.ScopedCapture() as capture:
                 self.simulate_substeps()
             self.cuda_graph = capture.graph
