@@ -95,6 +95,8 @@ Using joints with zero stiffness (:class:`newton.ModelBuilder.JointDofConfig.tar
 
 The default up axis of the builder is now Z instead of Y.
 
+Analogously, the geometry types plane, capsule, cylinder, and cone now have their up axis set to the Z axis instead of Y by default.
+
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | **warp.sim**                                           | **Newton**                                                             |
 +--------------------------------------------------------+------------------------------------------------------------------------+

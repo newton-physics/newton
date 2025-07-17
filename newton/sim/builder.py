@@ -22,7 +22,7 @@ import ctypes
 import itertools
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -63,6 +63,7 @@ from newton.geometry import (
     transform_inertia,
 )
 
+from ..geometry.utils import RemeshingMethod, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_BALL,
@@ -173,11 +174,11 @@ class ModelBuilder:
         def flags(self, value: int):
             """Sets the flags for the shape."""
 
-            self.is_visible = bool(value & SHAPE_FLAG_VISIBLE)
-            self.has_shape_collision = bool(value & SHAPE_FLAG_COLLIDE_SHAPES)
-            self.has_particle_collision = bool(value & SHAPE_FLAG_COLLIDE_PARTICLES)
+            self.is_visible = bool(value & int(SHAPE_FLAG_VISIBLE))
+            self.has_shape_collision = bool(value & int(SHAPE_FLAG_COLLIDE_SHAPES))
+            self.has_particle_collision = bool(value & int(SHAPE_FLAG_COLLIDE_PARTICLES))
 
-        def copy(self) -> ShapeConfig:
+        def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
 
     class JointDofConfig:
@@ -1789,16 +1790,16 @@ class ModelBuilder:
         Adds a plane collision shape to the model.
 
         If `xform` is provided, it directly defines the plane's position and orientation. The plane's collision normal
-        is assumed to be along the local Y-axis of this `xform`.
+        is assumed to be along the local Z-axis of this `xform`.
         If `xform` is `None`, it will be derived from the `plane` equation `a*x + b*y + c*z + d = 0`.
         Plane shapes added via this method are always static (massless).
 
         Args:
             plane (Vec4 | None): The plane equation `(a, b, c, d)`. If `xform` is `None`, this defines the plane.
-                The normal is `(a,b,c)` and `d` is the offset. Defaults to `(0.0, 1.0, 0.0, 0.0)` (an XZ ground plane at Y=0) if `xform` is also `None`.
+                The normal is `(a,b,c)` and `d` is the offset. Defaults to `(0.0, 0.0, 1.0, 0.0)` (an XY ground plane at Z=0) if `xform` is also `None`.
             xform (Transform | None): The transform of the plane in the world or parent body's frame. If `None`, transform is derived from `plane`. Defaults to `None`.
             width (float): The visual/collision extent of the plane along its local X-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
-            length (float): The visual/collision extent of the plane along its local Z-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
+            length (float): The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body (int): The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
@@ -1812,14 +1813,8 @@ class ModelBuilder:
             normal = np.array(plane[:3])
             normal /= np.linalg.norm(normal)
             pos = plane[3] * normal
-            if np.allclose(normal, (0.0, 1.0, 0.0)):
-                # no rotation necessary
-                rot = wp.quat_identity()
-            else:
-                c = np.cross(normal, (0.0, 1.0, 0.0))
-                angle = np.arcsin(np.linalg.norm(c))
-                axis = np.abs(c) / np.linalg.norm(c)
-                rot = wp.quat_from_axis_angle(wp.vec3(*axis), wp.float32(angle))
+            # compute rotation from local +Z axis to plane normal
+            rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -1934,20 +1929,20 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Z,
+        axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
-        The capsule is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+        The capsule is centered at its local origin as defined by `xform`. Its length extends along the specified `axis`.
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the capsule in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the capsule's hemispherical ends and its cylindrical segment. Defaults to `1.0`.
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
-            up_axis (AxisType): The local axis of the capsule along which its length is aligned (typically `Axis.X`, `Axis.Y`, or `Axis.Z`). Defaults to `Axis.Y`.
+            axis (AxisType): The local axis of the capsule along which its length is aligned (typically `Axis.X`, `Axis.Y`, or `Axis.Z`). Defaults to `Axis.Z`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -1959,8 +1954,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        # up axis is always +Y for capsules
-        q = quat_between_axes(Axis.Y, up_axis)
+        # internally capsule axis is always +Z
+        q = quat_between_axes(Axis.Z, axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -1981,20 +1976,20 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Z,
+        axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cylinder collision shape to a body.
 
-        The cylinder is centered at its local origin as defined by `xform`. Its length extends along the specified `up_axis`.
+        The cylinder is centered at its local origin as defined by `xform`. Its length extends along the specified `axis`.
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cylinder. Defaults to `1.0`.
-            half_height (float): The half-length of the cylinder along the `up_axis`. Defaults to `0.5`.
-            up_axis (AxisType): The local axis of the cylinder along which its length is aligned (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            half_height (float): The half-length of the cylinder along the `axis`. Defaults to `0.5`.
+            axis (AxisType): The local axis of the cylinder along which its length is aligned (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Z`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -2006,8 +2001,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        # up axis is always +Y for cylinders
-        q = quat_between_axes(Axis.Y, up_axis)
+        # internally cylinder axis is always +Z
+        q = quat_between_axes(Axis.Z, axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2028,20 +2023,20 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
-        up_axis: AxisType = Axis.Z,
+        axis: AxisType = Axis.Z,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a cone collision shape to a body.
 
-        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `up_axis` towards its apex.
+        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `axis` towards its apex.
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the cone in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cone's base. Defaults to `1.0`.
-            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `up_axis`). Defaults to `0.5`.
-            up_axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Y`.
+            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `axis`). Defaults to `0.5`.
+            axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Z`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -2053,8 +2048,8 @@ class ModelBuilder:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
-        # up axis is always +Y for cones
-        q = quat_between_axes(Axis.Y, up_axis)
+        # internally cone axis is always +Z
+        q = quat_between_axes(Axis.Z, axis)
         xform = wp.transform(xform.p, xform.q * q)
 
         if cfg is None:
@@ -2134,6 +2129,94 @@ class ModelBuilder:
             src=sdf,
             key=key,
         )
+
+    def simplify_meshes(
+        self,
+        method: Literal["coacd"] | RemeshingMethod = "convex_hull",
+        shape_indices: list[int] | None = None,
+        **remeshing_kwargs,
+    ):
+        """Simplifies the meshes of the model.
+
+        Args:
+            method: The method to use for simplification. One of "coacd" or "convex_hull".
+            **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+            shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`SHAPE_FLAG_COLLIDE_SHAPES` flag set are simplified.
+        """
+        if shape_indices is None:
+            shape_indices = [
+                i
+                for i, stype in enumerate(self.shape_geo_type)
+                if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
+            ]
+
+        if method == "coacd":
+            # convex decomposition using CoACD
+            import coacd  # noqa: PLC0415
+
+            decompositions = {}
+
+            for shape in shape_indices:
+                mesh: Mesh = self.shape_geo_src[shape]
+                hash_m = hash(mesh)
+                if hash_m in decompositions:
+                    decomposition = decompositions[hash_m]
+                else:
+                    cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                    coacd_settings = {
+                        "threshold": 0.5,
+                        "mcts_nodes": 20,
+                        "mcts_iterations": 5,
+                        "mcts_max_depth": 1,
+                        "merge": False,
+                        "max_convex_hull": mesh.maxhullvert,
+                    }
+                    coacd_settings.update(remeshing_kwargs)
+                    decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                    decompositions[hash_m] = decomposition
+                if len(decomposition) == 0:
+                    continue
+                self.shape_geo_src[shape].vertices = decomposition[0][0].reshape(-1, 3)
+                self.shape_geo_src[shape].indices = decomposition[0][1].flatten()
+                if len(decomposition) > 1:
+                    body = self.shape_body[shape]
+                    xform = self.shape_transform[shape]
+                    cfg = ModelBuilder.ShapeConfig(
+                        density=0.0,  # do not add extra mass / inertia
+                        ke=self.shape_material_ke[shape],
+                        kd=self.shape_material_kd[shape],
+                        kf=self.shape_material_kf[shape],
+                        ka=self.shape_material_ka[shape],
+                        mu=self.shape_material_mu[shape],
+                        restitution=self.shape_material_restitution[shape],
+                        thickness=self.shape_geo_thickness[shape],
+                        is_solid=self.shape_geo_is_solid[shape],
+                        collision_group=self.shape_collision_group[shape],
+                        collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                    )
+                    cfg.flags = self.shape_flags[shape]
+                    for i in range(1, len(decomposition)):
+                        self.add_shape_mesh(
+                            body=body,
+                            xform=xform,
+                            cfg=cfg,
+                            mesh=Mesh(decomposition[i][0], decomposition[i][1]),
+                            key=f"{self.shape_key[shape]}_convex_{i}",
+                        )
+        elif method in RemeshingMethod.__args__:
+            # remeshing of the individual meshes
+            remeshed = {}
+            for shape in shape_indices:
+                mesh: Mesh = self.shape_geo_src[shape]
+                hash_m = hash(mesh)
+                if hash_m in remeshed:
+                    mesh = remeshed[hash_m]
+                else:
+                    mesh = remesh_mesh(mesh, method=method, **remeshing_kwargs)
+                    remeshed[hash_m] = mesh
+                self.shape_geo_src[shape] = mesh
+        else:
+            raise ValueError(f"Unknown remeshing method: {method}")
 
     # endregion
 

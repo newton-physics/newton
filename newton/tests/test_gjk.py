@@ -93,7 +93,7 @@ def _support(geom: Geom, geomtype: int, dir: wp.vec3):
 
 
 def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def _gjk_kernel(
         # Model:
         geom_type: wp.array(dtype=int),

@@ -58,6 +58,292 @@ def import_mujoco():
     return mujoco, mujoco_warp
 
 
+@wp.func
+def orthogonals(a: wp.vec3):
+    y = wp.vec3(0.0, 1.0, 0.0)
+    z = wp.vec3(0.0, 0.0, 1.0)
+    b = wp.where((-0.5 < a[1]) and (a[1] < 0.5), y, z)
+    b = b - a * wp.dot(a, b)
+    b = wp.normalize(b)
+    if wp.length(a) == 0.0:
+        b = wp.vec3(0.0, 0.0, 0.0)
+    c = wp.cross(a, b)
+
+    return b, c
+
+
+@wp.func
+def make_frame(a: wp.vec3):
+    a = wp.normalize(a)
+    b, c = orthogonals(a)
+
+    # fmt: off
+    return wp.mat33(
+    a.x, a.y, a.z,
+    b.x, b.y, b.z,
+    c.x, c.y, c.z
+  )
+    # fmt: on
+
+
+# Define vec5 as a 5-element vector of float32, matching MuJoCo's convention
+vec5 = wp.types.vector(length=5, dtype=wp.float32)
+
+
+@wp.func
+def write_contact(
+    # Data in:
+    # In:
+    dist_in: float,
+    pos_in: wp.vec3,
+    frame_in: wp.mat33,
+    margin_in: float,
+    gap_in: float,
+    condim_in: int,
+    friction_in: vec5,
+    solref_in: wp.vec2f,
+    solreffriction_in: wp.vec2f,
+    solimp_in: vec5,
+    geoms_in: wp.vec2i,
+    worldid_in: int,
+    contact_id_in: int,
+    # Data out:
+    contact_dist_out: wp.array(dtype=float),
+    contact_pos_out: wp.array(dtype=wp.vec3),
+    contact_frame_out: wp.array(dtype=wp.mat33),
+    contact_includemargin_out: wp.array(dtype=float),
+    contact_friction_out: wp.array(dtype=vec5),
+    contact_solref_out: wp.array(dtype=wp.vec2),
+    contact_solreffriction_out: wp.array(dtype=wp.vec2),
+    contact_solimp_out: wp.array(dtype=vec5),
+    contact_dim_out: wp.array(dtype=int),
+    contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_worldid_out: wp.array(dtype=int),
+):
+    # See function write_contact in mujoco_warp, file collision_primitive.py
+
+    cid = contact_id_in
+    contact_dist_out[cid] = dist_in
+    contact_pos_out[cid] = pos_in
+    contact_frame_out[cid] = frame_in
+    contact_geom_out[cid] = geoms_in
+    contact_worldid_out[cid] = worldid_in
+    contact_includemargin_out[cid] = margin_in - gap_in
+    contact_dim_out[cid] = condim_in
+    contact_friction_out[cid] = friction_in
+    contact_solref_out[cid] = solref_in
+    contact_solreffriction_out[cid] = solreffriction_in
+    contact_solimp_out[cid] = solimp_in
+
+
+MJ_MINVAL = 2.220446049250313e-16
+
+
+@wp.func
+def contact_params(
+    geom_condim: wp.array(dtype=int),
+    geom_priority: wp.array(dtype=int),
+    geom_solmix: wp.array2d(dtype=float),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_solimp: wp.array2d(dtype=vec5),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_margin: wp.array2d(dtype=float),
+    geom_gap: wp.array2d(dtype=float),
+    geoms: wp.vec2i,
+    worldid: int,
+):
+    # See function contact_params in mujoco_warp, file collision_primitive.py
+
+    g1 = geoms[0]
+    g2 = geoms[1]
+
+    p1 = geom_priority[g1]
+    p2 = geom_priority[g2]
+
+    solmix1 = geom_solmix[worldid, g1]
+    solmix2 = geom_solmix[worldid, g2]
+
+    mix = solmix1 / (solmix1 + solmix2)
+    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+    mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+    mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
+
+    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
+    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
+
+    condim1 = geom_condim[g1]
+    condim2 = geom_condim[g2]
+    condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
+
+    max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+    friction = vec5(
+        max_geom_friction[0],
+        max_geom_friction[0],
+        max_geom_friction[1],
+        max_geom_friction[2],
+        max_geom_friction[2],
+    )
+
+    if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
+        solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
+    else:
+        solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+
+    solreffriction = wp.vec2(0.0, 0.0)
+
+    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
+
+    return margin, gap, condim, friction, solref, solreffriction, solimp
+
+
+@wp.kernel
+def convert_newton_contacts_to_mjwarp_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    # Model:
+    geom_condim: wp.array(dtype=int),
+    geom_priority: wp.array(dtype=int),
+    geom_solmix: wp.array2d(dtype=float),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_solimp: wp.array2d(dtype=vec5),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_margin: wp.array2d(dtype=float),
+    geom_gap: wp.array2d(dtype=float),
+    # Newton contacts
+    rigid_contact_count: wp.array(dtype=wp.int32),
+    rigid_contact_shape0: wp.array(dtype=wp.int32),
+    rigid_contact_shape1: wp.array(dtype=wp.int32),
+    rigid_contact_point0: wp.array(dtype=wp.vec3),
+    rigid_contact_point1: wp.array(dtype=wp.vec3),
+    rigid_contact_normal: wp.array(dtype=wp.vec3),
+    rigid_contact_thickness0: wp.array(dtype=wp.float32),
+    rigid_contact_thickness1: wp.array(dtype=wp.float32),
+    bodies_per_env: int,
+    to_mjc_geom_index: wp.array(dtype=wp.int32),
+    # Mujoco warp contacts
+    ncon_out: wp.array(dtype=int),
+    contact_dist_out: wp.array(dtype=float),
+    contact_pos_out: wp.array(dtype=wp.vec3),
+    contact_frame_out: wp.array(dtype=wp.mat33),
+    contact_includemargin_out: wp.array(dtype=float),
+    contact_friction_out: wp.array(dtype=vec5),
+    contact_solref_out: wp.array(dtype=wp.vec2),
+    contact_solreffriction_out: wp.array(dtype=wp.vec2),
+    contact_solimp_out: wp.array(dtype=vec5),
+    contact_dim_out: wp.array(dtype=int),
+    contact_geom_out: wp.array(dtype=wp.vec2i),
+    contact_worldid_out: wp.array(dtype=int),
+    # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
+    nworld_in: int,
+    hfield_geom_pair_in: int,
+    ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
+    collision_hftri_index_out: wp.array(dtype=int),
+    ncollision_out: wp.array(dtype=int),
+):
+    # See kernel solve_body_contact_positions for reference
+
+    tid = wp.tid()
+
+    # Set number of contacts (for a single world)
+    if tid == 0:
+        ncon_out[0] = rigid_contact_count[0]
+        ncollision_out[0] = 0
+
+    if tid < hfield_geom_pair_in * nworld_in:
+        ncon_hfield_out[tid] = 0
+
+    # Zero collision pair indices
+    collision_hftri_index_out[tid] = 0
+
+    if tid >= rigid_contact_count[0]:
+        return
+
+    shape_a = rigid_contact_shape0[tid]
+    shape_b = rigid_contact_shape1[tid]
+
+    body_a = -1
+    if shape_a >= 0:
+        body_a = shape_body[shape_a]
+    body_b = -1
+    if shape_b >= 0:
+        body_b = shape_body[shape_b]
+
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+
+    bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
+    bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
+
+    thickness = rigid_contact_thickness0[tid] + rigid_contact_thickness1[tid]
+
+    n = -rigid_contact_normal[tid]
+    dist = wp.dot(n, bx_b - bx_a) - thickness
+
+    # Contact position: use midpoint between contact points (as in XPBD kernel)
+    pos = 0.5 * (bx_a + bx_b)
+
+    # Build contact frame
+    frame = make_frame(n)
+
+    geoms = wp.vec2i(to_mjc_geom_index[shape_a], to_mjc_geom_index[shape_b])
+
+    # See kernel update_body_mass_ipos_kernel, line below:
+    #     worldid = wp.tid() // bodies_per_env
+    # which uses the same strategy to determine the world id
+    worldid = 0
+    if body_a >= 0:
+        worldid = body_a // bodies_per_env
+    elif body_b >= 0:
+        worldid = body_b // bodies_per_env
+
+    margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+        geom_condim,
+        geom_priority,
+        geom_solmix,
+        geom_solref,
+        geom_solimp,
+        geom_friction,
+        geom_margin,
+        geom_gap,
+        geoms,
+        worldid,
+    )
+
+    # Use the write_contact function to write all the data
+    write_contact(
+        dist_in=dist,
+        pos_in=pos,
+        frame_in=frame,
+        margin_in=margin,
+        gap_in=gap,
+        condim_in=condim,
+        friction_in=friction,
+        solref_in=solref,
+        solreffriction_in=solreffriction,
+        solimp_in=solimp,
+        geoms_in=geoms,
+        worldid_in=worldid,
+        contact_id_in=tid,
+        contact_dist_out=contact_dist_out,
+        contact_pos_out=contact_pos_out,
+        contact_frame_out=contact_frame_out,
+        contact_includemargin_out=contact_includemargin_out,
+        contact_friction_out=contact_friction_out,
+        contact_solref_out=contact_solref_out,
+        contact_solreffriction_out=contact_solreffriction_out,
+        contact_solimp_out=contact_solimp_out,
+        contact_dim_out=contact_dim_out,
+        contact_geom_out=contact_geom_out,
+        contact_worldid_out=contact_worldid_out,
+    )
+
+
 @wp.kernel
 def convert_mj_coords_to_warp_kernel(
     qpos: wp.array2d(dtype=wp.float32),
@@ -82,13 +368,8 @@ def convert_mj_coords_to_warp_kernel(
 
     if type == newton.JOINT_FREE:
         # convert position components
-        if up_axis == 1:
-            joint_q[wq_i + 0] = qpos[worldid, q_i + 0]
-            joint_q[wq_i + 1] = qpos[worldid, q_i + 2]
-            joint_q[wq_i + 2] = -qpos[worldid, q_i + 1]
-        else:
-            for i in range(3):
-                joint_q[wq_i + i] = qpos[worldid, q_i + i]
+        for i in range(3):
+            joint_q[wq_i + i] = qpos[worldid, q_i + i]
 
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -97,10 +378,6 @@ def convert_mj_coords_to_warp_kernel(
             qpos[worldid, q_i + 6],
             qpos[worldid, q_i + 3],
         )
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-            rot = rot_y2z * rot
-            # rot = rot * rot_y2z
         joint_q[wq_i + 3] = rot[0]
         joint_q[wq_i + 4] = rot[1]
         joint_q[wq_i + 5] = rot[2]
@@ -117,14 +394,9 @@ def convert_mj_coords_to_warp_kernel(
         joint_qd[wqd_i + 1] = w[1]
         joint_qd[wqd_i + 2] = w[2]
         # convert linear velocity
-        if up_axis == 1:
-            joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
-            joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 2]
-            joint_qd[wqd_i + 5] = -qvel[worldid, qd_i + 1]
-        else:
-            joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
-            joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 1]
-            joint_qd[wqd_i + 5] = qvel[worldid, qd_i + 2]
+        joint_qd[wqd_i + 3] = qvel[worldid, qd_i + 0]
+        joint_qd[wqd_i + 4] = qvel[worldid, qd_i + 1]
+        joint_qd[wqd_i + 5] = qvel[worldid, qd_i + 2]
     elif type == newton.JOINT_BALL:
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -133,9 +405,6 @@ def convert_mj_coords_to_warp_kernel(
             qpos[worldid, q_i + 3],
             qpos[worldid, q_i],
         )
-        # if up_axis == 1:
-        #     rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        #     rot = rot * rot_y2z
         joint_q[wq_i] = rot[0]
         joint_q[wq_i + 1] = rot[1]
         joint_q[wq_i + 2] = rot[2]
@@ -177,13 +446,8 @@ def convert_warp_coords_to_mj_kernel(
 
     if type == newton.JOINT_FREE:
         # convert position components
-        if up_axis == 1:
-            qpos[worldid, q_i + 0] = joint_q[wq_i + 0]
-            qpos[worldid, q_i + 1] = -joint_q[wq_i + 2]
-            qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
-        else:
-            for i in range(3):
-                qpos[worldid, q_i + i] = joint_q[wq_i + i]
+        for i in range(3):
+            qpos[worldid, q_i + i] = joint_q[wq_i + i]
 
         rot = wp.quat(
             joint_q[wq_i + 3],
@@ -191,30 +455,20 @@ def convert_warp_coords_to_mj_kernel(
             joint_q[wq_i + 5],
             joint_q[wq_i + 6],
         )
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-            rot_z_up = rot_y2z * rot
-        else:
-            rot_z_up = rot
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 3] = rot_z_up[3]
-        qpos[worldid, q_i + 4] = rot_z_up[0]
-        qpos[worldid, q_i + 5] = rot_z_up[1]
-        qpos[worldid, q_i + 6] = rot_z_up[2]
+        qpos[worldid, q_i + 3] = rot[3]
+        qpos[worldid, q_i + 4] = rot[0]
+        qpos[worldid, q_i + 5] = rot[1]
+        qpos[worldid, q_i + 6] = rot[2]
         # for i in range(6):
         #     # convert velocity components
         #     qvel[worldid, qd_i + i] = joint_qd[qd_i + i]
 
         # XXX swap angular and linear velocities
         # convert linear velocity
-        if up_axis == 1:
-            qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
-            qvel[worldid, qd_i + 1] = -joint_qd[wqd_i + 5]
-            qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 4]
-        else:
-            qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
-            qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 4]
-            qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 5]
+        qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 3]
+        qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 4]
+        qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 5]
 
         # rotate angular velocity to body frame
         w = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
@@ -277,10 +531,6 @@ def apply_mjc_body_f_kernel(
         f = body_f[worldid * bodies_per_env + bodyid]
         w = wp.vec3(f[0], f[1], f[2])
         v = wp.vec3(f[3], f[4], f[5])
-        if up_axis == 1:
-            rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-            w = wp.quat_rotate(rot_y2z, w)
-            v = wp.quat_rotate(rot_y2z, v)
         xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
@@ -511,7 +761,6 @@ def convert_body_xforms_to_warp_kernel(
     xquat: wp.array2d(dtype=wp.quat),
     to_mjc_body_index: wp.array(dtype=wp.int32),
     bodies_per_env: int,
-    up_axis: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
 ):
@@ -525,13 +774,6 @@ def convert_body_xforms_to_warp_kernel(
     # quat = wp.quat(quat[3], quat[0], quat[1], quat[2])
     # quat = wp.quat_identity()
     # quat = wp.quat_inverse(quat)
-    # rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-    # quat = rot_y2z * quat
-    if up_axis == 1:
-        pos = wp.vec3(pos[0], pos[2], -pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        # pos = wp.quat_rotate(rot_y2z, pos)
-        quat = rot_y2z * quat
     body_q[wbi] = wp.transform(pos, quat)
 
 
@@ -605,10 +847,6 @@ def update_body_inertia_kernel(
     # Convert eigenvectors to quaternion (xyzw format for mujoco)
     # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
     # q = wp.normalize(q)
-
-    # if up_axis == 1:
-    #     q_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5))
-    #     q = q_y2z * q
 
     # Convert from wxyz to xyzw format and compose with body orientation
     # q = wp.quat(q[1], q[2], q[3], q[0])
@@ -706,10 +944,8 @@ def update_geom_properties_kernel(
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
     shape_type: wp.array(dtype=wp.int32),
-    shape_body: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array(dtype=wp.int32),
     shape_incoming_xform: wp.array(dtype=wp.transform),
-    up_axis: int,
     torsional_friction: float,
     rolling_friction: float,
     contact_stiffness_time_const: float,
@@ -761,27 +997,6 @@ def update_geom_properties_kernel(
     tf = incoming_xform * tf
     pos = tf.p
     quat = tf.q
-    # get shape type and body
-    stype = shape_type[shape_idx]
-    body_idx = shape_body[shape_idx]
-    # apply shape-specific rotations (matching add_geoms logic)
-    if stype == wp.static(newton.GEO_CAPSULE) or stype == wp.static(newton.GEO_CYLINDER):
-        # MuJoCo aligns these shapes with the z-axis, Warp uses the y-axis
-        rot_y2z = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_y2z
-    # special handling for static geoms with Z-up axis (matching add_geoms logic)
-    if up_axis == 2 and body_idx == -1:
-        # reverse rotation that aligned the z-axis with the y-axis
-        rot_z2y = wp.static(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5))
-        quat = quat * rot_z2y
-    # handle up-axis conversion if needed
-    if up_axis == 1:
-        # MuJoCo uses Z-up, Newton Y-up requires conversion
-        # for static geoms, position conversion is handled by perm_position flag in add_geoms
-        if body_idx == -1:
-            pos = wp.vec3f(pos[0], -pos[2], pos[1])
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        quat = rot_y2z * quat
     geom_pos[worldid, geom_idx] = pos
     geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
@@ -824,6 +1039,8 @@ class MuJoCoSolver(SolverBase):
         ls_iterations: int = 10,
         solver: int | str = "cg",
         integrator: int | str = "euler",
+        cone: int | str = "pyramidal",
+        impratio: float = 1.0,
         use_mujoco: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -831,6 +1048,8 @@ class MuJoCoSolver(SolverBase):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         contact_stiffness_time_const: float = 0.02,
+        ls_parallel: bool = False,
+        use_mujoco_contacts: bool = True,
     ):
         """
         Args:
@@ -844,6 +1063,8 @@ class MuJoCoSolver(SolverBase):
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
+            cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
+            impratio (float): Frictional-to-normal constraint impedance ratio.
             use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -852,11 +1073,15 @@ class MuJoCoSolver(SolverBase):
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
-
+            ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
+            use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
         """
         super().__init__(model)
         self.mujoco, self.mujoco_warp = import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
+
+        if use_mujoco and not use_mujoco_contacts:
+            print("Setting use_mujoco_contacts to False has no effect when use_mujoco is True")
 
         disableflags = 0
         if disable_contacts:
@@ -878,14 +1103,20 @@ class MuJoCoSolver(SolverBase):
                 ncon_per_env=ncon_per_env,
                 iterations=iterations,
                 ls_iterations=ls_iterations,
+                cone=cone,
+                impratio=impratio,
                 solver=solver,
                 integrator=integrator,
                 default_actuator_gear=default_actuator_gear,
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
+                ls_parallel=ls_parallel,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
+
+        if self.mjw_model is not None:
+            self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
@@ -903,10 +1134,64 @@ class MuJoCoSolver(SolverBase):
                 self.update_mjc_data(self.mjw_data, self.model, state_in)
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
-                self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+                if self.mjw_model.opt.run_collision_detection:
+                    self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+                else:
+                    self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
+                    self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
+
+    def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
+        bodies_per_env = self.model.body_count // self.model.num_envs
+        wp.launch(
+            convert_newton_contacts_to_mjwarp_kernel,
+            dim=(contacts.rigid_contact_max,),
+            inputs=[
+                state_in.body_q,
+                model.shape_body,
+                self.mjw_model.geom_condim,
+                self.mjw_model.geom_priority,
+                self.mjw_model.geom_solmix,
+                self.mjw_model.geom_solref,
+                self.mjw_model.geom_solimp,
+                self.mjw_model.geom_friction,
+                self.mjw_model.geom_margin,
+                self.mjw_model.geom_gap,
+                # Newton contacts
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_thickness0,
+                contacts.rigid_contact_thickness1,
+                bodies_per_env,
+                self.model.to_mjc_geom_index,
+                # Mujoco warp contacts
+                self.mjw_data.ncon,
+                self.mjw_data.contact.dist,
+                self.mjw_data.contact.pos,
+                self.mjw_data.contact.frame,
+                self.mjw_data.contact.includemargin,
+                self.mjw_data.contact.friction,
+                self.mjw_data.contact.solref,
+                self.mjw_data.contact.solreffriction,
+                self.mjw_data.contact.solimp,
+                self.mjw_data.contact.dim,
+                self.mjw_data.contact.geom,
+                self.mjw_data.contact.worldid,
+                # Data to clear
+                self.mjw_data.nworld,
+                self.mjw_data.ncon_hfield.shape[1],
+                self.mjw_data.ncon_hfield.reshape(-1),
+                self.mjw_data.collision_hftri_index,
+                self.mjw_data.ncollision,
+            ],
+        )
 
     @override
     def notify_model_changed(self, flags: int):
@@ -1111,7 +1396,6 @@ class MuJoCoSolver(SolverBase):
                     xquat,
                     model.to_mjc_body_index,
                     bodies_per_env,
-                    int(model.up_axis),
                 ],
                 outputs=[state.body_q],
                 device=model.device,
@@ -1171,7 +1455,7 @@ class MuJoCoSolver(SolverBase):
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
         timestep: float = 0.01,
-        cone: int = 0,
+        cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
         # these numbers come from the cartpole.xml model
@@ -1189,6 +1473,7 @@ class MuJoCoSolver(SolverBase):
         skip_visual_only_geoms: bool = True,
         add_axes: bool = False,
         maxhullvert: int = MESH_MAXHULLVERT,
+        ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -1238,25 +1523,30 @@ class MuJoCoSolver(SolverBase):
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
             }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
 
-        def quat2mjc(q):
+        if isinstance(cone, str):
+            cone = {
+                "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
+                "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
+            }.get(cone.lower(), mujoco.mjtCone.mjCONE_PYRAMIDAL)
+
+        def quat_to_mjc(q):
             # convert from xyzw to wxyz
             return [q[3], q[0], q[1], q[2]]
 
-        def pos2mjc(p):
-            if model.up_axis == 1:
-                # mujoco uses y-axis up, Warp uses z-axis up
-                return [p[0], -p[2], p[1]]
-            else:
-                return p
+        def quat_from_mjc(q):
+            # convert from wxyz to xyzw
+            return [q[1], q[2], q[3], q[0]]
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = pos2mjc(wp.vec3(*model.gravity))
+        spec.option.gravity = model.gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
+        spec.option.cone = cone
+        spec.option.impratio = impratio
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
@@ -1322,7 +1612,6 @@ class MuJoCoSolver(SolverBase):
         # MoJoCo doesn't have velocity limit
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
-        body_q = model.body_q.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -1338,10 +1627,6 @@ class MuJoCoSolver(SolverBase):
         # mapping from joint axis to actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
-
-        # rotate Y axis to Z axis (used for correcting the alignment of capsules, cylinders)
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-        rot_y2z_mat = np.array(wp.quat_to_matrix(rot_y2z)).reshape(3, 3)
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -1374,11 +1659,14 @@ class MuJoCoSolver(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
         shape_mapping = {}
-        # mapping from Newton shape id to incoming transform
+        # mapping from Newton shape id to a corrective transform
+        # that maps from Newton's shape frame to MuJoCo's internal geom frame
+        # (this includes the shape transform due to the joint child transform
+        # and the transform MuJoCo does on mesh geoms)
         shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
-        body_names = {}
+        body_name_counts = {}
         joint_names = {}
 
         # only generate the first environment, replicate state of multiple worlds in MjData
@@ -1437,8 +1725,8 @@ class MuJoCoSolver(SolverBase):
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
             )
 
-        # maps from body_id to transform to be applied to its children
-        # i.e. its inverse child transform
+        # maps from Newton body index to the transform to be applied to its children
+        # i.e. its inverse joint child transform
         body_child_tf = {}
 
         # find graph coloring of collision filter pairs
@@ -1448,7 +1736,7 @@ class MuJoCoSolver(SolverBase):
         ]
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
-        def add_geoms(warp_body_id: int, perm_position: bool = False, incoming_xform: wp.transform | None = None):
+        def add_geoms(warp_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
             if not shapes:
@@ -1456,11 +1744,6 @@ class MuJoCoSolver(SolverBase):
             for shape in shapes:
                 if skip_visual_only_geoms and not (shape_flags[shape] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)):
                     continue
-                # elif separate_envs_to_worlds and shape >= shapes_per_env and shape != model.shape_count - 1:
-                #     # this is a shape in a different environment, skip it
-                #     # TODO fix handling of static shapes here, see cartpole.xml replication
-                #     # that is missing the rail shapes
-                #     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
                 if stype == newton.GEO_PLANE and warp_body_id != -1:
@@ -1469,44 +1752,26 @@ class MuJoCoSolver(SolverBase):
                     "type": geom_type_mapping[stype],
                     "name": name,
                 }
+                tf = wp.transform(*shape_transform[shape])
                 if stype == newton.GEO_MESH:
                     mesh_src = model.shape_geo_src[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
-                    # check if mesh has a pre-computed convex hull
-                    convex_hull = getattr(mesh_src, "convex_hull", None)
-                    # use convex hull if available, otherwise use original mesh
-                    mesh_to_use = convex_hull if convex_hull is not None else mesh_src
                     # apply scaling
                     size = shape_size[shape]
-                    vertices = mesh_to_use.vertices * size
+                    vertices = mesh_src.vertices * size
                     spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),
-                        userface=mesh_to_use.indices.flatten(),
+                        userface=mesh_src.indices.flatten(),
                         maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
-                q = wp.quat(*shape_transform[shape, 3:])
-                p = wp.vec3(*shape_transform[shape, :3])
-                tf = wp.transform(p, q)
                 if incoming_xform is not None:
                     # transform to world space
-                    tf: wp.transform = incoming_xform * tf
-                    q = tf.q
-                    p = tf.p
-                    shape_incoming_xform[shape] = incoming_xform
-                if stype in (newton.GEO_CAPSULE, newton.GEO_CYLINDER):
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    q = q * rot_y2z
-                if model.up_axis == 2 and warp_body_id == -1:
-                    # reverse rotation that aligned the z-axis with the y-axis
-                    q = q * wp.quat_inverse(rot_y2z)
-                if perm_position:
-                    # mujoco aligns these shapes with the z-axis, Warp uses the y-axis
-                    p = wp.vec3(p[0], -p[2], p[1])
-                geom_params["pos"] = p
-                geom_params["quat"] = quat2mjc(q)
+                    tf = incoming_xform * tf
+                geom_params["pos"] = tf.p
+                geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
                 if np.any(size > 0.0):
                     # duplicate nonzero entries at places where size is 0
@@ -1548,7 +1813,7 @@ class MuJoCoSolver(SolverBase):
                 shape_mapping[shape] = name
 
         # add static geoms attached to the worldbody
-        add_geoms(-1, perm_position=model.up_axis == 1)
+        add_geoms(-1)
 
         # add joints, bodies and geoms
         for ji in joint_order:
@@ -1558,48 +1823,32 @@ class MuJoCoSolver(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
-            parent_xform = joint_parent_xform[ji]
-            tf_p = body_q[child, :3]
-            tf_q = wp.quat(*body_q[child, 3:])
+            tf = wp.transform(*joint_parent_xform[ji])
             joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            if parent == -1:
-                # reverse rotation that aligned the z-axis with the y-axis
-                tf_q = wp.quat(*parent_xform[3:])
-                if model.up_axis == 1:
-                    tf_q = rot_y2z * tf_q
-                tf_p = pos2mjc(tf_p)
-            else:
-                tf_p = parent_xform[:3]
-                tf_q = wp.quat(*parent_xform[3:])
-
+            if parent != -1:
                 incoming_xform = body_child_tf.get(parent)
                 if incoming_xform is not None:
                     # apply the incoming transform from the parent body,
                     # which is the inverse of the parent joint's child transform
-                    tf = incoming_xform * wp.transform(tf_p, tf_q)
-                    tf_p = tf.p
-                    tf_q = tf.q
+                    tf = incoming_xform * tf
                     joint_pos = wp.vec3(0.0, 0.0, 0.0)
+
             # ensure unique body name
             name = model.body_key[child]
-            if name not in body_names:
-                body_names[name] = 1
+            if name not in body_name_counts:
+                body_name_counts[name] = 1
             else:
-                while name in body_names:
-                    body_names[name] += 1
-                    name = f"{name}_{body_names[name]}"
+                while name in body_name_counts:
+                    body_name_counts[name] += 1
+                    name = f"{name}_{body_name_counts[name]}"
 
             inertia = body_inertia[child]
-            if model.up_axis == 1:
-                # # TODO: what frame is the fullinertia in Mujoco?
-                # mat = np.array(wp.quat_to_matrix(rot_y2z * tf_q)).reshape(3, 3)
-                inertia = rot_y2z_mat @ inertia @ rot_y2z_mat.T
             body = mj_bodies[body_mapping[parent]].add_body(
                 name=name,
-                pos=tf_p,
-                quat=quat2mjc(tf_q),
+                pos=tf.p,
+                quat=quat_to_mjc(tf.q),
                 mass=body_mass[child],
-                ipos=pos2mjc(body_com[child, :]),
+                ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
                 explicitinertial=True,
             )
@@ -1767,13 +2016,47 @@ class MuJoCoSolver(SolverBase):
                 f.write(spec.to_xml())
                 print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
-        # now that the model is compiled, get the actual geom indices
+        # now that the model is compiled, get the actual geom indices and compute
+        # shape transform corrections
         shape_to_geom_idx = {}
+        geom_to_shape_idx = {}
         for shape, geom_name in shape_mapping.items():
             geom_idx = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
             if geom_idx >= 0:
                 shape_to_geom_idx[shape] = geom_idx
+                geom_to_shape_idx[geom_idx] = shape
+                # compute the difference between the original shape transform
+                # and the transform after applying the joint child transform
+                # and the transform MuJoCo does on mesh geoms
+                original_tf = wp.transform(*shape_transform[shape])
+                mjc_p = self.mj_model.geom_pos[geom_idx]
+                mjc_q = self.mj_model.geom_quat[geom_idx]
+                mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                shape_incoming_xform[shape] = mjc_tf * wp.transform_inverse(original_tf)
         shape_mapping = shape_to_geom_idx  # Replace with actual indices
+
+        # The current `shape_mapping` only contains the template shapes.
+        # We expand it to cover all shapes in all environments.
+        if separate_envs_to_worlds and model.num_envs > 1:
+            shapes_per_env = model.shape_count // model.num_envs
+            if model.shape_count % model.num_envs != 0:
+                wp.utils.warn(
+                    f"Total shape count {model.shape_count} is not divisible by number of environments {model.num_envs}. "
+                    "Shape mapping to MuJoCo geoms may be incorrect."
+                )
+
+            full_shape_mapping = {}
+            # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
+            for geom_idx, template_shape_idx in geom_to_shape_idx.items():
+                # The local index is consistent for a given part of the model across all environments.
+                local_shape_idx = template_shape_idx % shapes_per_env
+                for env_idx in range(model.num_envs):
+                    # Calculate the global Newton shape index for the current environment.
+                    global_shape_idx = env_idx * shapes_per_env + local_shape_idx
+                    # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
+                    full_shape_mapping[global_shape_idx] = geom_idx
+        else:
+            full_shape_mapping = shape_mapping
 
         self.mj_data = mujoco.MjData(self.mj_model)
         self.mj_data.nefc = nefc_per_env
@@ -1820,8 +2103,15 @@ class MuJoCoSolver(SolverBase):
             model.to_newton_shape_index = wp.array(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
             model.shape_incoming_xform = wp.array(shape_incoming_xform, dtype=wp.transform)  # pyright: ignore[reportAttributeAccessIssue]
 
+            # create mapping from Newton shape index to MuJoCo geom index (for all envs)
+            to_mjc_geom_array = np.full(model.shape_count, -1, dtype=np.int32)
+            if len(full_shape_mapping) > 0:
+                for shape_idx, geom_idx in full_shape_mapping.items():
+                    if shape_idx < len(to_mjc_geom_array):
+                        to_mjc_geom_array[shape_idx] = geom_idx
+            model.to_mjc_geom_index = wp.array(to_mjc_geom_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
-            self.mjw_model.opt.graph_conditional = newton.utils.check_conditional_graph_support()
 
             if separate_envs_to_worlds:
                 nworld = model.num_envs
@@ -2050,10 +2340,8 @@ class MuJoCoSolver(SolverBase):
                 self.model.shape_geo.scale,
                 self.model.shape_transform,
                 self.model.shape_geo.type,
-                self.model.shape_body,
                 self.model.to_newton_shape_index,
                 self.model.shape_incoming_xform,
-                self.model.up_axis,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
                 self.contact_stiffness_time_const,
