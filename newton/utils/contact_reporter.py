@@ -202,7 +202,6 @@ class ContactSensorManager:
         for sensor_entities, select_entities, sensor_matrix, *_ in self.contact_queries:
             n_query_sensors = len(sensor_matrix)
             n_query_selects = max(len(partners) for _, partners in sensor_matrix)
-            print(f"Sensors in query: {n_query_sensors}\t Max selects: {n_query_selects}")
             query_eps = []
             for sensor, selects in sensor_matrix:
                 for i in range(n_query_selects):
@@ -213,7 +212,6 @@ class ContactSensorManager:
             query_to_eps.append(query_eps)
             query_len.append(n_query_sensors * n_query_selects)
             query_shape.append((n_query_sensors, n_query_selects))
-            print(f"query_to_eps: {query_to_eps}")
             entity_pair_list.extend(query_eps)
 
         self.query_count = query_len
@@ -269,7 +267,6 @@ class ContactReporter:
                 flip_pair = sp[0] > sp[1]
                 if flip_pair:
                     sp = sp[1], sp[0]  # noqa
-                # print(f"Adding shape pair {sp} to entity pair {ep_idx} (flip={flip_pair})")
 
                 sp_ep_map[sp].append((ep_idx, flip_pair))
 

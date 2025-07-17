@@ -121,58 +121,6 @@ class Slice:
         return slice(self.start, self.stop)
 
 
-class ContactView:
-    """A view for querying contacts between entities in the simulation.
-
-    This class provides access to contact data that was set up during model building.
-    Contact queries must be registered with the ModelBuilder using add_contact_query()
-    before model finalization.
-    """
-
-    def __init__(self, query_id: int):
-        # self.contact_reporter = contact_reporter
-        self.query_id = query_id
-        self.finalized = False
-        self.shape = None
-        # if model.contact_reporter is None:
-        #     raise RuntimeError(
-        #         "No contact queries were registered during model building. "
-        #         "Use ModelBuilder.add_contact_query() before calling finalize()."
-        #     )
-
-        # if query_idx >= len(model.contact_reporter.entity_pair_contact):
-        #     raise IndexError(
-        #         f"Contact query index {query_idx} is out of range. "
-        #         f"Only {len(model.contact_reporter.entity_pair_contact)} queries were registered."
-        #     )
-
-    def _finalize(self):
-        # prepare array slice
-        self.finalized = True
-
-    def get_contact_force(self):
-        """Get the net contact force between entity pairs."""
-        if not self.finalized:
-            raise ValueError("Contact View has not been finalized")
-
-    def entities(self):
-        """Get the entities"""
-        return self.entities
-
-    @property
-    def query_keys(self):
-        """A tuple containing the shape or body keys for the queries.
-
-        Returns:
-            tuple: A tuple containing two lists - (entity_a_keys, entity_b_keys).
-                  Each list contains the shape or body keys for the respective entities.
-        """
-        return self.contact_reporter.get_query_keys(self.query_idx)
-
-    # TODO: expose raw contact arrays
-    # TODO: record entity names
-
-
 class ArticulationView:
     def __init__(
         self,
