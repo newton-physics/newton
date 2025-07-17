@@ -1260,7 +1260,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 def forward_step(
     dt: float,
     gravity: wp.vec3,
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1270,9 +1270,9 @@ def forward_step(
 ):
     particle = wp.tid()
 
-    prev_pos[particle] = pos[particle]
+    pos_prev[particle] = pos[particle]
     if not particle_flags[particle] & PARTICLE_FLAG_ACTIVE:
-        inertia[particle] = prev_pos[particle]
+        inertia[particle] = pos_prev[particle]
         return
     vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
     pos[particle] = pos[particle] + vel_new * dt
@@ -1283,7 +1283,7 @@ def forward_step(
 def forward_step_penetration_free(
     dt: float,
     gravity: wp.vec3,
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1295,9 +1295,9 @@ def forward_step_penetration_free(
 ):
     particle_index = wp.tid()
 
-    prev_pos[particle_index] = pos[particle_index]
+    pos_prev[particle_index] = pos[particle_index]
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
-        inertia[particle_index] = prev_pos[particle_index]
+        inertia[particle_index] = pos_prev[particle_index]
         return
     vel_new = vel[particle_index] + (gravity + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
@@ -1402,7 +1402,7 @@ def apply_conservative_bound_truncation(
 def solve_trimesh_no_self_contact_tile(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
@@ -1450,7 +1450,7 @@ def solve_trimesh_no_self_contact_tile(
 
     batch_counter = wp.int32(0)
 
-    # loop through all the adjacent triangles using whole blcok
+    # loop through all the adjacent triangles using whole block
     while batch_counter + thread_idx < num_adj_faces:
         adj_tri_counter = thread_idx + batch_counter
         batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -1461,7 +1461,7 @@ def solve_trimesh_no_self_contact_tile(
             tri_index,
             vertex_order,
             pos,
-            prev_pos,
+            pos_prev,
             tri_indices,
             tri_poses[tri_index],
             tri_areas[tri_index],
@@ -1502,7 +1502,7 @@ def solve_trimesh_no_self_contact_tile(
                 nei_edge_index,
                 vertex_order_on_edge,
                 pos,
-                prev_pos,
+                pos_prev,
                 edge_indices,
                 edge_rest_angles,
                 edge_rest_length,
@@ -1551,7 +1551,7 @@ def solve_trimesh_no_self_contact_tile(
 def solve_trimesh_no_self_contact(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
@@ -1612,7 +1612,7 @@ def solve_trimesh_no_self_contact(
             tri_id,
             particle_order,
             pos,
-            prev_pos,
+            pos_prev,
             tri_indices,
             tri_poses[tri_id],
             tri_areas[tri_id],
@@ -1642,7 +1642,7 @@ def solve_trimesh_no_self_contact(
             nei_edge_index,
             vertex_order_on_edge,
             pos,
-            prev_pos,
+            pos_prev,
             edge_indices,
             edge_rest_angles,
             edge_rest_length,
@@ -1676,10 +1676,10 @@ def copy_particle_positions_back(
 
 @wp.kernel
 def update_velocity(
-    dt: float, prev_pos: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
+    dt: float, pos_prev: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
 ):
     particle = wp.tid()
-    vel[particle] = (pos[particle] - prev_pos[particle]) / dt
+    vel[particle] = (pos[particle] - pos_prev[particle]) / dt
 
 
 @wp.kernel
@@ -2129,7 +2129,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
 
     batch_counter = wp.int32(0)
 
-    # loop through all the adjacent triangles using whole blcok
+    # loop through all the adjacent triangles using whole block
     while batch_counter + thread_idx < num_adj_faces:
         adj_tri_counter = thread_idx + batch_counter
         batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -2276,7 +2276,7 @@ class VBDSolver(SolverBase):
         edge_collision_buffer_pre_alloc: int = 64,
         collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
-        tiled_solve=True,
+        use_tile_solve: bool = True,
     ):
         """
         Args:
@@ -2300,7 +2300,7 @@ class VBDSolver(SolverBase):
                 If set to a value < 0, collision detection is only performed once before the initialization step.
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
-            tiled_solve: whether to accelerate the solver using tile API
+            use_tile_solve: whether to accelerate the solver using tile API
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to True, the rigid states should be integrated externally, with `state_in`
@@ -2329,10 +2329,10 @@ class VBDSolver(SolverBase):
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
 
-        if model.device.is_cpu and tiled_solve:
+        if model.device.is_cpu and use_tile_solve:
             wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
-        self.tiled_solve = tiled_solve and model.device.is_cuda
+        self.tiled_solve = use_tile_solve and model.device.is_cuda
 
         soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
