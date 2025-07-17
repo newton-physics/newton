@@ -1638,21 +1638,22 @@ def solve_trimesh_no_self_contact(
 
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
-        f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-            nei_edge_index,
-            vertex_order_on_edge,
-            pos,
-            pos_prev,
-            edge_indices,
-            edge_rest_angles,
-            edge_rest_length,
-            edge_bending_properties[nei_edge_index, 0],
-            edge_bending_properties[nei_edge_index, 1],
-            dt,
-        )
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
+            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                nei_edge_index,
+                vertex_order_on_edge,
+                pos,
+                pos_prev,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_length,
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
+            )
 
-        f += f_edge
-        h += h_edge
+            f += f_edge
+            h += h_edge
 
     h += particle_hessians[particle_index]
     f += particle_forces[particle_index]
@@ -2051,7 +2052,7 @@ def solve_trimesh_with_self_contact_penetration_free(
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
         # vertex is on the edge; otherwise it only effects the bending energy n
-        if edge_bending_properties[nei_edge_index, 0] != 0:
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
             f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                 nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
                 edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
@@ -2071,8 +2072,8 @@ def solve_trimesh_with_self_contact_penetration_free(
     # # fmt: on
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
-    if abs(wp.determinant(h)) > 1e-5:
 
+    if abs(wp.determinant(h)) > 1e-5:
         h_inv = wp.inverse(h)
         particle_pos_new = pos[particle_index] + h_inv * f
 
@@ -2177,7 +2178,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
             adjacency, particle_index, adj_edge_counter
         )
-        if edge_bending_properties[nei_edge_index, 0] != 0:
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
             f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                 nei_edge_index,
                 vertex_order_on_edge,
@@ -2210,24 +2211,24 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
             + particle_hessians[particle_index]
         )
+        if abs(wp.determinant(h_total)) > 1e-5:
+            h_inv = wp.inverse(h_total)
+            # wp.printf(
+            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            #     particle_index,
+            #     f_total[0], f_total[1], f_total[2],
+            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
+            # )
+            f_total = (
+                f_total
+                + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+                + particle_forces[particle_index]
+            )
+            particle_pos_new = particle_pos + h_inv * f_total
 
-        h_inv = wp.inverse(h_total)
-        # wp.printf(
-        #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
-        #     particle_index,
-        #     f_total[0], f_total[1], f_total[2],
-        #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
-        # )
-        f_total = (
-            f_total
-            + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
-            + particle_forces[particle_index]
-        )
-        particle_pos_new = particle_pos + h_inv * f_total
-
-        pos_new[particle_index] = apply_conservative_bound_truncation(
-            particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
-        )
+            pos_new[particle_index] = apply_conservative_bound_truncation(
+                particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
+            )
 
 
 class VBDSolver(SolverBase):
@@ -2332,7 +2333,7 @@ class VBDSolver(SolverBase):
         if model.device.is_cpu and use_tile_solve:
             wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
-        self.tiled_solve = use_tile_solve and model.device.is_cuda
+        self.use_tile_solve = use_tile_solve and model.device.is_cuda
 
         soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
@@ -2525,7 +2526,7 @@ class VBDSolver(SolverBase):
                     device=self.device,
                 )
 
-                if self.tiled_solve:
+                if self.use_tile_solve:
                     wp.launch(
                         kernel=solve_trimesh_no_self_contact_tile,
                         inputs=[
@@ -2682,7 +2683,7 @@ class VBDSolver(SolverBase):
                         max_blocks=self.model.device.sm_count,
                     )
 
-                if self.tiled_solve:
+                if self.use_tile_solve:
                     wp.launch(
                         kernel=solve_trimesh_with_self_contact_penetration_free_tile,
                         dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,

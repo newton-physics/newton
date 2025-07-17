@@ -21,7 +21,7 @@ from newton.examples.example_robot_manipulating_cloth import Example as ExampleC
 
 
 class VBDSpeedTestSelfContact:
-    numbers = 5
+    number = 5
 
     def setup(self):
         wp.init()
@@ -40,7 +40,7 @@ class VBDSpeedTestSelfContact:
 
 class VBDSpeedClothManipulation:
     timeout = 180
-    numbers = 3
+    number = 3
 
     def setup(self):
         wp.init()
