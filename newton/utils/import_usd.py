@@ -334,7 +334,6 @@ def parse_usd(
                 key=path,
                 armature=body_armature,
             )
-            builder.add_joint_free(b)
             path_body_map[path] = b
             return b
         else:
@@ -991,6 +990,9 @@ def parse_usd(
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
 
+    builder.add_free_joints_to_floating_bodies()
+
+    # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
     merged_body_data = {}
     path_body_relative_transform = {}
