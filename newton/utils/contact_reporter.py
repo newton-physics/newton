@@ -202,7 +202,7 @@ class ContactSensorManager:
                         query_eps.append((sensor_entities[sensor], select_entities[selects[i]]))
                     else:
                         query_eps.append(None)
-            query_to_eps.append(query_to_eps)
+            query_to_eps.append(query_eps)
             query_len.append(n_query_sensors * n_query_selects)
             query_shape.append((n_query_sensors, n_query_selects))
             print(f"query_to_eps: {query_to_eps}")
