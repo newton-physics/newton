@@ -1436,7 +1436,6 @@ def solve_trimesh_no_self_contact_tile(
         return
 
     particle_pos = pos[particle_index]
-    particle_prev_pos = prev_pos[particle_index]
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
@@ -1456,27 +1455,25 @@ def solve_trimesh_no_self_contact_tile(
         adj_tri_counter = thread_idx + batch_counter
         batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
         # elastic force and hessian
-        tri_id, particle_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
+        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
 
         f_tri, h_tri = evaluate_stvk_force_hessian(
-            tri_id,
-            particle_order,
+            tri_index,
+            vertex_order,
             pos,
+            prev_pos,
             tri_indices,
-            tri_poses[tri_id],
-            tri_areas[tri_id],
-            tri_materials[tri_id, 0],
-            tri_materials[tri_id, 1],
-            tri_materials[tri_id, 2],
+            tri_poses[tri_index],
+            tri_areas[tri_index],
+            tri_materials[tri_index, 0],
+            tri_materials[tri_index, 1],
+            tri_materials[tri_index, 2],
+            dt,
         )
         # compute damping
-        k_d = tri_materials[tri_id, 2]
-        h_d = h_tri * (k_d / dt)
 
-        f_d = h_d * (particle_prev_pos - particle_pos)
-
-        f += f_tri + f_d
-        h += h_tri + h_d
+        f += f_tri
+        h += h_tri
 
         # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f_tri[0], f_tri[1], f_tri[2])
 
@@ -1486,7 +1483,7 @@ def solve_trimesh_no_self_contact_tile(
                 "particle: %d, i_adj_tri: %d, particle_order: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
                 particle_index,
                 thread_idx,
-                particle_order,
+                vertex_order,
                 f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
             )
             # fmt: on
@@ -2121,7 +2118,6 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
         return
 
     particle_pos = pos[particle_index]
-    particle_prev_pos = pos_prev[particle_index]
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
@@ -2160,21 +2156,18 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             tri_index,
             vertex_order,
             pos,
+            pos_prev,
             tri_indices,
             tri_poses[tri_index],
             tri_areas[tri_index],
             tri_materials[tri_index, 0],
             tri_materials[tri_index, 1],
             tri_materials[tri_index, 2],
+            dt,
         )
-        # compute damping
-        k_d = tri_materials[tri_index, 2]
-        h_d = h_tri * (k_d / dt)
 
-        f_d = h_d * (particle_prev_pos - particle_pos)
-
-        f += f_tri + f_d
-        h += h_tri + h_d
+        f += f_tri
+        h += h_tri
 
     batch_counter = wp.int32(0)
     num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
