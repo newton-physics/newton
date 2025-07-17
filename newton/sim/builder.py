@@ -418,6 +418,30 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+        self.body_armature = self.default_body_armature
+
+        # sites (reference points on bodies for tendons)
+        self.site_name = []
+        self.site_body = []
+        self.site_xform = []
+
+        # tendons
+        self.tendon_name = []
+        self.tendon_type = []
+        self.tendon_site_ids = []
+        self.tendon_damping = []
+        self.tendon_stiffness = []
+        self.tendon_rest_length = []
+
+        # tendon actuators
+        self.tendon_actuator_tendon_id = []
+        self.tendon_actuator_name = []
+        self.tendon_actuator_kp = []
+        self.tendon_actuator_kv = []
+        self.tendon_actuator_force_range = []
+
+        # rigid articulations
+
     @property
     def up_vector(self) -> Vec3:
         """Computes the 3D up vector from :attr:`up_axis`."""
@@ -1696,6 +1720,99 @@ class ModelBuilder:
 
         # return the index of the muscle
         return len(self.muscle_start) - 1
+
+    def add_site(
+        self,
+        name: str,
+        body: int,
+        xform: Transform | None = None,
+    ) -> int:
+        """
+        Adds a site (reference point) to the model.
+
+        Args:
+            name: The name of the site
+            body: The body index to which the site is attached
+            xform: The transform of the site relative to the body (default: identity)
+
+        Returns:
+            The index of the site
+        """
+        if xform is None:
+            xform = wp.transform()
+        
+        i = len(self.site_name)
+        self.site_name.append(name)
+        self.site_body.append(body)
+        self.site_xform.append(xform)
+        
+        return i
+
+    def add_tendon(
+        self,
+        name: str,
+        tendon_type: str,
+        site_ids: list[int],
+        damping: float = 0.0,
+        stiffness: float = 0.0,
+        rest_length: float | None = None,
+    ) -> int:
+        """
+        Adds a tendon to the model.
+
+        Args:
+            name: The name of the tendon
+            tendon_type: The type of tendon (e.g., 'spatial')
+            site_ids: List of site indices that the tendon connects
+            damping: Damping coefficient for the tendon
+            stiffness: Stiffness coefficient for the tendon
+            rest_length: Rest length of the tendon (default: computed from initial configuration)
+
+        Returns:
+            The index of the tendon
+        """
+        i = len(self.tendon_name)
+        self.tendon_name.append(name)
+        self.tendon_type.append(tendon_type)
+        self.tendon_site_ids.append(site_ids)
+        self.tendon_damping.append(damping)
+        self.tendon_stiffness.append(stiffness)
+        self.tendon_rest_length.append(rest_length if rest_length is not None else 0.0)
+        
+        return i
+
+    def add_tendon_actuator(
+        self,
+        name: str,
+        tendon_id: int,
+        kp: float = 0.0,
+        kv: float = 0.0,
+        force_range: tuple[float, float] | None = None,
+    ) -> int:
+        """
+        Adds a tendon actuator to the model.
+
+        Args:
+            name: The name of the actuator
+            tendon_id: The index of the tendon to actuate
+            kp: Position gain for the actuator
+            kv: Velocity gain for the actuator
+            force_range: Force range [min, max] for the actuator (default: [-inf, inf])
+
+        Returns:
+            The index of the tendon actuator
+        """
+        if force_range is None:
+            force_range = (-float('inf'), float('inf'))
+        
+        i = len(self.tendon_actuator_name)
+        self.tendon_actuator_tendon_id.append(tendon_id)
+        self.tendon_actuator_name.append(name)
+        self.tendon_actuator_kp.append(kp)
+        self.tendon_actuator_kv.append(kv)
+        self.tendon_actuator_force_range.append(force_range)
+        
+        return i
 
     # region shapes
 
@@ -3389,6 +3506,26 @@ class ModelBuilder:
             m.muscle_points = wp.array(self.muscle_points, dtype=wp.vec3, requires_grad=requires_grad)
             m.muscle_activations = wp.array(self.muscle_activations, dtype=wp.float32, requires_grad=requires_grad)
 
+            # -----------------------
+            # sites, tendons, and tendon actuators
+
+            m.site_name = self.site_name
+            m.site_body = wp.array(self.site_body, dtype=wp.int32) if self.site_body else None
+            m.site_xform = wp.array(self.site_xform, dtype=wp.transform) if self.site_xform else None
+            
+            m.tendon_name = self.tendon_name
+            m.tendon_type = self.tendon_type
+            m.tendon_site_ids = self.tendon_site_ids
+            m.tendon_damping = wp.array(self.tendon_damping, dtype=wp.float32) if self.tendon_damping else None
+            m.tendon_stiffness = wp.array(self.tendon_stiffness, dtype=wp.float32) if self.tendon_stiffness else None
+            m.tendon_rest_length = wp.array(self.tendon_rest_length, dtype=wp.float32) if self.tendon_rest_length else None
+            
+            m.tendon_actuator_tendon_id = wp.array(self.tendon_actuator_tendon_id, dtype=wp.int32) if self.tendon_actuator_tendon_id else None
+            m.tendon_actuator_name = self.tendon_actuator_name
+            m.tendon_actuator_kp = wp.array(self.tendon_actuator_kp, dtype=wp.float32) if self.tendon_actuator_kp else None
+            m.tendon_actuator_kv = wp.array(self.tendon_actuator_kv, dtype=wp.float32) if self.tendon_actuator_kv else None
+            m.tendon_actuator_force_range = wp.array(self.tendon_actuator_force_range, dtype=wp.vec2) if self.tendon_actuator_force_range else None
+
             # --------------------------------------
             # rigid bodies
 
@@ -3463,6 +3600,9 @@ class ModelBuilder:
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
+            m.site_count = len(self.site_name)
+            m.tendon_count = len(self.tendon_name)
+            m.tendon_actuator_count = len(self.tendon_actuator_name)
             m.articulation_count = len(self.articulation_start)
 
             self.find_shape_contact_pairs(m)

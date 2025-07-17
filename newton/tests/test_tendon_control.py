@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+import tempfile
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton
+import newton.examples
+
+
+class TestTendonControl(unittest.TestCase):
+    def test_tendon_control_integration(self):
+        """Test full integration of tendon control from MJCF to simulation"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <geom type="capsule" pos="-.2 0 0" size="0.1 0.1" axisangle="0 1 0 90"/>
+        <site name="site0" pos="-.2 .0 .1"/>
+        <body>
+            <geom type="capsule" pos="0.21 0 0" size="0.1 0.1" axisangle="0 1 0 90"/>
+            <joint type="hinge" axis="0 1 0" name="hinge"/>
+            <site name="site1" pos=".2 .0 .1"/>
+        </body>
+    </worldbody>
+
+    <tendon>
+        <spatial name="spatial0">
+            <site site="site0"/>
+            <site site="site1"/>
+        </spatial>
+    </tendon>
+
+    <actuator>
+        <position name="spatial0_act" tendon="spatial0" kp="300" />
+    </actuator>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test_tendon.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            try:
+                import mujoco  # noqa: PLC0415
+                import mujoco_warp as mjwarp  # noqa: PLC0415
+                can_test = True
+            except ImportError:
+                can_test = False
+
+            if not can_test:
+                self.skipTest("MuJoCo or MuJoCo-Warp not available")
+
+            # Parse with Newton
+            builder = newton.ModelBuilder()
+            newton.utils.parse_mjcf(
+                mjcf_path,
+                builder,
+                collapse_fixed_joints=True,
+                up_axis="Z",
+                enable_self_collisions=False,
+            )
+            model = builder.finalize()
+
+            # Verify model structure
+            self.assertEqual(model.site_count, 2)
+            self.assertEqual(model.tendon_count, 1)
+            self.assertEqual(model.tendon_actuator_count, 1)
+            self.assertEqual(model.joint_count, 1)
+
+            # Create states and control
+            state_0 = model.state()
+            state_1 = model.state()
+            control = model.control()
+
+            # Verify control has tendon arrays
+            self.assertIsNotNone(control.tendon_target)
+            self.assertIsNotNone(control.tendon_f)
+            self.assertEqual(len(control.tendon_target), 1)
+
+            # Set tendon target
+            # Need to use numpy to modify warp array
+            tendon_targets = control.tendon_target.numpy()
+            tendon_targets[0] = -0.05  # Contract tendon by 5cm
+            control.tendon_target = wp.array(tendon_targets, dtype=wp.float32, device=model.device)
+
+            # Create solver - let it handle MuJoCo model creation internally
+            solver = newton.solvers.MuJoCoSolver(model)
+
+            # Record initial joint position
+            initial_joint_pos = state_0.joint_q[0]
+
+            # Simulate
+            dt = 0.001
+            for _ in range(100):
+                solver.step(state_0, state_1, control, None, dt)
+                state_0, state_1 = state_1, state_0
+
+            # Verify joint moved due to tendon actuation
+            final_joint_pos = state_0.joint_q[0]
+            self.assertNotAlmostEqual(initial_joint_pos, final_joint_pos, places=3)
+            # Joint should have rotated (negative direction due to tendon contraction)
+            self.assertLess(final_joint_pos, initial_joint_pos)
+
+    def test_control_initialization(self):
+        """Test that tendon control arrays are properly initialized"""
+        builder = newton.ModelBuilder()
+        
+        # Add a simple model with tendons
+        builder.add_body(xform=wp.transform())
+        site1 = builder.add_site("site1", 0, wp.transform(wp.vec3(0, 0, 0)))
+        site2 = builder.add_site("site2", 0, wp.transform(wp.vec3(1, 0, 0)))
+        
+        tendon_id = builder.add_tendon(
+            name="test_tendon",
+            tendon_type="spatial",
+            site_ids=[site1, site2],
+            stiffness=100.0
+        )
+        
+        builder.add_tendon_actuator(
+            name="test_actuator",
+            tendon_id=tendon_id,
+            kp=50.0
+        )
+        
+        model = builder.finalize()
+        
+        # Check control initialization
+        control = model.control()
+        self.assertIsNotNone(control.tendon_target)
+        self.assertIsNotNone(control.tendon_f)
+        self.assertEqual(len(control.tendon_target), 1)
+        self.assertEqual(len(control.tendon_f), 1)
+        
+        # Check initial values are zero
+        self.assertEqual(control.tendon_target.numpy()[0], 0.0)
+        self.assertEqual(control.tendon_f.numpy()[0], 0.0)
+
+
+if __name__ == "__main__":
+    wp.clear_kernel_cache()
+    unittest.main(verbosity=2) 

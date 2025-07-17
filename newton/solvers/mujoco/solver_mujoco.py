@@ -1242,6 +1242,33 @@ class MuJoCoSolver(SolverBase):
                 ],
                 device=model.device,
             )
+            
+            # Apply tendon control if available
+            if hasattr(control, 'tendon_target') and control.tendon_target is not None and model.tendon_actuator_count > 0:
+                # Use the tendon actuator mapping to set control values
+                tendon_targets = control.tendon_target.numpy()
+                tendon_mapping = model.mjc_tendon_actuator_to_actuator.numpy() if hasattr(model, 'mjc_tendon_actuator_to_actuator') else None
+                
+                if tendon_mapping is not None:
+                    if is_mjwarp:
+                        # For MuJoCo-Warp, we need to handle multi-world case
+                        ctrl_numpy = ctrl.numpy()
+                        actuators_per_world = ctrl_numpy.shape[1]
+                        for world_idx in range(nworld):
+                            for tendon_idx in range(model.tendon_actuator_count):
+                                mj_actuator_idx = tendon_mapping[tendon_idx]
+                                if mj_actuator_idx >= 0:  # Valid mapping
+                                    ctrl_idx = world_idx * actuators_per_world + mj_actuator_idx
+                                    ctrl_numpy[world_idx, mj_actuator_idx] = tendon_targets[tendon_idx]
+                        wp.copy(ctrl, wp.array(ctrl_numpy, dtype=wp.float32, device=model.device))
+                    else:
+                        # For regular MuJoCo
+                        ctrl_numpy = ctrl.numpy()
+                        for tendon_idx in range(model.tendon_actuator_count):
+                            mj_actuator_idx = tendon_mapping[tendon_idx]
+                            if mj_actuator_idx >= 0:  # Valid mapping
+                                ctrl_numpy[0, mj_actuator_idx] = tendon_targets[tendon_idx]
+                        ctrl = wp.array(ctrl_numpy, dtype=wp.float32, device=model.device)
             wp.launch(
                 apply_mjc_qfrc_kernel,
                 dim=(nworld, joints_per_env),
@@ -1627,6 +1654,8 @@ class MuJoCoSolver(SolverBase):
         # mapping from joint axis to actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
         actuator_count = 0
+        # mapping from tendon actuator to MuJoCo actuator index
+        tendon_actuator_to_actuator = np.zeros((model.tendon_actuator_count,), dtype=np.int32) - 1
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -2009,6 +2038,97 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
+        # -----------------------
+        # add sites to MuJoCo bodies
+        
+        if hasattr(model, 'site_name') and model.site_count > 0:
+            site_name = model.site_name
+            site_body = model.site_body.numpy() if model.site_body is not None else []
+            site_xform_array = model.site_xform.numpy() if model.site_xform is not None else []
+            
+            for site_idx in range(model.site_count):
+                body_idx = site_body[site_idx]
+                # Extract transform components from numpy array
+                site_tf_data = site_xform_array[site_idx]
+                site_pos = site_tf_data[:3]  # First 3 elements are position
+                site_quat = site_tf_data[3:7]  # Next 4 elements are quaternion (xyzw)
+                
+                # Find the MuJoCo body to attach the site to
+                if body_idx == -1:  # Worldbody
+                    mj_body = spec.worldbody
+                else:
+                    mj_body = mj_bodies[body_mapping[body_idx]]
+                
+                # Add the site to the MuJoCo body
+                mj_body.add_site(
+                    name=site_name[site_idx],
+                    pos=site_pos,
+                    quat=quat_to_mjc(site_quat),
+                )
+
+        # -----------------------
+        # add tendons to MuJoCo model
+        
+        if hasattr(model, 'tendon_name') and model.tendon_count > 0:
+            for tendon_idx in range(model.tendon_count):
+                tendon_name = model.tendon_name[tendon_idx]
+                tendon_type = model.tendon_type[tendon_idx]
+                
+                if tendon_type == "spatial":
+                    # Add tendon using the correct API
+                    tendon = spec.add_tendon(name=tendon_name)
+                    
+                    # Add sites to the tendon using wrap_site
+                    site_ids = model.tendon_site_ids[tendon_idx]
+                    for site_id in site_ids:
+                        tendon.wrap_site(model.site_name[site_id])
+                    
+                    # Set tendon properties if available
+                    if model.tendon_damping is not None:
+                        tendon.damping = float(model.tendon_damping.numpy()[tendon_idx])
+                    if model.tendon_stiffness is not None:
+                        tendon.stiffness = float(model.tendon_stiffness.numpy()[tendon_idx])
+
+        # -----------------------
+        # add tendon actuators
+        
+        if hasattr(model, 'tendon_actuator_name') and model.tendon_actuator_count > 0:
+            tendon_actuator_ids = model.tendon_actuator_tendon_id.numpy() if model.tendon_actuator_tendon_id is not None else []
+            for act_idx in range(model.tendon_actuator_count):
+                tendon_id = int(tendon_actuator_ids[act_idx])
+                tendon_name = model.tendon_name[tendon_id]
+                
+                # Create actuator args
+                act_args = {
+                    "name": model.tendon_actuator_name[act_idx],
+                    "target": tendon_name,
+                    "trntype": mujoco.mjtTrn.mjTRN_TENDON,
+                }
+
+                # Set actuator parameters
+                if model.tendon_actuator_kp is not None:
+                    kp_values = model.tendon_actuator_kp.numpy()
+                    kp = float(kp_values[act_idx])
+                    if model.tendon_actuator_kv is not None:
+                        kv_values = model.tendon_actuator_kv.numpy()
+                        kv = float(kv_values[act_idx])
+                    else:
+                        kv = 0.0
+
+                    # For position control actuators
+                    act_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                    act_args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+
+                # Set force range if available
+                if model.tendon_actuator_force_range is not None:
+                    force_range_values = model.tendon_actuator_force_range.numpy()
+                    force_range = force_range_values[act_idx]
+                    act_args["forcerange"] = [float(force_range[0]), float(force_range[1])]
+
+                spec.add_actuator(**act_args)
+                tendon_actuator_to_actuator[act_idx] = actuator_count
+                actuator_count += 1
+
         self.mj_model = spec.compile()
 
         if target_filename:
@@ -2083,6 +2203,12 @@ class MuJoCoSolver(SolverBase):
         with wp.ScopedDevice(model.device):
             # mapping from Newton joint axis index to MJC actuator index
             model.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            # mapping from Newton tendon actuator index to MJC actuator index
+            model.mjc_tendon_actuator_to_actuator = wp.array(tendon_actuator_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
+            # store joint actuator count (before tendon actuators)
+            model.joint_actuator_count = actuator_count  # pyright: ignore[reportAttributeAccessIssue]
+            # store total actuator count (including tendon actuators)
+            model.actuator_count = actuator_count + model.tendon_actuator_count  # pyright: ignore[reportAttributeAccessIssue]
             # mapping from MJC body index to Newton body index (skip world index -1)
             reverse_body_mapping = {v: k for k, v in body_mapping.items()}
             model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]

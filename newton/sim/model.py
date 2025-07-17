@@ -167,6 +167,37 @@ class Model:
         self.muscle_activations = None
         """Muscle activations, shape [muscle_count], float."""
 
+        self.site_name = []
+        """List of site names."""
+        self.site_body = None
+        """Body index for each site, shape [site_count], int."""
+        self.site_xform = None
+        """Transform (position and orientation) for each site relative to its body, shape [site_count, 7], float."""
+
+        self.tendon_name = []
+        """List of tendon names."""
+        self.tendon_type = []
+        """Type of each tendon ('spatial', etc.), shape [tendon_count], string."""
+        self.tendon_site_ids = []
+        """List of site IDs for each tendon. For spatial tendons, this is a list of site indices."""
+        self.tendon_damping = None
+        """Damping coefficient for each tendon, shape [tendon_count], float."""
+        self.tendon_stiffness = None
+        """Stiffness coefficient for each tendon, shape [tendon_count], float."""
+        self.tendon_rest_length = None
+        """Rest length for each tendon, shape [tendon_count], float."""
+
+        self.tendon_actuator_tendon_id = None
+        """Tendon index for each tendon actuator, shape [tendon_actuator_count], int."""
+        self.tendon_actuator_name = []
+        """List of tendon actuator names."""
+        self.tendon_actuator_kp = None
+        """Position gain for each tendon actuator, shape [tendon_actuator_count], float."""
+        self.tendon_actuator_kv = None
+        """Velocity gain for each tendon actuator, shape [tendon_actuator_count], float."""
+        self.tendon_actuator_force_range = None
+        """Force range [min, max] for each tendon actuator, shape [tendon_actuator_count, 2], float."""
+
         self.body_q = None
         """Poses of rigid bodies used for state initialization, shape [body_count, 7], float."""
         self.body_qd = None
@@ -296,6 +327,12 @@ class Model:
         """Total number of velocity degrees of freedom of all joints in the system. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints in the system."""
+        self.site_count = 0
+        """Total number of sites in the system."""
+        self.tendon_count = 0
+        """Total number of tendons in the system."""
+        self.tendon_actuator_count = 0
+        """Total number of tendon actuators in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []
@@ -420,12 +457,18 @@ class Model:
                 c.tet_activations = wp.clone(self.tet_activations, requires_grad=requires_grad)
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
+            if self.tendon_actuator_count:
+                c.tendon_target = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
+                c.tendon_f = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
         else:
             c.joint_target = self.joint_target
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
+            if self.tendon_actuator_count:
+                c.tendon_target = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
+                c.tendon_f = wp.zeros(self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
         return c
 
     def collide(
