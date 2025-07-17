@@ -2208,8 +2208,10 @@ class ModelBuilder:
                     decompositions[hash_m] = decomposition
                 if len(decomposition) == 0:
                     continue
-                self.shape_geo_src[shape].vertices = decomposition[0][0].reshape(-1, 3)
-                self.shape_geo_src[shape].indices = decomposition[0][1].flatten()
+                # note we need to copy the mesh to avoid modifying the original mesh
+                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    vertices=decomposition[0][0], indices=decomposition[0][1]
+                )
                 if len(decomposition) > 1:
                     body = self.shape_body[shape]
                     xform = self.shape_transform[shape]
@@ -2246,6 +2248,9 @@ class ModelBuilder:
                 self.shape_geo_type[shape] = GEO_SPHERE
                 self.shape_geo_src[shape] = None
                 self.shape_geo_scale[shape] = wp.vec3(radius, 0.0, 0.0)
+                tf = wp.transform(center, wp.quat_identity())
+                shape_tf = wp.transform(*self.shape_transform[shape])
+                self.shape_transform[shape] = shape_tf * tf
         elif method == "bounding_box":
             for shape in shape_indices:
                 mesh: Mesh = self.shape_geo_src[shape]
@@ -2263,12 +2268,14 @@ class ModelBuilder:
             for shape in shape_indices:
                 mesh: Mesh = self.shape_geo_src[shape]
                 hash_m = hash(mesh)
-                if hash_m in remeshed:
-                    mesh = remeshed[hash_m]
-                else:
-                    mesh = remesh_mesh(mesh, method=method, **remeshing_kwargs)
-                    remeshed[hash_m] = mesh
-                self.shape_geo_src[shape] = mesh
+                rmesh = remeshed.get(hash_m, None)
+                if rmesh is None:
+                    rmesh = remesh_mesh(mesh, method=method, inplace=False, **remeshing_kwargs)
+                    remeshed[hash_m] = rmesh
+                # note we need to copy the mesh to avoid modifying the original mesh
+                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    vertices=rmesh.vertices, indices=rmesh.indices
+                )
         else:
             raise ValueError(f"Unknown remeshing method: {method}")
 

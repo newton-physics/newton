@@ -449,22 +449,33 @@ def remesh(
     return new_vertices, new_faces
 
 
-def remesh_mesh(mesh: Mesh, method: RemeshingMethod = "quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
+def remesh_mesh(
+    mesh: Mesh,
+    method: RemeshingMethod = "quadratic",
+    recompute_inertia: bool = False,
+    inplace: bool = False,
+    **remeshing_kwargs,
+) -> Mesh:
     """Remesh a mesh using the specified method.
     Args:
         mesh: The mesh to remesh.
         method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
         recompute_inertia: Whether to recompute the inertia of the mesh.
+        inplace: Whether to modify the mesh in place or return a new mesh.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
     Returns:
         The remeshed mesh.
     """
     if method == "convex_hull":
         remeshing_kwargs["maxhullvert"] = mesh.maxhullvert
-    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
-    mesh.indices = mesh.indices.flatten()
-    if recompute_inertia:
-        mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, mesh.vertices, mesh.indices, is_solid=mesh.is_solid)
+    vertices, indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
+    if inplace:
+        mesh.vertices = vertices
+        mesh.indices = indices.flatten()
+        if recompute_inertia:
+            mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=mesh.is_solid)
+    else:
+        return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh
 
 
