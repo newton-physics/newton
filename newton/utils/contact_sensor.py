@@ -219,7 +219,6 @@ class ContactQuery:
 
 class ContactSensorManager:
     def __init__(self, model):
-        self.sensors = []
         self.contact_queries: list[ContactQuery] = []
         self.contact_views = []
         self.contact_reporter = None
@@ -258,7 +257,8 @@ class ContactSensorManager:
 
     def finalize(self):
         self._build_entity_pair_list()
-        self.contact_reporter = ContactReporter(self.model, [ep for query in self.entity_pairs for ep in query])
+        with wp.ScopedDevice(self.model.device):
+            self.contact_reporter = ContactReporter([ep for query in self.entity_pairs for ep in query])
 
         for offset, count, view, shape, query, entity_pairs_idx in zip(
             self.query_offset,
@@ -284,7 +284,6 @@ class ContactSensorManager:
                 query.select_entities,
                 view_entity_pairs,
             )
-            breakpoint()
 
     @staticmethod
     def _build_sensor_list(
@@ -338,16 +337,12 @@ class ContactSensorManager:
 class ContactReporter:
     """Aggregates contacts per entity pair"""
 
-    def __init__(self, model: Model, entity_pairs: list[tuple[tuple[int, ...], tuple[int, ...]]]):
-        self.model = model
-
+    def __init__(self, entity_pairs: list[tuple[tuple[int, ...], tuple[int, ...]]]):
         # initialize mapping from sp to eps & flips
         self.n_entity_pairs = len(entity_pairs)
         self._create_sp_ep_arrays(entity_pairs)
         # net force (1 vec3 per entity pair)
         self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
-
-        return
 
     def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[tuple[int, ...], tuple[int, ...] | MatchAny] | None]):
         """Build a mapping from shape pairs to entity pairs ordered by shape pair.
