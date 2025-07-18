@@ -3190,7 +3190,7 @@ class ModelBuilder:
             verbose: print details
         """
 
-        from newton.utils.contact_reporter import ContactView  # noqa: PLC0415
+        from newton.utils.contact_sensor import ContactView  # noqa: PLC0415
 
         if match_fun is None:
             match_fun = fnmatch
@@ -3570,7 +3570,7 @@ class ModelBuilder:
     ):
         """Create the list of individual sensors for a query and add the query to the manager."""
 
-        from newton.utils.contact_reporter import MatchAny  # noqa: PLC0415
+        from newton.utils.contact_sensor import MatchAny  # noqa: PLC0415
 
         if verbose:
             print("Finding entities")
@@ -3644,7 +3644,7 @@ class ModelBuilder:
         )
 
     def _build_contact_sensors(self, model: Model):
-        from newton.utils.contact_reporter import ContactSensorManager  # noqa: PLC0415
+        from newton.utils.contact_sensor import ContactSensorManager  # noqa: PLC0415
 
         # contact_reporter = ContactReporter(model)
         model.contact_sensor_manager = ContactSensorManager(model)
@@ -3690,7 +3690,7 @@ class ModelBuilder:
     def _get_entities(self, match_fn, model: Model, shape_pattern: str | None = None, body_pattern: str | None = None):
         """Find shapes or bodies matching the pattern. Return matching shapes in individual tuples, and matching bodies
         as tuples including all their shapes."""
-        from newton.utils.contact_reporter import EntityKind  # noqa: PLC0415
+        from newton.utils.contact_sensor import EntityKind  # noqa: PLC0415
 
         entities = []
         entity_keys = []

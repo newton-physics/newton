@@ -22,7 +22,7 @@ import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
 from newton.sim.contacts import ContactInfo
-from newton.utils.contact_reporter import convert_contact_info
+from newton.utils.contact_sensor import convert_contact_info
 from newton.utils.selection import ArticulationView
 
 USE_TORCH = False

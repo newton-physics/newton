@@ -19,7 +19,7 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.contact_reporter import ContactReporter, ContactSensorManager
+from newton.utils.contact_sensor import ContactReporter, ContactSensorManager, MatchAny
 
 
 class MockModel:
@@ -75,8 +75,8 @@ class TestContactSensor(unittest.TestCase):
         entity_pairs = [
             (entity_A, entity_B),
             (entity_B, entity_A),
-            (entity_A, None),
-            (entity_B, None),
+            (entity_A, MatchAny),
+            (entity_B, MatchAny),
         ]
         contact_reporter = ContactReporter(model, entity_pairs)
 
@@ -226,7 +226,7 @@ class TestContactSensorManager(unittest.TestCase):
         entity_b = (1,)
         cm.add_contact_query(
             [
-                (entity_a, None),
+                (entity_a, MatchAny),
             ]
         )
 
