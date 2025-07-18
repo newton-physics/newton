@@ -984,7 +984,7 @@ def parse_usd(
             if np.linalg.norm(i_diag) > 0.0:
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag) @ rot.T
-                builder.body_inertia[body_id] = inertia
+                builder.body_inertia[body_id] = wp.mat33(inertia)
                 if inertia.any():
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:
