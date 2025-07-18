@@ -1530,7 +1530,7 @@ def solve_trimesh_no_self_contact_tile(
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
             + particle_hessians[particle_index]
         )
-        if abs(wp.determinant(h)) > 1e-5:
+        if abs(wp.determinant(h_total)) > 1e-5:
             h_inv = wp.inverse(h_total)
             # wp.printf(
             #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
