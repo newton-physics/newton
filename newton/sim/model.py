@@ -265,6 +265,9 @@ class Model:
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
+        self.contact_sensor_manager = None
+        """contact information between entities."""
+
         self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
@@ -506,3 +509,6 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def eval_contact_sensors(self, contact_info):
+        self.contact_sensor_manager.eval_contact_sensors(contact_info)
