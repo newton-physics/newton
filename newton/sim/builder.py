@@ -3602,7 +3602,7 @@ class ModelBuilder:
                     f'No matching bodies (with shapes) for sensor body pattern "{sensor_body}".',
                     sensor_body,
                     "body",
-                    hint="Did you mean to match bodies?" if confusion_hint else "",
+                    hint="Did you mean to match shapes?" if confusion_hint else "",
                 )
 
         if contact_partners_body or contact_partners_shape:
@@ -3634,25 +3634,13 @@ class ModelBuilder:
             print(f"Contact partner entities found: {select_entities}")
             print(f"                          keys: {select_keys}")
 
-        def check_ep_can_collide(a, b) -> bool:
-            ep_sps = {(min(pair), max(pair)) for pair in itertools.product(a, b)}
-            return not self.contact_pairs.isdisjoint(ep_sps)
-
-        # build the matrix
-        sensor_matrix = []
-        for sensor_idx, sensor_entity in enumerate(sensor_entities):
-            if prune_noncolliding:
-                partner_indices = tuple(
-                    partner_idx
-                    for partner_idx, partner_entity in enumerate(select_entities)
-                    if check_ep_can_collide(sensor_entity, partner_entity)
-                )
-            else:
-                partner_indices = tuple(range(len(select_entities)))
-            sensor_matrix.append((sensor_idx, partner_indices))
-
         contact_sensor_manager.add_contact_query(
-            contact_view, sensor_entities, select_entities, sensor_matrix, sensor_keys, select_keys
+            sensor_entities=sensor_entities,
+            select_entities=select_entities,
+            sensor_keys=sensor_keys,
+            select_keys=select_keys,
+            contact_view=contact_view,
+            colliding_shape_pairs=self.contact_pairs if prune_noncolliding else None,
         )
 
     def _build_contact_sensors(self, model: Model):

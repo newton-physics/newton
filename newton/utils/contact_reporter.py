@@ -16,8 +16,9 @@
 import itertools
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypeAlias
 
 import numpy as np
 import warp as wp
@@ -39,6 +40,9 @@ class MatchAny(metaclass=SentinelMeta):
 
 
 EntityKind = Enum("EntityKind", [("SHAPE", 1), ("BODY", 1)])
+
+
+Entity: TypeAlias = tuple[int, ...]
 
 
 @wp.func
@@ -151,93 +155,184 @@ class ContactView:
         self.shape: tuple[int] = None
 
         self.net_force: wp.array(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
-        self.entity_pairs = None  # entity pair matrix
+        """Net force matrix, shape (n_sensors, n_contact_partners [+1 if total included])"""
+
         self.sensor_keys: list[str] = None
+        """Keys for the sensors in the query, n_sensors"""
         self.contact_partner_keys: list[str] = None
+        """Keys for the contact partners in the query, n_contact_partners"""
+        self.sensor_entities: list[tuple[int, ...]] = None
+        """Entities for the sensors in the query, n_sensors"""
+        self.contact_partner_entities: list[tuple[int, ...]] = None
+        """Entities for the contact partners in the query, n_contact_partners"""
+        self.entity_pairs: np.ndarray = None  # entity pair matrix
+        """Pairs of sensor and contact partner indices for the query, shape (n_sensors, n_contact_partners, 2)"""
+
+    def finalize(
+        self,
+        net_force: wp.array(dtype=wp.vec3),
+        sensor_keys: list[str],
+        contact_partner_keys: list[str],
+        sensor_entities: list[tuple[int, ...]],
+        contact_partner_entities: list[tuple[int, ...]],
+        entity_pairs: np.ndarray,
+    ):
+        assert not self.finalized
+        self.net_force = net_force
+        self.shape = self.net_force.shape
+        self.sensor_keys = sensor_keys
+        self.contact_partner_keys = contact_partner_keys
+        self.sensor_entities = sensor_entities
+        self.contact_partner_entities = contact_partner_entities
+        self.entity_pairs = entity_pairs
+
+        self.finalized = True
+
+
+@dataclass
+class ContactQuery:
+    """Contact Query data
+    sensor_entities: List of entity tuples representing the sensor entities.
+        These are indexed by the first element of sensor_matrix tuples.
+    select_entities: List of entity tuples representing the contact partners.
+        These are indexed by the values in the second element of the sensor_matrix tuples.
+    sensor_matrix: List of tuples defining which sensors interact with which select entities.
+        Each tuple is (sensor_index, tuple of select_indices) where:
+        - sensor_index: Index into sensor_entities list.
+        - select_indices: Tuple of indices into select_entities list.
+        The resulting contact matrix will have shape (len(sensor_matrix), max_selects)
+        where max_selects is the maximum length of select_indices tuples.
+    """
+
+    sensor_entities: list[Entity]
+    select_entities: list[Entity]
+
+    sensor_list: list[tuple[int, tuple[int, ...]]] | None = None
+    """List of sensors. Indexes sensor_entities and select_entities"""
+
+    sensor_keys: list[str] | None = None
+    select_keys: list[str] | None = None
+
+    colliding_shape_pairs: set[tuple[int, int]] | None = None
+    # sensor_matrix: list[list[tuple[int, int]]]
 
 
 class ContactSensorManager:
     def __init__(self, model):
         self.sensors = []
-        self.contact_queries = []
+        self.contact_queries: list[ContactQuery] = []
         self.contact_views = []
         self.contact_reporter = None
         self.model = model
 
     def add_contact_query(
         self,
-        contact_view: ContactView,
         sensor_entities: list[tuple[int, ...]],
         select_entities: list[tuple[int, ...] | MatchAny],
-        sensor_matrix: list[tuple[int, tuple[int, ...]]],
         sensor_keys: list[tuple],
-        contact_partner_keys: list[tuple],
+        select_keys: list[tuple],
+        contact_view: ContactView,
+        colliding_shape_pairs: set[tuple[int, int]] | None = None,
     ):
         """Add a contact query to track contact forces between specified entities.
 
         Args:
+            query: ContactQuery object containing sensor and select indices and keys.
             contact_view: ContactView object that will reference the results of this query.
-            sensor_entities: List of entity tuples representing the sensor entities.
-                These are indexed by the first element of sensor_matrix tuples.
-            select_entities: List of entity tuples representing the contact partners.
-                These are indexed by the values in the second element of the sensor_matrix tuples.
-            sensor_matrix: List of tuples defining which sensors interact with which select entities.
-                Each tuple is (sensor_index, tuple of select_indices) where:
-                - sensor_index: Index into sensor_entities list.
-                - select_indices: Tuple of indices into select_entities list.
-                The resulting contact matrix will have shape (len(sensor_matrix), max_selects)
-                where max_selects is the maximum length of select_indices tuples.
         """
-        self.contact_queries.append(
-            (sensor_entities, select_entities, sensor_matrix, sensor_keys, contact_partner_keys)
+        query = ContactQuery(
+            sensor_entities=sensor_entities,
+            select_entities=select_entities,
+            sensor_keys=sensor_keys,
+            select_keys=select_keys,
+            colliding_shape_pairs=colliding_shape_pairs,
         )
+
+        query.sensor_list = self._build_sensor_list(query)
+
+        self.contact_queries.append(query)
         self.contact_views.append(contact_view)
 
     def eval_contact_sensors(self, contact_info):
         self.contact_reporter._select_aggregate_net_force(contact_info)
 
-    def build_entity_pair_list(self):
-        query_to_eps = []
-        entity_pair_list = []
-        query_len = []
-        query_shape = []
-
-        for sensor_entities, select_entities, sensor_matrix, *_ in self.contact_queries:
-            n_query_sensors = len(sensor_matrix)
-            n_query_selects = max(len(partners) for _, partners in sensor_matrix)
-            query_eps = []
-            for sensor, selects in sensor_matrix:
-                for i in range(n_query_selects):
-                    if i < len(selects):
-                        query_eps.append((sensor_entities[sensor], select_entities[selects[i]]))
-                    else:
-                        query_eps.append(None)
-            query_to_eps.append(query_eps)
-            query_len.append(n_query_sensors * n_query_selects)
-            query_shape.append((n_query_sensors, n_query_selects))
-            entity_pair_list.extend(query_eps)
-
-        self.query_count = query_len
-        self.query_offset = [0, *np.cumsum(query_len[:-1]).tolist()]
-        self.query_shape = query_shape
-        return entity_pair_list
-
     def finalize(self):
-        self.entity_pairs = self.build_entity_pair_list()
-        self.contact_reporter = ContactReporter(self.model, self.entity_pairs)
-        for offset, count, view, shape, query in zip(
-            self.query_offset, self.query_count, self.contact_views, self.query_shape, self.contact_queries
-        ):
-            view.net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
-            view.shape = shape
-            view.sensor_keys = query[3]
-            view.contact_partner_keys = query[4]
+        self._build_entity_pair_list()
+        self.contact_reporter = ContactReporter(self.model, [ep for query in self.entity_pairs for ep in query])
 
-            entity_pairs = self.entity_pairs[offset : offset + count]
+        for offset, count, view, shape, query, entity_pairs_idx in zip(
+            self.query_offset,
+            self.query_count,
+            self.contact_views,
+            self.query_shape,
+            self.contact_queries,
+            self.entity_pairs_idx,
+        ):
+            net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
             n_sens, n_sel = shape
-            view.entity_pairs = [
-                [entity_pairs[sensor * n_sel + sel] for sel in range(n_sel)] for sensor in range(n_sens)
+            entity_pair_matrix = [
+                [entity_pairs_idx[sensor * n_sel + sel] or (None, None) for sel in range(n_sel)]
+                for sensor in range(n_sens)
             ]
+            view_entity_pairs = np.array(entity_pair_matrix)
+
+            view.finalize(
+                net_force,
+                query.sensor_keys,
+                query.select_keys,
+                query.sensor_entities,
+                query.select_entities,
+                view_entity_pairs,
+            )
+            breakpoint()
+
+    @staticmethod
+    def _build_sensor_list(
+        query: ContactQuery,
+    ) -> list[tuple[int, tuple[int, ...]]]:
+        """Build the list of sensor - select combinations, as tuples of (sensor_idx, (select_indices...)).
+        If colliding_shape_pairs is provided, for each sensor, keep only valid select indices."""
+        sensor_list = []
+
+        def check_ep_can_collide(a: Entity, b: Entity) -> bool:
+            ep_sps = {(min(pair), max(pair)) for pair in itertools.product(a, b)}
+            return not query.colliding_shape_pairs.isdisjoint(ep_sps)
+
+        for sensor_idx, sensor_entity in enumerate(query.sensor_entities):
+            select_indices = tuple(
+                select_idx
+                for select_idx, select_entity in enumerate(query.select_entities)
+                if query.colliding_shape_pairs is None or check_ep_can_collide(sensor_entity, select_entity)
+            )
+            sensor_list.append((sensor_idx, select_indices))
+        return sensor_list
+
+    def _build_entity_pair_list(self):
+        self.entity_pairs = []
+        self.entity_pairs_idx = []
+        self.query_shape = []
+
+        for query in self.contact_queries:
+            n_query_sensors = len(query.sensor_list)
+            n_query_selects = max(len(selects) for _, selects in query.sensor_list)
+            query_eps = []
+            query_eps_idx = []
+
+            for sensor_idx, selects in query.sensor_list:
+                for select_idx in selects:
+                    query_eps.append((query.sensor_entities[sensor_idx], query.select_entities[select_idx]))
+                    query_eps_idx.append((sensor_idx, select_idx))
+                padding = (None,) * (n_query_selects - len(selects))  # fill up with None
+                query_eps.extend(padding)
+                query_eps_idx.extend(padding)
+
+            assert n_query_selects * n_query_sensors == len(query_eps)
+            self.query_shape.append((n_query_sensors, n_query_selects))
+            self.entity_pairs.append(query_eps)
+            self.entity_pairs_idx.append(query_eps_idx)
+
+        self.query_count = [n_sens * n_sel for n_sens, n_sel in self.query_shape]
+        self.query_offset = [0, *np.cumsum(self.query_count[:-1]).tolist()]
 
 
 class ContactReporter:
@@ -264,7 +359,7 @@ class ContactReporter:
             e1, e2 = entity_pair
             assert e1 is not MatchAny, "Sensor cannot be attached to wildcard entity"
 
-            # pair e1 shapes with e2 shapes, or with -1 if e2 is MatchAll
+            # pair e1 shapes with e2 shapes, or with -1 if e2 is MatchAny
             shape_pairs = itertools.product(e1, ((-1,) if e2 is MatchAny else e2))
             for sp in shape_pairs:
                 flip_pair = sp[0] > sp[1]
