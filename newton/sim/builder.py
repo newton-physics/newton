@@ -3176,7 +3176,7 @@ class ModelBuilder:
         """Add a contact sensor view to the model. Return a ContactView.
         Exactly one of `sensor_shape` or `sensor_body` must be specified to define the sensor. If contact partners
         are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
-        the total contact force. MatchAll can be used to include a reading of the total contact force.
+        the total contact force.
 
         Args:
             sensor_shape: pattern to match sensor shape names; one entity per matching shape.
