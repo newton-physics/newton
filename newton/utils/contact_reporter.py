@@ -17,7 +17,9 @@ import itertools
 from collections import defaultdict
 from collections.abc import Iterable
 from enum import Enum
+from typing import Any
 
+import numpy as np
 import warp as wp
 
 from newton import Model
@@ -138,19 +140,20 @@ def convert_contact_info(
 
 
 class ContactView:
-    """A view for querying contacts between entities in the simulation."""
+    """A view for querying contacts between entities in the simulation.
+    This class stores the parameters of the query and provides a view of the results.
+    """
 
     def __init__(self, query_id: int, args: dict):
-        # self.contact_reporter = contact_reporter
         self.query_id = query_id
-        self.args = args
-        self.finalized = False
-        self.shape = None
+        self.args: dict[str, Any] = args
+        self.finalized: bool = False
+        self.shape: tuple[int] = None
 
-        self.net_force = None  # force matrix, aliased to contact reducer
+        self.net_force: wp.array(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
         self.entity_pairs = None  # entity pair matrix
-        self.sensor_keys = None
-        self.contact_partner_keys = None
+        self.sensor_keys: list[str] = None
+        self.contact_partner_keys: list[str] = None
 
 
 class ContactSensorManager:
