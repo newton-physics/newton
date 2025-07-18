@@ -223,6 +223,10 @@ class Model:
         """Generalized joint forces used for state initialization, shape [joint_dof_count], float."""
         self.joint_target = None
         """Generalized joint target inputs, shape [joint_dof_count], float."""
+        self.tendon_target = None
+        """Tendon position target for control, shape [tendon_actuator_count], float."""
+        self.tendon_f = None
+        """Tendon actuation force (computed from control), shape [tendon_actuator_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_parent = None
@@ -458,25 +462,16 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
             if self.tendon_actuator_count:
-                c.tendon_target = wp.zeros(
-                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
-                )
-                c.tendon_f = wp.zeros(
-                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
-                )
+                c.tendon_target = wp.clone(self.tendon_target, requires_grad=requires_grad)
+                c.tendon_f = wp.clone(self.tendon_f, requires_grad=requires_grad)
         else:
             c.joint_target = self.joint_target
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
-            if self.tendon_actuator_count:
-                c.tendon_target = wp.zeros(
-                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
-                )
-                c.tendon_f = wp.zeros(
-                    self.tendon_actuator_count, dtype=wp.float32, device=self.device, requires_grad=requires_grad
-                )
+            c.tendon_target = self.tendon_target
+            c.tendon_f = self.tendon_f
         return c
 
     def collide(

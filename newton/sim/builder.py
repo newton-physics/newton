@@ -3536,6 +3536,16 @@ class ModelBuilder:
                 wp.array(self.tendon_actuator_force_range, dtype=wp.vec2) if self.tendon_actuator_force_range else None
             )
 
+            # Initialize tendon control arrays
+            if self.tendon_actuator_name:
+                # Initialize with zeros
+                m.tendon_target = wp.zeros(
+                    len(self.tendon_actuator_name), dtype=wp.float32, device=device, requires_grad=requires_grad
+                )
+                m.tendon_f = wp.zeros(
+                    len(self.tendon_actuator_name), dtype=wp.float32, device=device, requires_grad=requires_grad
+                )
+
             # --------------------------------------
             # rigid bodies
 
