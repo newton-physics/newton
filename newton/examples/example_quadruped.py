@@ -123,7 +123,7 @@ class Example:
         with wp.ScopedTimer("render"):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
-            self.renderer.render_contacts(self.state_0, self.contacts, contact_point_radius=1e-2)
+            self.renderer.render_contacts(self.state_0.body_q, self.contacts, contact_point_radius=1e-2)
             self.renderer.end_frame()
 
 
