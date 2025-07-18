@@ -1249,6 +1249,12 @@ class MuJoCoSolver(SolverBase):
                 and control.tendon_target is not None
                 and model.tendon_actuator_count > 0
             ):
+                # Validate tendon_target dimensions
+                if len(control.tendon_target) != model.tendon_actuator_count:
+                    raise ValueError(
+                        f"Expected {model.tendon_actuator_count} tendon targets, got {len(control.tendon_target)}"
+                    )
+
                 # Use the tendon actuator mapping to set control values
                 tendon_targets = control.tendon_target.numpy()
                 tendon_mapping = (
@@ -2094,6 +2100,10 @@ class MuJoCoSolver(SolverBase):
                         tendon.damping = float(model.tendon_damping.numpy()[tendon_idx])
                     if model.tendon_stiffness is not None:
                         tendon.stiffness = float(model.tendon_stiffness.numpy()[tendon_idx])
+                else:
+                    wp.utils.warn(
+                        f"Tendon type '{tendon_type}' is not supported by MuJoCo solver, skipping tendon '{tendon_name}'"
+                    )
 
         # -----------------------
         # add tendon actuators
@@ -2214,9 +2224,9 @@ class MuJoCoSolver(SolverBase):
             # mapping from Newton tendon actuator index to MJC actuator index
             model.mjc_tendon_actuator_to_actuator = wp.array(tendon_actuator_to_actuator, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
             # store joint actuator count (before tendon actuators)
-            model.joint_actuator_count = actuator_count  # pyright: ignore[reportAttributeAccessIssue]
+            model.joint_actuator_count = actuator_count - model.tendon_actuator_count  # pyright: ignore[reportAttributeAccessIssue]
             # store total actuator count (including tendon actuators)
-            model.actuator_count = actuator_count + model.tendon_actuator_count  # pyright: ignore[reportAttributeAccessIssue]
+            model.actuator_count = actuator_count  # pyright: ignore[reportAttributeAccessIssue]
             # mapping from MJC body index to Newton body index (skip world index -1)
             reverse_body_mapping = {v: k for k, v in body_mapping.items()}
             model.to_mjc_body_index = wp.array(  # pyright: ignore[reportAttributeAccessIssue]

@@ -101,7 +101,7 @@ class TestTendonControl(unittest.TestCase):
             solver = newton.solvers.MuJoCoSolver(model)
 
             # Record initial joint position
-            initial_joint_pos = state_0.joint_q[0]
+            initial_joint_pos = state_0.joint_q.numpy()[0]
 
             # Simulate
             dt = 0.001
@@ -110,10 +110,10 @@ class TestTendonControl(unittest.TestCase):
                 state_0, state_1 = state_1, state_0
 
             # Verify joint moved due to tendon actuation
-            final_joint_pos = state_0.joint_q[0]
+            final_joint_pos = state_0.joint_q.numpy()[0]
             self.assertNotAlmostEqual(initial_joint_pos, final_joint_pos, places=3)
-            # Joint should have rotated (negative direction due to tendon contraction)
-            self.assertLess(final_joint_pos, initial_joint_pos)
+            # Joint should have rotated (positive direction due to tendon contraction pulling site1 towards site0)
+            self.assertGreater(final_joint_pos, initial_joint_pos)
 
     def test_control_initialization(self):
         """Test that tendon control arrays are properly initialized"""
