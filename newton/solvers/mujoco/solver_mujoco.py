@@ -1256,7 +1256,6 @@ class MuJoCoSolver(SolverBase):
                     )
 
                 # Use the tendon actuator mapping to set control values
-                tendon_targets = control.tendon_target.numpy()
                 tendon_mapping = (
                     model.mjc_tendon_actuator_to_actuator.numpy()
                     if hasattr(model, "mjc_tendon_actuator_to_actuator")
@@ -1264,6 +1263,7 @@ class MuJoCoSolver(SolverBase):
                 )
 
                 if tendon_mapping is not None:
+                    tendon_targets = control.tendon_target.numpy()
                     if is_mjwarp:
                         # For MuJoCo-Warp, we need to handle multi-world case
                         ctrl_numpy = ctrl.numpy()
