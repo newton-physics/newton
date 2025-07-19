@@ -416,6 +416,13 @@ def remesh_convex_hull(vertices, maxhullvert: int = 0):
         if np.dot(normal, a - centre) < 0:
             faces[i] = tri[[0, 2, 1]]
 
+    # trim vertices to only those that are used in the faces
+    unique_verts = np.unique(faces.flatten())
+    verts = verts[unique_verts]
+    # update face indices to use the new vertex indices
+    mapping = {v: i for i, v in enumerate(unique_verts)}
+    faces = np.array([mapping[v] for v in faces.flatten()], dtype=np.int32).reshape(faces.shape)
+
     return verts, faces
 
 
@@ -489,6 +496,77 @@ def remesh_mesh(
     else:
         return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh
+
+
+def create_box_mesh(half_extents: Vec3) -> tuple[nparray, nparray]:
+    x_extent, y_extent, z_extent = half_extents
+    vertices = np.array(
+        [
+            [-x_extent, -y_extent, -z_extent],
+            [x_extent, -y_extent, -z_extent],
+            [x_extent, y_extent, -z_extent],
+            [-x_extent, y_extent, -z_extent],
+            [-x_extent, -y_extent, z_extent],
+            [x_extent, -y_extent, z_extent],
+            [x_extent, y_extent, z_extent],
+            [-x_extent, y_extent, z_extent],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array(
+        [
+            # Bottom face (z = -z_extent)
+            0,
+            2,
+            1,
+            0,
+            3,
+            2,
+            # Top face (z = z_extent)
+            4,
+            5,
+            6,
+            4,
+            6,
+            7,
+            # Front face (y = -y_extent)
+            0,
+            1,
+            5,
+            0,
+            5,
+            4,
+            # Back face (y = y_extent)
+            2,
+            3,
+            7,
+            2,
+            7,
+            6,
+            # Left face (x = -x_extent)
+            0,
+            4,
+            7,
+            0,
+            7,
+            3,
+            # Right face (x = x_extent)
+            1,
+            2,
+            6,
+            1,
+            6,
+            5,
+        ],
+        dtype=np.int32,
+    )
+    return vertices, indices
+
+
+def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | None = None) -> nparray:
+    if scale is not None:
+        points = points * np.array(scale, dtype=np.float32)
+    return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]
