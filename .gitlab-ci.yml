@@ -172,10 +172,10 @@ doctest:
   stage: docs
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
-  extends:
-    - .omni_nvks_gpu
   script:
     - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+  tags:
+    - lnx-x86_64-gpu-1x-570.158.01
 
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.
