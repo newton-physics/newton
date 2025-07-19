@@ -54,4 +54,9 @@ class VBDSpeedClothManipulation:
     @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
     def time_run_example_cloth_manipulation(self):
         with wp.ScopedDevice("cuda"):
-            self.example.run()
+            for frame_idx in range(self.example.num_frames):
+                self.example.step()
+
+                if self.example.cloth_solver and not (frame_idx % 10):
+                    self.example.cloth_solver.rebuild_bvh(self.example.state_0)
+                    self.example.capture_cuda_graph()
