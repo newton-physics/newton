@@ -59,6 +59,83 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
         return 10.0
 
 
+def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
+    """Compute the axis-aligned bounding box of a set of vertices."""
+    min_coords = np.min(vertices, axis=0)
+    max_coords = np.max(vertices, axis=0)
+    return min_coords, max_coords
+
+
+def compute_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
+    """Compute the oriented bounding box of a set of vertices.
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+
+    Returns:
+        A tuple containing:
+        - transform: The transform of the oriented bounding box
+        - extents: The half-extents of the box along its principal axes
+    """
+    if len(vertices) == 0:
+        return wp.transform_identity(), wp.vec3(0.0, 0.0, 0.0)
+    if len(vertices) == 1:
+        return wp.transform(wp.vec3(vertices[0]), wp.quat_identity()), wp.vec3(0.0, 0.0, 0.0)
+
+    # Center the vertices
+    center = np.mean(vertices, axis=0)
+    centered_vertices = vertices - center
+
+    # Compute covariance matrix with handling for degenerate cases
+    if len(vertices) < 3:
+        # For 2 points, create a line-aligned OBB
+        direction = centered_vertices[1] if len(vertices) > 1 else np.array([1, 0, 0])
+        direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 1e-6 else np.array([1, 0, 0])
+        # Create orthogonal basis
+        if abs(direction[0]) < 0.9:
+            perpendicular = np.cross(direction, [1, 0, 0])
+        else:
+            perpendicular = np.cross(direction, [0, 1, 0])
+        perpendicular = perpendicular / np.linalg.norm(perpendicular)
+        third = np.cross(direction, perpendicular)
+        eigenvectors = np.column_stack([direction, perpendicular, third])
+    else:
+        cov_matrix = np.cov(centered_vertices.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+        # Sort by eigenvalues in descending order
+        sorted_indices = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sorted_indices]
+        eigenvectors = eigenvectors[:, sorted_indices]
+
+        # Ensure right-handed coordinate system
+        if np.linalg.det(eigenvectors) < 0:
+            eigenvectors[:, 2] *= -1
+
+    # Project vertices onto principal axes
+    projected = centered_vertices @ eigenvectors
+
+    # Compute extents
+    min_coords = np.min(projected, axis=0)
+    max_coords = np.max(projected, axis=0)
+    extents = (max_coords - min_coords) / 2.0
+
+    # Calculate the center in the projected coordinate system
+    center_offset = (max_coords + min_coords) / 2.0
+    # Transform the center offset back to the original coordinate system
+    center = center + center_offset @ eigenvectors.T
+
+    # Convert rotation matrix to quaternion
+    # The rotation matrix should transform from the original coordinate system to the principal axes
+    # eigenvectors is the rotation matrix from original to principal axes
+    rotation_matrix = eigenvectors
+
+    # Convert to quaternion using Warp's quat_from_matrix function
+    # First convert numpy array to Warp matrix
+    orientation = wp.quat_from_matrix(wp.mat33(rotation_matrix))
+
+    return wp.transform(wp.vec3(center), orientation), wp.vec3(extents)
+
+
 def load_mesh(filename: str, method: str | None = None):
     """
     Loads a 3D triangular surface mesh from a file.
@@ -339,6 +416,13 @@ def remesh_convex_hull(vertices, maxhullvert: int = 0):
         if np.dot(normal, a - centre) < 0:
             faces[i] = tri[[0, 2, 1]]
 
+    # trim vertices to only those that are used in the faces
+    unique_verts = np.unique(faces.flatten())
+    verts = verts[unique_verts]
+    # update face indices to use the new vertex indices
+    mapping = {v: i for i, v in enumerate(unique_verts)}
+    faces = np.array([mapping[v] for v in faces.flatten()], dtype=np.int32).reshape(faces.shape)
+
     return verts, faces
 
 
@@ -384,23 +468,105 @@ def remesh(
     return new_vertices, new_faces
 
 
-def remesh_mesh(mesh: Mesh, method: RemeshingMethod = "quadratic", recompute_inertia=False, **remeshing_kwargs) -> Mesh:
+def remesh_mesh(
+    mesh: Mesh,
+    method: RemeshingMethod = "quadratic",
+    recompute_inertia: bool = False,
+    inplace: bool = False,
+    **remeshing_kwargs,
+) -> Mesh:
     """Remesh a mesh using the specified method.
     Args:
         mesh: The mesh to remesh.
         method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
         recompute_inertia: Whether to recompute the inertia of the mesh.
+        inplace: Whether to modify the mesh in place or return a new mesh.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
     Returns:
         The remeshed mesh.
     """
     if method == "convex_hull":
         remeshing_kwargs["maxhullvert"] = mesh.maxhullvert
-    mesh.vertices, mesh.indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
-    mesh.indices = mesh.indices.flatten()
-    if recompute_inertia:
-        mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, mesh.vertices, mesh.indices, is_solid=mesh.is_solid)
+    vertices, indices = remesh(mesh.vertices, mesh.indices.reshape(-1, 3), method=method, **remeshing_kwargs)
+    if inplace:
+        mesh.vertices = vertices
+        mesh.indices = indices.flatten()
+        if recompute_inertia:
+            mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=mesh.is_solid)
+    else:
+        return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh
+
+
+def create_box_mesh(half_extents: Vec3) -> tuple[nparray, nparray]:
+    x_extent, y_extent, z_extent = half_extents
+    vertices = np.array(
+        [
+            [-x_extent, -y_extent, -z_extent],
+            [x_extent, -y_extent, -z_extent],
+            [x_extent, y_extent, -z_extent],
+            [-x_extent, y_extent, -z_extent],
+            [-x_extent, -y_extent, z_extent],
+            [x_extent, -y_extent, z_extent],
+            [x_extent, y_extent, z_extent],
+            [-x_extent, y_extent, z_extent],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array(
+        [
+            # Bottom face (z = -z_extent)
+            0,
+            2,
+            1,
+            0,
+            3,
+            2,
+            # Top face (z = z_extent)
+            4,
+            5,
+            6,
+            4,
+            6,
+            7,
+            # Front face (y = -y_extent)
+            0,
+            1,
+            5,
+            0,
+            5,
+            4,
+            # Back face (y = y_extent)
+            2,
+            3,
+            7,
+            2,
+            7,
+            6,
+            # Left face (x = -x_extent)
+            0,
+            4,
+            7,
+            0,
+            7,
+            3,
+            # Right face (x = x_extent)
+            1,
+            2,
+            6,
+            1,
+            6,
+            5,
+        ],
+        dtype=np.int32,
+    )
+    return vertices, indices
+
+
+def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | None = None) -> nparray:
+    if scale is not None:
+        points = points * np.array(scale, dtype=np.float32)
+    return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]

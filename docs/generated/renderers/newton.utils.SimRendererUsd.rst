@@ -17,6 +17,11 @@
    .. autosummary::
    
       ~SimRendererUsd.__init__
+      ~SimRendererUsd.get_new_color
+      ~SimRendererUsd.populate
+      ~SimRendererUsd.populate_bodies
+      ~SimRendererUsd.populate_joints
+      ~SimRendererUsd.populate_shapes
       ~SimRendererUsd.render
       ~SimRendererUsd.render_box
       ~SimRendererUsd.render_capsule
@@ -24,6 +29,8 @@
       ~SimRendererUsd.render_contacts
       ~SimRendererUsd.render_cylinder
       ~SimRendererUsd.render_line_list
+      ~SimRendererUsd.render_muscles
+      ~SimRendererUsd.render_particles_and_springs
       ~SimRendererUsd.render_plane
       ~SimRendererUsd.render_sphere
    

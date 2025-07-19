@@ -63,7 +63,7 @@ from newton.geometry import (
     transform_inertia,
 )
 
-from ..geometry.utils import RemeshingMethod, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_BALL,
@@ -2130,18 +2130,36 @@ class ModelBuilder:
             key=key,
         )
 
-    def simplify_meshes(
+    def approximate_meshes(
         self,
-        method: Literal["coacd"] | RemeshingMethod = "convex_hull",
+        method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
         shape_indices: list[int] | None = None,
-        **remeshing_kwargs,
-    ):
-        """Simplifies the meshes of the model.
+        **remeshing_kwargs: dict[str, Any],
+    ) -> None:
+        """Approximates the mesh shapes of the model.
+
+        The following methods are supported:
+
+        +------------------------+-------------------------------------------------------------------------------+
+        | Method                 | Description                                                                   |
+        +========================+===============================================================================+
+        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/wjakob/coacd>`_         |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"vhacd"``            | Convex decomposition using `V-HACD <https://github.com/trimesh/vhacdx>`_      |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"bounding_sphere"``  | Approximate the mesh with a sphere                                            |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"bounding_box"``     | Approximate the mesh with an oriented bounding box                            |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"convex_hull"``      | Approximate the mesh with a convex hull (default)                             |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``<remeshing_method>`` | Any remeshing method supported by :func:`newton.geometry.utils.remesh_mesh`   |
+        +------------------------+-------------------------------------------------------------------------------+
 
         Args:
-            method: The method to use for simplification. One of "coacd" or "convex_hull".
-            **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+            method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`SHAPE_FLAG_COLLIDE_SHAPES` flag set are simplified.
+            **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
         """
         if shape_indices is None:
             shape_indices = [
@@ -2150,34 +2168,50 @@ class ModelBuilder:
                 if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
-        if method == "coacd":
-            # convex decomposition using CoACD
-            import coacd  # noqa: PLC0415
+        if method == "coacd" or method == "vhacd":
+            if method == "coacd":
+                # convex decomposition using CoACD
+                import coacd  # noqa: PLC0415
+            else:
+                # convex decomposition using V-HACD
+                import trimesh  # noqa: PLC0415
 
             decompositions = {}
 
             for shape in shape_indices:
                 mesh: Mesh = self.shape_geo_src[shape]
+                scale = self.shape_geo_scale[shape]
                 hash_m = hash(mesh)
                 if hash_m in decompositions:
                     decomposition = decompositions[hash_m]
                 else:
-                    cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                    coacd_settings = {
-                        "threshold": 0.5,
-                        "mcts_nodes": 20,
-                        "mcts_iterations": 5,
-                        "mcts_max_depth": 1,
-                        "merge": False,
-                        "max_convex_hull": mesh.maxhullvert,
-                    }
-                    coacd_settings.update(remeshing_kwargs)
-                    decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                    if method == "coacd":
+                        cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                        coacd_settings = {
+                            "threshold": 0.5,
+                            "mcts_nodes": 20,
+                            "mcts_iterations": 5,
+                            "mcts_max_depth": 1,
+                            "merge": False,
+                            "max_convex_hull": mesh.maxhullvert,
+                        }
+                        coacd_settings.update(remeshing_kwargs)
+                        decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                    else:
+                        tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                        vhacd_settings = {
+                            "maxNumVerticesPerCH": mesh.maxhullvert,
+                        }
+                        vhacd_settings.update(remeshing_kwargs)
+                        decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
+                        decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
                     decompositions[hash_m] = decomposition
                 if len(decomposition) == 0:
                     continue
-                self.shape_geo_src[shape].vertices = decomposition[0][0].reshape(-1, 3)
-                self.shape_geo_src[shape].indices = decomposition[0][1].flatten()
+                # note we need to copy the mesh to avoid modifying the original mesh
+                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    vertices=decomposition[0][0], indices=decomposition[0][1]
+                )
                 if len(decomposition) > 1:
                     body = self.shape_body[shape]
                     xform = self.shape_transform[shape]
@@ -2202,19 +2236,46 @@ class ModelBuilder:
                             cfg=cfg,
                             mesh=Mesh(decomposition[i][0], decomposition[i][1]),
                             key=f"{self.shape_key[shape]}_convex_{i}",
+                            scale=scale,
                         )
+        elif method == "bounding_sphere":
+            for shape in shape_indices:
+                mesh: Mesh = self.shape_geo_src[shape]
+                scale = self.shape_geo_scale[shape]
+                vertices = mesh.vertices * np.array([*scale])
+                center = np.mean(vertices, axis=0)
+                radius = np.max(np.linalg.norm(vertices - center, axis=1))
+                self.shape_geo_type[shape] = GEO_SPHERE
+                self.shape_geo_src[shape] = None
+                self.shape_geo_scale[shape] = wp.vec3(radius, 0.0, 0.0)
+                tf = wp.transform(center, wp.quat_identity())
+                shape_tf = wp.transform(*self.shape_transform[shape])
+                self.shape_transform[shape] = shape_tf * tf
+        elif method == "bounding_box":
+            for shape in shape_indices:
+                mesh: Mesh = self.shape_geo_src[shape]
+                scale = self.shape_geo_scale[shape]
+                vertices = mesh.vertices * np.array([*scale])
+                tf, scale = compute_obb(vertices)
+                self.shape_geo_type[shape] = GEO_BOX
+                self.shape_geo_src[shape] = None
+                self.shape_geo_scale[shape] = scale
+                shape_tf = wp.transform(*self.shape_transform[shape])
+                self.shape_transform[shape] = shape_tf * tf
         elif method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
             for shape in shape_indices:
                 mesh: Mesh = self.shape_geo_src[shape]
                 hash_m = hash(mesh)
-                if hash_m in remeshed:
-                    mesh = remeshed[hash_m]
-                else:
-                    mesh = remesh_mesh(mesh, method=method, **remeshing_kwargs)
-                    remeshed[hash_m] = mesh
-                self.shape_geo_src[shape] = mesh
+                rmesh = remeshed.get(hash_m, None)
+                if rmesh is None:
+                    rmesh = remesh_mesh(mesh, method=method, inplace=False, **remeshing_kwargs)
+                    remeshed[hash_m] = rmesh
+                # note we need to copy the mesh to avoid modifying the original mesh
+                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    vertices=rmesh.vertices, indices=rmesh.indices
+                )
         else:
             raise ValueError(f"Unknown remeshing method: {method}")
 

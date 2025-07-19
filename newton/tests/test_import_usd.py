@@ -17,7 +17,6 @@ import os
 import unittest
 
 import numpy as np
-import warp as wp
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
@@ -157,5 +156,5 @@ class TestImportUsd(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
+    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)
