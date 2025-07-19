@@ -19,6 +19,7 @@ import unittest
 import numpy as np
 
 import newton
+from newton.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 from newton.utils import parse_usd
 
@@ -154,7 +155,68 @@ class TestImportUsd(unittest.TestCase):
             atol=1e-7,
         )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_approximation(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
+            vertices, indices = create_box_mesh(scale)
+            if transform is not None:
+                vertices = transform_points(vertices, transform)
+            return newton.Mesh(vertices, indices)
+
+        def npsorted(x):
+            return np.array(sorted(x))
+
+        stage = Usd.Stage.CreateInMemory()
+        self.assertTrue(stage)
+
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        self.assertTrue(scene)
+
+        tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
+        scale = wp.vec3(1.0, 3.0, 0.2)
+
+        rigidbody = UsdGeom.Xform.Define(stage, "/rigidBody")
+        UsdPhysics.RigidBodyAPI.Apply(rigidbody.GetPrim())
+        position = Gf.Vec3f(1.0, 2.0, -4.0)
+        rotate_xyz = Gf.Vec3f(0.0, 0.0, 45.0)
+
+        rigidbody.AddTranslateOp().Set(position)
+        rigidbody.AddRotateXYZOp().Set(rotate_xyz)
+        rigidbody.AddScaleOp().Set(Gf.Vec3f(*scale))
+
+        mesh = UsdGeom.Mesh.Define(stage, "/meshConvexHull")
+
+        box = box_mesh(scale=scale)
+
+        # Fill in VtArrays
+        points = []
+        normals = []
+        indices = []
+        vertex_counts = []
+
+        points = [Gf.Vec3f(*p) for p in box.vertices]
+        indices = [Gf.Vec3i(*i) for i in box.indices.reshape(-1, 3)]
+        vertex_counts = [3] * len(indices)
+
+        mesh.CreateFaceVertexCountsAttr().Set(vertex_counts)
+        mesh.CreateFaceVertexIndicesAttr().Set(indices)
+        mesh.CreatePointsAttr().Set(points)
+        mesh.CreateDoubleSidedAttr().Set(False)
+        # mesh.CreateNormalsAttr().Set(normals)
+
+        mesh_prim = mesh.GetPrim()
+
+        meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+        meshColAPI.GetApproximationAttr().Set(UsdPhysics.Tokens.convexHull)
+
+        builder = newton.ModelBuilder()
+        parse_usd(
+            stage,
+            builder,
+        )
+
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)
