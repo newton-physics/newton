@@ -1,0 +1,1395 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>newton.utils.SimRendererOpenGL &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=3521d46b"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'generated/renderers/newton.utils.SimRendererOpenGL';</script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Frequently Asked Questions (FAQ)" href="../../faq.html" />
+    <link rel="prev" title="newton.utils.SimRendererUsd" href="newton.utils.SimRendererUsd.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.1.1.a2)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../conventions.html">
+    Conventions
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="../../api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_core.html">
+    Core
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_solvers.html">
+    Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api_importers.html">
+    Importers
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../../api_renderers.html">
+    Renderers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../conventions.html">Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../api.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_core.html">Core</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_solvers.html">Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_importers.html">Importers</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../api_renderers.html">Renderers</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="newton.utils.SimRendererUsd.html">newton.utils.SimRendererUsd</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">newton.utils.SimRendererOpenGL</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../changelog.html">Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../development-guide.html">Development Guide</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../api_renderers.html" class="nav-link">Renderers</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.utils.SimRendererOpenGL</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="newton-utils-simrendereropengl">
+<h1>newton.utils.SimRendererOpenGL<a class="headerlink" href="#newton-utils-simrendereropengl" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.utils.</span></span><span class="sig-name descname"><span class="pre">SimRendererOpenGL</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'No</span> <span class="pre">path</span> <span class="pre">specified'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_particles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">render_kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">SimRenderer</span></code></p>
+<p>Real-time OpenGL renderer for Newton Physics simulations.</p>
+<p>This renderer provides real-time visualization of physics simulations using
+OpenGL, with interactive camera controls and various rendering options.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>model</strong> (<a class="reference internal" href="../core/newton.Model.html#newton.Model" title="newton.Model"><em>newton.Model</em></a>) – The Newton physics model to render.</p></li>
+<li><p><strong>path</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Window title for the OpenGL window.</p></li>
+<li><p><strong>scaling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><em>optional</em>) – Scaling factor for the rendered objects.
+Defaults to 1.0.</p></li>
+<li><p><strong>fps</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Target frames per second. Defaults to 60.</p></li>
+<li><p><strong>up_axis</strong> (<em>newton.AxisType</em><em>, </em><em>optional</em>) – Up axis for the scene. If None, uses model’s up axis. Defaults to None.</p></li>
+<li><p><strong>show_rigid_contact_points</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Whether to show contact
+points. Defaults to False.</p></li>
+<li><p><strong>contact_points_radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><em>optional</em>) – Radius of contact point
+spheres. Defaults to 1e-3.</p></li>
+<li><p><strong>show_joints</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Whether to show joint visualizations.
+Defaults to False.</p></li>
+<li><p><strong>**render_kwargs</strong> – Additional arguments passed to the underlying
+OpenGLRenderer.</p></li>
+</ul>
+</dd>
+</dl>
+<p class="rubric">Example</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="p">()</span>  <span class="c1"># your model setup</span>
+<span class="n">renderer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">SimRendererOpenGL</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;Newton Simulator&quot;</span><span class="p">)</span>
+<span class="c1"># In your simulation loop:</span>
+<span class="n">renderer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">time</span><span class="p">)</span>
+<span class="n">renderer</span><span class="o">.</span><span class="n">render</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">renderer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Keyboard shortcuts available during rendering:</p>
+<ul class="simple">
+<li><p>W, A, S, D (or arrow keys) + mouse: FPS-style camera movement</p></li>
+<li><p>X: Toggle wireframe rendering</p></li>
+<li><p>B: Toggle backface culling</p></li>
+<li><p>C: Toggle coordinate system axes</p></li>
+<li><p>G: Toggle ground grid</p></li>
+<li><p>T: Toggle depth rendering</p></li>
+<li><p>I: Toggle info text</p></li>
+<li><p>SPACE: Pause/continue simulation</p></li>
+<li><p>TAB: Skip rendering (background simulation)</p></li>
+</ul>
+</div>
+<p class="rubric">Methods</p>
+<div class="pst-scrollable-table-container"><table class="autosummary longtable table">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.__init__" title="newton.utils.SimRendererOpenGL.__init__"><code class="xref py py-obj docutils literal notranslate"><span class="pre">__init__</span></code></a>([model, path, scaling, fps, ...])</p></td>
+<td><p>Initializes the simulation renderer.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.compute_projection_matrix" title="newton.utils.SimRendererOpenGL.compute_projection_matrix"><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_projection_matrix</span></code></a>(fov, aspect_ratio, ...)</p></td>
+<td><p>Compute a projection matrix given the field of view, aspect ratio, near plane, and far plane.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.get_new_color" title="newton.utils.SimRendererOpenGL.get_new_color"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_new_color</span></code></a>(instance_count)</p></td>
+<td><p>Gets a new color from a predefined color map.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.get_pixels" title="newton.utils.SimRendererOpenGL.get_pixels"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_pixels</span></code></a>(target_image[, split_up_tiles, ...])</p></td>
+<td><p>Read the pixels from the frame buffer (RGB or depth are supported) into the given array.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.populate" title="newton.utils.SimRendererOpenGL.populate"><code class="xref py py-obj docutils literal notranslate"><span class="pre">populate</span></code></a>(model)</p></td>
+<td><p>Populates the renderer with objects from the simulation model.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.populate_bodies" title="newton.utils.SimRendererOpenGL.populate_bodies"><code class="xref py py-obj docutils literal notranslate"><span class="pre">populate_bodies</span></code></a>(body_name_arr[, ...])</p></td>
+<td><p>Populates the renderer with body objects.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.populate_joints" title="newton.utils.SimRendererOpenGL.populate_joints"><code class="xref py py-obj docutils literal notranslate"><span class="pre">populate_joints</span></code></a>(body_names, joint_type, ...)</p></td>
+<td><p>Populates the renderer with joint visualizations.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.populate_shapes" title="newton.utils.SimRendererOpenGL.populate_shapes"><code class="xref py py-obj docutils literal notranslate"><span class="pre">populate_shapes</span></code></a>(body_names, geo_shape, ...)</p></td>
+<td><p>Populates the renderer with shapes for rigid bodies.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render" title="newton.utils.SimRendererOpenGL.render"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render</span></code></a>(state)</p></td>
+<td><p>Updates the renderer with the given simulation state.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_arrow" title="newton.utils.SimRendererOpenGL.render_arrow"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_arrow</span></code></a>(name, pos, rot, base_radius, ...)</p></td>
+<td><p>Add a arrow for visualization</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_box" title="newton.utils.SimRendererOpenGL.render_box"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_box</span></code></a>(name, pos, rot, extents[, ...])</p></td>
+<td><p>Add a box for visualization</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_capsule" title="newton.utils.SimRendererOpenGL.render_capsule"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_capsule</span></code></a>(name, pos, rot, radius, ...)</p></td>
+<td><p>Add a capsule for visualization</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_cone" title="newton.utils.SimRendererOpenGL.render_cone"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_cone</span></code></a>(name, pos, rot, radius, half_height)</p></td>
+<td><p>Add a cone for visualization</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_contacts" title="newton.utils.SimRendererOpenGL.render_contacts"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_contacts</span></code></a>(body_q, contacts[, ...])</p></td>
+<td><p>Render contact points between rigid bodies.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_cylinder" title="newton.utils.SimRendererOpenGL.render_cylinder"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_cylinder</span></code></a>(name, pos, rot, radius, ...)</p></td>
+<td><p>Add a cylinder for visualization</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_ground" title="newton.utils.SimRendererOpenGL.render_ground"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_ground</span></code></a>([size, plane])</p></td>
+<td><p>Add a ground plane for visualization</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_line_list" title="newton.utils.SimRendererOpenGL.render_line_list"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_line_list</span></code></a>(name, vertices, indices[, ...])</p></td>
+<td><p>Add a line list as a set of capsules</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_line_strip" title="newton.utils.SimRendererOpenGL.render_line_strip"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_line_strip</span></code></a>(name, vertices[, color, ...])</p></td>
+<td><p>Add a line strip as a set of capsules</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_mesh" title="newton.utils.SimRendererOpenGL.render_mesh"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_mesh</span></code></a>(name, points, indices[, colors, ...])</p></td>
+<td><p>Add a mesh for visualization</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_muscles" title="newton.utils.SimRendererOpenGL.render_muscles"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_muscles</span></code></a>(body_q, muscle_start, ...)</p></td>
+<td><p>Renders muscles as line strips.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_particles_and_springs" title="newton.utils.SimRendererOpenGL.render_particles_and_springs"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_particles_and_springs</span></code></a>(particle_q, ...)</p></td>
+<td><p>Renders particles, mesh surface, and springs.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_plane" title="newton.utils.SimRendererOpenGL.render_plane"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_plane</span></code></a>(name, pos, rot, width, length)</p></td>
+<td><p>Add a plane for visualization</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_points" title="newton.utils.SimRendererOpenGL.render_points"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_points</span></code></a>(name, points, radius[, ...])</p></td>
+<td><p>Add a set of points</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_ref" title="newton.utils.SimRendererOpenGL.render_ref"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_ref</span></code></a>(name, path, pos, rot, scale[, color])</p></td>
+<td><p>Create a reference (instance) with the given name to the given path.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.render_sphere" title="newton.utils.SimRendererOpenGL.render_sphere"><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_sphere</span></code></a>(name, pos, rot, radius[, ...])</p></td>
+<td><p>Add a sphere for visualization</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.setup_tiled_rendering" title="newton.utils.SimRendererOpenGL.setup_tiled_rendering"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setup_tiled_rendering</span></code></a>(instances[, ...])</p></td>
+<td><p>Set up tiled rendering where the render buffer is split into multiple tiles that can visualize different shape instances of the scene with different view and projection matrices.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.update_shape_instance" title="newton.utils.SimRendererOpenGL.update_shape_instance"><code class="xref py py-obj docutils literal notranslate"><span class="pre">update_shape_instance</span></code></a>(name[, pos, rot, ...])</p></td>
+<td><p>Update the instance properties of the shape</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.update_tile" title="newton.utils.SimRendererOpenGL.update_tile"><code class="xref py py-obj docutils literal notranslate"><span class="pre">update_tile</span></code></a>(tile_id[, instances, ...])</p></td>
+<td><p>Update the shape instances, projection matrix, view matrix, tile size, or tile position for a given tile given its index.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p class="rubric">Attributes</p>
+<div class="pst-scrollable-table-container"><table class="autosummary longtable table">
+<tbody>
+<tr class="row-odd"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.default_num_segments" title="newton.utils.SimRendererOpenGL.default_num_segments"><code class="xref py py-obj docutils literal notranslate"><span class="pre">default_num_segments</span></code></a></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#newton.utils.SimRendererOpenGL.use_unique_colors" title="newton.utils.SimRendererOpenGL.use_unique_colors"><code class="xref py py-obj docutils literal notranslate"><span class="pre">use_unique_colors</span></code></a></p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'No</span> <span class="pre">path</span> <span class="pre">specified'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fps</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_particles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">render_kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.__init__" title="Link to this definition">#</a></dt>
+<dd><p>Initializes the simulation renderer.
+:param model: The simulation model to render. Defaults to None.
+:type model: newton.Model, optional
+:param path: The path for the rendered output (e.g., filename for USD, window title for OpenGL).
+:type path: str, optional
+:param scaling: Scaling factor for the rendered output. Defaults to 1.0.
+:type scaling: float, optional
+:param fps: Frames per second for the rendered output. Defaults to 60.
+:type fps: int, optional
+:param up_axis: The up-axis for the scene. If not provided, it’s inferred from the model, or defaults to “Z” if no model is given. Defaults to None.
+:type up_axis: newton.AxisType, optional
+:param show_joints: Whether to visualize joints. Defaults to False.
+:type show_joints: bool, optional
+:param show_particles: Whether to visualize particles. Defaults to True.
+:type show_particles: bool, optional
+:param **render_kwargs: Additional keyword arguments for the underlying renderer.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.compute_projection_matrix">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">compute_projection_matrix</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fov</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">aspect_ratio</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">near_plane</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">far_plane</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.compute_projection_matrix" title="Link to this definition">#</a></dt>
+<dd><p>Compute a projection matrix given the field of view, aspect ratio, near plane, and far plane.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>fov</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The field of view in degrees.</p></li>
+<li><p><strong>aspect_ratio</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The aspect ratio (width / height).</p></li>
+<li><p><strong>near_plane</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The near plane.</p></li>
+<li><p><strong>far_plane</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The far plane.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A projection matrix.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)">float</a>] | <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)">float</a>]] | <a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.3)"><em>ndarray</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.default_num_segments">
+<span class="sig-name descname"><span class="pre">default_num_segments</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">32</span></em><a class="headerlink" href="#newton.utils.SimRendererOpenGL.default_num_segments" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.get_new_color">
+<span class="sig-name descname"><span class="pre">get_new_color</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">instance_count</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.get_new_color" title="Link to this definition">#</a></dt>
+<dd><p>Gets a new color from a predefined color map.
+This method provides a new color based on the current instance count,
+cycling through a predefined color map to ensure variety.
+:returns: A tuple representing the new color (e.g., in RGB format).
+:rtype: tuple</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.get_pixels">
+<span class="sig-name descname"><span class="pre">get_pixels</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">target_image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">split_up_tiles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'rgb'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_uint8</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.get_pixels" title="Link to this definition">#</a></dt>
+<dd><p>Read the pixels from the frame buffer (RGB or depth are supported) into the given array.</p>
+<p>If <cite>split_up_tiles</cite> is False, array must be of shape (screen_height, screen_width, 3) for RGB mode or
+(screen_height, screen_width, 1) for depth mode.
+If <cite>split_up_tiles</cite> is True, the pixels will be split up into tiles (see <code class="xref py py-attr docutils literal notranslate"><span class="pre">tile_width</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">tile_height</span></code> for dimensions):
+array must be of shape (num_tiles, tile_height, tile_width, 3) for RGB mode or (num_tiles, tile_height, tile_width, 1) for depth mode.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>target_image</strong> (<em>array</em>) – The array to read the pixels into. Must have float32 as dtype and be on a CUDA device.</p></li>
+<li><p><strong>split_up_tiles</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Whether to split up the viewport into tiles, see <a class="reference internal" href="#newton.utils.SimRendererOpenGL.setup_tiled_rendering" title="newton.utils.SimRendererOpenGL.setup_tiled_rendering"><code class="xref py py-meth docutils literal notranslate"><span class="pre">setup_tiled_rendering()</span></code></a>.</p></li>
+<li><p><strong>mode</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – can be either “rgb” or “depth”</p></li>
+<li><p><strong>use_uint8</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Whether to use uint8 as dtype in RGB mode for the target_image array and return values in the range [0, 255]. Otherwise, float32 is assumed as dtype with values in the range [0, 1].</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Whether the pixels were successfully read.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.populate">
+<span class="sig-name descname"><span class="pre">populate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.populate" title="Link to this definition">#</a></dt>
+<dd><p>Populates the renderer with objects from the simulation model.
+This method sets up the rendering scene by creating visual representations
+for all the bodies, shapes, and other components of the simulation model.
+:param model: The simulation model containing the objects to populate.
+:type model: newton.Model</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.populate_bodies">
+<span class="sig-name descname"><span class="pre">populate_bodies</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_name_arr</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bodies_per_env</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_env</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.populate_bodies" title="Link to this definition">#</a></dt>
+<dd><p>Populates the renderer with body objects.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>body_name_arr</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a>) – List of body names from the model.</p></li>
+<li><p><strong>bodies_per_env</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Number of bodies per environment. If -1, all bodies belong to same environment. Defaults to -1.</p></li>
+<li><p><strong>body_env</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>, </em><em>optional</em>) – List to store environment IDs for each body. Defaults to None.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>List of generated unique body names in the format “body_{index}_{name}”.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)">list</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.populate_joints">
+<span class="sig-name descname"><span class="pre">populate_joints</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_names</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_type</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_axis</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd_start</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_dof_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_parent</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_child</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_tf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">instance_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.populate_joints" title="Link to this definition">#</a></dt>
+<dd><p>Populates the renderer with joint visualizations.
+:param body_names: List of body names.
+:type body_names: list
+:param joint_type: Type of each joint.
+:type joint_type: numpy.ndarray
+:param joint_axis: Axis of each joint.
+:type joint_axis: numpy.ndarray
+:param joint_qd_start: Start index for joint dofs.
+:type joint_qd_start: numpy.ndarray
+:param joint_dof_dim: Dimensions of joint dofs (linear and angular).
+:type joint_dof_dim: numpy.ndarray
+:param joint_parent: Parent body index for each joint.
+:type joint_parent: numpy.ndarray
+:param joint_child: Child body index for each joint.
+:type joint_child: numpy.ndarray
+:param joint_tf: Transform of each joint.
+:type joint_tf: numpy.ndarray
+:param shape_collision_radius: Collision radius of shapes, used for scaling joint arrows.
+:type shape_collision_radius: numpy.ndarray
+:param body_shapes: List of shapes attached to each body.
+:type body_shapes: list
+:param instance_count: Initial instance count. Defaults to 0.
+:type instance_count: int, optional</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>The updated instance count after adding joint visualizations.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.populate_shapes">
+<span class="sig-name descname"><span class="pre">populate_shapes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_names</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_shape</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_body</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_geo_src</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_geo_type</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_geo_scale</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_geo_thickness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_geo_is_solid</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_transform</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_flags</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_key</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">instance_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_unique_colors</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.populate_shapes" title="Link to this definition">#</a></dt>
+<dd><p>Populates the renderer with shapes for rigid bodies.
+:param body_names: List of body names.
+:type body_names: list
+:param geo_shape: A dictionary to cache geometry shapes.
+:type geo_shape: dict
+:param shape_body: Maps shape index to body index.
+:type shape_body: numpy.ndarray
+:param shape_geo_src: Source geometry for each shape.
+:type shape_geo_src: list
+:param shape_geo_type: Type of each shape’s geometry.
+:type shape_geo_type: numpy.ndarray
+:param shape_geo_scale: Scale of each shape’s geometry.
+:type shape_geo_scale: numpy.ndarray
+:param shape_geo_thickness: Thickness of each shape’s geometry.
+:type shape_geo_thickness: numpy.ndarray
+:param shape_geo_is_solid: Solid flag for each shape’s geometry.
+:type shape_geo_is_solid: numpy.ndarray
+:param shape_transform: Local transform of each shape.
+:type shape_transform: numpy.ndarray
+:param shape_flags: Visibility and other flags for each shape.
+:type shape_flags: numpy.ndarray
+:param shape_key: List of shape names.
+:type shape_key: list
+:param instance_count: Initial instance count. Defaults to 0.
+:type instance_count: int, optional
+:param use_unique_colors: Whether to assign unique colors to shapes. Defaults to True.
+:type use_unique_colors: bool, optional</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>The updated instance count after adding shapes.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render">
+<span class="sig-name descname"><span class="pre">render</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render" title="Link to this definition">#</a></dt>
+<dd><p>Updates the renderer with the given simulation state.
+:param state: The simulation state to render.
+:type state: newton.State</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_arrow">
+<span class="sig-name descname"><span class="pre">render_arrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_arrow" title="Link to this definition">#</a></dt>
+<dd><p>Add a arrow for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the arrow</p></li>
+<li><p><strong>base_radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the cylindrical base of the arrow</p></li>
+<li><p><strong>base_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The height of the cylindrical base of the arrow</p></li>
+<li><p><strong>cap_radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>) – The radius of the conical cap of the arrow</p></li>
+<li><p><strong>cap_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>) – The height of the conical cap of the arrow</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>up_axis</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The axis of the arrow that points up (0: x, 1: y, 2: z)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_box">
+<span class="sig-name descname"><span class="pre">render_box</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extents</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_box" title="Link to this definition">#</a></dt>
+<dd><p>Add a box for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the box</p></li>
+<li><p><strong>extents</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The extents of the box</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the box</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_capsule">
+<span class="sig-name descname"><span class="pre">render_capsule</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">half_height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_capsule" title="Link to this definition">#</a></dt>
+<dd><p>Add a capsule for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the capsule</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the capsule</p></li>
+<li><p><strong>half_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The half height of the capsule</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>up_axis</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The axis of the capsule that points up (0: x, 1: y, 2: z)</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the capsule</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_cone">
+<span class="sig-name descname"><span class="pre">render_cone</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">half_height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_cone" title="Link to this definition">#</a></dt>
+<dd><p>Add a cone for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the cone</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the cone</p></li>
+<li><p><strong>half_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The half height of the cone</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>up_axis</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The axis of the cone that points up (0: x, 1: y, 2: z)</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the cone</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_contacts">
+<span class="sig-name descname"><span class="pre">render_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contact_point_radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-3</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_contacts" title="Link to this definition">#</a></dt>
+<dd><p>Render contact points between rigid bodies.
+:param body_q: Array of body transformations.
+:type body_q: wp.array
+:param contacts: The contacts to render.
+:type contacts: newton.Contacts
+:param contact_point_radius: The radius of the contact points.
+:type contact_point_radius: float, optional</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_cylinder">
+<span class="sig-name descname"><span class="pre">render_cylinder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">half_height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_cylinder" title="Link to this definition">#</a></dt>
+<dd><p>Add a cylinder for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the cylinder</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the cylinder</p></li>
+<li><p><strong>half_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The half height of the cylinder</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>up_axis</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The axis of the cylinder that points up (0: x, 1: y, 2: z)</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the capsule</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_ground">
+<span class="sig-name descname"><span class="pre">render_ground</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">plane</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_ground" title="Link to this definition">#</a></dt>
+<dd><p>Add a ground plane for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The size of the ground plane</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_line_list">
+<span class="sig-name descname"><span class="pre">render_line_list</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_line_list" title="Link to this definition">#</a></dt>
+<dd><p>Add a line list as a set of capsules</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>vertices</strong> – The vertices of the line-list</p></li>
+<li><p><strong>indices</strong> – The indices of the line-list</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the line</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the line</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_line_strip">
+<span class="sig-name descname"><span class="pre">render_line_strip</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_line_strip" title="Link to this definition">#</a></dt>
+<dd><p>Add a line strip as a set of capsules</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>vertices</strong> – The vertices of the line-strip</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the line</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the line</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_mesh">
+<span class="sig-name descname"><span class="pre">render_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,</span> <span class="pre">1.0,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_topology</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">smooth_shading</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_mesh" title="Link to this definition">#</a></dt>
+<dd><p>Add a mesh for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>points</strong> – The points of the mesh</p></li>
+<li><p><strong>indices</strong> – The indices of the mesh</p></li>
+<li><p><strong>colors</strong> – The colors of the mesh</p></li>
+<li><p><strong>pos</strong> – The position of the mesh</p></li>
+<li><p><strong>rot</strong> – The rotation of the mesh</p></li>
+<li><p><strong>scale</strong> – The scale of the mesh</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>smooth_shading</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Whether to average face normals at each vertex or introduce additional vertices for each face</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_muscles">
+<span class="sig-name descname"><span class="pre">render_muscles</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">muscle_start</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">muscle_links</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">muscle_points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">muscle_activation</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_muscles" title="Link to this definition">#</a></dt>
+<dd><p>Renders muscles as line strips.
+:param body_q: Array of body transformations.
+:type body_q: numpy.ndarray
+:param muscle_start: Start indices for muscles in other muscle arrays.
+:type muscle_start: numpy.ndarray
+:param muscle_links: Body indices for each muscle point.
+:type muscle_links: numpy.ndarray
+:param muscle_points: Local positions of muscle attachment points.
+:type muscle_points: numpy.ndarray
+:param muscle_activation: Activation level for each muscle, used for color.
+:type muscle_activation: numpy.ndarray</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_particles_and_springs">
+<span class="sig-name descname"><span class="pre">render_particles_and_springs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">particle_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">particle_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tri_indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">spring_indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_particles_and_springs" title="Link to this definition">#</a></dt>
+<dd><p>Renders particles, mesh surface, and springs.
+:param particle_q: Array of particle positions.
+:type particle_q: numpy.ndarray
+:param particle_radius: Radius of the particles.
+:type particle_radius: float
+:param tri_indices: Triangle indices for the surface mesh. Defaults to None.
+:type tri_indices: numpy.ndarray, optional
+:param spring_indices: Spring indices. Defaults to None.
+:type spring_indices: numpy.ndarray, optional</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_plane">
+<span class="sig-name descname"><span class="pre">render_plane</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">length</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,</span> <span class="pre">1.0,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">u_scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">v_scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_plane" title="Link to this definition">#</a></dt>
+<dd><p>Add a plane for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – The name of the plane</p></li>
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the plane</p></li>
+<li><p><strong>rot</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The rotation of the plane</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The width of the plane</p></li>
+<li><p><strong>length</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The length of the plane</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The color of the plane</p></li>
+<li><p><strong>texture</strong> – The texture of the plane (optional)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_points">
+<span class="sig-name descname"><span class="pre">render_points</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">as_spheres</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_points" title="Link to this definition">#</a></dt>
+<dd><p>Add a set of points</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>points</strong> – The points to render</p></li>
+<li><p><strong>radius</strong> – The radius of the points (scalar or list)</p></li>
+<li><p><strong>colors</strong> – The colors of the points</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_ref">
+<span class="sig-name descname"><span class="pre">render_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_ref" title="Link to this definition">#</a></dt>
+<dd><p>Create a reference (instance) with the given name to the given path.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.render_sphere">
+<span class="sig-name descname"><span class="pre">render_sphere</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.render_sphere" title="Link to this definition">#</a></dt>
+<dd><p>Add a sphere for visualization</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pos</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a>) – The position of the sphere</p></li>
+<li><p><strong>radius</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – The radius of the sphere</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – A name for the USD prim on the stage</p></li>
+<li><p><strong>color</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – The color of the sphere</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.setup_tiled_rendering">
+<span class="sig-name descname"><span class="pre">setup_tiled_rendering</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">instances</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rescale_window</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_width</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_ncols</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_nrows</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_positions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_sizes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">projection_matrices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">view_matrices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.setup_tiled_rendering" title="Link to this definition">#</a></dt>
+<dd><p>Set up tiled rendering where the render buffer is split into multiple tiles that can visualize
+different shape instances of the scene with different view and projection matrices.
+See <a class="reference internal" href="#newton.utils.SimRendererOpenGL.get_pixels" title="newton.utils.SimRendererOpenGL.get_pixels"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_pixels()</span></code></a> which allows to retrieve the pixels of for each tile.
+See <a class="reference internal" href="#newton.utils.SimRendererOpenGL.update_tile" title="newton.utils.SimRendererOpenGL.update_tile"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update_tile()</span></code></a> which allows to update the shape instances, projection matrix, view matrix, tile size, or tile position for a given tile.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>instances</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>]</em>) – A list of lists of shape instance ids. Each list of shape instance ids
+will be rendered into a separate tile.</p></li>
+<li><p><strong>rescale_window</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – If True, the window will be resized to fit the tiles.</p></li>
+<li><p><strong>tile_width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – The width of each tile in pixels (optional).</p></li>
+<li><p><strong>tile_height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – The height of each tile in pixels (optional).</p></li>
+<li><p><strong>tile_ncols</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – The number of tiles rendered horizontally (optional). Will be considered
+if <cite>tile_width</cite> is set to compute the tile positions, unless <cite>tile_positions</cite> is defined.</p></li>
+<li><p><strong>tile_positions</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>] </em><em>| </em><em>None</em>) – A list of (x, y) tuples specifying the position of each tile in pixels.
+If None, the tiles will be arranged in a square grid, or, if <cite>tile_ncols</cite> and <cite>tile_nrows</cite>
+is set, in a grid with the specified number of columns and rows.</p></li>
+<li><p><strong>tile_sizes</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>] </em><em>| </em><em>None</em>) – A list of (width, height) tuples specifying the size of each tile in pixels.
+If None, the tiles will have the same size as specified by <cite>tile_width</cite> and <cite>tile_height</cite>.</p></li>
+<li><p><strong>projection_matrices</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.3)"><em>ndarray</em></a><em>] </em><em>| </em><em>None</em>) – A list of projection matrices for each tile (each view matrix is
+either a flattened 16-dimensional array or a 4x4 matrix).
+If the entire array is None, or only a view instances, the projection matrices for all, or these
+instances, respectively, will be derived from the current render settings.</p></li>
+<li><p><strong>view_matrices</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.3)"><em>ndarray</em></a><em>] </em><em>| </em><em>None</em>) – A list of view matrices for each tile (each view matrix is either a flattened
+16-dimensional array or a 4x4 matrix).
+If the entire array is None, or only a view instances, the view matrices for all, or these
+instances, respectively, will be derived from the current camera settings and be
+updated when the camera is moved.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.update_shape_instance">
+<span class="sig-name descname"><span class="pre">update_shape_instance</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pos</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rot</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color1</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visible</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.update_shape_instance" title="Link to this definition">#</a></dt>
+<dd><p>Update the instance properties of the shape</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> – The name of the shape</p></li>
+<li><p><strong>pos</strong> – The position of the shape</p></li>
+<li><p><strong>rot</strong> – The rotation of the shape</p></li>
+<li><p><strong>color1</strong> – The first color of the checker pattern</p></li>
+<li><p><strong>color2</strong> – The second color of the checker pattern</p></li>
+<li><p><strong>visible</strong> – Whether the shape is visible</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.update_tile">
+<span class="sig-name descname"><span class="pre">update_tile</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tile_id</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">instances</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">projection_matrix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">view_matrix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tile_position</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.utils.SimRendererOpenGL.update_tile" title="Link to this definition">#</a></dt>
+<dd><p>Update the shape instances, projection matrix, view matrix, tile size, or tile position
+for a given tile given its index.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>tile_id</strong> – The index of the tile to update.</p></li>
+<li><p><strong>instances</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – A list of shape instance ids (optional).</p></li>
+<li><p><strong>projection_matrix</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.3)"><em>ndarray</em></a><em> | </em><em>None</em>) – A projection matrix (optional).</p></li>
+<li><p><strong>view_matrix</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.3)"><em>ndarray</em></a><em> | </em><em>None</em>) – A view matrix (optional).</p></li>
+<li><p><strong>tile_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – A (width, height) tuple specifying the size of the tile in pixels (optional).</p></li>
+<li><p><strong>tile_position</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – A (x, y) tuple specifying the position of the tile in pixels (optional).</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.utils.SimRendererOpenGL.use_unique_colors">
+<span class="sig-name descname"><span class="pre">use_unique_colors</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">True</span></em><a class="headerlink" href="#newton.utils.SimRendererOpenGL.use_unique_colors" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.__init__"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.compute_projection_matrix"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.compute_projection_matrix()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.default_num_segments"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.default_num_segments</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.get_new_color"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.get_new_color()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.get_pixels"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.get_pixels()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.populate"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.populate()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.populate_bodies"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.populate_bodies()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.populate_joints"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.populate_joints()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.populate_shapes"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.populate_shapes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_arrow"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_arrow()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_box"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_box()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_capsule"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_capsule()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_cone"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_cone()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_contacts"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_contacts()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_cylinder"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_cylinder()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_ground"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_ground()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_line_list"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_line_list()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_line_strip"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_line_strip()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_mesh"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_mesh()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_muscles"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_muscles()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_particles_and_springs"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_particles_and_springs()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_plane"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_plane()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_points"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_points()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_ref"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_ref()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.render_sphere"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.render_sphere()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.setup_tiled_rendering"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.setup_tiled_rendering()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.update_shape_instance"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.update_shape_instance()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.update_tile"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.update_tile()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.utils.SimRendererOpenGL.use_unique_colors"><code class="docutils literal notranslate"><span class="pre">SimRendererOpenGL.use_unique_colors</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

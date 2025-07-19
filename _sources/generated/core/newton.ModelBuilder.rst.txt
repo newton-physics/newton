@@ -1,0 +1,69 @@
+﻿newton.ModelBuilder
+===================
+
+.. currentmodule:: newton
+
+.. autoclass:: ModelBuilder
+   :members:
+   :inherited-members:
+   :member-order: bysource
+   
+   
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~ModelBuilder.__init__
+      ~ModelBuilder.add_body
+      ~ModelBuilder.add_builder
+      ~ModelBuilder.add_cloth_grid
+      ~ModelBuilder.add_cloth_mesh
+      ~ModelBuilder.add_edge
+      ~ModelBuilder.add_edges
+      ~ModelBuilder.add_ground_plane
+      ~ModelBuilder.add_joint
+      ~ModelBuilder.add_joint_ball
+      ~ModelBuilder.add_joint_d6
+      ~ModelBuilder.add_joint_distance
+      ~ModelBuilder.add_joint_fixed
+      ~ModelBuilder.add_joint_free
+      ~ModelBuilder.add_joint_prismatic
+      ~ModelBuilder.add_joint_revolute
+      ~ModelBuilder.add_muscle
+      ~ModelBuilder.add_particle
+      ~ModelBuilder.add_particles
+      ~ModelBuilder.add_shape
+      ~ModelBuilder.add_shape_box
+      ~ModelBuilder.add_shape_capsule
+      ~ModelBuilder.add_shape_cone
+      ~ModelBuilder.add_shape_cylinder
+      ~ModelBuilder.add_shape_mesh
+      ~ModelBuilder.add_shape_plane
+      ~ModelBuilder.add_shape_sdf
+      ~ModelBuilder.add_shape_sphere
+      ~ModelBuilder.add_soft_grid
+      ~ModelBuilder.add_soft_mesh
+      ~ModelBuilder.add_spring
+      ~ModelBuilder.add_tetrahedron
+      ~ModelBuilder.add_triangle
+      ~ModelBuilder.add_triangles
+      ~ModelBuilder.collapse_fixed_joints
+      ~ModelBuilder.color
+      ~ModelBuilder.finalize
+      ~ModelBuilder.plot_articulation
+      ~ModelBuilder.set_coloring
+      ~ModelBuilder.simplify_meshes
+   
+   
+
+   
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~ModelBuilder.up_vector
+   
+   
