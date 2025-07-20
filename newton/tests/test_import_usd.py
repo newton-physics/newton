@@ -155,6 +155,17 @@ class TestImportUsd(unittest.TestCase):
             atol=1e-7,
         )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_cube_cylinder_joint_count(self):
+        builder = newton.ModelBuilder()
+        parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            invert_rotations=True,
+        )
+        self.assertEqual(builder.joint_count, 1)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
