@@ -119,7 +119,7 @@ class TestImportMjcf(unittest.TestCase):
 
     def test_inertia_rotation(self):
         """Test that inertia tensors are properly rotated using sandwich product R @ I @ R.T"""
-        
+
         # Test case 1: Diagonal inertia with rotation
         mjcf_diagonal = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_diagonal">
@@ -151,10 +151,8 @@ class TestImportMjcf(unittest.TestCase):
 
         # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
         # This transforms the diagonal inertia [1, 2, 3] to [2, 1, 3] via sandwich product R @ I @ R.T
-        expected_diagonal = np.array([[2.0, 0.0, 0.0],
-                                     [0.0, 1.0, 0.0],
-                                     [0.0, 0.0, 3.0]])
-        
+        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
+
         actual_inertia = model.body_inertia.numpy()[0]
         np.testing.assert_array_almost_equal(actual_inertia, expected_diagonal, decimal=6)
 
@@ -168,35 +166,29 @@ class TestImportMjcf(unittest.TestCase):
         # [1.0  0.1  0.2]
         # [0.1  2.0  0.3]
         # [0.2  0.3  3.0]
-        
+
         # The quaternion (0.7071068, 0, 0, 0.7071068) transforms the inertia
         # We need to use the same quaternion-to-matrix conversion as the MJCF importer
-        
-        original_inertia = np.array([[1.0, 0.1, 0.2],
-                                    [0.1, 2.0, 0.3],
-                                    [0.2, 0.3, 3.0]])
-        
+
+        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+
         # For full inertia, calculate the expected result analytically using the same quaternion
         # Original inertia matrix:
         # [1.0  0.1  0.2]
         # [0.1  2.0  0.3]
         # [0.2  0.3  3.0]
-        
+
         # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
         # Calculate the expected result analytically using the correct rotation matrix
         # For a 90-degree Z-axis rotation: R = [0 -1 0; 1 0 0; 0 0 1]
-        
-        original_inertia = np.array([[1.0, 0.1, 0.2],
-                                    [0.1, 2.0, 0.3],
-                                    [0.2, 0.3, 3.0]])
-        
+
+        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+
         # Rotation matrix for 90-degree rotation around Z-axis
-        rotation_matrix = np.array([[0.0, -1.0, 0.0],
-                                   [1.0, 0.0, 0.0],
-                                   [0.0, 0.0, 1.0]])
-        
+        rotation_matrix = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
         expected_full = rotation_matrix @ original_inertia @ rotation_matrix.T
-        
+
         actual_inertia = model.body_inertia.numpy()[0]
         np.testing.assert_array_almost_equal(actual_inertia, expected_full, decimal=6)
 

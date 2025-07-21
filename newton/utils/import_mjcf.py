@@ -89,7 +89,7 @@ def parse_mjcf(
         xform = wp.transform(*xform)
 
     # Check if input is XML string content or a file path
-    if mjcf_filename_or_string.strip().startswith('<?xml') or mjcf_filename_or_string.strip().startswith('<mujoco'):
+    if mjcf_filename_or_string.strip().startswith("<?xml") or mjcf_filename_or_string.strip().startswith("<mujoco"):
         # It's XML string content
         root = ET.fromstring(mjcf_filename_or_string)
         mjcf_dirname = "."
@@ -710,7 +710,6 @@ def parse_mjcf(
                 I_m[1, 0] = I_m[0, 1]
                 I_m[2, 0] = I_m[0, 2]
                 I_m[2, 1] = I_m[1, 2]
-                
 
             rot = wp.quat_to_matrix(inertial_frame.q)
             rot_np = np.array(rot).reshape(3, 3)
