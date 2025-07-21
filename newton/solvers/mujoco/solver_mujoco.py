@@ -2102,7 +2102,7 @@ class MuJoCoSolver(SolverBase):
                         tendon.stiffness = float(model.tendon_stiffness.numpy()[tendon_idx])
                 else:
                     wp.utils.warn(
-                        f"Tendon type '{tendon_type}' is not supported by MuJoCo solver, skipping tendon '{tendon_name}'"
+                        f"Tendon type '{tendon_type}' is not supported by MuJoCo solver, skipping tendon '{tendon_key}'"
                     )
 
         # -----------------------
