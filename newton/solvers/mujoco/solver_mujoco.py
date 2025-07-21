@@ -1028,7 +1028,10 @@ class MuJoCoSolver(SolverBase):
 
     @staticmethod
     def update_newton_state(
-        model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True, update_contacts: bool = False
+        model: Model,
+        state: State,
+        mj_data: MjWarpData | MjData,
+        eval_fk: bool = True,
     ):
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:

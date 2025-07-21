@@ -39,7 +39,7 @@ class MatchAny(metaclass=SentinelMeta):
     """Sentinel class matching all contact partners."""
 
 
-EntityKind = Enum("EntityKind", [("SHAPE", 1), ("BODY", 1)])
+EntityKind = Enum("EntityKind", [("SHAPE", 1), ("BODY", 2)])
 
 
 Entity: TypeAlias = tuple[int, ...]
@@ -92,8 +92,7 @@ def select_aggregate_net_force(
 
         # add contribution for shape pair
         normalized_pair = wp.vec2i(smin, smax)
-        sp_flip = not (normalized_pair == pair)
-        # sp_flip = normalized_pair[0] != pair[0]
+        sp_flip = normalized_pair[0] != pair[0]
         sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
         force = contact_force[con_idx] * contact_normal[con_idx]
