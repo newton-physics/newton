@@ -611,6 +611,7 @@ class ClothSim:
         )
 
         self.fixed_particles = fixed_particles if fixed_particles is not None else []
+        self.renderer_scale_factor = 1
 
         self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
 
