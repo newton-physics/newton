@@ -23,6 +23,8 @@ import newton.examples
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, stage_path="example_cloth_style3d.usd", num_frames=3000):

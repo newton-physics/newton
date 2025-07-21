@@ -29,6 +29,8 @@ import newton
 import newton.sim.ik as ik
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 @dataclass(frozen=True)
 class RobotCfg:

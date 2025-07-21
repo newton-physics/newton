@@ -33,6 +33,8 @@ import newton.examples
 import newton.sim
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):

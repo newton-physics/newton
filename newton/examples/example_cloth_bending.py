@@ -31,6 +31,8 @@ import newton
 import newton.examples
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, stage_path="example_cloth_bending.usd", num_frames=300):

@@ -27,6 +27,8 @@ USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
 
+wp.config.enable_backward = False
+
 
 @wp.kernel
 def randomize_states_kernel(joint_q: wp.array2d(dtype=float), seed: int):

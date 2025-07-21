@@ -23,6 +23,8 @@ import warp as wp
 import newton
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, options: argparse.Namespace):

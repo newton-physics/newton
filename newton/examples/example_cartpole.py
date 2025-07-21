@@ -28,6 +28,8 @@ import newton
 import newton.examples
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, stage_path="example_cartpole.usd", num_envs=8, use_cuda_graph=True):
