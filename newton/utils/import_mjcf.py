@@ -730,13 +730,13 @@ def parse_mjcf(
 
         for site in body.findall("site"):
             site_attrib = site.attrib
-            site_name = site_attrib.get("name", f"{body_name}_site_{len(builder.site_name)}")
+            site_name = site_attrib.get("name", f"{body_name}_site_{len(builder.site_key)}")
             site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             site_quat = parse_orientation(site_attrib)
             site_xform = wp.transform(site_pos, site_quat)
 
             # Add the site to the builder
-            builder.add_site(site_name, link, site_xform)
+            builder.add_site(link, site_xform, key=site_name)
 
         # -----------------
         # recurse
@@ -784,7 +784,7 @@ def parse_mjcf(
 
     for site in world.findall("site"):
         site_attrib = site.attrib
-        site_name = site_attrib.get("name", f"world_site_{len(builder.site_name)}")
+        site_name = site_attrib.get("name", f"world_site_{len(builder.site_key)}")
         site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
         site_quat = parse_orientation(site_attrib)
         site_xform = wp.transform(site_pos, site_quat)
@@ -794,7 +794,7 @@ def parse_mjcf(
             site_xform = xform * site_xform
 
         # Add the site to the builder (worldbody has index -1)
-        builder.add_site(site_name, -1, site_xform)
+        builder.add_site(-1, site_xform, key=site_name)
 
     end_shape_count = len(builder.shape_geo_type)
 
@@ -811,12 +811,12 @@ def parse_mjcf(
     # parse tendons
 
     # Create a mapping from site names to site indices
-    site_name_to_index = {name: i for i, name in enumerate(builder.site_name)}
+    site_name_to_index = {name: i for i, name in enumerate(builder.site_key)}
 
     tendon_root = root.find("tendon")
     if tendon_root is not None:
         for spatial_tendon in tendon_root.findall("spatial"):
-            tendon_name = spatial_tendon.attrib.get("name", f"spatial_tendon_{len(builder.tendon_name)}")
+            tendon_name = spatial_tendon.attrib.get("name", f"spatial_tendon_{len(builder.tendon_key)}")
 
             # Parse tendon properties
             damping = parse_float(spatial_tendon.attrib, "damping", 0.0)
@@ -833,11 +833,11 @@ def parse_mjcf(
 
             if len(site_ids) >= 2:  # A tendon needs at least 2 sites
                 builder.add_tendon(
-                    name=tendon_name,
                     tendon_type="spatial",
                     site_ids=site_ids,
                     damping=damping,
                     stiffness=stiffness,
+                    key=tendon_name,
                 )
             else:
                 print(f"Warning: Tendon '{tendon_name}' has fewer than 2 sites, skipping")
@@ -846,7 +846,7 @@ def parse_mjcf(
     # parse actuators
 
     # Create a mapping from tendon names to tendon indices
-    tendon_name_to_index = {name: i for i, name in enumerate(builder.tendon_name)}
+    tendon_name_to_index = {name: i for i, name in enumerate(builder.tendon_key)}
 
     actuator_root = root.find("actuator")
     if actuator_root is not None:
@@ -854,13 +854,13 @@ def parse_mjcf(
             # Check if this actuator references a tendon
             tendon_ref = actuator.attrib.get("tendon")
             if tendon_ref and tendon_ref in tendon_name_to_index:
-                actuator_name = actuator.attrib.get("name", f"tendon_actuator_{len(builder.tendon_actuator_name)}")
+                actuator_name = actuator.attrib.get("name", f"tendon_actuator_{len(builder.tendon_actuator_key)}")
                 tendon_id = tendon_name_to_index[tendon_ref]
 
                 # Parse actuator properties
-                # For position actuators, kp is the gain
-                kp = parse_float(actuator.attrib, "kp", 0.0)
-                kv = parse_float(actuator.attrib, "kv", 0.0)
+                # For position actuators, kp maps to ke (elastic gain)
+                ke = parse_float(actuator.attrib, "kp", 0.0)
+                kd = parse_float(actuator.attrib, "kv", 0.0)
 
                 # Parse force range if specified
                 forcerange = actuator.attrib.get("forcerange")
@@ -871,11 +871,11 @@ def parse_mjcf(
                     force_range = None
 
                 builder.add_tendon_actuator(
-                    name=actuator_name,
                     tendon_id=tendon_id,
-                    kp=kp,
-                    kv=kv,
+                    ke=ke,
+                    kd=kd,
                     force_range=force_range,
+                    key=actuator_name,
                 )
 
     if collapse_fixed_joints:

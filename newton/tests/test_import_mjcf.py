@@ -145,17 +145,17 @@ class TestImportMjcf(unittest.TestCase):
 
             # Check sites were parsed
             self.assertEqual(model.site_count, 3)
-            self.assertEqual(len(model.site_name), 3)
+            self.assertEqual(len(model.site_key), 3)
 
-            # Check site names
-            self.assertIn("world_site", model.site_name)
-            self.assertIn("body_site1", model.site_name)
-            self.assertIn("body_site2", model.site_name)
+            # Check site keys
+            self.assertIn("world_site", model.site_key)
+            self.assertIn("body_site1", model.site_key)
+            self.assertIn("body_site2", model.site_key)
 
             # Check site bodies (world is -1, body1 is 0)
             site_bodies = model.site_body.numpy() if model.site_body is not None else []
-            world_site_idx = model.site_name.index("world_site")
-            body_site1_idx = model.site_name.index("body_site1")
+            world_site_idx = model.site_key.index("world_site")
+            body_site1_idx = model.site_key.index("body_site1")
 
             self.assertEqual(site_bodies[world_site_idx], -1)  # worldbody
             self.assertEqual(site_bodies[body_site1_idx], 0)  # first body
@@ -200,14 +200,14 @@ class TestImportMjcf(unittest.TestCase):
 
             # Check tendons were parsed
             self.assertEqual(model.tendon_count, 2)
-            self.assertEqual(len(model.tendon_name), 2)
+            self.assertEqual(len(model.tendon_key), 2)
 
-            # Check tendon names
-            self.assertIn("tendon1", model.tendon_name)
-            self.assertIn("tendon2", model.tendon_name)
+            # Check tendon keys
+            self.assertIn("tendon1", model.tendon_key)
+            self.assertIn("tendon2", model.tendon_key)
 
             # Check tendon properties
-            tendon1_idx = model.tendon_name.index("tendon1")
+            tendon1_idx = model.tendon_key.index("tendon1")
             self.assertEqual(model.tendon_type[tendon1_idx], "spatial")
 
             if model.tendon_damping is not None:
@@ -260,18 +260,18 @@ class TestImportMjcf(unittest.TestCase):
 
             # Check tendon actuator was parsed
             self.assertEqual(model.tendon_actuator_count, 1)
-            self.assertEqual(len(model.tendon_actuator_name), 1)
+            self.assertEqual(len(model.tendon_actuator_key), 1)
 
-            # Check actuator name
-            self.assertEqual(model.tendon_actuator_name[0], "tendon_act1")
+            # Check actuator key
+            self.assertEqual(model.tendon_actuator_key[0], "tendon_act1")
 
             # Check actuator properties
-            if model.tendon_actuator_kp is not None:
-                kp_values = model.tendon_actuator_kp.numpy()
-                self.assertAlmostEqual(kp_values[0], 300.0)
-            if model.tendon_actuator_kv is not None:
-                kv_values = model.tendon_actuator_kv.numpy()
-                self.assertAlmostEqual(kv_values[0], 10.0)
+            if model.tendon_actuator_ke is not None:
+                ke_values = model.tendon_actuator_ke.numpy()
+                self.assertAlmostEqual(ke_values[0], 300.0)
+            if model.tendon_actuator_kd is not None:
+                kd_values = model.tendon_actuator_kd.numpy()
+                self.assertAlmostEqual(kd_values[0], 10.0)
             if model.tendon_actuator_force_range is not None:
                 force_range = model.tendon_actuator_force_range.numpy()
                 self.assertAlmostEqual(force_range[0][0], -50.0)
@@ -280,7 +280,7 @@ class TestImportMjcf(unittest.TestCase):
             # Check actuator references correct tendon
             tendon_ids = model.tendon_actuator_tendon_id.numpy()
             tendon_id = tendon_ids[0]
-            self.assertEqual(model.tendon_name[tendon_id], "tendon1")
+            self.assertEqual(model.tendon_key[tendon_id], "tendon1")
 
 
 if __name__ == "__main__":

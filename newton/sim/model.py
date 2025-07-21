@@ -167,15 +167,15 @@ class Model:
         self.muscle_activations = None
         """Muscle activations, shape [muscle_count], float."""
 
-        self.site_name = []
-        """List of site names."""
+        self.site_key = []
+        """List of site keys."""
         self.site_body = None
         """Body index for each site, shape [site_count], int."""
         self.site_xform = None
         """Transform (position and orientation) for each site relative to its body, shape [site_count, 7], float."""
 
-        self.tendon_name = []
-        """List of tendon names."""
+        self.tendon_key = []
+        """List of tendon keys."""
         self.tendon_type = []
         """Type of each tendon ('spatial', etc.), shape [tendon_count], string."""
         self.tendon_site_ids = []
@@ -189,12 +189,12 @@ class Model:
 
         self.tendon_actuator_tendon_id = None
         """Tendon index for each tendon actuator, shape [tendon_actuator_count], int."""
-        self.tendon_actuator_name = []
-        """List of tendon actuator names."""
-        self.tendon_actuator_kp = None
-        """Position gain for each tendon actuator, shape [tendon_actuator_count], float."""
-        self.tendon_actuator_kv = None
-        """Velocity gain for each tendon actuator, shape [tendon_actuator_count], float."""
+        self.tendon_actuator_key = []
+        """List of tendon actuator keys."""
+        self.tendon_actuator_ke = None
+        """Elastic/stiffness gain for each tendon actuator, shape [tendon_actuator_count], float."""
+        self.tendon_actuator_kd = None
+        """Damping gain for each tendon actuator, shape [tendon_actuator_count], float."""
         self.tendon_actuator_force_range = None
         """Force range [min, max] for each tendon actuator, shape [tendon_actuator_count, 2], float."""
 

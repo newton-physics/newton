@@ -2053,8 +2053,8 @@ class MuJoCoSolver(SolverBase):
         # -----------------------
         # add sites to MuJoCo bodies
 
-        if hasattr(model, "site_name") and model.site_count > 0:
-            site_name = model.site_name
+        if hasattr(model, "site_key") and model.site_count > 0:
+            site_key = model.site_key
             site_body = model.site_body.numpy() if model.site_body is not None else []
             site_xform_array = model.site_xform.numpy() if model.site_xform is not None else []
 
@@ -2073,7 +2073,7 @@ class MuJoCoSolver(SolverBase):
 
                 # Add the site to the MuJoCo body
                 mj_body.add_site(
-                    name=site_name[site_idx],
+                    name=site_key[site_idx],
                     pos=site_pos,
                     quat=quat_to_mjc(site_quat),
                 )
@@ -2081,19 +2081,19 @@ class MuJoCoSolver(SolverBase):
         # -----------------------
         # add tendons to MuJoCo model
 
-        if hasattr(model, "tendon_name") and model.tendon_count > 0:
+        if hasattr(model, "tendon_key") and model.tendon_count > 0:
             for tendon_idx in range(model.tendon_count):
-                tendon_name = model.tendon_name[tendon_idx]
+                tendon_key = model.tendon_key[tendon_idx]
                 tendon_type = model.tendon_type[tendon_idx]
 
                 if tendon_type == "spatial":
                     # Add tendon using the correct API
-                    tendon = spec.add_tendon(name=tendon_name)
+                    tendon = spec.add_tendon(name=tendon_key)
 
                     # Add sites to the tendon using wrap_site
                     site_ids = model.tendon_site_ids[tendon_idx]
                     for site_id in site_ids:
-                        tendon.wrap_site(model.site_name[site_id])
+                        tendon.wrap_site(model.site_key[site_id])
 
                     # Set tendon properties if available
                     if model.tendon_damping is not None:
@@ -2108,34 +2108,34 @@ class MuJoCoSolver(SolverBase):
         # -----------------------
         # add tendon actuators
 
-        if hasattr(model, "tendon_actuator_name") and model.tendon_actuator_count > 0:
+        if hasattr(model, "tendon_actuator_key") and model.tendon_actuator_count > 0:
             tendon_actuator_ids = (
                 model.tendon_actuator_tendon_id.numpy() if model.tendon_actuator_tendon_id is not None else []
             )
             for act_idx in range(model.tendon_actuator_count):
                 tendon_id = int(tendon_actuator_ids[act_idx])
-                tendon_name = model.tendon_name[tendon_id]
+                tendon_key = model.tendon_key[tendon_id]
 
                 # Create actuator args
                 act_args = {
-                    "name": model.tendon_actuator_name[act_idx],
-                    "target": tendon_name,
+                    "name": model.tendon_actuator_key[act_idx],
+                    "target": tendon_key,
                     "trntype": mujoco.mjtTrn.mjTRN_TENDON,
                 }
 
                 # Set actuator parameters
-                if model.tendon_actuator_kp is not None:
-                    kp_values = model.tendon_actuator_kp.numpy()
-                    kp = float(kp_values[act_idx])
-                    if model.tendon_actuator_kv is not None:
-                        kv_values = model.tendon_actuator_kv.numpy()
-                        kv = float(kv_values[act_idx])
+                if model.tendon_actuator_ke is not None:
+                    ke_values = model.tendon_actuator_ke.numpy()
+                    ke = float(ke_values[act_idx])
+                    if model.tendon_actuator_kd is not None:
+                        kd_values = model.tendon_actuator_kd.numpy()
+                        kd = float(kd_values[act_idx])
                     else:
-                        kv = 0.0
+                        kd = 0.0
 
-                    # For position control actuators
-                    act_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                    act_args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+                    # For position control actuators (MuJoCo uses kp/kv terminology)
+                    act_args["gainprm"] = [ke, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                    act_args["biasprm"] = [0.0, -ke, -kd, 0, 0, 0, 0, 0, 0, 0]
 
                 # Set force range if available
                 if model.tendon_actuator_force_range is not None:

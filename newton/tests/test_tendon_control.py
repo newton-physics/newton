@@ -121,14 +121,14 @@ class TestTendonControl(unittest.TestCase):
 
         # Add a simple model with tendons
         builder.add_body(xform=wp.transform())
-        site1 = builder.add_site("site1", 0, wp.transform(wp.vec3(0, 0, 0)))
-        site2 = builder.add_site("site2", 0, wp.transform(wp.vec3(1, 0, 0)))
+        site1 = builder.add_site(0, wp.transform(wp.vec3(0, 0, 0)), key="site1")
+        site2 = builder.add_site(0, wp.transform(wp.vec3(1, 0, 0)), key="site2")
 
         tendon_id = builder.add_tendon(
-            name="test_tendon", tendon_type="spatial", site_ids=[site1, site2], stiffness=100.0
+            tendon_type="spatial", site_ids=[site1, site2], stiffness=100.0, key="test_tendon"
         )
 
-        builder.add_tendon_actuator(name="test_actuator", tendon_id=tendon_id, kp=50.0)
+        builder.add_tendon_actuator(tendon_id=tendon_id, ke=50.0, key="test_actuator")
 
         model = builder.finalize()
 
