@@ -57,6 +57,12 @@ ROBOT_CONFIGS = {
         "njmax": 50,
         "nconmax": 50,
     },
+    "ant": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 50,
+        "nconmax": 50,
+    },
     "quadruped": {
         "solver": "newton",
         "integrator": "euler",
@@ -135,6 +141,20 @@ def _setup_cartpole(articulation_builder):
     return root_dofs
 
 
+def _setup_ant(articulation_builder):
+    newton.utils.parse_usd(
+        newton.examples.get_asset("ant.usda"),
+        articulation_builder,
+        collapse_fixed_joints=True,
+    )
+
+    # Setting root pose
+    root_dofs = 7
+    articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
+
+    return root_dofs
+
+
 def _setup_quadruped(articulation_builder):
     articulation_builder.default_body_armature = 0.01
     articulation_builder.default_joint_cfg.armature = 0.01
@@ -199,6 +219,8 @@ class Example:
             root_dofs = _setup_g1(articulation_builder)
         elif robot == "cartpole":
             root_dofs = _setup_cartpole(articulation_builder)
+        elif robot == "ant":
+            root_dofs = _setup_ant(articulation_builder)
         elif robot == "quadruped":
             root_dofs = _setup_quadruped(articulation_builder)
         else:
