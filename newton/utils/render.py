@@ -23,6 +23,99 @@ from warp.render import OpenGLRenderer, UsdRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
 
 import newton
+from newton.geometry import raycast
+
+
+@wp.kernel
+def compute_pick_state_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_index: int,
+    hit_point_world: wp.vec3,
+    # output
+    pick_body: wp.array(dtype=int),
+    pick_state: wp.array(dtype=float),
+):
+    if body_index < 0:
+        return
+
+    # store body index
+    pick_body[0] = body_index
+
+    # store target world
+    pick_state[3] = hit_point_world[0]
+    pick_state[4] = hit_point_world[1]
+    pick_state[5] = hit_point_world[2]
+
+    # compute and store local space attachment point
+    X_wb = body_q[body_index]
+    X_bw = wp.transform_inverse(X_wb)
+    pick_pos_local = wp.transform_point(X_bw, hit_point_world)
+
+    pick_state[0] = pick_pos_local[0]
+    pick_state[1] = pick_pos_local[1]
+    pick_state[2] = pick_pos_local[2]
+
+
+@wp.kernel
+def apply_picking_force_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_f: wp.array(dtype=wp.spatial_vector),
+    pick_body_arr: wp.array(dtype=int),
+    pick_state: wp.array(dtype=float),
+):
+    pick_body = pick_body_arr[0]
+    if pick_body < 0:
+        return
+
+    pick_pos_local = wp.vec3(pick_state[0], pick_state[1], pick_state[2])
+    pick_target_world = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
+    pick_stiffness = pick_state[6]
+    pick_damping = pick_state[7]
+    angular_damping = 1.0  # Damping coefficient for angular velocity
+
+    # world space attachment point
+    X_wb = body_q[pick_body]
+    pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
+
+    # center of mass
+    com = wp.transform_get_translation(X_wb)
+
+    # get velocity of attachment point
+    omega = wp.spatial_top(body_qd[pick_body])
+    vel_com = wp.spatial_bottom(body_qd[pick_body])
+    vel_world = vel_com + wp.cross(omega, pick_pos_world - com)
+
+    # compute spring force
+    f = pick_stiffness * (pick_target_world - pick_pos_world) - pick_damping * vel_world
+
+    # compute torque with angular damping
+    t = wp.cross(pick_pos_world - com, f) - angular_damping * omega
+
+    # apply force and torque
+    wp.atomic_add(body_f, pick_body, wp.spatial_vector(t, f))
+
+
+@wp.kernel
+def update_pick_target_kernel(
+    p: wp.vec3,
+    d: wp.vec3,
+    pick_camera_front: wp.vec3,
+    # read-write
+    pick_state: wp.array(dtype=float),
+):
+    # get current target position
+    current_target = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
+
+    # compute distance from ray origin to current target
+    dist = wp.length(current_target - p)
+
+    # project new target onto sphere with same radius
+    new_target = p + d * dist
+
+    pick_state[3] = new_target[0]
+    pick_state[4] = new_target[1]
+    pick_state[5] = new_target[2]
 
 
 @wp.kernel
@@ -79,6 +172,8 @@ def CreateSimRenderer(renderer):
             up_axis: newton.AxisType | None = None,
             show_joints: bool = False,
             show_particles: bool = True,
+            pick_stiffness: float = 20000.0,
+            pick_damping: float = 2000.0,
             **render_kwargs,
         ):
             """
@@ -91,6 +186,8 @@ def CreateSimRenderer(renderer):
                 up_axis (newton.AxisType, optional): The up-axis for the scene. If not provided, it's inferred from the model, or defaults to "Z" if no model is given. Defaults to None.
                 show_joints (bool, optional): Whether to visualize joints. Defaults to False.
                 show_particles (bool, optional): Whether to visualize particles. Defaults to True.
+                pick_stiffness (float, optional): Stiffness of the picking force. Defaults to 20000.0.
+                pick_damping (float, optional): Damping of the picking force. Defaults to 2000.0.
                 **render_kwargs: Additional keyword arguments for the underlying renderer.
             """
             if up_axis is None:
@@ -108,8 +205,40 @@ def CreateSimRenderer(renderer):
             if model:
                 self.populate(model)
 
+            self.state = None
+            self.min_dist = None
+            self.min_index = None
+            self.min_body_index = None
+            self.lock = None
             self._contact_points0 = None
             self._contact_points1 = None
+
+            # picking state
+            if model and model.device.is_cuda:
+                self.pick_body = wp.array([-1], dtype=int, pinned=True)
+            else:
+                self.pick_body = wp.array([-1], dtype=int, device="cpu")
+            # pick_state array format (stored in a warp array for graph capture support):
+            # [0:3] - pick point in world space (vec3)
+            # [3:6] - pick target point in world space (vec3)
+            # [6] - pick spring stiffness
+            # [7] - pick spring damping
+            pick_state_np = np.zeros(8, dtype=np.float32)
+            if model:
+                pick_state_np[6] = pick_stiffness
+                pick_state_np[7] = pick_damping
+            self.pick_state = wp.array(pick_state_np, dtype=float, device=model.device if model else "cpu")
+
+            self.pick_dist = 0.0
+            self.pick_camera_front = wp.vec3()
+            self._default_on_mouse_drag = None
+
+            if isinstance(self, OpenGLRenderer):
+                if not self.headless:
+                    self.window.on_mouse_press = self.on_mouse_press
+                    self.window.on_mouse_release = self.on_mouse_release
+                    self._default_on_mouse_drag = self.window.on_mouse_drag
+                    self.window.on_mouse_drag = self.on_mouse_drag
 
         def populate(self, model: newton.Model):
             """
@@ -450,12 +579,33 @@ def CreateSimRenderer(renderer):
             """
             return tab10_color_map(instance_count)
 
+        def apply_picking_force(self, state: newton.State):
+            """Applies a force to the body at the picking position.
+            Args:
+                state (newton.State): The simulation state.
+            """
+            # Launch kernel always because of graph capture
+            wp.launch(
+                kernel=apply_picking_force_kernel,
+                dim=1,
+                inputs=[
+                    state.body_q,
+                    state.body_qd,
+                    state.body_f,
+                    self.pick_body,
+                    self.pick_state,
+                ],
+                device=self.model.device,
+            )
+
         def render(self, state: newton.State):
             """
             Updates the renderer with the given simulation state.
             Args:
                 state (newton.State): The simulation state to render.
             """
+            self.state = state
+
             if self.skip_rendering:
                 return
 
@@ -480,6 +630,8 @@ def CreateSimRenderer(renderer):
             # update bodies
             if self.model.body_count:
                 self.update_body_transforms(state.body_q)
+
+            self.state = state
 
         def render_particles_and_springs(
             self,
@@ -511,6 +663,161 @@ def CreateSimRenderer(renderer):
             # render springs
             if spring_indices is not None:
                 self.render_line_list("springs", particle_q, spring_indices.flatten(), (0.25, 0.5, 0.25), 0.02)
+
+        def on_mouse_press(self, x, y, button, modifiers):
+            # action 1 for press
+            self.on_mouse_click(x, y, button, 1)
+
+        def on_mouse_release(self, x, y, button, modifiers):
+            # action 0 for release
+            self.pick_body.fill_(-1)
+            self.on_mouse_click(x, y, button, 0)
+
+        def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+            if self.pick_body.numpy()[0] < 0:
+                # default camera controls
+                if self._default_on_mouse_drag:
+                    self._default_on_mouse_drag(x, y, dx, dy, buttons, modifiers)
+                return
+
+            p, d, _ = self.get_world_ray(x, y)
+            d = wp.normalize(d)
+
+            wp.launch(
+                kernel=update_pick_target_kernel,
+                dim=1,
+                inputs=[
+                    p,
+                    d,
+                    self.pick_camera_front,
+                    self.pick_state,
+                ],
+                device=self.model.device,
+            )
+
+        def get_world_ray(self, x: float, y: float) -> tuple[wp.vec3, wp.vec3, np.ndarray]:
+            # aspect ratio
+            aspect_ratio = self.screen_width / self.screen_height
+
+            # pre-compute factor from vertical FOV
+            fov_rad = np.radians(self.camera_fov)
+            alpha = np.tan(fov_rad * 0.5)  # = tan(fov/2)
+
+            # camera vectors → NumPy
+            camera_front = np.array(self._camera_front, dtype=np.float32)
+            camera_up = np.array(self._camera_up, dtype=np.float32)
+            camera_pos = np.array(self._camera_pos, dtype=np.float32)
+
+            # build an orthonormal basis (front, right, up)
+            front = camera_front / np.linalg.norm(camera_front)
+            right = np.cross(front, camera_up)
+            right = right / np.linalg.norm(right)
+            up = np.cross(right, front)  # already unit length
+
+            # normalised pixel coordinates
+            u = 2.0 * (x / self.screen_width) - 1.0  # [-1, 1] left → right
+            v = 2.0 * (y / self.screen_height) - 1.0  # [-1, 1] bottom → top
+
+            # ray direction in world space (before normalisation)
+            direction = front + u * alpha * aspect_ratio * right + v * alpha * up
+            direction = direction / np.linalg.norm(direction)
+
+            # transform ray from render-space to simulation-space
+            inv_model_matrix = self._inv_model_matrix.reshape(4, 4)
+
+            p_h = np.append(camera_pos, 1.0)
+            p_transformed_h = inv_model_matrix @ p_h
+            p_sim = p_transformed_h[:3]
+
+            d_h = np.append(direction, 0.0)
+            d_transformed_h = inv_model_matrix @ d_h
+            d_sim = d_transformed_h[:3]
+
+            # output
+            p = wp.vec3(p_sim[0], p_sim[1], p_sim[2])  # ray origin
+            d = wp.vec3(d_sim[0], d_sim[1], d_sim[2])  # ray direction
+
+            return p, d, camera_front
+
+        def on_mouse_click(self, x, y, button, action):
+            from pyglet.window import mouse  # noqa: PLC0415
+
+            # want to pick on mouse-down events
+            if action != 1:  # Press
+                return
+
+            if button == mouse.RIGHT:  # right-click
+                if self.state is None:
+                    return
+
+                p, d, camera_front = self.get_world_ray(x, y)
+
+                debug = False
+                if debug and isinstance(self, SimRendererOpenGL):
+                    p_np = np.array([p[0], p[1], p[2]])
+                    d_np = np.array([d[0], d[1], d[2]])
+                    # use a large length for visualization
+                    end_point = p_np + d_np * 1000.0
+                    self.render_line_strip("__picking_ray__", [p_np, end_point], color=(1.0, 1.0, 0.0), radius=0.005)
+
+                num_geoms = self.model.shape_count
+                if num_geoms == 0:
+                    return
+
+                if self.min_dist is None:
+                    self.min_dist = wp.array([1.0e10], dtype=float, device=self.model.device)
+                    self.min_index = wp.array([-1], dtype=int, device=self.model.device)
+                    self.min_body_index = wp.array([-1], dtype=int, device=self.model.device)
+                    self.lock = wp.array([0], dtype=wp.int32, device=self.model.device)
+                else:
+                    self.min_dist.fill_(1.0e10)
+                    self.min_index.fill_(-1)
+                    self.min_body_index.fill_(-1)
+                    self.lock.zero_()
+
+                wp.launch(
+                    kernel=raycast.raycast_kernel,
+                    dim=num_geoms,
+                    inputs=[
+                        self.state.body_q,
+                        self.model.shape_body,
+                        self.model.shape_transform,
+                        self.model.shape_geo.type,
+                        self.model.shape_geo.scale,
+                        p,
+                        d,
+                        self.lock,
+                    ],
+                    outputs=[self.min_dist, self.min_index, self.min_body_index],
+                    device=self.model.device,
+                )
+                wp.synchronize()
+
+                dist = self.min_dist.numpy()[0]
+                index = self.min_index.numpy()[0]
+                body_index = self.min_body_index.numpy()[0]
+
+                if dist < 1.0e10 and body_index >= 0:
+                    self.pick_dist = dist
+                    self.pick_camera_front = wp.vec3(camera_front[0], camera_front[1], camera_front[2])
+
+                    # world space hit point
+                    hit_point_world = p + d * dist
+
+                    wp.launch(
+                        kernel=compute_pick_state_kernel,
+                        dim=1,
+                        inputs=[self.state.body_q, body_index, hit_point_world],
+                        outputs=[self.pick_body, self.pick_state],
+                        device=self.model.device,
+                    )
+                    wp.synchronize()
+
+                if debug:
+                    if dist < 1.0e10:
+                        print("#" * 80)
+                        print(f"Hit geom {index} of body {body_index} at distance {dist}")
+                        print("#" * 80)
 
         def render_muscles(
             self,
@@ -986,6 +1293,7 @@ class SimRendererOpenGL(CreateSimRenderer(renderer=OpenGLRenderer)):
         Keyboard shortcuts available during rendering:
 
         - W, A, S, D (or arrow keys) + mouse: FPS-style camera movement
+        - RIGHT-CLICK + DRAG: Pick and move rigid bodies
         - X: Toggle wireframe rendering
         - B: Toggle backface culling
         - C: Toggle coordinate system axes

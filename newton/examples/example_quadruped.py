@@ -20,6 +20,8 @@
 # from a URDF using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
 #
+# Users can pick bodies by right-clicking and dragging with the mouse.
+#
 ###########################################################################
 
 
@@ -104,6 +106,8 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            if self.renderer and hasattr(self.renderer, "apply_picking_force"):
+                self.renderer.apply_picking_force(self.state_0)
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
