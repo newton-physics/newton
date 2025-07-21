@@ -3542,9 +3542,6 @@ class ModelBuilder:
                 m.tendon_target = wp.zeros(
                     len(self.tendon_actuator_key), dtype=wp.float32, device=device, requires_grad=requires_grad
                 )
-                m.tendon_f = wp.zeros(
-                    len(self.tendon_actuator_key), dtype=wp.float32, device=device, requires_grad=requires_grad
-                )
 
             # --------------------------------------
             # rigid bodies

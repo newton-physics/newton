@@ -88,7 +88,6 @@ class TestTendonControl(unittest.TestCase):
 
             # Verify control has tendon arrays
             self.assertIsNotNone(control.tendon_target)
-            self.assertIsNotNone(control.tendon_f)
             self.assertEqual(len(control.tendon_target), 1)
 
             # Set tendon target
@@ -135,13 +134,10 @@ class TestTendonControl(unittest.TestCase):
         # Check control initialization
         control = model.control()
         self.assertIsNotNone(control.tendon_target)
-        self.assertIsNotNone(control.tendon_f)
         self.assertEqual(len(control.tendon_target), 1)
-        self.assertEqual(len(control.tendon_f), 1)
 
         # Check initial values are zero
         self.assertEqual(control.tendon_target.numpy()[0], 0.0)
-        self.assertEqual(control.tendon_f.numpy()[0], 0.0)
 
 
 if __name__ == "__main__":

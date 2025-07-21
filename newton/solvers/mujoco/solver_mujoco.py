@@ -582,6 +582,20 @@ def apply_mjc_qfrc_kernel(
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
 
 
+@wp.kernel
+def apply_mjc_tendon_control_kernel(
+    tendon_target: wp.array(dtype=wp.float32),
+    tendon_actuator_to_actuator: wp.array(dtype=wp.int32),
+    tendons_per_env: int,
+    # outputs
+    mj_act: wp.array2d(dtype=wp.float32),
+):
+    worldid, tendon_idx = wp.tid()
+    actuator_id = tendon_actuator_to_actuator[tendon_idx]
+    if actuator_id != -1:  # Valid mapping
+        mj_act[worldid, actuator_id] = tendon_target[worldid * tendons_per_env + tendon_idx]
+
+
 @wp.func
 def eval_single_articulation_fk(
     joint_start: int,
@@ -1244,43 +1258,29 @@ class MuJoCoSolver(SolverBase):
             )
 
             # Apply tendon control if available
-            if (
-                hasattr(control, "tendon_target")
-                and control.tendon_target is not None
-                and model.tendon_actuator_count > 0
-            ):
+            if control.tendon_target is not None:
                 # Validate tendon_target dimensions
                 if len(control.tendon_target) != model.tendon_actuator_count:
                     raise ValueError(
                         f"Expected {model.tendon_actuator_count} tendon targets, got {len(control.tendon_target)}"
                     )
+                # Apply tendon control using the tendon actuator mapping
+                if hasattr(model, "mjc_tendon_actuator_to_actuator"):
+                    tendons_per_env = model.tendon_actuator_count // nworld
+                    wp.launch(
+                        apply_mjc_tendon_control_kernel,
+                        dim=(nworld, tendons_per_env),
+                        inputs=[
+                            control.tendon_target,
+                            model.mjc_tendon_actuator_to_actuator,
+                            tendons_per_env,
+                        ],
+                        outputs=[
+                            ctrl,
+                        ],
+                        device=model.device,
+                    )
 
-                # Use the tendon actuator mapping to set control values
-                tendon_mapping = (
-                    model.mjc_tendon_actuator_to_actuator.numpy()
-                    if hasattr(model, "mjc_tendon_actuator_to_actuator")
-                    else None
-                )
-
-                if tendon_mapping is not None:
-                    tendon_targets = control.tendon_target.numpy()
-                    if is_mjwarp:
-                        # For MuJoCo-Warp, we need to handle multi-world case
-                        ctrl_numpy = ctrl.numpy()
-                        for world_idx in range(nworld):
-                            for tendon_idx in range(model.tendon_actuator_count):
-                                mj_actuator_idx = tendon_mapping[tendon_idx]
-                                if mj_actuator_idx >= 0:  # Valid mapping
-                                    ctrl_numpy[world_idx, mj_actuator_idx] = tendon_targets[tendon_idx]
-                        wp.copy(ctrl, wp.array(ctrl_numpy, dtype=wp.float32, device=model.device))
-                    else:
-                        # For regular MuJoCo
-                        ctrl_numpy = ctrl.numpy()
-                        for tendon_idx in range(model.tendon_actuator_count):
-                            mj_actuator_idx = tendon_mapping[tendon_idx]
-                            if mj_actuator_idx >= 0:  # Valid mapping
-                                ctrl_numpy[0, mj_actuator_idx] = tendon_targets[tendon_idx]
-                        ctrl = wp.array(ctrl_numpy, dtype=wp.float32, device=model.device)
             wp.launch(
                 apply_mjc_qfrc_kernel,
                 dim=(nworld, joints_per_env),

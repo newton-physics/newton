@@ -50,12 +50,6 @@ class Control:
         The joint targets are defined for any joint type, except for free joints.
         """
 
-        self.tendon_f: wp.array | None = None
-        """
-        Array of tendon forces with shape ``(tendon_count,)`` and type ``float``.
-        These forces are applied directly to the tendons.
-        """
-
         self.tendon_target: wp.array | None = None
         """
         Array of tendon targets with shape ``(tendon_count,)`` and type ``float``.

@@ -151,23 +151,6 @@ class Example:
                     radius=0.02,
                 )
 
-                # Add visual feedback for tendon force
-                if hasattr(self.control, "tendon_f"):
-                    tendon_force = self.control.tendon_f.numpy()[0]
-                    # Make cable thicker and redder when under tension
-                    force_magnitude = abs(tendon_force)
-                    max_force = 500.0  # Approximate max force based on kp
-                    force_ratio = min(force_magnitude / max_force, 1.0)
-
-                    # Interpolate color from orange to red based on force
-                    cable_color = (1.0, 0.5 * (1 - force_ratio), 0.0)
-                    cable_radius = 0.02 + 0.03 * force_ratio
-
-                    # Re-render with force-based appearance
-                    self.renderer.render_line_strip(
-                        "tendon_cable_force", site_positions, color=cable_color, radius=cable_radius
-                    )
-
             self.renderer.end_frame()
 
     def run(self):
@@ -184,10 +167,7 @@ class Example:
             if i % 30 == 0:
                 angle = self.state_0.joint_q.numpy()[0]
                 velocity = self.state_0.joint_qd.numpy()[0]
-                tendon_force = self.control.tendon_f.numpy()[0] if hasattr(self.control, "tendon_f") else 0.0
-                print(
-                    f"  t={self.sim_time:.1f}s: angle={np.degrees(angle):6.1f}°, velocity={velocity:6.2f} rad/s, tendon_force={tendon_force:6.1f}N"
-                )
+                print(f"  t={self.sim_time:.1f}s: angle={np.degrees(angle):6.1f}°, velocity={velocity:6.2f} rad/s")
 
         # Final results
         final_angle = self.state_0.joint_q.numpy()[0]
