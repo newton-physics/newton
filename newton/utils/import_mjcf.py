@@ -31,7 +31,7 @@ from newton.sim import ModelBuilder
 
 
 def parse_mjcf(
-    mjcf_filename: str,
+    mjcf_filename_or_string: str,
     builder: ModelBuilder,
     xform: Transform | None = None,
     floating: bool | None = None,
@@ -59,7 +59,7 @@ def parse_mjcf(
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        mjcf_filename (str): The filename of the MuJoCo file to parse.
+        mjcf_filename_or_string (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         xform (Transform): The transform to apply to the imported mechanism.
         floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
@@ -88,9 +88,16 @@ def parse_mjcf(
     else:
         xform = wp.transform(*xform)
 
-    mjcf_dirname = os.path.dirname(mjcf_filename)
-    file = ET.parse(mjcf_filename)
-    root = file.getroot()
+    # Check if input is XML string content or a file path
+    if mjcf_filename_or_string.strip().startswith('<?xml') or mjcf_filename_or_string.strip().startswith('<mujoco'):
+        # It's XML string content
+        root = ET.fromstring(mjcf_filename_or_string)
+        mjcf_dirname = "."
+    else:
+        # It's a file path
+        mjcf_dirname = os.path.dirname(mjcf_filename_or_string)
+        file = ET.parse(mjcf_filename_or_string)
+        root = file.getroot()
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
