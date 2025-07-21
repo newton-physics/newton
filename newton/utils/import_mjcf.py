@@ -88,16 +88,30 @@ def parse_mjcf(
     else:
         xform = wp.transform(*xform)
 
-    # Check if input is XML string content or a file path
-    if mjcf_filename_or_string.strip().startswith("<?xml") or mjcf_filename_or_string.strip().startswith("<mujoco"):
-        # It's XML string content
-        root = ET.fromstring(mjcf_filename_or_string)
-        mjcf_dirname = "."
-    else:
+    # Check if input is a file path first
+    if os.path.isfile(mjcf_filename_or_string):
         # It's a file path
         mjcf_dirname = os.path.dirname(mjcf_filename_or_string)
         file = ET.parse(mjcf_filename_or_string)
         root = file.getroot()
+    else:
+        # It's XML string content
+        # Strip leading whitespace and byte-order marks
+        xml_content = mjcf_filename_or_string.strip()
+        # Remove BOM if present
+        if xml_content.startswith("\ufeff"):
+            xml_content = xml_content[1:]
+        # Remove leading XML comments
+        while xml_content.strip().startswith("<!--"):
+            end_comment = xml_content.find("-->")
+            if end_comment != -1:
+                xml_content = xml_content[end_comment + 3 :].strip()
+            else:
+                break
+        xml_content = xml_content.strip()
+
+        root = ET.fromstring(xml_content)
+        mjcf_dirname = "."
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
