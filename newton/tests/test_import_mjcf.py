@@ -125,7 +125,7 @@ class TestImportMjcf(unittest.TestCase):
 <mujoco model="test_diagonal">
     <worldbody>
         <body>
-            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068" 
+            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
                       mass="1.0" diaginertia="1.0 2.0 3.0"/>
         </body>
     </worldbody>
@@ -137,7 +137,7 @@ class TestImportMjcf(unittest.TestCase):
 <mujoco model="test_full">
     <worldbody>
         <body>
-            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068" 
+            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
                       mass="1.0" fullinertia="1.0 2.0 3.0 0.1 0.2 0.3"/>
         </body>
     </worldbody>
