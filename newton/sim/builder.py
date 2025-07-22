@@ -22,7 +22,9 @@ import ctypes
 import itertools
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from fnmatch import fnmatch
 from typing import Any, Literal
 
@@ -3164,10 +3166,10 @@ class ModelBuilder:
 
     def add_contact_sensor(
         self,
-        sensor_shape: str | None = None,
-        sensor_body: str | None = None,
-        contact_partners_shape: str | None = None,
-        contact_partners_body: str | None = None,
+        sensor_shape: str | list[str] | None = None,
+        sensor_body: str | list[str] | None = None,
+        contact_partners_shape: str | list[str] | None = None,
+        contact_partners_body: str | list[str] | None = None,
         match_fun: Callable[[str, str], bool] | None = None,
         include_total: bool = True,
         prune_noncolliding: bool = False,
@@ -3577,51 +3579,26 @@ class ModelBuilder:
         m = contact_sensor_manager.model
 
         # Get entities matching the pattern
+        sensor_entities, sensor_keys = [], []
         sensor_entities, sensor_keys = self._get_entities(
-            match_fun, m, shape_pattern=sensor_shape, body_pattern=sensor_body
+            match_fun,
+            m,
+            shape_pattern=sensor_shape,
+            body_pattern=sensor_body,
+            raise_if_not_found=True,
         )
         if verbose:
             print(f"Sensor entities found: {sensor_entities}")
             print(f"                 keys: {sensor_keys}")
 
-        if not sensor_entities:
-            # check for possible confusion of shape vs body
-            confusion_hint = (
-                self._get_entities(match_fun, m, shape_pattern=sensor_body, body_pattern=sensor_shape)[0] is not None
-            )
-
-            if sensor_shape:
-                raise EntityNotFoundError(
-                    f'No matching shapes for sensor shape pattern "{sensor_shape}".',
-                    sensor_shape,
-                    "shape",
-                    hint="Did you mean to match bodies?" if confusion_hint else "",
-                )
-            else:
-                raise EntityNotFoundError(
-                    f'No matching bodies (with shapes) for sensor body pattern "{sensor_body}".',
-                    sensor_body,
-                    "body",
-                    hint="Did you mean to match shapes?" if confusion_hint else "",
-                )
-
         if contact_partners_body or contact_partners_shape:
             select_entities, select_keys = self._get_entities(
-                match_fun, m, shape_pattern=contact_partners_shape, body_pattern=contact_partners_body
+                match_fun,
+                m,
+                shape_pattern=contact_partners_shape,
+                body_pattern=contact_partners_body,
+                raise_if_not_found=True,
             )
-            if not select_entities:
-                if contact_partners_shape:
-                    raise EntityNotFoundError(
-                        f'No matching shapes for contact partners shape pattern "{contact_partners_shape}".',
-                        contact_partners_shape,
-                        "shape",
-                    )
-                else:
-                    raise EntityNotFoundError(
-                        f'No matching bodies (with shapes) for contact partners body pattern "{contact_partners_body}".',
-                        contact_partners_body,
-                        "body",
-                    )
 
             if include_total:
                 select_entities = (MatchAny, *select_entities)
@@ -3687,24 +3664,39 @@ class ModelBuilder:
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
 
-    def _get_entities(self, match_fn, model: Model, shape_pattern: str | None = None, body_pattern: str | None = None):
-        """Find shapes or bodies matching the pattern. Return matching shapes in individual tuples, and matching bodies
-        as tuples including all their shapes."""
+    def _get_entities(
+        self,
+        match_fn: Callable[[str, str], bool],
+        model: Model,
+        shape_pattern: str | None = None,
+        body_pattern: str | None = None,
+        raise_if_not_found: bool = False,
+    ) -> tuple[list[Entity], list[tuple[Enum, str]]] | tuple[None, None]:
+        """Find shapes or bodies matching the pattern. Return entities, i.e. matching shapes in individual tuples,
+        and matching bodies as tuples including all their shapes."""
         from newton.utils.contact_sensor import EntityKind  # noqa: PLC0415
 
-        entities = []
-        entity_keys = []
-        assert (shape_pattern is None) != (body_pattern is None), (
-            "Exactly one of shape_pattern or body_pattern must be specified"
-        )
+        entities, entity_keys = [], []
 
-        if shape_pattern is not None:
+        match_shapes, match_bodies = shape_pattern is not None, body_pattern is not None
+        assert match_shapes != match_bodies, "Exactly one of shape_pattern or body_pattern must be specified"
+
+        if isinstance(shape_pattern, list) or isinstance(body_pattern, list):
+            pattern_list = shape_pattern if match_shapes else body_pattern
+            arg = "shape_pattern" if match_shapes else "body_pattern"
+
+            for pattern in pattern_list:
+                e, k = self._get_entities(match_fn, model, **{arg: pattern}, raise_if_not_found=raise_if_not_found)
+                entities.extend(e)
+                entity_keys.extend(k)
+            return entities, entity_keys
+
+        if match_shapes:
             for shape_id, shape_key in enumerate(model.shape_key):
                 if match_fn(shape_key, shape_pattern):
                     entities.append((shape_id,))
                     entity_keys.append((EntityKind.SHAPE, shape_key))
-
-        if body_pattern is not None:
+        else:
             for body_id, body_key in enumerate(model.body_key):
                 if match_fn(body_key, body_pattern):
                     body_shapes = tuple(model.body_shapes[body_id])
@@ -3712,6 +3704,31 @@ class ModelBuilder:
                         continue
                     entities.append(body_shapes)
                     entity_keys.append((EntityKind.BODY, body_key))
+
+        if raise_if_not_found and not entities:
+            # check for possible confusion of shape vs body
+            confusion_hint = (
+                self._get_entities(
+                    match_fn,
+                    model,
+                    body_pattern,
+                    shape_pattern,
+                    False,
+                )[0]
+                is not None
+            )
+
+            if match_shapes:
+                sought, other, pattern, kind = "shapes", "bodies", shape_pattern, "shape"
+            else:
+                sought, other, pattern, kind = "bodies (with shapes)", "shapes", body_pattern, "body"
+
+            raise EntityNotFoundError(
+                f'No matching {sought} for pattern "{pattern}".',
+                pattern,
+                kind,
+                hint=f"Did you mean to match {other}?" if confusion_hint else "",
+            )
 
         if not entities:
             return None, None

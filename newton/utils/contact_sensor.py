@@ -31,7 +31,7 @@ NUM_THREADS = 8192
 
 
 class SentinelMeta(type):
-    def __repr__(cls):
+    def __repr__(cls) -> str:
         return f"<{cls.__name__}>"
 
 
@@ -51,7 +51,7 @@ def bisect_shape_pairs(
     shape_pairs_sorted: wp.array(dtype=wp.vec2i),
     n_shape_pairs: wp.int32,
     value: wp.vec2i,
-):
+) -> wp.int32:
     lo = wp.int32(0)
     hi = n_shape_pairs
     while lo < hi:
@@ -147,11 +147,11 @@ class ContactView:
     This class stores the parameters of the query and provides a view of the results.
     """
 
-    def __init__(self, query_id: int, args: dict):
-        self.query_id = query_id
+    def __init__(self, query_id: int, args: dict[str, Any]):
+        self.query_id: int = query_id
         self.args: dict[str, Any] = args
         self.finalized: bool = False
-        self.shape: tuple[int] = None
+        self.shape: tuple[int, int] = None
 
         self.net_force: wp.array(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
         """Net force matrix, shape (n_sensors, n_contact_partners [+1 if total included])"""
@@ -160,9 +160,9 @@ class ContactView:
         """Keys for the sensors in the query, n_sensors"""
         self.contact_partner_keys: list[str] = None
         """Keys for the contact partners in the query, n_contact_partners"""
-        self.sensor_entities: list[tuple[int, ...]] = None
+        self.sensor_entities: list[Entity] = None
         """Entities for the sensors in the query, n_sensors"""
-        self.contact_partner_entities: list[tuple[int, ...]] = None
+        self.contact_partner_entities: list[Entity] = None
         """Entities for the contact partners in the query, n_contact_partners"""
         self.entity_pairs: np.ndarray = None  # entity pair matrix
         """Pairs of sensor and contact partner indices for the query, shape (n_sensors, n_contact_partners, 2)"""
@@ -172,8 +172,8 @@ class ContactView:
         net_force: wp.array(dtype=wp.vec3),
         sensor_keys: list[str],
         contact_partner_keys: list[str],
-        sensor_entities: list[tuple[int, ...]],
-        contact_partner_entities: list[tuple[int, ...]],
+        sensor_entities: list[Entity],
+        contact_partner_entities: list[Entity],
         entity_pairs: np.ndarray,
     ):
         assert not self.finalized
@@ -213,22 +213,21 @@ class ContactQuery:
     select_keys: list[str] | None = None
 
     colliding_shape_pairs: set[tuple[int, int]] | None = None
-    # sensor_matrix: list[list[tuple[int, int]]]
 
 
 class ContactSensorManager:
-    def __init__(self, model):
+    def __init__(self, model: Model):
         self.contact_queries: list[ContactQuery] = []
-        self.contact_views = []
-        self.contact_reporter = None
-        self.model = model
+        self.contact_views: list[ContactView] = []
+        self.contact_reporter: ContactReporter | None = None
+        self.model: Model = model
 
     def add_contact_query(
         self,
-        sensor_entities: list[tuple[int, ...]],
-        select_entities: list[tuple[int, ...] | MatchAny],
-        sensor_keys: list[tuple],
-        select_keys: list[tuple],
+        sensor_entities: list[Entity],
+        select_entities: list[Entity | MatchAny],
+        sensor_keys: list[tuple[Any, ...]],
+        select_keys: list[tuple[Any, ...]],
         contact_view: ContactView,
         colliding_shape_pairs: set[tuple[int, int]] | None = None,
     ):
@@ -251,7 +250,7 @@ class ContactSensorManager:
         self.contact_queries.append(query)
         self.contact_views.append(contact_view)
 
-    def eval_contact_sensors(self, contact_info):
+    def eval_contact_sensors(self, contact_info: ContactInfo):
         self.contact_reporter._select_aggregate_net_force(contact_info)
 
     def finalize(self):
@@ -336,14 +335,14 @@ class ContactSensorManager:
 class ContactReporter:
     """Aggregates contacts per entity pair"""
 
-    def __init__(self, entity_pairs: list[tuple[tuple[int, ...], tuple[int, ...]]]):
+    def __init__(self, entity_pairs: list[tuple[Entity, Entity]]):
         # initialize mapping from sp to eps & flips
-        self.n_entity_pairs = len(entity_pairs)
+        self.n_entity_pairs: int = len(entity_pairs)
         self._create_sp_ep_arrays(entity_pairs)
         # net force (1 vec3 per entity pair)
         self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
 
-    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[tuple[int, ...], tuple[int, ...] | MatchAny] | None]):
+    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[Entity, Entity | MatchAny] | None]):
         """Build a mapping from shape pairs to entity pairs ordered by shape pair.
         None is accepted as a filler value."""
         sp_ep_map = defaultdict(list)
@@ -370,9 +369,7 @@ class ContactReporter:
         self.sp_sorted_list = sp_sorted
         self.sp_ep_list = sp_ep
 
-        self.n_shape_pairs = len(sp_sorted)
-
-        # TODO: ensure no symmetric pairs
+        self.n_shape_pairs: int = len(sp_sorted)
 
         # initialize warp arrays
         self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i)
