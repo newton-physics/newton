@@ -272,6 +272,29 @@ class Model:
         self.gravity = np.array((0.0, 0.0, -9.81))
         """Gravity vector, shape [3], float."""
 
+        self.equality_constraint_type = []
+        """Type of equality constraint, shape [equality_constraint_count], str."""
+        self.equality_constraint_body1 = []
+        """First body index, shape [equality_constraint_count], int."""
+        self.equality_constraint_body2 = []
+        """Second body index, shape [equality_constraint_count], int."""
+        self.equality_constraint_anchor1 = []
+        """Anchor point on first body, shape [equality_constraint_count, 3], float."""
+        self.equality_constraint_anchor2 = []
+        """Anchor point on second body, shape [equality_constraint_count, 3], float."""
+        self.equality_constraint_distance = []
+        """Target distance, shape [equality_constraint_count], float."""
+        self.equality_constraint_joint1 = []
+        """First joint index, shape [equality_constraint_count], int."""
+        self.equality_constraint_joint2 = []
+        """Second joint index, shape [equality_constraint_count], int."""
+        self.equality_constraint_polycoef = []
+        """Polynomial coefficients, shape [equality_constraint_count, 2], float."""
+        self.equality_constraint_key = []
+        """Constraint name/key, shape [equality_constraint_count], str."""
+        self.equality_constraint_enabled = []
+        """Whether constraint is active, shape [equality_constraint_count], bool."""
+
         self.particle_count = 0
         """Total number of particles in the system."""
         self.body_count = 0
@@ -296,6 +319,8 @@ class Model:
         """Total number of velocity degrees of freedom of all joints in the system. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints in the system."""
+        self.equality_constraint_count = 0
+        """Total number of equality constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []

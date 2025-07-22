@@ -1653,6 +1653,16 @@ class MuJoCoSolver(SolverBase):
         shape_body = model.shape_body.numpy()
         shape_flags = model.shape_flags.numpy()
 
+        eq_constraint_body1 = model.equality_constraint_body1.numpy()
+        eq_constraint_body2 = model.equality_constraint_body2.numpy()
+        eq_constraint_anchor1 = model.equality_constraint_anchor1.numpy()
+        # eq_constraint_anchor2 = model.equality_constraint_anchor2.numpy()
+        # eq_constraint_distance = model.equality_constraint_distance.numpy()
+        eq_constraint_joint1 = model.equality_constraint_joint1.numpy()
+        eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
+        eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
+        # eq_constraint_enabled = model.equality_constraint_enabled.numpy()
+
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
 
@@ -2040,6 +2050,26 @@ class MuJoCoSolver(SolverBase):
             body_child_tf[child] = child_tf
 
             add_geoms(child, incoming_xform=child_tf)
+
+        for i, typ in enumerate(model.equality_constraint_type):
+            if typ == "connect":
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq.active = 1
+                eq.data[0:3] = eq_constraint_anchor1[i]
+
+            elif typ == "joint":
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
+
+                eq.name1 = model.joint_key[eq_constraint_joint1[i]]
+                eq.name2 = model.joint_key[eq_constraint_joint2[i]]
+
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+
+                eq.active = 1
+                eq.data[0 : len(eq_constraint_polycoef[i])] = eq_constraint_polycoef[i]
 
         self.mj_model = spec.compile()
 
