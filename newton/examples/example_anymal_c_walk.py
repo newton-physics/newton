@@ -34,6 +34,8 @@ import newton.examples
 import newton.utils
 from newton.sim import Control, State
 
+wp.config.enable_backward = False
+
 
 @wp.kernel
 def compute_observations_anymal(

@@ -28,6 +28,8 @@ import newton.utils
 from newton.sim import eval_fk
 from newton.utils.gizmo import GizmoSystem
 
+wp.config.enable_backward = False
+
 # -------------------------------------------------------------------------
 # Utility classes
 # -------------------------------------------------------------------------
