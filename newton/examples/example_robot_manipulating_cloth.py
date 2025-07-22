@@ -284,7 +284,7 @@ class Example:
         self.cloth_solver: VBDSolver | None = None
         if self.add_cloth:
             # initialize cloth solver
-            #   set edge rest angle to zero to disable bending, this is currently a walkaround to make VBDSolver stable
+            #   set edge rest angle to zero to disable bending, this is currently a workaround to make VBDSolver stable
             #   TODO: fix VBDSolver's bending issue
             self.model.edge_rest_angle.zero_()
             self.cloth_solver = VBDSolver(

@@ -46,7 +46,7 @@ class InitializeModel:
             _example = Example(stage_path=None, num_envs=num_envs)
 
 
-class ExampleLoad:
+class XPBDSolverLoad:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -58,7 +58,7 @@ class ExampleLoad:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the Quadruped example."""
+        """Time the amount of time it takes to load and run one frame of the example."""
 
         command = [
             sys.executable,
