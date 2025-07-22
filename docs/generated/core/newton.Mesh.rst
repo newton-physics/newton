@@ -18,7 +18,6 @@
       ~Mesh.__init__
       ~Mesh.compute_convex_hull
       ~Mesh.finalize
-      ~Mesh.set_convex_hull
    
    
 
