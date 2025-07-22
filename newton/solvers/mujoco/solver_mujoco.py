@@ -1017,12 +1017,46 @@ class MuJoCoSolver(SolverBase):
 
     .. code-block:: python
 
-        solver = newton.MuJoCoSolver(model)
+        solver = newton.solvers.MuJoCoSolver(model)
 
         # simulation loop
         for i in range(100):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
+
+    Debugging
+    ---------
+
+    To debug the MuJoCoSolver, you can save the MuJoCo model that is created from the :class:`newton.Model` in the constructor of the MuJoCoSolver:
+
+    .. code-block:: python
+
+        solver = newton.solvers.MuJoCoSolver(model, save_to_mjcf="model.xml")
+
+    This will save the MuJoCo model as an MJCF file, which can be opened in the MuJoCo simulator.
+
+    It is also possible to visualize the simulation running in the MuJoCoSolver through MuJoCo's own viewer.
+    This may help to debug the simulation and see how the MuJoCo model looks like when it is created from the Newton model.
+
+    .. code-block:: python
+
+        import mujoco
+        import mujoco.viewer
+        import mujoco_warp
+
+        solver = newton.solvers.MuJoCoSolver(model)
+        mjm, mjd = solver.mj_model, solver.mj_data
+        m, d = solver.mjw_model, solver.mjw_data
+        viewer = mujoco.viewer.launch_passive(mjm, mjd)
+
+        for _ in range(num_frames):
+            # step the solver
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+            if not solver.use_mujoco:
+                mujoco_warp.get_data_into(mjd, mjm, d)
+            viewer.sync()
     """
 
     def __init__(
