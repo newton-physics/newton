@@ -511,8 +511,6 @@ def apply_mjc_control_kernel(
     if actuator_id != -1:
         if axis_mode[axisid] != newton.JOINT_MODE_NONE:
             mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
-        else:
-            mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
 
 
 @wp.kernel
