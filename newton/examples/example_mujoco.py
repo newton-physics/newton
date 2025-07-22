@@ -22,7 +22,6 @@
 #
 # Future improvements:
 # - Add options to run with a pre-trained policy
-# - Add the Ant environment
 # - Add the Anymal environment
 # - Fix the use_mujoco option (currently crash)
 ###########################################################################
