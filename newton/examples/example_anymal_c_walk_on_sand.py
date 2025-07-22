@@ -32,6 +32,8 @@ import newton.utils
 from newton.examples.example_anymal_c_walk import AnymalController
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
 
+wp.config.enable_backward = False
+
 
 @wp.kernel
 def update_collider_mesh(

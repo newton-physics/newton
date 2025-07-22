@@ -27,6 +27,8 @@ import warp as wp
 
 import newton
 
+wp.config.enable_backward = False
+
 
 class Example:
     def __init__(self, stage_path: str | None = "example_rigid_force.usd", headless: bool = False):

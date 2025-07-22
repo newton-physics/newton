@@ -32,6 +32,8 @@ VERBOSE = True
 # - If False, each shape in each environment gets its own random value.
 RANDOMIZE_PER_ENV = True
 
+wp.config.enable_backward = False
+
 
 @wp.kernel
 def compute_middle_kernel(

@@ -31,7 +31,7 @@ from newton.sim import ModelBuilder
 
 
 def parse_mjcf(
-    mjcf_filename: str,
+    mjcf_filename_or_string: str,
     builder: ModelBuilder,
     xform: Transform | None = None,
     floating: bool | None = None,
@@ -59,7 +59,7 @@ def parse_mjcf(
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        mjcf_filename (str): The filename of the MuJoCo file to parse.
+        mjcf_filename_or_string (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         xform (Transform): The transform to apply to the imported mechanism.
         floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
@@ -88,9 +88,30 @@ def parse_mjcf(
     else:
         xform = wp.transform(*xform)
 
-    mjcf_dirname = os.path.dirname(mjcf_filename)
-    file = ET.parse(mjcf_filename)
-    root = file.getroot()
+    # Check if input is a file path first
+    if os.path.isfile(mjcf_filename_or_string):
+        # It's a file path
+        mjcf_dirname = os.path.dirname(mjcf_filename_or_string)
+        file = ET.parse(mjcf_filename_or_string)
+        root = file.getroot()
+    else:
+        # It's XML string content
+        # Strip leading whitespace and byte-order marks
+        xml_content = mjcf_filename_or_string.strip()
+        # Remove BOM if present
+        if xml_content.startswith("\ufeff"):
+            xml_content = xml_content[1:]
+        # Remove leading XML comments
+        while xml_content.strip().startswith("<!--"):
+            end_comment = xml_content.find("-->")
+            if end_comment != -1:
+                xml_content = xml_content[end_comment + 3 :].strip()
+            else:
+                break
+        xml_content = xml_content.strip()
+
+        root = ET.fromstring(xml_content)
+        mjcf_dirname = "."
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
@@ -703,8 +724,11 @@ def parse_mjcf(
                 I_m[1, 0] = I_m[0, 1]
                 I_m[2, 0] = I_m[0, 2]
                 I_m[2, 1] = I_m[1, 2]
+
             rot = wp.quat_to_matrix(inertial_frame.q)
-            I_m = rot @ wp.mat33(I_m)
+            rot_np = np.array(rot).reshape(3, 3)
+            I_m = rot_np @ I_m @ rot_np.T
+            I_m = wp.mat33(I_m)
             m = float(inertial_attrib.get("mass", "0"))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m if m > 0.0 else 0.0

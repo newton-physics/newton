@@ -51,6 +51,12 @@ ROBOT_CONFIGS = {
         "njmax": 400,
         "nconmax": 150,
     },
+    "h1": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 400,
+        "nconmax": 150,
+    },
     "cartpole": {
         "solver": "newton",
         "integrator": "euler",
@@ -110,6 +116,24 @@ def _setup_g1(articulation_builder):
             )
             articulation_builder.shape_geo_src[i] = simplified
             simplified_meshes[hash_m] = simplified
+    root_dofs = 7
+
+    return root_dofs
+
+
+def _setup_h1(articulation_builder):
+    articulation_builder.default_shape_cfg.density = 100.0
+    articulation_builder.default_joint_cfg.armature = 0.1
+    articulation_builder.default_body_armature = 0.1
+
+    asset_path = newton.utils.download_asset("h1_description")
+    newton.utils.parse_mjcf(
+        str(asset_path / "mjcf" / "h1_with_hand.xml"),
+        articulation_builder,
+        collapse_fixed_joints=True,
+        up_axis="Z",
+        enable_self_collisions=False,
+    )
     root_dofs = 7
 
     return root_dofs
@@ -197,6 +221,8 @@ class Example:
             root_dofs = _setup_humanoid(articulation_builder)
         elif robot == "g1":
             root_dofs = _setup_g1(articulation_builder)
+        elif robot == "h1":
+            root_dofs = _setup_h1(articulation_builder)
         elif robot == "cartpole":
             root_dofs = _setup_cartpole(articulation_builder)
         elif robot == "quadruped":

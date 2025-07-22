@@ -28,6 +28,8 @@ import warp as wp
 import newton
 import newton.utils
 
+wp.config.enable_backward = False
+
 
 class SolverType(Enum):
     EULER = "euler"
