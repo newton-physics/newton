@@ -15,10 +15,11 @@
 
 """Tests for inertia validation and correction functionality."""
 
+import unittest
+import warnings
+
 import numpy as np
 import warp as wp
-import warnings
-import unittest
 
 from newton.geometry.inertia import verify_and_correct_inertia
 from newton.sim import ModelBuilder
@@ -31,168 +32,168 @@ class TestInertiaValidation(unittest.TestCase):
         """Test that negative mass is corrected to zero."""
         mass = -10.0
         inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, 0.0)
             # Zero mass should have zero inertia
             self.assertTrue(np.allclose(np.array(corrected_inertia), 0.0))
             self.assertTrue(len(w) > 0)
             self.assertIn("Negative mass", str(w[0].message))
-    
+
     def test_mass_bound(self):
         """Test that mass below bound is clamped."""
         mass = 0.5
         bound_mass = 1.0
         inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, bound_mass=bound_mass
             )
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, bound_mass)
             self.assertTrue(len(w) > 0)
             self.assertIn("below bound", str(w[0].message))
-    
+
     def test_negative_inertia_diagonal(self):
         """Test that negative inertia diagonal elements are corrected."""
         mass = 1.0
         inertia = wp.mat33([[-1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, -3.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, mass)
-            
+
             inertia_array = np.array(corrected_inertia).reshape(3, 3)
             self.assertTrue(inertia_array[0, 0] >= 0)
             self.assertTrue(inertia_array[1, 1] >= 0)
             self.assertTrue(inertia_array[2, 2] >= 0)
             self.assertTrue(len(w) > 0)
             self.assertIn("Negative inertia diagonal", str(w[0].message))
-    
+
     def test_inertia_bound(self):
         """Test that inertia diagonal elements below bound are clamped."""
         mass = 1.0
         bound_inertia = 1.0
         inertia = wp.mat33([[0.1, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 0.5]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, bound_inertia=bound_inertia
             )
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, mass)
-            
+
             inertia_array = np.array(corrected_inertia).reshape(3, 3)
             self.assertGreaterEqual(inertia_array[0, 0], bound_inertia)
-            self.assertGreaterEqual(inertia_array[1, 1], bound_inertia)  
+            self.assertGreaterEqual(inertia_array[1, 1], bound_inertia)
             self.assertGreaterEqual(inertia_array[2, 2], bound_inertia)
             self.assertTrue(len(w) > 0)
-    
+
     def test_triangle_inequality_violation(self):
         """Test correction of inertia that violates triangle inequality."""
         mass = 1.0
         # Violates Ixx + Iyy >= Izz (0.1 + 0.1 < 10.0)
         inertia = wp.mat33([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 10.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, balance_inertia=True
             )
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, mass)
-            
+
             # Check that triangle inequalities are satisfied
             inertia_array = np.array(corrected_inertia).reshape(3, 3)
             Ixx, Iyy, Izz = inertia_array[0, 0], inertia_array[1, 1], inertia_array[2, 2]
-            
+
             self.assertGreaterEqual(Ixx + Iyy, Izz - 1e-10)
             self.assertGreaterEqual(Iyy + Izz, Ixx - 1e-10)
             self.assertGreaterEqual(Izz + Ixx, Iyy - 1e-10)
-            
+
             self.assertTrue(len(w) > 0)
             self.assertIn("triangle inequality", str(w[0].message))
-    
+
     def test_no_balance_inertia(self):
         """Test that triangle inequality violation is reported but not corrected when balance_inertia=False."""
         mass = 1.0
         # Violates Ixx + Iyy >= Izz
         inertia = wp.mat33([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 10.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, balance_inertia=False
             )
-            
+
             self.assertTrue(was_corrected)
             self.assertEqual(corrected_mass, mass)
-            
+
             # Inertia should not be balanced
             inertia_array = np.array(corrected_inertia).reshape(3, 3)
             self.assertAlmostEqual(inertia_array[0, 0], 0.1)
             self.assertAlmostEqual(inertia_array[1, 1], 0.1)
             self.assertAlmostEqual(inertia_array[2, 2], 10.0)
-            
+
             self.assertTrue(len(w) > 0)
             self.assertIn("triangle inequality", str(w[0].message))
-    
+
     def test_valid_inertia_no_correction(self):
         """Test that valid inertia is not corrected."""
         mass = 1.0
         inertia = wp.mat33([[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]])
-        
+
         with warnings.catch_warnings(record=True) as w:
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(mass, inertia)
-            
+
             self.assertFalse(was_corrected)
             self.assertEqual(corrected_mass, mass)
             self.assertTrue(np.allclose(np.array(corrected_inertia).reshape(3, 3), np.array(inertia).reshape(3, 3)))
             self.assertEqual(len(w), 0)
-    
+
     def test_model_builder_integration(self):
         """Test that inertia validation works in ModelBuilder.finalize()."""
         builder = ModelBuilder()
         builder.balance_inertia = True
         builder.bound_mass = 0.1
         builder.bound_inertia = 0.01
-        
+
         # Add a body with invalid inertia
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
         body_idx = builder.add_body(
             mass=0.05,  # Below bound
             I_m=invalid_inertia,  # Violates triangle inequality
-            key="test_body"
+            key="test_body",
         )
-        
+
         with warnings.catch_warnings(record=True) as w:
             model = builder.finalize()
-            
+
             # Check that mass and inertia were corrected
             body_mass = model.body_mass.numpy()[body_idx]
             body_inertia = model.body_inertia.numpy()[body_idx]
-            
+
             self.assertGreaterEqual(body_mass, builder.bound_mass)
-            
+
             Ixx, Iyy, Izz = body_inertia[0, 0], body_inertia[1, 1], body_inertia[2, 2]
             self.assertGreaterEqual(Ixx, builder.bound_inertia)
             self.assertGreaterEqual(Iyy, builder.bound_inertia)
             self.assertGreaterEqual(Izz, builder.bound_inertia)
-            
+
             # Check triangle inequalities
             self.assertGreaterEqual(Ixx + Iyy, Izz - 1e-10)
             self.assertGreaterEqual(Iyy + Izz, Ixx - 1e-10)
             self.assertGreaterEqual(Izz + Ixx, Iyy - 1e-10)
-            
+
             self.assertTrue(len(w) > 0)
 
 
 if __name__ == "__main__":
-    unittest.main() 
+    unittest.main()
