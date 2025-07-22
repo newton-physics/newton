@@ -17,6 +17,7 @@ import os
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton.geometry.utils import create_box_mesh, transform_points
@@ -187,24 +188,23 @@ class TestImportUsd(unittest.TestCase):
         rigidbody.AddScaleOp().Set(Gf.Vec3f(*scale))
 
         mesh = UsdGeom.Mesh.Define(stage, "/meshConvexHull")
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
 
         box = box_mesh(scale=scale)
 
         # Fill in VtArrays
         points = []
-        normals = []
         indices = []
         vertex_counts = []
 
-        points = [Gf.Vec3f(*p) for p in box.vertices]
-        indices = [Gf.Vec3i(*i) for i in box.indices.reshape(-1, 3)]
-        vertex_counts = [3] * len(indices)
+        points = [Gf.Vec3f(*p) for p in box.vertices.tolist()]
+        indices = box.indices.tolist()
+        vertex_counts = [3] * (len(indices) // 3)
 
         mesh.CreateFaceVertexCountsAttr().Set(vertex_counts)
         mesh.CreateFaceVertexIndicesAttr().Set(indices)
         mesh.CreatePointsAttr().Set(points)
         mesh.CreateDoubleSidedAttr().Set(False)
-        # mesh.CreateNormalsAttr().Set(normals)
 
         mesh_prim = mesh.GetPrim()
 
@@ -212,10 +212,16 @@ class TestImportUsd(unittest.TestCase):
         meshColAPI.GetApproximationAttr().Set(UsdPhysics.Tokens.convexHull)
 
         builder = newton.ModelBuilder()
+        newton.geometry.MESH_MAXHULLVERT = 6
         parse_usd(
             stage,
             builder,
         )
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 1)
+        converted_mesh = builder.shape_geo_src[0]
+        self.assertEqual(converted_mesh.vertices.shape, (6, 3))
 
 
 if __name__ == "__main__":
