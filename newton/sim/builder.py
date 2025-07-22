@@ -444,6 +444,19 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+        # equality constraints
+        self.equality_constraint_type = []
+        self.equality_constraint_body1 = []
+        self.equality_constraint_body2 = []
+        self.equality_constraint_anchor1 = []
+        self.equality_constraint_anchor2 = []
+        self.equality_constraint_distance = []
+        self.equality_constraint_joint1 = []
+        self.equality_constraint_joint2 = []
+        self.equality_constraint_polycoef = []
+        self.equality_constraint_key = []
+        self.equality_constraint_enabled = []
+
     @property
     def up_vector(self) -> Vec3:
         """Computes the 3D up vector from :attr:`up_axis`."""
@@ -698,6 +711,17 @@ class ModelBuilder:
             "tet_poses",
             "tet_activations",
             "tet_materials",
+            "equality_constraint_type",
+            "equality_constraint_body1",
+            "equality_constraint_body2",
+            "equality_constraint_anchor1",
+            "equality_constraint_anchor2",
+            "equality_constraint_distance",
+            "equality_constraint_joint1",
+            "equality_constraint_joint2",
+            "equality_constraint_polycoef",
+            "equality_constraint_key",
+            "equality_constraint_enabled",
         ]
 
         for attr in more_builder_attrs:
@@ -1285,6 +1309,58 @@ class ModelBuilder:
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
+
+    def add_equality_constraint(
+        self,
+        constraint_type: str,
+        body1name: str | None = None,
+        body2name: str | None = None,
+        anchor1: Vec3 | None = None,
+        anchor2: Vec3 | None = None,
+        distance: float | None = None,
+        joint1name: str | None = None,
+        joint2name: str | None = None,
+        polycoef: list[float] | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a Mujoco equality constraint.
+
+        Args:
+            constraint_type: Type of constraint ('connect', 'weld', 'joint', 'tendon', 'distance')
+            body1name: First body for body-based constraints
+            body2name: Second body for body-based constraints
+            anchor1: Anchor point on body1 (for connect constraints)
+            anchor2: Anchor point on body2 (for connect constraints)
+            distance: Target distance (for distance constraints)
+            joint1name: First joint for joint coupling
+            joint2name: Second joint for joint coupling
+            polycoef: Polynomial coefficients for joint coupling
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        body1 = self.body_key.index(body1name) if body1name else -1
+        body2 = self.body_key.index(body2name) if body2name else -1
+        joint1 = self.joint_key.index(joint1name) if joint1name else -1
+        joint2 = self.joint_key.index(joint2name) if joint2name else -1
+
+        self.equality_constraint_type.append(constraint_type)
+        self.equality_constraint_body1.append(body1)
+        self.equality_constraint_body2.append(body2)
+        self.equality_constraint_anchor1.append(anchor1 or wp.vec3())
+        self.equality_constraint_anchor2.append(anchor2 or wp.vec3())
+        self.equality_constraint_distance.append(distance or 0.0)
+        self.equality_constraint_joint1.append(joint1)
+        self.equality_constraint_joint2.append(joint2)
+        self.equality_constraint_polycoef.append(polycoef or [0.0, 1.0])
+        self.equality_constraint_key.append(key)
+        self.equality_constraint_enabled.append(enabled)
+
+        return len(self.equality_constraint_type) - 1
 
     # endregion
 
@@ -3668,6 +3744,19 @@ class ModelBuilder:
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
 
+            # equality constraints
+            m.equality_constraint_type = self.equality_constraint_type
+            m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
+            m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
+            m.equality_constraint_anchor1 = wp.array(self.equality_constraint_anchor1, dtype=wp.vec3)
+            m.equality_constraint_anchor2 = wp.array(self.equality_constraint_anchor2, dtype=wp.vec3)
+            m.equality_constraint_distance = wp.array(self.equality_constraint_distance, dtype=wp.float32)
+            m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
+            m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
+            m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
+            m.equality_constraint_key = self.equality_constraint_key
+            m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
+
             # counts
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
@@ -3681,6 +3770,7 @@ class ModelBuilder:
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
+            m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = count_rigid_contact_points(m)

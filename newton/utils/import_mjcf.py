@@ -54,6 +54,7 @@ def parse_mjcf(
     static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
+    parse_equality: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -82,6 +83,7 @@ def parse_mjcf(
         static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
+        parse_equality (bool): Whether <equality> tags should be parsed. If False, equality constraints are ignored.
     """
     if xform is None:
         xform = wp.transform()
@@ -761,6 +763,79 @@ def parse_mjcf(
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
             parse_body(child, link, _incoming_defaults, childclass=_childclass)
 
+    def parse_equality_constraints(equality):
+        for connect in equality.findall("connect"):
+            body1_name = connect.attrib.get("body1").replace("-", "_")
+            body2_name = connect.attrib.get("body2").replace("-", "_")
+            anchor = connect.attrib.get("anchor", "0 0 0")
+            anchor_vec = np.array([float(x) for x in anchor.split()])
+            active = connect.attrib.get("active", "true").lower() == "true"
+            name = connect.attrib.get("name")
+
+            if body1_name and body2_name and active:
+                anchor1 = wp.vec3(anchor_vec[0] * scale, anchor_vec[1] * scale, anchor_vec[2] * scale)
+                anchor2 = wp.vec3(0.0, 0.0, 0.0)
+
+                if verbose:
+                    print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor_vec}")
+
+                builder.add_equality_constraint(
+                    constraint_type="connect",
+                    body1name=body1_name,
+                    body2name=body2_name,
+                    anchor1=anchor1,
+                    anchor2=anchor2,
+                    key=name,
+                    enabled=active,
+                )
+
+        for weld in equality.findall("weld"):
+            body1_name = weld.attrib.get("body1")
+            body2_name = weld.attrib.get("body2")
+            active = weld.attrib.get("active", "true").lower() == "true"
+
+            if body1_name and body2_name and active:
+                print(f"Weld constraint: {body1_name} to {body2_name}")
+                # TODO
+
+        for joint in equality.findall("joint"):
+            joint1_name = joint.attrib.get("joint1")
+            joint2_name = joint.attrib.get("joint2")
+            polycoef = joint.attrib.get("polycoef", "0 1")  # Default is 1:1 coupling
+            active = joint.attrib.get("active", "true").lower() == "true"
+
+            if joint1_name and joint2_name and active:
+                if verbose:
+                    print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
+
+                builder.add_equality_constraint(
+                    constraint_type="joint",
+                    joint1name=joint1_name,
+                    joint2name=joint2_name,
+                    # key=name,
+                    enabled=active,
+                    polycoef=[float(x) for x in polycoef.split()],
+                )
+
+        for tendon in equality.findall("tendon"):
+            tendon1_name = tendon.attrib.get("tendon1")
+            tendon2_name = tendon.attrib.get("tendon2")
+            active = tendon.attrib.get("active", "true").lower() == "true"
+
+            if tendon1_name and tendon2_name and active:
+                print(f"Tendon constraint: {tendon1_name} to {tendon2_name}")
+                # TODO
+
+        for distance in equality.findall("distance"):
+            geom1_name = distance.attrib.get("geom1")
+            geom2_name = distance.attrib.get("geom2")
+            distance_val = float(distance.attrib.get("distance", "0"))
+            active = distance.attrib.get("active", "true").lower() == "true"
+
+            if geom1_name and geom2_name and active:
+                print(f"Distance constraint: {geom1_name} to {geom2_name} at distance {distance_val}")
+                # TODO
+
     # -----------------
     # start articulation
 
@@ -789,6 +864,15 @@ def parse_mjcf(
         density=default_shape_density,
         incoming_xform=xform,
     )
+
+    # -----------------
+    # add equality constraints
+
+    equality = root.find("equality")
+    if equality is not None and parse_equality:
+        parse_equality_constraints(equality)
+
+    # -----------------
 
     end_shape_count = len(builder.shape_type)
 
