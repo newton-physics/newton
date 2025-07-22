@@ -499,7 +499,6 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
-    joint_f: wp.array(dtype=wp.float32),
     axis_mode: wp.array(dtype=wp.int32),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
@@ -512,7 +511,7 @@ def apply_mjc_control_kernel(
         if axis_mode[axisid] != newton.JOINT_MODE_NONE:
             mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
         else:
-            mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
+            mj_act[worldid, actuator_id] = 0.0
 
 
 @wp.kernel
@@ -1232,7 +1231,6 @@ class MuJoCoSolver(SolverBase):
                 dim=(nworld, axes_per_env),
                 inputs=[
                     control.joint_target,
-                    control.joint_f,
                     model.joint_dof_mode,
                     model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                     axes_per_env,
