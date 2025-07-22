@@ -62,6 +62,7 @@ from newton.geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from newton.geometry.inertia import verify_and_correct_inertia
 
 from ..geometry.utils import RemeshingMethod, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
@@ -279,6 +280,12 @@ class ModelBuilder:
 
         # Default body settings
         self.default_body_armature = 0.0
+        # endregion
+
+        # region compiler settings (similar to MuJoCo)
+        self.balance_inertia = True  # Automatically balance inertia tensors to satisfy triangle inequality
+        self.bound_mass = None  # Minimum mass for bodies (None means no bound)
+        self.bound_inertia = None  # Minimum inertia diagonal values (None means no bound)
         # endregion
 
         # particles
@@ -3391,6 +3398,30 @@ class ModelBuilder:
 
             # --------------------------------------
             # rigid bodies
+
+            # Apply inertia verification and correction before transferring to model
+            if self.balance_inertia or self.bound_mass is not None or self.bound_inertia is not None:
+                for i in range(len(self.body_mass)):
+                    mass = self.body_mass[i]
+                    inertia = self.body_inertia[i]
+
+                    corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                        mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia
+                    )
+
+                    if was_corrected:
+                        self.body_mass[i] = corrected_mass
+                        self.body_inertia[i] = corrected_inertia
+                        # Update inverse mass and inertia
+                        if corrected_mass > 0.0:
+                            self.body_inv_mass[i] = 1.0 / corrected_mass
+                        else:
+                            self.body_inv_mass[i] = 0.0
+
+                        if any(x for x in corrected_inertia):
+                            self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                        else:
+                            self.body_inv_inertia[i] = corrected_inertia
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)

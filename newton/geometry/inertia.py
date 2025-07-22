@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -485,3 +487,166 @@ def compute_shape_inertia(
             m, c, I, _vol = compute_mesh_inertia(density, vertices, src.indices, is_solid, thickness)
             return m, c, I
     raise ValueError(f"Unsupported shape type: {type}")
+
+
+def verify_and_correct_inertia(
+    mass: float,
+    inertia: wp.mat33,
+    balance_inertia: bool = True,
+    bound_mass: float | None = None,
+    bound_inertia: float | None = None,
+) -> tuple[float, wp.mat33, bool]:
+    """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
+
+    This function checks for invalid inertia values and corrects them if needed. It performs
+    the following checks and corrections:
+    1. Ensures mass is non-negative (and bounded if specified)
+    2. Ensures inertia diagonal elements are non-negative (and bounded if specified)
+    3. Ensures inertia matrix satisfies triangle inequality (principal moments satisfy Ixx + Iyy >= Izz etc.)
+    4. Optionally balances inertia to satisfy the triangle inequality exactly
+
+    Args:
+        mass: The mass of the body
+        inertia: The 3x3 inertia tensor
+        balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
+        bound_mass: If specified, clamp mass to be at least this value
+        bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
+
+    Returns:
+        A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
+        indicates if any corrections were made
+    """
+    was_corrected = False
+    corrected_mass = mass
+    inertia_array = np.array(inertia).reshape(3, 3)
+    corrected_inertia = inertia_array.copy()
+
+    # Check and correct mass
+    if mass < 0:
+        warnings.warn(f"Negative mass {mass} detected, setting to 0", stacklevel=2)
+        corrected_mass = 0.0
+        was_corrected = True
+    elif bound_mass is not None and mass < bound_mass and mass > 0:
+        warnings.warn(f"Mass {mass} is below bound {bound_mass}, clamping", stacklevel=2)
+        corrected_mass = bound_mass
+        was_corrected = True
+
+    # For zero mass, inertia should also be zero
+    if corrected_mass == 0.0:
+        if np.any(inertia_array != 0):
+            warnings.warn("Zero mass body should have zero inertia, correcting", stacklevel=2)
+            corrected_inertia = np.zeros((3, 3))
+            was_corrected = True
+        return corrected_mass, wp.mat33(corrected_inertia), was_corrected
+
+    # Check that inertia matrix is symmetric
+    if not np.allclose(inertia_array, inertia_array.T):
+        warnings.warn("Inertia matrix is not symmetric, making it symmetric", stacklevel=2)
+        corrected_inertia = (inertia_array + inertia_array.T) / 2
+        was_corrected = True
+
+    # Extract principal moments (diagonal elements)
+    Ixx, Iyy, Izz = corrected_inertia[0, 0], corrected_inertia[1, 1], corrected_inertia[2, 2]
+
+    # Check for negative diagonal elements
+    if Ixx < 0 or Iyy < 0 or Izz < 0:
+        warnings.warn(
+            f"Negative inertia diagonal elements detected: ({Ixx}, {Iyy}, {Izz}), taking absolute values", stacklevel=2
+        )
+        Ixx, Iyy, Izz = abs(Ixx), abs(Iyy), abs(Izz)
+        corrected_inertia[0, 0] = Ixx
+        corrected_inertia[1, 1] = Iyy
+        corrected_inertia[2, 2] = Izz
+        was_corrected = True
+
+    # Apply inertia bounds if specified
+    if bound_inertia is not None:
+        if Ixx < bound_inertia:
+            warnings.warn(f"Ixx {Ixx} is below bound {bound_inertia}, clamping", stacklevel=2)
+            Ixx = bound_inertia
+            corrected_inertia[0, 0] = Ixx
+            was_corrected = True
+        if Iyy < bound_inertia:
+            warnings.warn(f"Iyy {Iyy} is below bound {bound_inertia}, clamping", stacklevel=2)
+            Iyy = bound_inertia
+            corrected_inertia[1, 1] = Iyy
+            was_corrected = True
+        if Izz < bound_inertia:
+            warnings.warn(f"Izz {Izz} is below bound {bound_inertia}, clamping", stacklevel=2)
+            Izz = bound_inertia
+            corrected_inertia[2, 2] = Izz
+            was_corrected = True
+
+    # Check triangle inequality (principal moments must satisfy these constraints)
+    # For a physically valid inertia tensor: Ixx + Iyy >= Izz, Iyy + Izz >= Ixx, Izz + Ixx >= Iyy
+    violations = []
+    if Ixx + Iyy < Izz:
+        violations.append((0, 1, 2))  # Ixx + Iyy < Izz
+    if Iyy + Izz < Ixx:
+        violations.append((1, 2, 0))  # Iyy + Izz < Ixx
+    if Izz + Ixx < Iyy:
+        violations.append((2, 0, 1))  # Izz + Ixx < Iyy
+
+    if violations:
+        warnings.warn(
+            f"Inertia tensor violates triangle inequality with principal moments ({Ixx}, {Iyy}, {Izz})", stacklevel=2
+        )
+        was_corrected = True
+
+        if balance_inertia:
+            # Balance inertia similar to MuJoCo's approach
+            # Find the smallest adjustment that satisfies all constraints
+            I = [Ixx, Iyy, Izz]
+
+            # MuJoCo's algorithm: repeatedly find the most violated constraint and fix it
+            max_iterations = 10
+            for _ in range(max_iterations):
+                # Find the most violated constraint
+                max_violation = 0
+                max_idx = -1
+                for i, j, k in [(0, 1, 2), (1, 2, 0), (2, 0, 1)]:
+                    violation = I[k] - I[i] - I[j]
+                    if violation > max_violation:
+                        max_violation = violation
+                        max_idx = k
+
+                if max_violation <= 1e-10:
+                    break
+
+                # Fix the violation by increasing the two smaller moments
+                if max_idx == 0:  # Ixx is too large
+                    delta = (I[0] - I[1] - I[2]) / 2
+                    I[1] += delta
+                    I[2] += delta
+                elif max_idx == 1:  # Iyy is too large
+                    delta = (I[1] - I[2] - I[0]) / 2
+                    I[2] += delta
+                    I[0] += delta
+                else:  # Izz is too large
+                    delta = (I[2] - I[0] - I[1]) / 2
+                    I[0] += delta
+                    I[1] += delta
+
+            corrected_inertia[0, 0] = I[0]
+            corrected_inertia[1, 1] = I[1]
+            corrected_inertia[2, 2] = I[2]
+
+            warnings.warn(f"Balanced inertia to ({I[0]}, {I[1]}, {I[2]})", stacklevel=2)
+
+    # Final check: ensure the corrected inertia matrix is positive definite
+    try:
+        eigenvalues = np.linalg.eigvals(corrected_inertia)
+        if np.any(eigenvalues <= 0):
+            warnings.warn("Corrected inertia matrix is not positive definite, this should not happen", stacklevel=2)
+            # As a last resort, make it positive definite by adding a small value to diagonal
+            min_eigenvalue = np.min(eigenvalues)
+            if min_eigenvalue <= 0:
+                epsilon = abs(min_eigenvalue) + 1e-6
+                corrected_inertia[0, 0] += epsilon
+                corrected_inertia[1, 1] += epsilon
+                corrected_inertia[2, 2] += epsilon
+                was_corrected = True
+    except np.linalg.LinAlgError:
+        warnings.warn("Failed to compute eigenvalues of inertia matrix", stacklevel=2)
+
+    return corrected_mass, wp.mat33(corrected_inertia), was_corrected
