@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.examples
 import newton.utils
@@ -31,8 +33,6 @@ VERBOSE = True
 # - If True, all shapes in the same environment get the same random value.
 # - If False, each shape in each environment gets its own random value.
 RANDOMIZE_PER_ENV = True
-
-wp.config.enable_backward = False
 
 
 @wp.kernel
