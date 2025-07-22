@@ -21,14 +21,14 @@ from typing import Callable
 import numpy as np
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.examples
 import newton.sim.ik as ik
 import newton.utils
 from newton.sim import eval_fk
 from newton.utils.gizmo import GizmoSystem
-
-wp.config.enable_backward = False
 
 # -------------------------------------------------------------------------
 # Utility classes

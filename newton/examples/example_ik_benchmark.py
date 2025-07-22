@@ -25,11 +25,11 @@ from typing import Callable
 import numpy as np
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.sim.ik as ik
 import newton.utils
-
-wp.config.enable_backward = False
 
 
 @dataclass(frozen=True)

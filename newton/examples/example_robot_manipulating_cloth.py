@@ -139,12 +139,7 @@ def compute_body_jacobian(
     body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
     tape = wp.Tape()
     with tape:
-        eval_fk(
-            model,
-            joint_q,
-            joint_qd,
-            out_state,
-        )
+        eval_fk(model, joint_q, joint_qd, out_state)
         wp.launch(compute_body_out, 1, inputs=[out_state.body_qd if velocity else out_state.body_q], outputs=[body_out])
 
     def onehot(i):

@@ -84,10 +84,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [dependency-groups]
-dev = [
-    "asv>=0.6.4",
-    "coverage[toml]>=7.8.0",
-]
+dev = ["asv>=0.6.4", "coverage[toml]>=7.8.0"]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
@@ -129,6 +126,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012"]
+"newton/examples/**/*" = ["E402"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

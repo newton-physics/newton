@@ -26,11 +26,11 @@
 import torch
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.utils
 from newton.sim import State
-
-wp.config.enable_backward = False
 
 lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
 mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]

@@ -30,11 +30,11 @@ import warp as wp
 import warp.examples
 from pxr import Usd, UsdGeom
 
+wp.config.enable_backward = False
+
 import newton
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE
-
-wp.config.enable_backward = False
 
 
 @wp.kernel

@@ -26,16 +26,14 @@
 # - Fix the use_mujoco option (currently crash)
 ###########################################################################
 
-
 import numpy as np
 import warp as wp
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples
 import newton.utils
-
-wp.config.enable_backward = False
-
 
 ROBOT_CONFIGS = {
     "humanoid": {

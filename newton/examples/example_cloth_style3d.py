@@ -13,17 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
-
-wp.config.enable_backward = False
 
 
 class Example:
