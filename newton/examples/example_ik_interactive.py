@@ -21,14 +21,14 @@ from typing import Callable
 import numpy as np
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.examples
 import newton.sim.ik as ik
 import newton.utils
 from newton.sim import eval_fk
 from newton.utils.gizmo import GizmoSystem
-
-wp.config.enable_backward = False
 
 # -------------------------------------------------------------------------
 # Utility classes
@@ -502,14 +502,14 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage_path",
+        "--stage-path",
         type=lambda x: None if x == "None" else str(x),
         default="example_h1_ik_interactive.usd",
         help="Path of the output USD.",
     )
-    parser.add_argument("--num_envs", type=int, default=4, help="Number of parallel environments.")
+    parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel environments.")
     parser.add_argument(
-        "--tie_targets",
+        "--tie-targets",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Tie all envs together so dragging one EE moves the others.",

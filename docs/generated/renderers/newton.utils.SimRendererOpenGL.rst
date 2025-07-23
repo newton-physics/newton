@@ -17,8 +17,14 @@
    .. autosummary::
    
       ~SimRendererOpenGL.__init__
+      ~SimRendererOpenGL.apply_picking_force
       ~SimRendererOpenGL.compute_projection_matrix
+      ~SimRendererOpenGL.get_new_color
       ~SimRendererOpenGL.get_pixels
+      ~SimRendererOpenGL.populate
+      ~SimRendererOpenGL.populate_bodies
+      ~SimRendererOpenGL.populate_joints
+      ~SimRendererOpenGL.populate_shapes
       ~SimRendererOpenGL.render
       ~SimRendererOpenGL.render_arrow
       ~SimRendererOpenGL.render_box
@@ -30,6 +36,8 @@
       ~SimRendererOpenGL.render_line_list
       ~SimRendererOpenGL.render_line_strip
       ~SimRendererOpenGL.render_mesh
+      ~SimRendererOpenGL.render_muscles
+      ~SimRendererOpenGL.render_particles_and_springs
       ~SimRendererOpenGL.render_plane
       ~SimRendererOpenGL.render_points
       ~SimRendererOpenGL.render_ref

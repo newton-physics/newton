@@ -22,7 +22,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 from newton.examples.example_humanoid import Example
 
 
-class ExampleLoad:
+class MuJoCoSolverLoad:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -32,8 +32,10 @@ class ExampleLoad:
         wp.build.clear_lto_cache()
         wp.build.clear_kernel_cache()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
+        """Time the amount of time it takes to load and run one frame of the example."""
+
         command = [
             sys.executable,
             "-m",
@@ -60,7 +62,7 @@ class MuJoCoSolverSimulate:
         self.num_frames = 100
         self.example = Example(stage_path=None, num_envs=8, use_cuda_graph=True)
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or wp.context.runtime.driver_version < (12, 3))
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()

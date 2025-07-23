@@ -21,14 +21,13 @@
 # Note this example does not include a trained policy.
 ###########################################################################
 
-
 import warp as wp
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples
 import newton.utils
-
-wp.config.enable_backward = False
 
 
 class Example:

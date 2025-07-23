@@ -22,21 +22,18 @@
 #
 # Future improvements:
 # - Add options to run with a pre-trained policy
-# - Add the Ant environment
 # - Add the Anymal environment
 # - Fix the use_mujoco option (currently crash)
 ###########################################################################
 
-
 import numpy as np
 import warp as wp
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples
 import newton.utils
-
-wp.config.enable_backward = False
-
 
 ROBOT_CONFIGS = {
     "humanoid": {
@@ -58,6 +55,12 @@ ROBOT_CONFIGS = {
         "nconmax": 150,
     },
     "cartpole": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 50,
+        "nconmax": 50,
+    },
+    "ant": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 50,
@@ -159,6 +162,20 @@ def _setup_cartpole(articulation_builder):
     return root_dofs
 
 
+def _setup_ant(articulation_builder):
+    newton.utils.parse_usd(
+        newton.examples.get_asset("ant.usda"),
+        articulation_builder,
+        collapse_fixed_joints=True,
+    )
+
+    # Setting root pose
+    root_dofs = 7
+    articulation_builder.joint_q[:3] = [0.0, 0.0, 1.5]
+
+    return root_dofs
+
+
 def _setup_quadruped(articulation_builder):
     articulation_builder.default_body_armature = 0.01
     articulation_builder.default_joint_cfg.armature = 0.01
@@ -225,6 +242,8 @@ class Example:
             root_dofs = _setup_h1(articulation_builder)
         elif robot == "cartpole":
             root_dofs = _setup_cartpole(articulation_builder)
+        elif robot == "ant":
+            root_dofs = _setup_ant(articulation_builder)
         elif robot == "quadruped":
             root_dofs = _setup_quadruped(articulation_builder)
         else:
