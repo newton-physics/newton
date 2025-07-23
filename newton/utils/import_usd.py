@@ -921,7 +921,9 @@ def parse_usd(
                             )
                             continue
                         face_id += count
-                    m = newton.Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                    m = newton.Mesh(
+                        points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=newton.geometry.MESH_MAXHULLVERT
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
