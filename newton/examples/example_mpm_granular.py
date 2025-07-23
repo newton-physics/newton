@@ -13,17 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common definitions for types and constants."""
-
 import argparse
 
 import numpy as np
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 from newton.solvers.implicit_mpm import ImplicitMPMSolver
-
-wp.config.enable_backward = False
 
 
 class Example:

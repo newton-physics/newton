@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import warp as wp
 
-import newton
-
 wp.config.enable_backward = False
+
+import newton
 
 
 class Example:
