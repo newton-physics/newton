@@ -139,7 +139,10 @@ def convert_contact_info(
         if isinstance(solver, MuJoCoSolver):
             solver.update_newton_contacts(model, solver.mjw_data, contact_info)
         else:
-            raise NotImplementedError("Contact conversion not yet implemented this solver")
+            raise NotImplementedError("Contact conversion not yet implemented for this solver")
+    if contacts is not None:
+        raise NotImplementedError("Contact conversion not yet implemented for Contacts object")
+
 
 
 class ContactView:

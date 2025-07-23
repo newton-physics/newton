@@ -3191,8 +3191,13 @@ class ModelBuilder:
             prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
             verbose: print details
         """
-
         from newton.utils.contact_sensor import ContactView  # noqa: PLC0415
+
+        if (sensor_shape is None) == (sensor_body is None):
+            raise ValueError("Exactly one of sensor_shape and sensor_body must be specified")
+
+        if (contact_partners_shape is not None) and (contact_partners_body is not None):
+            raise ValueError("At most one of contact_partners_shape and contact_partners_body must be specified.")
 
         if match_fun is None:
             match_fun = fnmatch
@@ -3671,7 +3676,7 @@ class ModelBuilder:
         shape_pattern: str | None = None,
         body_pattern: str | None = None,
         raise_if_not_found: bool = False,
-    ) -> tuple[list[Entity], list[tuple[Enum, str]]] | tuple[None, None]:
+    ) -> tuple[list[tuple[int, ...]], list[tuple[Enum, str]]] | tuple[None, None]:
         """Find shapes or bodies matching the pattern. Return entities, i.e. matching shapes in individual tuples,
         and matching bodies as tuples including all their shapes."""
         from newton.utils.contact_sensor import EntityKind  # noqa: PLC0415

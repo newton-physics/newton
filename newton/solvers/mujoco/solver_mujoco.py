@@ -1148,7 +1148,7 @@ class MuJoCoSolver(SolverBase):
     def create_newton_contact_geom_mapping(self, model: Model):
         indices = [idx for w, idx in self.shape_map.values() if idx is not None]
         if not indices:
-            return None
+            return wp.array([], dtype=wp.int32, device=model.device)
         max_mj_shape_id = max(indices)
         geom_mapping = np.full((model.num_envs, max_mj_shape_id + 1), -1, dtype=np.int32)
 
