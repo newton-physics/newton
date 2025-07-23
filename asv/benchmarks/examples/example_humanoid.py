@@ -19,20 +19,7 @@ import sys
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_mujoco import Example
-
-
-class InitializeModel:
-    params = [64, 128]
-
-    number = 10
-
-    def setup(self, num_envs):
-        wp.init()
-
-    def time_initialize_model(self, num_envs):
-        # use_cuda_graph is False to exclude kernel compilation
-        _example = Example(stage_path=None, robot="humanoid", headless=True, num_envs=num_envs, use_cuda_graph=False)
+from newton.examples.example_humanoid import Example
 
 
 class MuJoCoSolverLoad:
@@ -52,14 +39,12 @@ class MuJoCoSolverLoad:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_mujoco",
+            "newton.examples.example_humanoid",
             "--stage-path",
             "None",
-            "--robot",
-            "humanoid",
-            "--headless",
             "--num-frames",
             "1",
+            "--headless",
             "--no-use-cuda-graph",
         ]
 
@@ -74,16 +59,8 @@ class MuJoCoSolverSimulate:
     number = 1
 
     def setup(self):
-        self.num_frames = 200
-        self.example = Example(
-            stage_path=None,
-            robot="humanoid",
-            randomize=True,
-            headless=True,
-            actuation="random",
-            num_envs=8,
-            use_cuda_graph=True,
-        )
+        self.num_frames = 100
+        self.example = Example(stage_path=None, num_envs=8, use_cuda_graph=True)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
