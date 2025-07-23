@@ -19,7 +19,7 @@ newton.geometry
 
 .. autosummary::
    :toctree: _generated
-   :nosignatures:
+   :signatures: long
 
    build_ccd_generic
    compute_shape_inertia

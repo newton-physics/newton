@@ -15,7 +15,7 @@ newton.core
 
 .. autosummary::
    :toctree: _generated
-   :nosignatures:
+   :signatures: long
 
    AxisType
    quat_between_axes

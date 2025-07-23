@@ -1,27 +1,8 @@
 ﻿newton.geometry.BroadPhaseAllPairs
 ==================================
 
-.. currentmodule:: newton.geometry
-
-.. autoclass:: BroadPhaseAllPairs
+.. autoclass:: newton.geometry.BroadPhaseAllPairs
    :members:
+   :undoc-members:
    :show-inheritance:
-   :member-order: bysource
-   
-   
-
-   
-   .. rubric:: Methods
-
-   .. autosummary::
-   
-   
-   
-      ~BroadPhaseAllPairs.launch
-   
-   
-   
-
-   
-   
-    
+   :member-order: groupwise

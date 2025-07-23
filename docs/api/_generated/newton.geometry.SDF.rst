@@ -1,24 +1,8 @@
 ﻿newton.geometry.SDF
 ===================
 
-.. currentmodule:: newton.geometry
-
-.. autoclass:: SDF
+.. autoclass:: newton.geometry.SDF
    :members:
+   :undoc-members:
    :show-inheritance:
-   :member-order: bysource
-   
-   
-
-   
-   .. rubric:: Methods
-
-   .. autosummary::
-   
-   
-   
-   
-
-   
-   
-    
+   :member-order: groupwise

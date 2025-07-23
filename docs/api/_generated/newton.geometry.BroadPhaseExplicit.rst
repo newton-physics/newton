@@ -1,27 +1,8 @@
 ﻿newton.geometry.BroadPhaseExplicit
 ==================================
 
-.. currentmodule:: newton.geometry
-
-.. autoclass:: BroadPhaseExplicit
+.. autoclass:: newton.geometry.BroadPhaseExplicit
    :members:
+   :undoc-members:
    :show-inheritance:
-   :member-order: bysource
-   
-   
-
-   
-   .. rubric:: Methods
-
-   .. autosummary::
-   
-   
-   
-      ~BroadPhaseExplicit.launch
-   
-   
-   
-
-   
-   
-    
+   :member-order: groupwise

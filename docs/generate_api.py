@@ -127,7 +127,7 @@ def write_module_page(mod_name: str) -> None:
                 "",
                 ".. autosummary::",
                 f"   :toctree: {TOCTREE_DIR}",
-                "   :nosignatures:",
+                "   :signatures: long",
                 "",
             ]
         )

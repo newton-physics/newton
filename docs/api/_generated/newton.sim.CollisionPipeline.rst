@@ -1,24 +1,8 @@
 ﻿newton.sim.CollisionPipeline
 ============================
 
-.. currentmodule:: newton.sim
-
-.. autoclass:: CollisionPipeline
+.. autoclass:: newton.sim.CollisionPipeline
    :members:
+   :undoc-members:
    :show-inheritance:
-   :member-order: bysource
-   
-   
-
-   
-   .. rubric:: Methods
-
-   .. autosummary::
-   
-   
-   
-   
-
-   
-   
-    
+   :member-order: groupwise

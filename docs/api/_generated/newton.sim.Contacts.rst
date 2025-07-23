@@ -1,27 +1,8 @@
 ﻿newton.sim.Contacts
 ===================
 
-.. currentmodule:: newton.sim
-
-.. autoclass:: Contacts
+.. autoclass:: newton.sim.Contacts
    :members:
+   :undoc-members:
    :show-inheritance:
-   :member-order: bysource
-   
-   
-
-   
-   .. rubric:: Methods
-
-   .. autosummary::
-   
-   
-   
-      ~Contacts.clear
-   
-   
-   
-
-   
-   
-    
+   :member-order: groupwise

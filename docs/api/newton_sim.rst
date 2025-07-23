@@ -24,7 +24,7 @@ newton.sim
 
 .. autosummary::
    :toctree: _generated
-   :nosignatures:
+   :signatures: long
 
    color_graph
    count_rigid_contact_points

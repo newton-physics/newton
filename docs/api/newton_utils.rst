@@ -17,7 +17,7 @@ newton.utils
 
 .. autosummary::
    :toctree: _generated
-   :nosignatures:
+   :signatures: long
 
    boltzmann
    check_conditional_graph_support
