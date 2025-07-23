@@ -71,8 +71,11 @@ class ForceElementAdjacencyInfo:
     v_adj_edges: wp.array(dtype=int)
     v_adj_edges_offsets: wp.array(dtype=int)
 
+    v_adj_springs: wp.array(dtype=int)
+    v_adj_springs_offsets: wp.array(dtype=int)
+
     def to(self, device):
-        if device.is_cpu:
+        if device == self.v_adj_faces.device:
             return self
         else:
             adjacency_gpu = ForceElementAdjacencyInfo()
@@ -81,6 +84,9 @@ class ForceElementAdjacencyInfo:
 
             adjacency_gpu.v_adj_edges = self.v_adj_edges.to(device)
             adjacency_gpu.v_adj_edges_offsets = self.v_adj_edges_offsets.to(device)
+
+            adjacency_gpu.v_adj_springs = self.v_adj_springs.to(device)
+            adjacency_gpu.v_adj_springs_offsets = self.v_adj_springs_offsets.to(device)
 
             return adjacency_gpu
 
@@ -105,6 +111,17 @@ def get_vertex_num_adjacent_faces(adjacency: ForceElementAdjacencyInfo, vertex: 
 def get_vertex_adjacent_face_id_order(adjacency: ForceElementAdjacencyInfo, vertex: wp.int32, face: wp.int32):
     offset = adjacency.v_adj_faces_offsets[vertex]
     return adjacency.v_adj_faces[offset + face * 2], adjacency.v_adj_faces[offset + face * 2 + 1]
+
+
+@wp.func
+def get_vertex_num_adjacent_springs(adjacency: ForceElementAdjacencyInfo, vertex: wp.int32):
+    return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
+
+
+@wp.func
+def get_vertex_adjacent_spring_id(adjacency: ForceElementAdjacencyInfo, vertex: wp.int32, spring: wp.int32):
+    offset = adjacency.v_adj_springs_offsets[vertex]
+    return adjacency.v_adj_springs[offset + spring]
 
 
 @wp.kernel
@@ -1897,6 +1914,84 @@ def accumulate_contact_force_and_hessian(
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
 
 
+@wp.func
+def evaluate_spring_force_and_hessian(
+    particle_idx: int,
+    spring_idx: int,
+    dt: float,
+    pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
+    spring_indices: wp.array(dtype=int),
+    spring_rest_length: wp.array(dtype=float),
+    spring_stiffness: wp.array(dtype=float),
+    spring_damping: wp.array(dtype=float),
+):
+    v0 = spring_indices[spring_idx * 2]
+    v1 = spring_indices[spring_idx * 2 + 1]
+
+    diff = pos[v0] - pos[v1]
+    l = wp.length(diff)
+    l0 = spring_rest_length[spring_idx]
+
+    force_sign = 1.0 if particle_idx == v0 else -1.0
+
+    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - l) / l * diff
+    spring_hessian = spring_stiffness[spring_idx] * (
+        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(diff, diff) / (l * l))
+    )
+
+    # compute damping
+    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
+
+    f_d = h_d * (pos_prev[particle_idx] - pos[particle_idx])
+
+    spring_force = spring_force + f_d
+    spring_hessian = spring_hessian + h_d
+
+    return spring_force, spring_hessian
+
+
+@wp.kernel
+def accumulate_spring_force_and_hessian(
+    # inputs
+    dt: float,
+    current_color: int,
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    particle_ids_in_color: wp.array(dtype=int),
+    adjacency: ForceElementAdjacencyInfo,
+    # spring constraints
+    spring_indices: wp.array(dtype=int),
+    spring_rest_length: wp.array(dtype=float),
+    spring_stiffness: wp.array(dtype=float),
+    spring_damping: wp.array(dtype=float),
+    # outputs: particle force and hessian
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
+):
+    t_id = wp.tid()
+
+    particle_index = particle_ids_in_color[t_id]
+
+    num_adj_springs = get_vertex_num_adjacent_springs(adjacency, particle_index)
+    for spring_counter in range(num_adj_springs):
+        spring_index = get_vertex_adjacent_spring_id(adjacency, particle_index, spring_counter)
+        spring_force, spring_hessian = evaluate_spring_force_and_hessian(
+            particle_index,
+            spring_index,
+            dt,
+            pos,
+            pos_prev,
+            spring_indices,
+            spring_rest_length,
+            spring_stiffness,
+            spring_damping,
+        )
+
+        wp.atomic_add(particle_forces, particle_index, spring_force)
+        wp.atomic_add(particle_hessians, particle_index, spring_hessian)
+
+
 @wp.kernel
 def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
@@ -2386,6 +2481,8 @@ class VBDSolver(SolverBase):
     def compute_force_element_adjacency(self, model):
         adjacency = ForceElementAdjacencyInfo()
         edges_array = model.edge_indices.to("cpu")
+        spring_array = model.spring_indices.to("cpu")
+        face_indices = model.tri_indices.to("cpu")
 
         with wp.ScopedDevice("cpu"):
             if edges_array.size:
@@ -2425,37 +2522,74 @@ class VBDSolver(SolverBase):
                 adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
                 adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32)
 
-            # compute adjacent triangles
+            if face_indices.size:
+                # compute adjacent triangles
+                # count number of adjacent faces for each vertex
+                num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+                wp.launch(kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
 
-            # count number of adjacent faces for each vertex
-            face_indices = model.tri_indices.to("cpu")
-            num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-            wp.launch(kernel=self.count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
+                # preallocate memory based on counting results
+                num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
+                vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
+                vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
+                vertex_adjacent_faces_offsets[0] = 0
+                adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
 
-            # preallocate memory based on counting results
-            num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
-            vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-            vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
-            vertex_adjacent_faces_offsets[0] = 0
-            adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
+                vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
-            vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+                face_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
+                # (face, vertex_order) * num_adj_faces * num_particles
+                # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
+                adjacency.v_adj_faces = wp.empty(shape=(face_adjacency_array_size,), dtype=wp.int32)
 
-            face_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
-            # (face, vertex_order) * num_adj_faces * num_particles
-            # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
-            adjacency.v_adj_faces = wp.empty(shape=(face_adjacency_array_size,), dtype=wp.int32)
+                wp.launch(
+                    kernel=self.fill_adjacent_faces,
+                    inputs=[
+                        face_indices,
+                        adjacency.v_adj_faces_offsets,
+                        vertex_adjacent_faces_fill_count,
+                        adjacency.v_adj_faces,
+                    ],
+                    dim=1,
+                )
+            else:
+                adjacency.v_adj_faces_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                adjacency.v_adj_faces = wp.empty(shape=(0,), dtype=wp.int32)
 
-            wp.launch(
-                kernel=self.fill_adjacent_faces,
-                inputs=[
-                    face_indices,
-                    adjacency.v_adj_faces_offsets,
-                    vertex_adjacent_faces_fill_count,
-                    adjacency.v_adj_faces,
-                ],
-                dim=1,
-            )
+            if spring_array.size:
+                # build vertex-springs adjacency data
+                num_vertex_adjacent_spring = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=self.count_num_adjacent_springs,
+                    inputs=[spring_array, num_vertex_adjacent_spring],
+                    dim=1,
+                )
+
+                num_vertex_adjacent_spring = num_vertex_adjacent_spring.numpy()
+                vertex_adjacent_springs_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
+                vertex_adjacent_springs_offsets[1:] = np.cumsum(num_vertex_adjacent_spring)[:]
+                vertex_adjacent_springs_offsets[0] = 0
+                adjacency.v_adj_springs_offsets = wp.array(vertex_adjacent_springs_offsets, dtype=wp.int32)
+
+                # temporal variables to record how much adjacent springs has been filled to each vertex
+                vertex_adjacent_springs_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+                adjacency.v_adj_springs = wp.empty(shape=(num_vertex_adjacent_spring.sum(),), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=self.fill_adjacent_springs,
+                    inputs=[
+                        spring_array,
+                        adjacency.v_adj_springs_offsets,
+                        vertex_adjacent_springs_fill_count,
+                        adjacency.v_adj_springs,
+                    ],
+                    dim=1,
+                )
+
+            else:
+                adjacency.v_adj_springs_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                adjacency.v_adj_springs = wp.empty(shape=(0,), dtype=wp.int32)
 
         return adjacency
 
@@ -2525,6 +2659,26 @@ class VBDSolver(SolverBase):
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
                 )
+
+                if model.spring_count:
+                    wp.launch(
+                        kernel=accumulate_spring_force_and_hessian,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_color_groups[color],
+                            self.adjacency,
+                            self.model.spring_indices,
+                            self.model.spring_rest_length,
+                            self.model.spring_stiffness,
+                            self.model.spring_damping,
+                        ],
+                        outputs=[self.particle_forces, self.particle_hessians],
+                        dim=self.model.particle_color_groups[color].size,
+                        device=self.device,
+                    )
 
                 if self.use_tile_solve:
                     wp.launch(
@@ -2681,6 +2835,26 @@ class VBDSolver(SolverBase):
                         outputs=[self.particle_forces, self.particle_hessians],
                         device=self.device,
                         max_blocks=self.model.device.sm_count,
+                    )
+
+                if model.spring_count:
+                    wp.launch(
+                        kernel=accumulate_spring_force_and_hessian,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_color_groups[color],
+                            self.adjacency,
+                            self.model.spring_indices,
+                            self.model.spring_rest_length,
+                            self.model.spring_stiffness,
+                            self.model.spring_damping,
+                        ],
+                        outputs=[self.particle_forces, self.particle_hessians],
+                        dim=self.model.particle_color_groups[color].size,
+                        device=self.device,
                     )
 
                 if self.use_tile_solve:
@@ -2896,3 +3070,37 @@ class VBDSolver(SolverBase):
             vertex_adjacent_faces[buffer_offset_v2 + fill_count_v2 * 2] = face
             vertex_adjacent_faces[buffer_offset_v2 + fill_count_v2 * 2 + 1] = 2
             vertex_adjacent_faces_fill_count[v2] = fill_count_v2 + 1
+
+    @wp.kernel
+    def count_num_adjacent_springs(
+        springs_array: wp.array(dtype=wp.int32), num_vertex_adjacent_springs: wp.array(dtype=wp.int32)
+    ):
+        num_springs = springs_array.shape[0] / 2
+        for spring_id in range(num_springs):
+            v0 = springs_array[spring_id * 2]
+            v1 = springs_array[spring_id * 2 + 1]
+
+            num_vertex_adjacent_springs[v0] = num_vertex_adjacent_springs[v0] + 1
+            num_vertex_adjacent_springs[v1] = num_vertex_adjacent_springs[v1] + 1
+
+    @wp.kernel
+    def fill_adjacent_springs(
+        springs_array: wp.array(dtype=wp.int32),
+        vertex_adjacent_springs_offsets: wp.array(dtype=wp.int32),
+        vertex_adjacent_springs_fill_count: wp.array(dtype=wp.int32),
+        vertex_adjacent_springs: wp.array(dtype=wp.int32),
+    ):
+        num_springs = springs_array.shape[0] / 2
+        for spring_id in range(num_springs):
+            v0 = springs_array[spring_id * 2]
+            v1 = springs_array[spring_id * 2 + 1]
+
+            fill_count_v0 = vertex_adjacent_springs_fill_count[v0]
+            buffer_offset_v0 = vertex_adjacent_springs_offsets[v0]
+            vertex_adjacent_springs[buffer_offset_v0 + fill_count_v0] = spring_id
+            vertex_adjacent_springs_fill_count[v0] = fill_count_v0 + 1
+
+            fill_count_v1 = vertex_adjacent_springs_fill_count[v1]
+            buffer_offset_v1 = vertex_adjacent_springs_offsets[v1]
+            vertex_adjacent_springs[buffer_offset_v1 + fill_count_v1] = spring_id
+            vertex_adjacent_springs_fill_count[v1] = fill_count_v1 + 1
