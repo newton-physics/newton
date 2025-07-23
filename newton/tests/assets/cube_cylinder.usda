@@ -20,55 +20,11 @@
             }
             string boundCamera = "/OmniverseKit_Persp"
         }
-        dictionary metricsAssembler = {
-            dictionary "/Environment/cylinder2" = {
-            }
-            dictionary "/World/cylinder" = {
-            }
-            dictionary "/World/naturalbostonroundbottle_a02/cylinder2" = {
-            }
-            dictionary "/World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/cylinder2" = {
-            }
-            dictionary "/World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/cylinder_reverse" = {
-            }
-            dictionary "/World/standardwoodcrate_a01/cube" = {
-            }
-            dictionary "/World/standardwoodcrate_a01/standardwoodcrate_a01_inst/cube2" = {
-            }
-            int version = 1
-        }
-        dictionary omni_layer = {
-            string authoring_layer = "./cube_cylinder_debug2.usda"
-            dictionary locked = {
-            }
-            dictionary muteness = {
-            }
-        }
         dictionary renderSettings = {
             double "rtx:translucency:worldEps" = 0.005
         }
     }
     defaultPrim = "World"
-    doc = """Generated from Composed Stage of root layer D:\\scenes\\SimSetup\\simple_drop.usda
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/data/simple_drop_flat.usd
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/data/cube_cylinder3.usda
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder.usda
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
-
-
-Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
-"""
     endTimeCode = 1000000
     metersPerUnit = 1
     startTimeCode = 0
