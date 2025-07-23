@@ -21,7 +21,8 @@ from .types import Axis, AxisType
 @wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     """
-    Returns the velocity of a point relative to the frame with the given spatial velocity.
+    Returns the velocity of a point relative to the frame that owns the
+    provided spatial velocity.
 
     Args:
         qd (spatial_vector): The spatial velocity of the frame.
@@ -60,7 +61,8 @@ def quat_twist_angle(axis: wp.vec3, q: wp.quat):
 @wp.func
 def quat_decompose(q: wp.quat):
     """
-    Decompose a quaternion into a sequence of 3 rotations around x,y',z' respectively, i.e.: q = q_z''q_y'q_x.
+    Decompose a quaternion into a sequence of three rotations around
+    ``x``, ``y'`` and ``z'`` respectively, i.e. ``q = q_z'' q_y' q_x``.
     """
 
     R = wp.matrix_from_cols(
@@ -85,9 +87,9 @@ def quat_decompose(q: wp.quat):
 def quat_to_rpy(q: wp.quat):
     """
     Convert a quaternion into Euler angles (roll, pitch, yaw)
-    roll is rotation around x in radians (counterclockwise)
-    pitch is rotation around y in radians (counterclockwise)
-    yaw is rotation around z in radians (counterclockwise)
+    roll is rotation around *x* in radians (counter-clockwise)
+    pitch is rotation around *y* in radians (counter-clockwise)
+    yaw is rotation around *z* in radians (counter-clockwise)
     """
     x = q[0]
     y = q[1]
@@ -116,7 +118,8 @@ def quat_to_euler(q: wp.quat, i: int, j: int, k: int) -> wp.vec3:
     :math:`i, j, k` are the indices in :math:`[0, 1, 2]` of the axes to use
     (:math:`i \\neq j, j \\neq k`).
 
-    Reference: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0276302
+    Reference: https://journals.plos.org/plosone/article?id=10.1371/
+    journal.pone.0276302
 
     Args:
         q (quat): The quaternion to convert
@@ -169,8 +172,9 @@ def quat_from_euler(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
     """
     Convert Euler angles to a quaternion.
 
-    :math:`i, j, k` are the indices in :math:`[0, 1, 2]` of the axes in which the Euler angles are provided
-    (:math:`i \\neq j, j \\neq k`), e.g. (0, 1, 2) for Euler sequence XYZ.
+    The integers ``i, j, k`` select axes in the set ``{0, 1, 2}`` that
+    determine the Euler-sequence used.  They must satisfy ``i ≠ j`` and
+    ``j ≠ k``.  For example, the XYZ sequence corresponds to ``(0, 1, 2)``.
 
     Args:
         e (vec3): The Euler angles (in radians)
@@ -203,7 +207,31 @@ def quat_from_euler(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
 
 @wp.func
 def transform_twist(t: wp.transform, x: wp.spatial_vector):
-    # Frank & Park definition 3.20, pg 100
+    """Transform a spatial twist between coordinate frames.
+
+    This routine applies the rigid-body twist transformation defined in
+    *Frank & Park, Modern Robotics* (Definition 3.20, p. 100).
+
+    Given a spatial twist ``x = (ω, v)`` expressed in the *source* frame and a
+    homogeneous transform ``t`` (source → destination), the returned twist
+    ``x' = (ω', v')`` represents the same motion expressed in the destination
+    frame:
+
+    .. math::
+
+       x' = \begin{bmatrix} R & 0 \\ [p]_{\times} R & R \\end{bmatrix} x
+
+    where *R* and *p* are the rotation and translation components of ``t`` and
+    ``[p]_x`` is the skew-symmetric matrix of *p*.
+
+    Args:
+        t (transform): The transform from the **source** frame to the
+            **destination** frame.
+        x (spatial_vector): The spatial twist expressed in the source frame.
+
+    Returns:
+        spatial_vector: The twist expressed in the destination frame.
+    """
 
     q = wp.transform_get_rotation(t)
     p = wp.transform_get_translation(t)
@@ -219,6 +247,28 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
 
 @wp.func
 def transform_wrench(t: wp.transform, x: wp.spatial_vector):
+    """Transform a spatial **wrench** between coordinate frames.
+
+    A spatial wrench is the dual vector to a spatial twist and consists of a
+    torque-force pair ``x = (τ, f)``.
+
+    Given a wrench expressed in the *source* frame and a transform ``t``
+    (source → destination), this function returns the equivalent wrench in the
+    destination frame:
+
+    .. math::
+
+       x' = \begin{bmatrix} R & [p]_{\times} R \\ 0 & R \\end{bmatrix} x
+
+    Args:
+        t (transform): The transform from the **source** frame to the
+            **destination** frame.
+        x (spatial_vector): The spatial wrench expressed in the source frame.
+
+    Returns:
+        spatial_vector: The wrench expressed in the destination frame.
+    """
+
     q = wp.transform_get_rotation(t)
     p = wp.transform_get_translation(t)
 
@@ -236,7 +286,8 @@ __axis_rotations = {}
 
 def quat_between_axes(*axes: AxisType) -> wp.quat:
     """
-    Returns a quaternion that represents the rotations between the given sequence of axes.
+    Returns a quaternion representing the rotations between the provided
+    sequence of axes.
 
     Args:
         axes (AxisType): The axes between to rotate.

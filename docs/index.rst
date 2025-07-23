@@ -25,15 +25,15 @@ Newton Physics
    Articulations <concepts/articulations>
 
 .. toctree::
-   :maxdepth: 0
+   :maxdepth: 1
    :hidden:
    :caption: API Reference
    
-   Overview <api>
-   api_core
-   api_solvers
-   api_importers
-   api_renderers
+   api/newton_core
+   api/newton_geometry
+   api/newton_sim
+   api/newton_solvers
+   api/newton_utils
 
 
 
