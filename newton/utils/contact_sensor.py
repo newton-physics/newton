@@ -144,7 +144,6 @@ def convert_contact_info(
         raise NotImplementedError("Contact conversion not yet implemented for Contacts object")
 
 
-
 class ContactView:
     """A view for querying contacts between entities in the simulation.
     This class stores the parameters of the query and provides a view of the results.
