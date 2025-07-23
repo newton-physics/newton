@@ -33,10 +33,6 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
-import newton.geometry.kernels
-import newton.sim.articulation
-import newton.solvers.euler.kernels
-import newton.solvers.vbd.solver_vbd
 import newton.utils
 from newton.sim import Model, ModelBuilder, State, eval_fk
 from newton.solvers import FeatherstoneSolver, VBDSolver
@@ -143,12 +139,7 @@ def compute_body_jacobian(
     body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
     tape = wp.Tape()
     with tape:
-        eval_fk(
-            model,
-            joint_q,
-            joint_qd,
-            out_state,
-        )
+        eval_fk(model, joint_q, joint_qd, out_state)
         wp.launch(compute_body_out, 1, inputs=[out_state.body_qd if velocity else out_state.body_q], outputs=[body_out])
 
     def onehot(i):
@@ -288,7 +279,7 @@ class Example:
         self.cloth_solver: VBDSolver | None = None
         if self.add_cloth:
             # initialize cloth solver
-            #   set edge rest angle to zero to disable bending, this is currently a walkaround to make VBDSolver stable
+            #   set edge rest angle to zero to disable bending, this is currently a workaround to make VBDSolver stable
             #   TODO: fix VBDSolver's bending issue
             self.model.edge_rest_angle.zero_()
             self.cloth_solver = VBDSolver(
@@ -357,15 +348,6 @@ class Example:
         self.initial_pose = self.model.joint_q.numpy()
 
     def capture_cuda_graph(self):
-        if self.cuda_graph is None:
-            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
-            wp.load_module(newton.solvers.euler.kernels, device=wp.get_device())
-            wp.load_module(newton.sim.articulation, device=wp.get_device())
-            wp.set_module_options({"block_dim": 16}, newton.geometry.kernels)
-            wp.load_module(newton.geometry.kernels, device=wp.get_device())
-            wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
-            wp.load_module(newton.solvers.vbd.solver_vbd, device=wp.get_device())
-
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.integrate_frame()

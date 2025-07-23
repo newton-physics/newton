@@ -17,6 +17,7 @@
    .. autosummary::
    
       ~SimRendererOpenGL.__init__
+      ~SimRendererOpenGL.apply_picking_force
       ~SimRendererOpenGL.compute_projection_matrix
       ~SimRendererOpenGL.get_new_color
       ~SimRendererOpenGL.get_pixels

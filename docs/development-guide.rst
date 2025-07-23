@@ -317,7 +317,7 @@ To run the benchmarks, run the following command from the root of the repository
 
 .. code-block:: console
 
-    asv run --launch-method spawn --append-samples main^!
+    asv run --launch-method spawn main^!
 
 The benchmarks discovered by airspeed velocity are in the ``asv/benchmarks`` directory. This command runs the
 benchmark code from the ``asv/benchmarks`` directory against the code state of the ``main`` branch. Note that
@@ -332,7 +332,16 @@ to just the ones under development:
 
 .. code-block:: console
 
-    asv run --launch-method spawn --append-samples main^! --bench example_anymal.PretrainedSimulate
+    asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate
+
+The most time-consuming benchmarks are those that measure the time it takes to load and run one frame of the example
+starting from an empty kernel cache.
+These benchmarks have names ending with ``time_load``. It is sometimes convenient to exclude these benchmarks
+from running by using the following command:
+
+.. code-block:: console
+
+    asv run --launch-method spawn main^! -b '^(?!.*time_load$).*'
 
 While airspeed velocity has built-in mechanisms to determine automatically how to collect measurements,
 it is often useful to manually specify benchmark attributes like ``repeat`` and ``number`` to control the

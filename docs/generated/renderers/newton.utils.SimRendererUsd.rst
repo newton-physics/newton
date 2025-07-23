@@ -17,6 +17,7 @@
    .. autosummary::
    
       ~SimRendererUsd.__init__
+      ~SimRendererUsd.apply_picking_force
       ~SimRendererUsd.get_new_color
       ~SimRendererUsd.populate
       ~SimRendererUsd.populate_bodies

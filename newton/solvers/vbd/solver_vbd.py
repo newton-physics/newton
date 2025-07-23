@@ -46,6 +46,7 @@ VBD_DEBUG_PRINTING_OPTIONS = {
 }
 
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
+TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
 
 class mat32(matrix(shape=(3, 2), dtype=float32)):
@@ -1259,7 +1260,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 def forward_step(
     dt: float,
     gravity: wp.vec3,
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1269,9 +1270,9 @@ def forward_step(
 ):
     particle = wp.tid()
 
-    prev_pos[particle] = pos[particle]
+    pos_prev[particle] = pos[particle]
     if not particle_flags[particle] & PARTICLE_FLAG_ACTIVE:
-        inertia[particle] = prev_pos[particle]
+        inertia[particle] = pos_prev[particle]
         return
     vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
     pos[particle] = pos[particle] + vel_new * dt
@@ -1282,7 +1283,7 @@ def forward_step(
 def forward_step_penetration_free(
     dt: float,
     gravity: wp.vec3,
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1294,9 +1295,9 @@ def forward_step_penetration_free(
 ):
     particle_index = wp.tid()
 
-    prev_pos[particle_index] = pos[particle_index]
+    pos_prev[particle_index] = pos[particle_index]
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
-        inertia[particle_index] = prev_pos[particle_index]
+        inertia[particle_index] = pos_prev[particle_index]
         return
     vel_new = vel[particle_index] + (gravity + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
@@ -1398,10 +1399,159 @@ def apply_conservative_bound_truncation(
 
 
 @wp.kernel
+def solve_trimesh_no_self_contact_tile(
+    dt: float,
+    particle_ids_in_color: wp.array(dtype=wp.int32),
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
+    mass: wp.array(dtype=float),
+    inertia: wp.array(dtype=wp.vec3),
+    particle_flags: wp.array(dtype=wp.uint32),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    tri_poses: wp.array(dtype=wp.mat22),
+    tri_materials: wp.array(dtype=float, ndim=2),
+    tri_areas: wp.array(dtype=float),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_rest_angles: wp.array(dtype=float),
+    edge_rest_length: wp.array(dtype=float),
+    edge_bending_properties: wp.array(dtype=float, ndim=2),
+    adjacency: ForceElementAdjacencyInfo,
+    # contact info
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+    thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+    particle_index = particle_ids_in_color[block_idx]
+
+    # wp.printf("block_idx %d thread_idx %d particle_index %d\n", block_idx, thread_idx, particle_index)
+
+    if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
+        if thread_idx == 0:
+            pos_new[particle_index] = pos[particle_index]
+        return
+
+    particle_pos = pos[particle_index]
+
+    dt_sqr_reciprocal = 1.0 / (dt * dt)
+
+    # # inertia force and hessian
+    # f = mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+    # h = mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+
+    f = wp.vec3(0.0)
+    h = wp.mat33(0.0)
+
+    num_adj_faces = get_vertex_num_adjacent_faces(adjacency, particle_index)
+
+    batch_counter = wp.int32(0)
+
+    # loop through all the adjacent triangles using whole block
+    while batch_counter + thread_idx < num_adj_faces:
+        adj_tri_counter = thread_idx + batch_counter
+        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        # elastic force and hessian
+        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
+
+        f_tri, h_tri = evaluate_stvk_force_hessian(
+            tri_index,
+            vertex_order,
+            pos,
+            pos_prev,
+            tri_indices,
+            tri_poses[tri_index],
+            tri_areas[tri_index],
+            tri_materials[tri_index, 0],
+            tri_materials[tri_index, 1],
+            tri_materials[tri_index, 2],
+            dt,
+        )
+        # compute damping
+
+        f += f_tri
+        h += h_tri
+
+        # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f_tri[0], f_tri[1], f_tri[2])
+
+        # fmt: off
+        if wp.static("elasticity_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+            wp.printf(
+                "particle: %d, i_adj_tri: %d, particle_order: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+                particle_index,
+                thread_idx,
+                vertex_order,
+                f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+            )
+            # fmt: on
+
+    #
+    batch_counter = wp.int32(0)
+    num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
+    while batch_counter + thread_idx < num_adj_edges:
+        adj_edge_counter = batch_counter + thread_idx
+        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+            adjacency, particle_index, adj_edge_counter
+        )
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
+            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                nei_edge_index,
+                vertex_order_on_edge,
+                pos,
+                pos_prev,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_length,
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
+            )
+
+            f += f_edge
+            h += h_edge
+
+    # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f[0], f[1], f[2])
+    f_tile = wp.tile(f, preserve_type=True)
+    h_tile = wp.tile(h, preserve_type=True)
+    # wp.printf("f_tile shape: %d | h_tile shape: %d\n", f_tile.shape[0], h_tile.shape[0])
+
+    f_total = wp.tile_reduce(wp.add, f_tile)[0]
+    h_total = wp.tile_reduce(wp.add, h_tile)[0]
+
+    if thread_idx == 0:
+        # wp.printf(
+        #     "particle: %d, f_total:\n %f %f %f,\n", particle_index, f_total[0], f_total[1], f_total[2])
+        h_total = (
+            h_total
+            + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+            + particle_hessians[particle_index]
+        )
+        if abs(wp.determinant(h_total)) > 1e-5:
+            h_inv = wp.inverse(h_total)
+            # wp.printf(
+            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            #     particle_index,
+            #     f_total[0], f_total[1], f_total[2],
+            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
+            # )
+            f_total = (
+                f_total
+                + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+                + particle_forces[particle_index]
+            )
+
+            pos_new[particle_index] = particle_pos + h_inv * f_total
+
+
+@wp.kernel
 def solve_trimesh_no_self_contact(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
-    prev_pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
@@ -1462,7 +1612,7 @@ def solve_trimesh_no_self_contact(
             tri_id,
             particle_order,
             pos,
-            prev_pos,
+            pos_prev,
             tri_indices,
             tri_poses[tri_id],
             tri_areas[tri_id],
@@ -1488,24 +1638,25 @@ def solve_trimesh_no_self_contact(
 
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
-        f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-            nei_edge_index,
-            vertex_order_on_edge,
-            pos,
-            prev_pos,
-            edge_indices,
-            edge_rest_angles,
-            edge_rest_length,
-            edge_bending_properties[nei_edge_index, 0],
-            edge_bending_properties[nei_edge_index, 1],
-            dt,
-        )
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
+            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                nei_edge_index,
+                vertex_order_on_edge,
+                pos,
+                pos_prev,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_length,
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
+            )
 
-        f = f + f_edge
-        h = h + h_edge
+            f += f_edge
+            h += h_edge
 
-    h = h + particle_hessians[particle_index]
-    f = f + particle_forces[particle_index]
+    h += particle_hessians[particle_index]
+    f += particle_forces[particle_index]
 
     if abs(wp.determinant(h)) > 1e-5:
         hInv = wp.inverse(h)
@@ -1526,10 +1677,10 @@ def copy_particle_positions_back(
 
 @wp.kernel
 def update_velocity(
-    dt: float, prev_pos: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
+    dt: float, pos_prev: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
 ):
     particle = wp.tid()
-    vel[particle] = (pos[particle] - prev_pos[particle]) / dt
+    vel[particle] = (pos[particle] - pos_prev[particle]) / dt
 
 
 @wp.kernel
@@ -1611,7 +1762,10 @@ def accumulate_contact_force_and_hessian(
             if e1_idx != -1 and e2_idx != -1:
                 e1_v1 = edge_indices[e1_idx, 2]
                 e1_v2 = edge_indices[e1_idx, 3]
-                if particle_colors[e1_v1] == current_color or particle_colors[e1_v2] == current_color:
+
+                c_e1_v1 = particle_colors[e1_v1]
+                c_e1_v2 = particle_colors[e1_v2]
+                if c_e1_v1 == current_color or c_e1_v2 == current_color:
                     has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
                         evaluate_edge_edge_contact_2_vertices(
                             e1_idx,
@@ -1631,10 +1785,10 @@ def accumulate_contact_force_and_hessian(
 
                     if has_contact:
                         # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
-                        if particle_colors[e1_v1] == current_color:
+                        if c_e1_v1 == current_color:
                             wp.atomic_add(particle_forces, e1_v1, collision_force_0)
                             wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
-                        if particle_colors[e1_v2] == current_color:
+                        if c_e1_v2 == current_color:
                             wp.atomic_add(particle_forces, e1_v2, collision_force_1)
                             wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
@@ -1653,11 +1807,17 @@ def accumulate_contact_force_and_hessian(
                 tri_a = tri_indices[tri_idx, 0]
                 tri_b = tri_indices[tri_idx, 1]
                 tri_c = tri_indices[tri_idx, 2]
+
+                c_v = particle_colors[particle_idx]
+                c_tri_a = particle_colors[tri_a]
+                c_tri_b = particle_colors[tri_b]
+                c_tri_c = particle_colors[tri_c]
+
                 if (
-                    particle_colors[particle_idx] == current_color
-                    or particle_colors[tri_a] == current_color
-                    or particle_colors[tri_b] == current_color
-                    or particle_colors[tri_c] == current_color
+                    c_v == current_color
+                    or c_tri_a == current_color
+                    or c_tri_b == current_color
+                    or c_tri_c == current_color
                 ):
                     (
                         has_contact,
@@ -1685,22 +1845,22 @@ def accumulate_contact_force_and_hessian(
 
                     if has_contact:
                         # particle
-                        if particle_colors[particle_idx] == current_color:
+                        if c_v == current_color:
                             wp.atomic_add(particle_forces, particle_idx, collision_force_3)
                             wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
 
                         # tri_a
-                        if particle_colors[tri_a] == current_color:
+                        if c_tri_a == current_color:
                             wp.atomic_add(particle_forces, tri_a, collision_force_0)
                             wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
 
                         # tri_b
-                        if particle_colors[tri_b] == current_color:
+                        if c_tri_b == current_color:
                             wp.atomic_add(particle_forces, tri_b, collision_force_1)
                             wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
 
                         # tri_c
-                        if particle_colors[tri_c] == current_color:
+                        if c_tri_c == current_color:
                             wp.atomic_add(particle_forces, tri_c, collision_force_2)
                             wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
@@ -1892,7 +2052,7 @@ def solve_trimesh_with_self_contact_penetration_free(
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
         # vertex is on the edge; otherwise it only effects the bending energy n
-        if edge_bending_properties[nei_edge_index, 0] != 0:
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
             f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                 nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
                 edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
@@ -1912,14 +2072,163 @@ def solve_trimesh_with_self_contact_penetration_free(
     # # fmt: on
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
-    if abs(wp.determinant(h)) > 1e-5:
 
+    if abs(wp.determinant(h)) > 1e-5:
         h_inv = wp.inverse(h)
         particle_pos_new = pos[particle_index] + h_inv * f
 
         pos_new[particle_index] = apply_conservative_bound_truncation(
             particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
         )
+
+
+@wp.kernel
+def solve_trimesh_with_self_contact_penetration_free_tile(
+    dt: float,
+    particle_ids_in_color: wp.array(dtype=wp.int32),
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
+    mass: wp.array(dtype=float),
+    inertia: wp.array(dtype=wp.vec3),
+    particle_flags: wp.array(dtype=wp.uint32),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    tri_poses: wp.array(dtype=wp.mat22),
+    tri_materials: wp.array(dtype=float, ndim=2),
+    tri_areas: wp.array(dtype=float),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_rest_angles: wp.array(dtype=float),
+    edge_rest_length: wp.array(dtype=float),
+    edge_bending_properties: wp.array(dtype=float, ndim=2),
+    adjacency: ForceElementAdjacencyInfo,
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
+    pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+    particle_conservative_bounds: wp.array(dtype=float),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+    thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+    particle_index = particle_ids_in_color[block_idx]
+
+    if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
+        if thread_idx == 0:
+            pos_new[particle_index] = pos[particle_index]
+        return
+
+    particle_pos = pos[particle_index]
+
+    dt_sqr_reciprocal = 1.0 / (dt * dt)
+
+    # elastic force and hessian
+    num_adj_faces = get_vertex_num_adjacent_faces(adjacency, particle_index)
+
+    f = wp.vec3(0.0)
+    h = wp.mat33(0.0)
+
+    batch_counter = wp.int32(0)
+
+    # loop through all the adjacent triangles using whole block
+    while batch_counter + thread_idx < num_adj_faces:
+        adj_tri_counter = thread_idx + batch_counter
+        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        # elastic force and hessian
+        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
+
+        # fmt: off
+        if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+            wp.printf(
+                "particle: %d | num_adj_faces: %d | ",
+                particle_index,
+                get_vertex_num_adjacent_faces(particle_index, adjacency),
+            )
+            wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
+            wp.printf(
+                "face: %d %d %d\n",
+                tri_indices[tri_index, 0],
+                tri_indices[tri_index, 1],
+                tri_indices[tri_index, 2],
+            )
+        # fmt: on
+
+        f_tri, h_tri = evaluate_stvk_force_hessian(
+            tri_index,
+            vertex_order,
+            pos,
+            pos_prev,
+            tri_indices,
+            tri_poses[tri_index],
+            tri_areas[tri_index],
+            tri_materials[tri_index, 0],
+            tri_materials[tri_index, 1],
+            tri_materials[tri_index, 2],
+            dt,
+        )
+
+        f += f_tri
+        h += h_tri
+
+    batch_counter = wp.int32(0)
+    num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
+    while batch_counter + thread_idx < num_adj_edges:
+        adj_edge_counter = batch_counter + thread_idx
+        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+            adjacency, particle_index, adj_edge_counter
+        )
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
+            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                nei_edge_index,
+                vertex_order_on_edge,
+                pos,
+                pos_prev,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_length,
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
+            )
+
+            f += f_edge
+            h += h_edge
+
+    # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f[0], f[1], f[2])
+    f_tile = wp.tile(f, preserve_type=True)
+    h_tile = wp.tile(h, preserve_type=True)
+    # wp.printf("f_tile shape: %d | h_tile shape: %d\n", f_tile.shape[0], h_tile.shape[0])
+
+    f_total = wp.tile_reduce(wp.add, f_tile)[0]
+    h_total = wp.tile_reduce(wp.add, h_tile)[0]
+
+    if thread_idx == 0:
+        # wp.printf(
+        #     "particle: %d, f_total:\n %f %f %f,\n", particle_index, f_total[0], f_total[1], f_total[2])
+        h_total = (
+            h_total
+            + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+            + particle_hessians[particle_index]
+        )
+        if abs(wp.determinant(h_total)) > 1e-5:
+            h_inv = wp.inverse(h_total)
+            # wp.printf(
+            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            #     particle_index,
+            #     f_total[0], f_total[1], f_total[2],
+            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
+            # )
+            f_total = (
+                f_total
+                + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+                + particle_forces[particle_index]
+            )
+            particle_pos_new = particle_pos + h_inv * f_total
+
+            pos_new[particle_index] = apply_conservative_bound_truncation(
+                particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
+            )
 
 
 class VBDSolver(SolverBase):
@@ -1968,6 +2277,7 @@ class VBDSolver(SolverBase):
         edge_collision_buffer_pre_alloc: int = 64,
         collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
+        use_tile_solve: bool = True,
     ):
         """
         Args:
@@ -1991,6 +2301,7 @@ class VBDSolver(SolverBase):
                 If set to a value < 0, collision detection is only performed once before the initialization step.
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
+            use_tile_solve: whether to accelerate the solver using tile API
         Note:
             - The `integrate_with_external_rigid_solver` argument is an indicator of one-way coupling between rigid body
               and soft body solvers. If set to True, the rigid states should be integrated externally, with `state_in`
@@ -2018,6 +2329,11 @@ class VBDSolver(SolverBase):
         self.handle_self_contact = handle_self_contact
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
+
+        if model.device.is_cpu and use_tile_solve:
+            wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+
+        self.use_tile_solve = use_tile_solve and model.device.is_cuda
 
         soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
@@ -2210,35 +2526,67 @@ class VBDSolver(SolverBase):
                     device=self.device,
                 )
 
-                wp.launch(
-                    kernel=solve_trimesh_no_self_contact,
-                    inputs=[
-                        dt,
-                        self.model.particle_color_groups[color],
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        state_in.particle_qd,
-                        self.model.particle_mass,
-                        self.inertia,
-                        self.model.particle_flags,
-                        self.model.tri_indices,
-                        self.model.tri_poses,
-                        self.model.tri_materials,
-                        self.model.tri_areas,
-                        self.model.edge_indices,
-                        self.model.edge_rest_angle,
-                        self.model.edge_rest_length,
-                        self.model.edge_bending_properties,
-                        self.adjacency,
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
-                    outputs=[
-                        state_out.particle_q,
-                    ],
-                    dim=self.model.particle_color_groups[color].size,
-                    device=self.device,
-                )
+                if self.use_tile_solve:
+                    wp.launch(
+                        kernel=solve_trimesh_no_self_contact_tile,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            state_in.particle_qd,
+                            self.model.particle_mass,
+                            self.inertia,
+                            self.model.particle_flags,
+                            self.model.tri_indices,
+                            self.model.tri_poses,
+                            self.model.tri_materials,
+                            self.model.tri_areas,
+                            self.model.edge_indices,
+                            self.model.edge_rest_angle,
+                            self.model.edge_rest_length,
+                            self.model.edge_bending_properties,
+                            self.adjacency,
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        outputs=[
+                            state_out.particle_q,
+                        ],
+                        dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                        block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                        device=self.device,
+                    )
+                else:
+                    wp.launch(
+                        kernel=solve_trimesh_no_self_contact,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            state_in.particle_qd,
+                            self.model.particle_mass,
+                            self.inertia,
+                            self.model.particle_flags,
+                            self.model.tri_indices,
+                            self.model.tri_poses,
+                            self.model.tri_materials,
+                            self.model.tri_areas,
+                            self.model.edge_indices,
+                            self.model.edge_rest_angle,
+                            self.model.edge_rest_length,
+                            self.model.edge_bending_properties,
+                            self.adjacency,
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        outputs=[
+                            state_out.particle_q,
+                        ],
+                        dim=self.model.particle_color_groups[color].size,
+                        device=self.device,
+                    )
 
                 wp.launch(
                     kernel=copy_particle_positions_back,
@@ -2335,37 +2683,71 @@ class VBDSolver(SolverBase):
                         max_blocks=self.model.device.sm_count,
                     )
 
-                wp.launch(
-                    kernel=solve_trimesh_with_self_contact_penetration_free,
-                    dim=self.model.particle_color_groups[color].shape[0],
-                    inputs=[
-                        dt,
-                        self.model.particle_color_groups[color],
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        state_in.particle_qd,
-                        self.model.particle_mass,
-                        self.inertia,
-                        self.model.particle_flags,
-                        self.model.tri_indices,
-                        self.model.tri_poses,
-                        self.model.tri_materials,
-                        self.model.tri_areas,
-                        self.model.edge_indices,
-                        self.model.edge_rest_angle,
-                        self.model.edge_rest_length,
-                        self.model.edge_bending_properties,
-                        self.adjacency,
-                        self.particle_forces,
-                        self.particle_hessians,
-                        self.pos_prev_collision_detection,
-                        self.particle_conservative_bounds,
-                    ],
-                    outputs=[
-                        state_out.particle_q,
-                    ],
-                    device=self.device,
-                )
+                if self.use_tile_solve:
+                    wp.launch(
+                        kernel=solve_trimesh_with_self_contact_penetration_free_tile,
+                        dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                        block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            state_in.particle_qd,
+                            self.model.particle_mass,
+                            self.inertia,
+                            self.model.particle_flags,
+                            self.model.tri_indices,
+                            self.model.tri_poses,
+                            self.model.tri_materials,
+                            self.model.tri_areas,
+                            self.model.edge_indices,
+                            self.model.edge_rest_angle,
+                            self.model.edge_rest_length,
+                            self.model.edge_bending_properties,
+                            self.adjacency,
+                            self.particle_forces,
+                            self.particle_hessians,
+                            self.pos_prev_collision_detection,
+                            self.particle_conservative_bounds,
+                        ],
+                        outputs=[
+                            state_out.particle_q,
+                        ],
+                        device=self.device,
+                    )
+                else:
+                    wp.launch(
+                        kernel=solve_trimesh_with_self_contact_penetration_free,
+                        dim=self.model.particle_color_groups[color].size,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            state_in.particle_qd,
+                            self.model.particle_mass,
+                            self.inertia,
+                            self.model.particle_flags,
+                            self.model.tri_indices,
+                            self.model.tri_poses,
+                            self.model.tri_materials,
+                            self.model.tri_areas,
+                            self.model.edge_indices,
+                            self.model.edge_rest_angle,
+                            self.model.edge_rest_length,
+                            self.model.edge_bending_properties,
+                            self.adjacency,
+                            self.particle_forces,
+                            self.particle_hessians,
+                            self.pos_prev_collision_detection,
+                            self.particle_conservative_bounds,
+                        ],
+                        outputs=[
+                            state_out.particle_q,
+                        ],
+                        device=self.device,
+                    )
 
                 wp.launch(
                     kernel=copy_particle_positions_back,

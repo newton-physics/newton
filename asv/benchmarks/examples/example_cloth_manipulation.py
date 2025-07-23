@@ -19,14 +19,13 @@ import sys
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_anymal_c_walk import Example
+from newton.examples.example_robot_manipulating_cloth import Example as ExampleClothManipulation
 
 
-class FeatherstoneSolverLoad:
+class SolverLoad:
     warmup_time = 0
     repeat = 2
     number = 1
-    timeout = 600
 
     def setup(self):
         wp.build.clear_lto_cache()
@@ -39,12 +38,11 @@ class FeatherstoneSolverLoad:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_anymal_c_walk",
+            "newton.examples.example_robot_manipulating_cloth",
             "--stage-path",
             "None",
             "--num-frames",
             "1",
-            "--headless",
         ]
 
         # Run the script as a subprocess
@@ -53,16 +51,20 @@ class FeatherstoneSolverLoad:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class PretrainedSimulate:
+class SolverSimulate:
+    timeout = 300
     repeat = 3
     number = 1
 
     def setup(self):
-        self.num_frames = 50
-        self.example = Example(stage_path=None, headless=True)
+        self.num_frames = 30
+        self.example = ExampleClothManipulation(stage_path=None, num_frames=self.num_frames)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        for _ in range(self.num_frames):
+        for frame_idx in range(self.num_frames):
             self.example.step()
-        wp.synchronize_device()
+
+            if self.example.cloth_solver and not (frame_idx % 10):
+                self.example.cloth_solver.rebuild_bvh(self.example.state_0)
+                self.example.capture_cuda_graph()
