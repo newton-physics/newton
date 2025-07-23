@@ -1,0 +1,483 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (0.5934058944105998, 0.8761204693242719, 1.263178226717228)
+                double3 target = (-1.6394225532678774e-8, 7.764349629901801e-8, 2.1118415238774446e-7)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary metricsAssembler = {
+            dictionary "/Environment/cylinder2" = {
+            }
+            dictionary "/World/cylinder" = {
+            }
+            dictionary "/World/naturalbostonroundbottle_a02/cylinder2" = {
+            }
+            dictionary "/World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/cylinder2" = {
+            }
+            dictionary "/World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/cylinder_reverse" = {
+            }
+            dictionary "/World/standardwoodcrate_a01/cube" = {
+            }
+            dictionary "/World/standardwoodcrate_a01/standardwoodcrate_a01_inst/cube2" = {
+            }
+            int version = 1
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./cube_cylinder_debug2.usda"
+            dictionary locked = {
+            }
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+            double "rtx:translucency:worldEps" = 0.005
+        }
+    }
+    defaultPrim = "World"
+    doc = """Generated from Composed Stage of root layer D:\\scenes\\SimSetup\\simple_drop.usda
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/data/simple_drop_flat.usd
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/data/cube_cylinder3.usda
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder.usda
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
+
+
+Generated from Composed Stage of root layer /media/andre/data/dev/newton/newton/tests/assets/cube_cylinder_debug2.usda
+"""
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+over "Render" (
+    hide_in_stage_window = true
+)
+{
+}
+
+def PhysicsScene "physicsScene"
+{
+    bool warp:collapse_fixed_joints = 0
+}
+
+def Xform "World"
+{
+    def Xform "naturalbostonroundbottle_a02" (
+        apiSchemas = ["SemanticsAPI:Semantics_Himt", "SemanticsAPI:Semantics_3y9s", "SemanticsAPI:Semantics_8TFT", "SemanticsAPI:QWQQ", "SemanticsAPI:QWQL", "SemanticsAPI:QWQC", "MaterialBindingAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        kind = "component"
+    )
+    {
+        custom rel material:binding
+        uniform token physics:approximation = "convexHull"
+        string semantic:QWQC:params:semanticData = "container/vessel/bottle"
+        string semantic:QWQC:params:semanticType = "hierarchy"
+        string semantic:QWQL:params:semanticData = "bottle"
+        string semantic:QWQL:params:semanticType = "class"
+        string semantic:QWQQ:params:semanticData = "Q80228"
+        string semantic:QWQQ:params:semanticType = "qcode"
+        string semantic:Semantics_3y9s:params:semanticData = "bottle"
+        string semantic:Semantics_3y9s:params:semanticType = "prop_general_type"
+        string semantic:Semantics_8TFT:params:semanticData = "Q80228"
+        string semantic:Semantics_8TFT:params:semanticType = "prop_general_qcode"
+        string semantic:Semantics_Himt:params:semanticData = "prop_general"
+        string semantic:Semantics_Himt:params:semanticType = "class"
+        float3 xformOp:rotateXYZ = (320.41278, 30.864384, -17.834925)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.04081685096025467, 0.3882038203736343)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Xform "naturalbostonroundbottle_a02_inst" (
+            apiSchemas = ["MaterialBindingAPI"]
+            instanceable = false
+        )
+        {
+            custom rel material:binding = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/opaque__plastic__glossy_white_a> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            custom rel material:binding:physics = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/PhysicsMaterials/plastic> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Scope "PhysicsMaterials"
+            {
+                def Material "plastic" (
+                    apiSchemas = ["PhysicsMaterialAPI"]
+                )
+                {
+                    float physics:density = 800
+                    float physics:dynamicFriction = 0.2
+                    float physics:restitution = 0.3
+                    float physics:staticFriction = 0.2
+                }
+            }
+
+            def Scope "Looks"
+            {
+                bool ingested = 1
+
+                def Material "opaque__plastic__glossy_white_a"
+                {
+                    bool ingested = 1
+                    token outputs:mdl:displacement.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/opaque__plastic__glossy_white_a/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/opaque__plastic__glossy_white_a/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/opaque__plastic__glossy_white_a/Shader.outputs:out>
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/naturalbostonroundbottle_a02/materials/Plastic_Glossy_White_A.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "Plastic_Glossy_White_A"
+                        float inputs:albedo_desaturation = 1 (
+                            customData = {
+                                float default = 0
+                                dictionary soft_range = {
+                                    float max = 1
+                                    float min = 0
+                                }
+                            }
+                            displayGroup = "Albedo"
+                            displayName = "Albedo Desaturation"
+                            doc = "Desaturates the diffuse color"
+                            hidden = false
+                        )
+                        bool inputs:excludeFromWhiteMode = 0 (
+                            customData = {
+                                bool default = 0
+                            }
+                            displayGroup = "Material Flags"
+                            displayName = "Exclude from White Mode"
+                            hidden = false
+                        )
+                        token outputs:out
+                    }
+                }
+
+                def Material "trans__plastic__natural_a" (
+                    customData = {
+                        dictionary ui = {
+                            dictionary nodegraph = {
+                                dictionary node = {
+                                    dictionary pos = {
+                                        double2 input = (-793.0662841796875, 417.4958190917969)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+                {
+                    reorder properties = ["outputs:displacement", "outputs:mdl:displacement", "outputs:mdl:surface", "outputs:mdl:volume", "outputs:surface", "outputs:volume", "inputs:cutout_opacity", "inputs:glass_color"]
+                    bool ingested = 1
+                    token outputs:mdl:displacement.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/trans__plastic__natural_a/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/trans__plastic__natural_a/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </World/naturalbostonroundbottle_a02/naturalbostonroundbottle_a02_inst/Looks/trans__plastic__natural_a/Shader.outputs:out>
+
+                    def Shader "Shader" (
+                        apiSchemas = ["NodeGraphNodeAPI"]
+                    )
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/naturalbostonroundbottle_a02/materials/Natural_Plastic_E.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "Natural_Plastic_E"
+                        token outputs:out
+                        uniform token ui:nodegraph:node:expansionState = "open"
+                        uniform float2 ui:nodegraph:node:pos = (-435.17294, 9.402893)
+                    }
+                }
+            }
+
+            def Xform "cylinder_reverse" (
+                kind = "component"
+            )
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double xformOp:rotateX:unitsResolve = 90
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale", "xformOp:rotateX:unitsResolve"]
+
+                def Mesh "mesh_0" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-0.05, -0.1, -0.05), (0.05, 0.1, 0.05)]
+                    int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                    int[] faceVertexIndices = [6, 4, 5, 17, 19, 18, 0, 13, 1, 1, 14, 2, 2, 15, 3, 3, 16, 4, 4, 17, 5, 5, 18, 6, 6, 19, 7, 7, 20, 8, 8, 21, 9, 9, 22, 10, 10, 23, 11, 11, 12, 0, 12, 11, 23, 23, 10, 22, 22, 9, 21, 21, 8, 20, 20, 7, 19, 19, 6, 18, 18, 5, 17, 17, 4, 16, 16, 3, 15, 15, 2, 14, 14, 1, 13, 13, 0, 12, 12, 23, 13, 13, 23, 14, 14, 23, 22, 14, 22, 15, 15, 22, 21, 15, 21, 16, 16, 21, 20, 16, 20, 17, 17, 20, 19, 11, 0, 10, 10, 0, 9, 9, 0, 1, 9, 1, 8, 8, 1, 2, 8, 2, 7, 7, 2, 3, 7, 3, 6, 6, 3, 4]
+                    uniform token orientation = "leftHanded"
+                    uniform token physics:approximation = "convexHull"
+                    point3f[] points = [(0.05, 0.1, 0), (0.04330127, 0.1, -0.025), (0.024999999, 0.1, -0.043301273), (-2.1855695e-9, 0.1, -0.05), (-0.025000004, 0.1, -0.04330127), (-0.04330127, 0.1, -0.025000004), (-0.05, 0.1, 4.371139e-9), (-0.043301266, 0.1, 0.02500001), (-0.024999997, 0.1, 0.043301273), (5.9624405e-10, 0.1, 0.05), (0.024999997, 0.1, 0.043301273), (0.04330128, 0.1, 0.02499999), (0.05, -0.1, 0), (0.04330127, -0.1, -0.025), (0.024999999, -0.1, -0.043301273), (-2.1855695e-9, -0.1, -0.05), (-0.025000004, -0.1, -0.04330127), (-0.04330127, -0.1, -0.025000004), (-0.05, -0.1, 4.371139e-9), (-0.043301266, -0.1, 0.02500001), (-0.024999997, -0.1, 0.043301273), (5.9624405e-10, -0.1, 0.05), (0.024999997, -0.1, 0.043301273), (0.04330128, -0.1, 0.02499999)] (
+                        interpolation = "vertex"
+                    )
+                    uniform token subdivisionScheme = "none"
+                }
+            }
+        }
+    }
+
+    def Xform "standardwoodcrate_a01" (
+        apiSchemas = ["SemanticsAPI:Semantics_qnhc", "SemanticsAPI:Semantics_qZdh", "SemanticsAPI:Semantics_6oTl", "SemanticsAPI:QWQQ", "SemanticsAPI:QWQL", "SemanticsAPI:QWQC", "PhysicsMassAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        kind = "component"
+    )
+    {
+        string semantic:QWQC:params:semanticData = "container/crate"
+        string semantic:QWQC:params:semanticType = "hierarchy"
+        string semantic:QWQL:params:semanticData = "crate"
+        string semantic:QWQL:params:semanticType = "class"
+        string semantic:QWQQ:params:semanticData = "Q605384"
+        string semantic:QWQQ:params:semanticType = "qcode"
+        string semantic:Semantics_6oTl:params:semanticData = "Q605384"
+        string semantic:Semantics_6oTl:params:semanticType = "prop_general_qcode"
+        string semantic:Semantics_qnhc:params:semanticData = "prop_general"
+        string semantic:Semantics_qnhc:params:semanticType = "class"
+        string semantic:Semantics_qZdh:params:semanticData = "crate"
+        string semantic:Semantics_qZdh:params:semanticType = "prop_general_type"
+        float3 xformOp:rotateXYZ = (0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, -1.5)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Xform "standardwoodcrate_a01_inst" (
+            instanceable = false
+        )
+        {
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Scope "PhysicsMaterials"
+            {
+                def Material "metal" (
+                    apiSchemas = ["PhysicsMaterialAPI"]
+                )
+                {
+                    float physics:density = 2700
+                    float physics:dynamicFriction = 0.1
+                    float physics:restitution = 0.1
+                    float physics:staticFriction = 0.1
+                }
+
+                def Material "wood" (
+                    apiSchemas = ["PhysicsMaterialAPI"]
+                )
+                {
+                    float physics:density = 1500
+                    float physics:dynamicFriction = 0.75
+                    float physics:restitution = 0.3
+                    float physics:staticFriction = 0.75
+                }
+            }
+
+            def Scope "Looks"
+            {
+                bool ingested = 1
+
+                def Material "opaque__wood__woodcrate"
+                {
+                    bool ingested = 1
+                    token outputs:mdl:displacement.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__wood__woodcrate/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__wood__woodcrate/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__wood__woodcrate/Shader.outputs:out>
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/materials/StandardWoodCrate_A_Tile.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "StandardWoodCrate_A_Tile"
+                        asset inputs:diffuse_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_StandardWoodCrate_A1_Tile_Albedo.png@ (
+                            colorSpace = "sRGB"
+                            displayGroup = "Albedo"
+                            displayName = "Albedo Map"
+                            hidden = false
+                        )
+                        bool inputs:enable_ORM_texture = 1 (
+                            customData = {
+                                bool default = 1
+                            }
+                            displayGroup = "Reflectivity"
+                            displayName = "Enable ORM Texture"
+                            doc = "The ORM texture will be used to extract the Occlusion, Roughness and Metallic textures from R,G,B channels"
+                            hidden = false
+                        )
+                        bool inputs:excludeFromWhiteMode = 0 (
+                            customData = {
+                                bool default = 0
+                            }
+                            displayGroup = "Material Flags"
+                            displayName = "Exclude from White Mode"
+                            hidden = false
+                        )
+                        float inputs:metallic_texture_influence = 1 (
+                            customData = {
+                                float default = 1
+                                dictionary range = {
+                                    float max = 1
+                                    float min = 0
+                                }
+                            }
+                            displayGroup = "Reflectivity"
+                            displayName = "Metallic Map Influence"
+                            doc = "Blends between the constant value and the lookup of the metallic texture"
+                            hidden = false
+                        )
+                        asset inputs:normalmap_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_StandardWoodCrate_A1_Tile_Normal.png@ (
+                            colorSpace = "raw"
+                            displayGroup = "Normal"
+                            displayName = "Normal Map"
+                            doc = "Enables the usage of the normalmap texture"
+                            hidden = false
+                        )
+                        asset inputs:ORM_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_StandardWoodCrate_A1_Tile_ORM.png@ (
+                            colorSpace = "raw"
+                            displayGroup = "Reflectivity"
+                            displayName = "ORM Map"
+                            doc = "Texture that has Occlusion, Roughness and Metallic maps stored in their respective R, G and B channels"
+                            hidden = false
+                        )
+                        float inputs:reflection_roughness_texture_influence = 1 (
+                            customData = {
+                                float default = 1
+                                dictionary range = {
+                                    float max = 1
+                                    float min = 0
+                                }
+                            }
+                            displayGroup = "Reflectivity"
+                            displayName = "Roughness Map Influence"
+                            doc = "Blends between the constant value and the lookup of the roughness texture"
+                            hidden = false
+                        )
+                        token outputs:out
+                    }
+                }
+
+                def Material "opaque__metal__aluminimum_brushed"
+                {
+                    bool ingested = 1
+                    token outputs:mdl:displacement.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__metal__aluminimum_brushed/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__metal__aluminimum_brushed/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </World/standardwoodcrate_a01/standardwoodcrate_a01_inst/Looks/opaque__metal__aluminimum_brushed/Shader.outputs:out>
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/materials/Aluminium_Brushed_B.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "Aluminium_Brushed_B"
+                        asset inputs:diffuse_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_Aluminium_Brushed_A1_Albedo.png@ (
+                            colorSpace = "sRGB"
+                            displayGroup = "Albedo"
+                            displayName = "Albedo Map"
+                            hidden = false
+                        )
+                        bool inputs:enable_ORM_texture = 1 (
+                            customData = {
+                                bool default = 1
+                            }
+                            displayGroup = "Reflectivity"
+                            displayName = "Enable ORM Texture"
+                            doc = "When True the ORM texture will be used to extract the Occlusion, Roughness and Metallic Map"
+                            hidden = false
+                        )
+                        asset inputs:normalmap_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_Aluminium_Brushed_A1_Normal.png@ (
+                            colorSpace = "raw"
+                            displayGroup = "Normal"
+                            displayName = "Normal Map"
+                            doc = "Enables the usage of the normalmap texture"
+                            hidden = false
+                        )
+                        asset inputs:ORM_texture = @https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/standardwoodcrate_a01/textures/T_Aluminium_Brushed_A1_ORM.png@ (
+                            colorSpace = "raw"
+                            displayGroup = "Reflectivity"
+                            displayName = "ORM Map"
+                            doc = "Texture that hae Occlusion, Roughness and Metallic map stored in the respective r, g and b channels"
+                            hidden = false
+                        )
+                        token outputs:out
+                        uniform token ui:nodegraph:node:expansionState = "open"
+                    }
+                }
+            }
+
+            def Xform "cube2" (
+                kind = "component"
+            )
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double xformOp:rotateX:unitsResolve = 90
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale", "xformOp:rotateX:unitsResolve"]
+
+                def Mesh "mesh_0" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                    int[] faceVertexIndices = [0, 3, 1, 0, 2, 3, 4, 7, 5, 4, 6, 7, 6, 2, 7, 6, 3, 2, 5, 1, 4, 5, 0, 1, 5, 2, 0, 5, 7, 2, 1, 6, 4, 1, 3, 6]
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token orientation = "leftHanded"
+                    point3f[] points = [(0.5, -0.5, 0.5), (-0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)] (
+                        interpolation = "vertex"
+                    )
+                    uniform token subdivisionScheme = "none"
+                }
+            }
+        }
+    }
+}
+
+def Xform "Environment"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def DistantLight "defaultLight" (
+        apiSchemas = ["ShapingAPI"]
+    )
+    {
+        float inputs:angle = 1
+        float inputs:intensity = 3000
+        float inputs:shaping:cone:angle = 180
+        float inputs:shaping:cone:softness
+        float inputs:shaping:focus
+        color3f inputs:shaping:focusTint
+        asset inputs:shaping:ies:file
+        quatd xformOp:orient = (0.6532814824381883, 0.27059805007309856, 0.27059805007309856, 0.6532814824381883)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
