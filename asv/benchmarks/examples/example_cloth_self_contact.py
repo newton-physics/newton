@@ -19,14 +19,13 @@ import sys
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_anymal_c_walk import Example
+from newton.examples.example_cloth_self_contact import Example as ExampleClothSelfContact
 
 
-class FeatherstoneSolverLoad:
+class VBDSolverLoad:
     warmup_time = 0
     repeat = 2
     number = 1
-    timeout = 600
 
     def setup(self):
         wp.build.clear_lto_cache()
@@ -39,12 +38,11 @@ class FeatherstoneSolverLoad:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_anymal_c_walk",
+            "newton.examples.example_cloth_self_contact",
             "--stage-path",
             "None",
             "--num-frames",
             "1",
-            "--headless",
         ]
 
         # Run the script as a subprocess
@@ -53,16 +51,26 @@ class FeatherstoneSolverLoad:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class PretrainedSimulate:
-    repeat = 3
+class VBDSolverSimulate:
+    repeat = 5
     number = 1
 
     def setup(self):
-        self.num_frames = 50
-        self.example = Example(stage_path=None, headless=True)
+        self.num_frames = 100
+        self.example = ExampleClothSelfContact(stage_path=None)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        for _ in range(self.num_frames):
+        for i in range(self.num_frames):
             self.example.step()
-        wp.synchronize_device()
+
+            if (
+                i != 0
+                and not i % self.example.bvh_rebuild_frames
+                and self.example.use_cuda_graph
+                and self.example.solver.handle_self_contact
+            ):
+                self.example.solver.rebuild_bvh(self.example.state_0)
+                with wp.ScopedCapture() as capture:
+                    self.example.simulate_substeps()
+                self.example.cuda_graph = capture.graph

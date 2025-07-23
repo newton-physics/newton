@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.examples
 import newton.utils
@@ -26,8 +28,6 @@ from newton.utils.selection import ArticulationView
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
-
-wp.config.enable_backward = False
 
 
 @wp.kernel
