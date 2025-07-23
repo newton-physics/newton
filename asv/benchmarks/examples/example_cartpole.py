@@ -87,7 +87,15 @@ class MuJoCoSolverSimulate:
     def setup(self):
         wp.init()
         self.num_frames = 200
-        self.example = Example(stage_path=None, robot="cartpole", randomize=True, headless=True, actuation="random", num_envs=8, use_cuda_graph=True)
+        self.example = Example(
+            stage_path=None,
+            robot="cartpole",
+            randomize=True,
+            headless=True,
+            actuation="random",
+            num_envs=8,
+            use_cuda_graph=True,
+        )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
