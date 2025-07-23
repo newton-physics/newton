@@ -19,7 +19,7 @@ import sys
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_cartpole import Example
+from newton.examples.example_mujoco import Example
 
 
 class ModelMemory:
@@ -30,7 +30,7 @@ class ModelMemory:
 
     def peakmem_initialize_model_cpu(self, num_envs):
         with wp.ScopedDevice("cpu"):
-            _example = Example(stage_path=None, num_envs=num_envs)
+            _example = Example(stage_path=None, robot="cartpole", headless=True, num_envs=num_envs)
 
 
 class InitializeModel:
@@ -43,7 +43,7 @@ class InitializeModel:
 
     def time_initialize_model(self, num_envs):
         with wp.ScopedDevice("cpu"):
-            _example = Example(stage_path=None, num_envs=num_envs)
+            _example = Example(stage_path=None, robot="cartpole", headless=True, num_envs=num_envs)
 
 
 class MuJoCoSolverLoad:
@@ -63,9 +63,12 @@ class MuJoCoSolverLoad:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_cartpole",
+            "newton.examples.example_mujoco",
             "--stage-path",
             "None",
+            "--robot",
+            "cartpole",
+            "--headless",
             "--num-frames",
             "1",
             "--no-use-cuda-graph",
@@ -78,12 +81,13 @@ class MuJoCoSolverLoad:
 
 
 class MuJoCoSolverSimulate:
-    repeat = 10
+    repeat = 5
     number = 1
 
     def setup(self):
+        wp.init()
         self.num_frames = 200
-        self.example = Example(stage_path=None, num_envs=8, use_cuda_graph=True)
+        self.example = Example(stage_path=None, robot="cartpole", randomize=True, headless=True, actuation="random", num_envs=8, use_cuda_graph=True)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
