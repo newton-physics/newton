@@ -75,7 +75,7 @@ class TestInertiaValidation(unittest.TestCase):
             self.assertTrue(inertia_array[1, 1] >= 0)
             self.assertTrue(inertia_array[2, 2] >= 0)
             self.assertTrue(len(w) > 0)
-            self.assertIn("Negative inertia diagonal", str(w[0].message))
+            self.assertIn("Negative eigenvalues detected", str(w[0].message))
 
     def test_inertia_bound(self):
         """Test that inertia diagonal elements below bound are clamped."""

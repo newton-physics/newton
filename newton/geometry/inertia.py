@@ -550,89 +550,80 @@ def verify_and_correct_inertia(
         corrected_inertia = (inertia_array + inertia_array.T) / 2
         was_corrected = True
 
-    # Extract principal moments (diagonal elements)
-    Ixx, Iyy, Izz = corrected_inertia[0, 0], corrected_inertia[1, 1], corrected_inertia[2, 2]
-
-    # Check for negative diagonal elements
-    if Ixx < 0 or Iyy < 0 or Izz < 0:
-        warnings.warn(
-            f"Negative inertia diagonal elements detected{body_id}: ({Ixx}, {Iyy}, {Izz}), taking absolute values",
-            stacklevel=2,
-        )
-        Ixx, Iyy, Izz = abs(Ixx), abs(Iyy), abs(Izz)
-        corrected_inertia[0, 0] = Ixx
-        corrected_inertia[1, 1] = Iyy
-        corrected_inertia[2, 2] = Izz
+    # Compute eigenvalues (principal moments) for validation
+    try:
+        eigenvalues = np.linalg.eigvals(corrected_inertia)
+        
+        # Check for negative eigenvalues
+        if np.any(eigenvalues < 0):
+            warnings.warn(
+                f"Negative eigenvalues detected{body_id}: {eigenvalues}, making positive definite",
+                stacklevel=2,
+            )
+            # Make positive definite by adjusting eigenvalues
+            min_eig = np.min(eigenvalues)
+            corrected_inertia += np.eye(3) * (-min_eig + 1e-6)
+            eigenvalues = np.linalg.eigvals(corrected_inertia)
+            was_corrected = True
+            
+        # Apply inertia bounds to eigenvalues if specified
+        if bound_inertia is not None:
+            min_eig = np.min(eigenvalues)
+            if min_eig < bound_inertia:
+                warnings.warn(f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2)
+                corrected_inertia += np.eye(3) * (bound_inertia - min_eig)
+                eigenvalues = np.linalg.eigvals(corrected_inertia)
+                was_corrected = True
+                
+        # Sort eigenvalues to get principal moments
+        principal_moments = np.sort(eigenvalues)
+        I1, I2, I3 = principal_moments
+        
+        # Check triangle inequality on principal moments
+        # For a physically valid inertia tensor: I1 + I2 >= I3
+        has_violations = (I1 + I2 < I3)
+        
+    except np.linalg.LinAlgError:
+        warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
         was_corrected = True
-
-    # Apply inertia bounds if specified
-    if bound_inertia is not None:
-        if Ixx < bound_inertia:
-            warnings.warn(f"Ixx {Ixx} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
-            Ixx = bound_inertia
-            corrected_inertia[0, 0] = Ixx
-            was_corrected = True
-        if Iyy < bound_inertia:
-            warnings.warn(f"Iyy {Iyy} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
-            Iyy = bound_inertia
-            corrected_inertia[1, 1] = Iyy
-            was_corrected = True
-        if Izz < bound_inertia:
-            warnings.warn(f"Izz {Izz} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
-            Izz = bound_inertia
-            corrected_inertia[2, 2] = Izz
-            was_corrected = True
-
-    # Check triangle inequality (principal moments must satisfy these constraints)
-    # For a physically valid inertia tensor: Ixx + Iyy >= Izz, Iyy + Izz >= Ixx, Izz + Ixx >= Iyy
-    has_violations = (Ixx + Iyy < Izz) or (Iyy + Izz < Ixx) or (Izz + Ixx < Iyy)
+        # Fallback: use diagonal elements
+        trace = np.trace(corrected_inertia)
+        if trace <= 0:
+            trace = 1e-6
+        corrected_inertia = np.eye(3) * (trace / 3.0)
+        has_violations = False
+        principal_moments = [trace/3.0, trace/3.0, trace/3.0]
 
     if has_violations:
         warnings.warn(
-            f"Inertia tensor{body_id} violates triangle inequality with principal moments ({Ixx}, {Iyy}, {Izz})",
+            f"Inertia tensor{body_id} violates triangle inequality with principal moments ({I1:.6f}, {I2:.6f}, {I3:.6f})",
             stacklevel=2,
         )
         was_corrected = True
 
         if balance_inertia:
-            # Balance inertia similar to MuJoCo's approach
-            # Find the smallest adjustment that satisfies all constraints
-            I = [Ixx, Iyy, Izz]
-
-            # MuJoCo's algorithm: repeatedly find the most violated constraint and fix it
-            max_iterations = 10
-            for _ in range(max_iterations):
-                # Find the most violated constraint
-                max_violation = 0
-                max_idx = -1
-                for i, j, k in [(0, 1, 2), (1, 2, 0), (2, 0, 1)]:
-                    violation = I[k] - I[i] - I[j]
-                    if violation > max_violation:
-                        max_violation = violation
-                        max_idx = k
-
-                if max_violation <= 1e-10:
-                    break
-
-                # Fix the violation by increasing the two smaller moments
-                if max_idx == 0:  # Ixx is too large
-                    delta = (I[0] - I[1] - I[2]) / 2
-                    I[1] += delta
-                    I[2] += delta
-                elif max_idx == 1:  # Iyy is too large
-                    delta = (I[1] - I[2] - I[0]) / 2
-                    I[2] += delta
-                    I[0] += delta
-                else:  # Izz is too large
-                    delta = (I[2] - I[0] - I[1]) / 2
-                    I[0] += delta
-                    I[1] += delta
-
-            corrected_inertia[0, 0] = I[0]
-            corrected_inertia[1, 1] = I[1]
-            corrected_inertia[2, 2] = I[2]
-
-            warnings.warn(f"Balanced inertia{body_id} to ({I[0]}, {I[1]}, {I[2]})", stacklevel=2)
+            # For non-diagonal matrices, we need to adjust while preserving the rotation
+            deficit = I3 - I1 - I2
+            if deficit > 0:
+                # Simple approach: add scalar to all eigenvalues to ensure validity
+                # This preserves eigenvectors exactly
+                # We need: (I1 + α) + (I2 + α) >= I3 + α
+                # Which simplifies to: I1 + I2 + α >= I3
+                # So: α >= I3 - I1 - I2 = deficit
+                adjustment = deficit + 1e-6
+                
+                # Add scalar*I to shift all eigenvalues equally
+                corrected_inertia = corrected_inertia + np.eye(3) * adjustment
+                
+                # Recompute eigenvalues for the warning message
+                new_eigenvalues = np.linalg.eigvals(corrected_inertia)
+                new_eigenvalues = np.sort(new_eigenvalues)
+                
+                warnings.warn(
+                    f"Balanced principal moments{body_id} from ({I1:.6f}, {I2:.6f}, {I3:.6f}) to "
+                    f"({new_eigenvalues[0]:.6f}, {new_eigenvalues[1]:.6f}, {new_eigenvalues[2]:.6f})",
+                    stacklevel=2
+                )
 
     # Final check: ensure the corrected inertia matrix is positive definite
     try:
@@ -694,55 +685,33 @@ def validate_and_correct_inertia_kernel(
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         was_corrected = 1
     else:
+        # For non-diagonal matrices, we can only do basic checks
         # Extract diagonal elements
         Ixx = inertia[0, 0]
         Iyy = inertia[1, 1]
         Izz = inertia[2, 2]
-
-        # Check for negative diagonal elements
-        if Ixx < 0.0:
-            Ixx = -Ixx
-            was_corrected = 1
-        if Iyy < 0.0:
-            Iyy = -Iyy
-            was_corrected = 1
-        if Izz < 0.0:
-            Izz = -Izz
-            was_corrected = 1
-
-        # Apply inertia bounds
+        
+        # Ensure diagonal elements meet minimum bound if specified
         if bound_inertia > 0.0:
             if Ixx < bound_inertia:
-                Ixx = bound_inertia
+                inertia[0, 0] = bound_inertia
                 was_corrected = 1
             if Iyy < bound_inertia:
-                Iyy = bound_inertia
+                inertia[1, 1] = bound_inertia
                 was_corrected = 1
             if Izz < bound_inertia:
-                Izz = bound_inertia
+                inertia[2, 2] = bound_inertia
                 was_corrected = 1
-
-        # Check triangle inequality
-        has_violation = (Ixx + Iyy < Izz) or (Iyy + Izz < Ixx) or (Izz + Ixx < Iyy)
-
-        if has_violation and balance_inertia:
-            # Simple correction: scale up smaller values
-            # This is simpler than the iterative algorithm but ensures validity
-            max_I = wp.max(wp.max(Ixx, Iyy), Izz)
-            min_required = max_I * 0.5 + 1e-6
-
-            if Ixx < min_required:
-                Ixx = min_required
-            if Iyy < min_required:
-                Iyy = min_required
-            if Izz < min_required:
-                Izz = min_required
+        
+        # Ensure positive trace
+        trace = inertia[0, 0] + inertia[1, 1] + inertia[2, 2]
+        if trace < 1e-6:
+            # Add small value to diagonal to ensure positive definiteness
+            adjustment = (1e-6 - trace) / 3.0 + 1e-6
+            inertia[0, 0] += adjustment
+            inertia[1, 1] += adjustment
+            inertia[2, 2] += adjustment
             was_corrected = 1
-
-        # Update inertia matrix with corrected diagonal
-        inertia = wp.mat33(
-            Ixx, inertia[0, 1], inertia[0, 2], inertia[1, 0], Iyy, inertia[1, 2], inertia[2, 0], inertia[2, 1], Izz
-        )
 
     # Write back corrected values
     body_mass[tid] = mass
@@ -756,12 +725,8 @@ def validate_and_correct_inertia_kernel(
 
     # Update inverse inertia
     if mass > 0.0:
-        # For diagonal-dominant matrices, we can use a simplified inverse
-        det = Ixx * Iyy * Izz  # Simplified for diagonal matrix
-        if det > 0.0:
-            body_inv_inertia[tid] = wp.mat33(1.0 / Ixx, 0.0, 0.0, 0.0, 1.0 / Iyy, 0.0, 0.0, 0.0, 1.0 / Izz)
-        else:
-            body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        inv_inertia = wp.inverse(inertia)
+        body_inv_inertia[tid] = inv_inertia
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
