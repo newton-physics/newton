@@ -495,6 +495,7 @@ def verify_and_correct_inertia(
     balance_inertia: bool = True,
     bound_mass: float | None = None,
     bound_inertia: float | None = None,
+    body_key: str | None = None,
 ) -> tuple[float, wp.mat33, bool]:
     """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
 
@@ -511,6 +512,7 @@ def verify_and_correct_inertia(
         balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
         bound_mass: If specified, clamp mass to be at least this value
         bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
+        body_key: Optional key/name of the body for more informative warnings
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
@@ -521,27 +523,30 @@ def verify_and_correct_inertia(
     inertia_array = np.array(inertia).reshape(3, 3)
     corrected_inertia = inertia_array.copy()
 
+    # Format body identifier for warnings
+    body_id = f" for body '{body_key}'" if body_key else ""
+
     # Check and correct mass
     if mass < 0:
-        warnings.warn(f"Negative mass {mass} detected, setting to 0", stacklevel=2)
+        warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", stacklevel=2)
         corrected_mass = 0.0
         was_corrected = True
     elif bound_mass is not None and mass < bound_mass and mass > 0:
-        warnings.warn(f"Mass {mass} is below bound {bound_mass}, clamping", stacklevel=2)
+        warnings.warn(f"Mass {mass} is below bound {bound_mass}{body_id}, clamping", stacklevel=2)
         corrected_mass = bound_mass
         was_corrected = True
 
     # For zero mass, inertia should also be zero
     if corrected_mass == 0.0:
         if np.any(inertia_array != 0):
-            warnings.warn("Zero mass body should have zero inertia, correcting", stacklevel=2)
+            warnings.warn(f"Zero mass body{body_id} should have zero inertia, correcting", stacklevel=2)
             corrected_inertia = np.zeros((3, 3))
             was_corrected = True
         return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
     # Check that inertia matrix is symmetric
     if not np.allclose(inertia_array, inertia_array.T):
-        warnings.warn("Inertia matrix is not symmetric, making it symmetric", stacklevel=2)
+        warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
         corrected_inertia = (inertia_array + inertia_array.T) / 2
         was_corrected = True
 
@@ -551,7 +556,8 @@ def verify_and_correct_inertia(
     # Check for negative diagonal elements
     if Ixx < 0 or Iyy < 0 or Izz < 0:
         warnings.warn(
-            f"Negative inertia diagonal elements detected: ({Ixx}, {Iyy}, {Izz}), taking absolute values", stacklevel=2
+            f"Negative inertia diagonal elements detected{body_id}: ({Ixx}, {Iyy}, {Izz}), taking absolute values",
+            stacklevel=2,
         )
         Ixx, Iyy, Izz = abs(Ixx), abs(Iyy), abs(Izz)
         corrected_inertia[0, 0] = Ixx
@@ -562,34 +568,29 @@ def verify_and_correct_inertia(
     # Apply inertia bounds if specified
     if bound_inertia is not None:
         if Ixx < bound_inertia:
-            warnings.warn(f"Ixx {Ixx} is below bound {bound_inertia}, clamping", stacklevel=2)
+            warnings.warn(f"Ixx {Ixx} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
             Ixx = bound_inertia
             corrected_inertia[0, 0] = Ixx
             was_corrected = True
         if Iyy < bound_inertia:
-            warnings.warn(f"Iyy {Iyy} is below bound {bound_inertia}, clamping", stacklevel=2)
+            warnings.warn(f"Iyy {Iyy} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
             Iyy = bound_inertia
             corrected_inertia[1, 1] = Iyy
             was_corrected = True
         if Izz < bound_inertia:
-            warnings.warn(f"Izz {Izz} is below bound {bound_inertia}, clamping", stacklevel=2)
+            warnings.warn(f"Izz {Izz} is below bound {bound_inertia}{body_id}, clamping", stacklevel=2)
             Izz = bound_inertia
             corrected_inertia[2, 2] = Izz
             was_corrected = True
 
     # Check triangle inequality (principal moments must satisfy these constraints)
     # For a physically valid inertia tensor: Ixx + Iyy >= Izz, Iyy + Izz >= Ixx, Izz + Ixx >= Iyy
-    has_violations = False
-    if Ixx + Iyy < Izz:
-        has_violations = True  # Ixx + Iyy < Izz
-    if Iyy + Izz < Ixx:
-        has_violations = True  # Iyy + Izz < Ixx
-    if Izz + Ixx < Iyy:
-        has_violations = True  # Izz + Ixx < Iyy
+    has_violations = (Ixx + Iyy < Izz) or (Iyy + Izz < Ixx) or (Izz + Ixx < Iyy)
 
     if has_violations:
         warnings.warn(
-            f"Inertia tensor violates triangle inequality with principal moments ({Ixx}, {Iyy}, {Izz})", stacklevel=2
+            f"Inertia tensor{body_id} violates triangle inequality with principal moments ({Ixx}, {Iyy}, {Izz})",
+            stacklevel=2,
         )
         was_corrected = True
 
@@ -631,21 +632,137 @@ def verify_and_correct_inertia(
             corrected_inertia[1, 1] = I[1]
             corrected_inertia[2, 2] = I[2]
 
-            warnings.warn(f"Balanced inertia to ({I[0]}, {I[1]}, {I[2]})", stacklevel=2)
+            warnings.warn(f"Balanced inertia{body_id} to ({I[0]}, {I[1]}, {I[2]})", stacklevel=2)
 
     # Final check: ensure the corrected inertia matrix is positive definite
     try:
         eigenvalues = np.linalg.eigvals(corrected_inertia)
-        if np.any(eigenvalues <= 0):
-            warnings.warn("Corrected inertia matrix is not positive definite, this should not happen", stacklevel=2)
+        if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
+            warnings.warn(
+                f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
+            )
             # As a last resort, make it positive definite by adding a small value to diagonal
-            min_eigenvalue = np.min(eigenvalues)
+            min_eigenvalue = (
+                np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
+            )
             epsilon = abs(min_eigenvalue) + 1e-6
             corrected_inertia[0, 0] += epsilon
             corrected_inertia[1, 1] += epsilon
             corrected_inertia[2, 2] += epsilon
             was_corrected = True
     except np.linalg.LinAlgError:
-        warnings.warn("Failed to compute eigenvalues of inertia matrix", stacklevel=2)
+        warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
 
     return corrected_mass, wp.mat33(corrected_inertia), was_corrected
+
+
+@wp.kernel
+def validate_and_correct_inertia_kernel(
+    body_mass: wp.array(dtype=wp.float32),
+    body_inertia: wp.array(dtype=wp.mat33),
+    body_inv_mass: wp.array(dtype=wp.float32),
+    body_inv_inertia: wp.array(dtype=wp.mat33),
+    balance_inertia: wp.bool,
+    bound_mass: wp.float32,
+    bound_inertia: wp.float32,
+    correction_flags: wp.array(dtype=wp.int32),  # Output: 1 if corrected, 0 otherwise
+):
+    """Warp kernel for parallel inertia validation and correction.
+
+    This kernel performs basic validation and correction but doesn't support:
+    - Warning messages (handled by caller)
+    - Complex iterative balancing (falls back to simple correction)
+    """
+    tid = wp.tid()
+
+    mass = body_mass[tid]
+    inertia = body_inertia[tid]
+    was_corrected = 0
+
+    # Check for negative mass
+    if mass < 0.0:
+        mass = 0.0
+        was_corrected = 1
+
+    # Apply mass bound
+    if bound_mass > 0.0 and mass < bound_mass:
+        mass = bound_mass
+        was_corrected = 1
+
+    # For zero mass, inertia should be zero
+    if mass == 0.0:
+        inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        was_corrected = 1
+    else:
+        # Extract diagonal elements
+        Ixx = inertia[0, 0]
+        Iyy = inertia[1, 1]
+        Izz = inertia[2, 2]
+
+        # Check for negative diagonal elements
+        if Ixx < 0.0:
+            Ixx = -Ixx
+            was_corrected = 1
+        if Iyy < 0.0:
+            Iyy = -Iyy
+            was_corrected = 1
+        if Izz < 0.0:
+            Izz = -Izz
+            was_corrected = 1
+
+        # Apply inertia bounds
+        if bound_inertia > 0.0:
+            if Ixx < bound_inertia:
+                Ixx = bound_inertia
+                was_corrected = 1
+            if Iyy < bound_inertia:
+                Iyy = bound_inertia
+                was_corrected = 1
+            if Izz < bound_inertia:
+                Izz = bound_inertia
+                was_corrected = 1
+
+        # Check triangle inequality
+        has_violation = (Ixx + Iyy < Izz) or (Iyy + Izz < Ixx) or (Izz + Ixx < Iyy)
+
+        if has_violation and balance_inertia:
+            # Simple correction: scale up smaller values
+            # This is simpler than the iterative algorithm but ensures validity
+            max_I = wp.max(wp.max(Ixx, Iyy), Izz)
+            min_required = max_I * 0.5 + 1e-6
+
+            if Ixx < min_required:
+                Ixx = min_required
+            if Iyy < min_required:
+                Iyy = min_required
+            if Izz < min_required:
+                Izz = min_required
+            was_corrected = 1
+
+        # Update inertia matrix with corrected diagonal
+        inertia = wp.mat33(
+            Ixx, inertia[0, 1], inertia[0, 2], inertia[1, 0], Iyy, inertia[1, 2], inertia[2, 0], inertia[2, 1], Izz
+        )
+
+    # Write back corrected values
+    body_mass[tid] = mass
+    body_inertia[tid] = inertia
+
+    # Update inverse mass
+    if mass > 0.0:
+        body_inv_mass[tid] = 1.0 / mass
+    else:
+        body_inv_mass[tid] = 0.0
+
+    # Update inverse inertia
+    if mass > 0.0:
+        # For diagonal-dominant matrices, we can use a simplified inverse
+        det = Ixx * Iyy * Izz  # Simplified for diagonal matrix
+        if det > 0.0:
+            body_inv_inertia[tid] = wp.mat33(1.0 / Ixx, 0.0, 0.0, 0.0, 1.0 / Iyy, 0.0, 0.0, 0.0, 1.0 / Izz)
+        else:
+            body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    else:
+        body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    correction_flags[tid] = was_corrected

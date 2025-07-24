@@ -21,6 +21,7 @@ import copy
 import ctypes
 import itertools
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -62,7 +63,7 @@ from newton.geometry import (
     compute_shape_radius,
     transform_inertia,
 )
-from newton.geometry.inertia import verify_and_correct_inertia
+from newton.geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 
 from ..geometry.utils import RemeshingMethod, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
@@ -283,9 +284,10 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.balance_inertia = True  # Automatically balance inertia tensors to satisfy triangle inequality
-        self.bound_mass = None  # Minimum mass for bodies (None means no bound)
-        self.bound_inertia = None  # Minimum inertia diagonal values (None means no bound)
+        self.balance_inertia = True
+        self.bound_mass = None
+        self.bound_inertia = None
+        self.validate_inertia_detailed = False
         # endregion
 
         # particles
@@ -3399,29 +3401,72 @@ class ModelBuilder:
             # --------------------------------------
             # rigid bodies
 
-            # Apply inertia verification and correction before transferring to model
-            if self.balance_inertia or self.bound_mass is not None or self.bound_inertia is not None:
-                for i in range(len(self.body_mass)):
-                    mass = self.body_mass[i]
-                    inertia = self.body_inertia[i]
+            # Apply inertia verification and correction
+            # This catches negative masses/inertias and other critical issues
+            if len(self.body_mass) > 0:
+                if self.validate_inertia_detailed:
+                    # Use detailed Python validation with per-body warnings
+                    for i in range(len(self.body_mass)):
+                        mass = self.body_mass[i]
+                        inertia = self.body_inertia[i]
+                        body_key = self.body_key[i] if i < len(self.body_key) else f"body_{i}"
 
-                    corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
-                        mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia
+                        corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                            mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_key
+                        )
+
+                        if was_corrected:
+                            self.body_mass[i] = corrected_mass
+                            self.body_inertia[i] = corrected_inertia
+                            # Update inverse mass and inertia
+                            if corrected_mass > 0.0:
+                                self.body_inv_mass[i] = 1.0 / corrected_mass
+                            else:
+                                self.body_inv_mass[i] = 0.0
+
+                            if any(x for x in corrected_inertia):
+                                self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                            else:
+                                self.body_inv_inertia[i] = corrected_inertia
+                else:
+                    # Use fast Warp kernel validation
+                    # First create arrays for the kernel
+                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=False)
+                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=False)
+                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=False)
+                    body_inv_inertia_array = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=False)
+                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.int32)
+
+                    # Launch validation kernel
+                    wp.launch(
+                        kernel=validate_and_correct_inertia_kernel,
+                        dim=len(self.body_mass),
+                        inputs=[
+                            body_mass_array,
+                            body_inertia_array,
+                            body_inv_mass_array,
+                            body_inv_inertia_array,
+                            self.balance_inertia,
+                            self.bound_mass if self.bound_mass is not None else 0.0,
+                            self.bound_inertia if self.bound_inertia is not None else 0.0,
+                            correction_flags,
+                        ],
                     )
 
-                    if was_corrected:
-                        self.body_mass[i] = corrected_mass
-                        self.body_inertia[i] = corrected_inertia
-                        # Update inverse mass and inertia
-                        if corrected_mass > 0.0:
-                            self.body_inv_mass[i] = 1.0 / corrected_mass
-                        else:
-                            self.body_inv_mass[i] = 0.0
+                    # Check if any corrections were made
+                    num_corrections = int(np.sum(correction_flags.numpy()))
+                    if num_corrections > 0:
+                        warnings.warn(
+                            f"Inertia validation corrected {num_corrections} bodies. "
+                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                            stacklevel=2,
+                        )
 
-                        if any(x for x in corrected_inertia):
-                            self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
-                        else:
-                            self.body_inv_inertia[i] = corrected_inertia
+                    # Copy corrected values back
+                    self.body_mass = body_mass_array.numpy().tolist()
+                    self.body_inertia = [wp.mat33(m) for m in body_inertia_array.numpy()]
+                    self.body_inv_mass = body_inv_mass_array.numpy().tolist()
+                    self.body_inv_inertia = [wp.mat33(m) for m in body_inv_inertia_array.numpy()]
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)

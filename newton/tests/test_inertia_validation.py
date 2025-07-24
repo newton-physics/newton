@@ -158,12 +158,13 @@ class TestInertiaValidation(unittest.TestCase):
             self.assertTrue(np.allclose(np.array(corrected_inertia).reshape(3, 3), np.array(inertia).reshape(3, 3)))
             self.assertEqual(len(w), 0)
 
-    def test_model_builder_integration(self):
-        """Test that inertia validation works in ModelBuilder.finalize()."""
+    def test_model_builder_integration_fast(self):
+        """Test that fast inertia validation works in ModelBuilder.finalize()."""
         builder = ModelBuilder()
         builder.balance_inertia = True
         builder.bound_mass = 0.1
         builder.bound_inertia = 0.01
+        builder.validate_inertia_detailed = False  # Use fast validation (default)
 
         # Add a body with invalid inertia
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
@@ -175,6 +176,46 @@ class TestInertiaValidation(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as w:
             model = builder.finalize()
+
+            # Should get one summary warning
+            self.assertEqual(len(w), 1)
+            self.assertIn("Inertia validation corrected 1 bodies", str(w[0].message))
+            self.assertIn("validate_inertia_detailed=True", str(w[0].message))
+
+            # Check that mass and inertia were corrected
+            body_mass = model.body_mass.numpy()[body_idx]
+            body_inertia = model.body_inertia.numpy()[body_idx]
+
+            self.assertGreaterEqual(body_mass, builder.bound_mass)
+
+            Ixx, Iyy, Izz = body_inertia[0, 0], body_inertia[1, 1], body_inertia[2, 2]
+            self.assertGreaterEqual(Ixx, builder.bound_inertia)
+            self.assertGreaterEqual(Iyy, builder.bound_inertia)
+            self.assertGreaterEqual(Izz, builder.bound_inertia)
+
+    def test_model_builder_integration_detailed(self):
+        """Test that detailed inertia validation works in ModelBuilder.finalize()."""
+        builder = ModelBuilder()
+        builder.balance_inertia = True
+        builder.bound_mass = 0.1
+        builder.bound_inertia = 0.01
+        builder.validate_inertia_detailed = True  # Use detailed validation
+
+        # Add a body with invalid inertia
+        invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
+        body_idx = builder.add_body(
+            mass=0.05,  # Below bound
+            I_m=invalid_inertia,  # Violates triangle inequality
+            key="test_body",
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            model = builder.finalize()
+
+            # Should get multiple detailed warnings
+            self.assertGreater(len(w), 1)
+            warning_messages = [str(warning.message) for warning in w]
+            self.assertTrue(any("Mass 0.05 is below bound" in msg for msg in warning_messages))
 
             # Check that mass and inertia were corrected
             body_mass = model.body_mass.numpy()[body_idx]
@@ -193,6 +234,28 @@ class TestInertiaValidation(unittest.TestCase):
             self.assertGreaterEqual(Izz + Ixx, Iyy - 1e-10)
 
             self.assertTrue(len(w) > 0)
+
+    def test_default_validation_catches_negative_mass(self):
+        """Test that validation runs by default and catches critical issues."""
+        builder = ModelBuilder()
+        # Don't set any validation options - use defaults
+
+        # Add a body with negative mass
+        body_idx = builder.add_body(
+            mass=-1.0,  # Negative mass - critical issue
+            key="test_body",
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            model = builder.finalize()
+
+            # Should get warning about issues found
+            self.assertEqual(len(w), 1)
+            self.assertIn("Inertia validation corrected 1 bodies", str(w[0].message))
+
+            # Mass should be corrected to 0
+            body_mass = model.body_mass.numpy()[body_idx]
+            self.assertEqual(body_mass, 0.0)
 
 
 if __name__ == "__main__":
