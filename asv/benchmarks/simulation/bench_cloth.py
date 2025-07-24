@@ -13,45 +13,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import subprocess
-import sys
-
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 from newton.examples.example_cloth_self_contact import Example as ExampleClothSelfContact
+from newton.examples.example_robot_manipulating_cloth import Example as ExampleClothManipulation
 
 
-class VBDSolverLoad:
-    warmup_time = 0
-    repeat = 2
+class FastExampleClothManipulation:
+    timeout = 300
+    repeat = 3
     number = 1
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        self.num_frames = 30
+        self.example = ExampleClothManipulation(stage_path=None, num_frames=self.num_frames)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_load(self):
-        """Time the amount of time it takes to load and run one frame of the example."""
+    def time_simulate(self):
+        for frame_idx in range(self.num_frames):
+            self.example.step()
 
-        command = [
-            sys.executable,
-            "-m",
-            "newton.examples.example_cloth_self_contact",
-            "--stage-path",
-            "None",
-            "--num-frames",
-            "1",
-        ]
+            if self.example.cloth_solver and not (frame_idx % 10):
+                self.example.cloth_solver.rebuild_bvh(self.example.state_0)
+                self.example.capture_cuda_graph()
 
-        # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        wp.synchronize_device()
 
 
-class VBDSolverSimulate:
+class FastExampleClothSelfContactVBD:
     repeat = 5
     number = 1
 
@@ -74,3 +64,5 @@ class VBDSolverSimulate:
                 with wp.ScopedCapture() as capture:
                     self.example.simulate_substeps()
                 self.example.cuda_graph = capture.graph
+
+        wp.synchronize_device()
