@@ -601,7 +601,6 @@ def verify_and_correct_inertia(
             f"Inertia tensor{body_id} violates triangle inequality with principal moments ({I1:.6f}, {I2:.6f}, {I3:.6f})",
             stacklevel=2,
         )
-        was_corrected = True
 
         if balance_inertia:
             # For non-diagonal matrices, we need to adjust while preserving the rotation
@@ -616,6 +615,7 @@ def verify_and_correct_inertia(
 
                 # Add scalar*I to shift all eigenvalues equally
                 corrected_inertia = corrected_inertia + np.eye(3) * adjustment
+                was_corrected = True
 
                 # Recompute eigenvalues for the warning message
                 new_eigenvalues = np.linalg.eigvals(corrected_inertia)
