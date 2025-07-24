@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 # Modules for which we want API pages.  Feel free to modify.
-MODULES: list[str] = ["newton.sim", "newton.core", "newton.geometry", "newton.solvers", "newton.utils"]
+MODULES: list[str] = ["newton.core", "newton.sim", "newton.geometry", "newton.solvers", "newton.utils"]
 
 # Output directory (relative to repo root)
 OUTPUT_DIR = REPO_ROOT / "docs" / "api"
@@ -71,6 +71,7 @@ def write_module_page(mod_name: str) -> None:
     classes: list[str] = []
     functions: list[str] = []
     constants: list[str] = []
+    modules: list[str] = []
 
     for name in symbols:
         attr = getattr(module, name)
@@ -90,6 +91,13 @@ def write_module_page(mod_name: str) -> None:
             continue
 
         # ------------------------------------------------------------------
+        # Submodules
+        # ------------------------------------------------------------------
+
+        if inspect.ismodule(attr):
+            modules.append(name)
+
+        # ------------------------------------------------------------------
         # Everything else → functions section
         # ------------------------------------------------------------------
         functions.append(name)
@@ -105,6 +113,20 @@ def write_module_page(mod_name: str) -> None:
         lines.extend([doc, ""])
 
     lines.extend([f".. currentmodule:: {mod_name}", ""])
+
+    if modules:
+        lines.extend(
+            [
+                ".. rubric:: Submodules",
+                "",
+                ".. autosummary::",
+                f"   :toctree: {TOCTREE_DIR}",
+                "   :nosignatures:",
+                "",
+            ]
+        )
+        lines.extend([f"   {mod}" for mod in modules])
+        lines.append("")
 
     if classes:
         lines.extend(

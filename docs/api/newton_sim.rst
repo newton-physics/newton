@@ -3,6 +3,14 @@ newton.sim
 
 .. currentmodule:: newton.sim
 
+.. rubric:: Submodules
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   ik
+
 .. rubric:: Classes
 
 .. autosummary::
@@ -26,6 +34,7 @@ newton.sim
    :toctree: _generated
    :signatures: long
 
+   ik
    color_graph
    count_rigid_contact_points
    eval_fk
