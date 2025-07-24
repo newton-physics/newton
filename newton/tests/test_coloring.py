@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import os
 import unittest
 
@@ -28,6 +29,63 @@ from newton.sim.graph_coloring import (
     validate_graph_coloring,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
+
+
+def create_lattice_grid(N):
+    size = 10
+    position = (0, 0)
+
+    X = np.linspace(-0.5 * size + position[0], 0.5 * size + position[0], N)
+    Y = np.linspace(-0.5 * size + position[1], 0.5 * size + position[1], N)
+
+    X, Y = np.meshgrid(X, Y)
+
+    Z = []
+    for _i in range(N):
+        Z.append(np.linspace(0, size, N))
+
+    Z = np.array(Z)
+
+    vs = []
+    for i, j in itertools.product(range(N), range(N)):
+        vs.append(wp.vec3((X[i, j], Y[i, j], Z[i, j])))
+
+    fs = []
+    for i, j in itertools.product(range(0, N - 1), range(0, N - 1)):
+        vId = j + i * N
+
+        if (j + i) % 2:
+            fs.extend(
+                [
+                    vId,
+                    vId + N + 1,
+                    vId + 1,
+                ]
+            )
+            fs.extend(
+                [
+                    vId,
+                    vId + N,
+                    vId + N + 1,
+                ]
+            )
+        else:
+            fs.extend(
+                [
+                    vId,
+                    vId + N,
+                    vId + 1,
+                ]
+            )
+            fs.extend(
+                [
+                    vId + N,
+                    vId + N + 1,
+                    vId + 1,
+                ]
+            )
+
+    return vs, fs
 
 
 def color_lattice_grid(num_x, num_y):
@@ -154,6 +212,22 @@ def test_coloring_trimesh(test, device):
         color_sizes = np.array([c.shape[0] for c in color_categories_balanced], dtype=np.float32)
         test.assertTrue(np.max(color_sizes) / np.min(color_sizes) <= max_min_ratio)
 
+        # test if the color balance can quit from equilibrium
+        builder = ModelBuilder()
+
+        vs, fs = create_lattice_grid(100)
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
+            scale=1.0,
+            vertices=vs,
+            indices=fs,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            density=0.02,
+        )
+
+        builder.color(include_bending=True)
+
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_combine_coloring(test, device):
@@ -253,7 +327,7 @@ class TestColoring(unittest.TestCase):
     pass
 
 
-add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, devices=devices)
+add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, devices=devices, check_output=False)
 add_function_test(TestColoring, "test_combine_coloring", test_combine_coloring, devices=devices)
 
 if __name__ == "__main__":

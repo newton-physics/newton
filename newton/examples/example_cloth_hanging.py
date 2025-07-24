@@ -25,6 +25,8 @@ from enum import Enum
 
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.utils
 
