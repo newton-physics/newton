@@ -133,7 +133,7 @@ class TestInertiaValidation(unittest.TestCase):
                 mass, inertia, balance_inertia=False
             )
 
-            self.assertTrue(was_corrected)
+            self.assertFalse(was_corrected)  # No correction made when balance_inertia=False
             self.assertEqual(corrected_mass, mass)
 
             # Inertia should not be balanced
