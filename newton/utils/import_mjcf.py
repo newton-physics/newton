@@ -764,47 +764,79 @@ def parse_mjcf(
             parse_body(child, link, _incoming_defaults, childclass=_childclass)
 
     def parse_equality_constraints(equality):
+        def parse_common_attributes(element):
+            return {
+                "name": element.attrib.get("name"),
+                "active": element.attrib.get("active", "true").lower() == "true",
+                "solref": element.attrib.get("solref"),
+                "solimp": element.attrib.get("solimp"),
+            }
+
         for connect in equality.findall("connect"):
-            body1_name = connect.attrib.get("body1").replace("-", "_")
-            body2_name = connect.attrib.get("body2").replace("-", "_")
-            anchor = connect.attrib.get("anchor", "0 0 0")
-            anchor_vec = np.array([float(x) for x in anchor.split()])
-            active = connect.attrib.get("active", "true").lower() == "true"
-            name = connect.attrib.get("name")
+            common = parse_common_attributes(connect)
+            body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
+            body2_name = (
+                connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
+            )
+            anchor = connect.attrib.get("anchor")
 
-            if body1_name and body2_name and active:
-                anchor1 = wp.vec3(anchor_vec[0] * scale, anchor_vec[1] * scale, anchor_vec[2] * scale)
-                anchor2 = wp.vec3(0.0, 0.0, 0.0)
+            site1 = connect.attrib.get("site1")
 
+            if body1_name and anchor:
                 if verbose:
-                    print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor_vec}")
+                    print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor}")
+
+                anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()]) if anchor else None
 
                 builder.add_equality_constraint(
                     constraint_type="connect",
                     body1name=body1_name,
                     body2name=body2_name,
-                    anchor1=anchor1,
-                    anchor2=anchor2,
-                    key=name,
-                    enabled=active,
+                    anchor=anchor_vec,
+                    key=common["name"],
+                    enabled=common["active"],
                 )
 
-        for weld in equality.findall("weld"):
-            body1_name = weld.attrib.get("body1")
-            body2_name = weld.attrib.get("body2")
-            active = weld.attrib.get("active", "true").lower() == "true"
+            if site1:  # Implement site-based connect after Newton supports sites
+                print("Warning: MuJoCo sites are not yet supported in Newton.")
 
-            if body1_name and body2_name and active:
-                print(f"Weld constraint: {body1_name} to {body2_name}")
-                # TODO
+        for weld in equality.findall("weld"):
+            common = parse_common_attributes(weld)
+            body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
+            body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
+            anchor = weld.attrib.get("anchor", "0 0 0")
+            relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
+            torquescale = weld.attrib.get("torquescale")
+
+            site1 = weld.attrib.get("site1")
+
+            if body1_name:
+                if verbose:
+                    print(f"Weld constraint: {body1_name} to {body2_name}")
+
+                anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
+
+                builder.add_equality_constraint(
+                    constraint_type="weld",
+                    body1name=body1_name,
+                    body2name=body2_name,
+                    anchor=anchor_vec,
+                    relpose=[float(x) for x in relpose.split()],
+                    torquescale=torquescale,
+                    key=common["name"],
+                    enabled=common["active"],
+                )
+
+            if site1:  # Implement site-based weld after Newton supports sites
+                print("Warning: MuJoCo sites are not yet supported in Newton.")
 
         for joint in equality.findall("joint"):
+            common = parse_common_attributes(joint)
             joint1_name = joint.attrib.get("joint1")
             joint2_name = joint.attrib.get("joint2")
-            polycoef = joint.attrib.get("polycoef", "0 1")  # Default is 1:1 coupling
-            active = joint.attrib.get("active", "true").lower() == "true"
+            polycoef = joint.attrib.get("polycoef", "0 1 0 0 0")
 
-            if joint1_name and joint2_name and active:
+            if joint1_name:
                 if verbose:
                     print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
 
@@ -812,29 +844,12 @@ def parse_mjcf(
                     constraint_type="joint",
                     joint1name=joint1_name,
                     joint2name=joint2_name,
-                    # key=name,
-                    enabled=active,
                     polycoef=[float(x) for x in polycoef.split()],
+                    key=common["name"],
+                    enabled=common["active"],
                 )
 
-        for tendon in equality.findall("tendon"):
-            tendon1_name = tendon.attrib.get("tendon1")
-            tendon2_name = tendon.attrib.get("tendon2")
-            active = tendon.attrib.get("active", "true").lower() == "true"
-
-            if tendon1_name and tendon2_name and active:
-                print(f"Tendon constraint: {tendon1_name} to {tendon2_name}")
-                # TODO
-
-        for distance in equality.findall("distance"):
-            geom1_name = distance.attrib.get("geom1")
-            geom2_name = distance.attrib.get("geom2")
-            distance_val = float(distance.attrib.get("distance", "0"))
-            active = distance.attrib.get("active", "true").lower() == "true"
-
-            if geom1_name and geom2_name and active:
-                print(f"Distance constraint: {geom1_name} to {geom2_name} at distance {distance_val}")
-                # TODO
+        # add support for types "tendon" and "flex" once Newton supports them
 
     # -----------------
     # start articulation

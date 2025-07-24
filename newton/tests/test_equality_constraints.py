@@ -22,16 +22,19 @@ import newton
 
 
 class TestEqualityConstraints(unittest.TestCase):
-    def test_connect_constraint(self):
+    def test_multiple_constraints(self):
         self.sim_time = 0.0
         self.frame_dt = 1 / 60
         self.sim_dt = self.frame_dt / 10
 
         builder = newton.ModelBuilder()
 
-        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "4_bar.xml")
         newton.utils.parse_mjcf(
-            mjcf_filename, builder, ignore_names=["floor", "ground"], up_axis="Z", parse_equality=True
+            os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
+            builder,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
+            parse_equality=True,
         )
 
         self.model = builder.finalize()
@@ -47,17 +50,17 @@ class TestEqualityConstraints(unittest.TestCase):
             ncon_per_env=50,
         )
 
-        # self.control = self.model.control()
-        # self.state_0, self.state_1 = self.model.state(), self.model.state()
-        # newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        self.control = self.model.control()
+        self.state_0, self.state_1 = self.model.state(), self.model.state()
+        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # for _ in range(5):
-        #     for _ in range(5):
-        #         self.state_0.clear_forces()
-        #         self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        #         self.state_0, self.state_1 = self.state_1, self.state_0
+        for _ in range(5):
+            for _ in range(5):
+                self.state_0.clear_forces()
+                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
-        #     self.sim_time += self.frame_dt
+            self.sim_time += self.frame_dt
 
         self.assertGreater(
             self.solver.mj_model.eq_type.shape[0], 0
