@@ -553,7 +553,7 @@ def verify_and_correct_inertia(
     # Compute eigenvalues (principal moments) for validation
     try:
         eigenvalues = np.linalg.eigvals(corrected_inertia)
-        
+
         # Check for negative eigenvalues
         if np.any(eigenvalues < 0):
             warnings.warn(
@@ -565,24 +565,26 @@ def verify_and_correct_inertia(
             corrected_inertia += np.eye(3) * (-min_eig + 1e-6)
             eigenvalues = np.linalg.eigvals(corrected_inertia)
             was_corrected = True
-            
+
         # Apply inertia bounds to eigenvalues if specified
         if bound_inertia is not None:
             min_eig = np.min(eigenvalues)
             if min_eig < bound_inertia:
-                warnings.warn(f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2)
+                warnings.warn(
+                    f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2
+                )
                 corrected_inertia += np.eye(3) * (bound_inertia - min_eig)
                 eigenvalues = np.linalg.eigvals(corrected_inertia)
                 was_corrected = True
-                
+
         # Sort eigenvalues to get principal moments
         principal_moments = np.sort(eigenvalues)
         I1, I2, I3 = principal_moments
-        
+
         # Check triangle inequality on principal moments
         # For a physically valid inertia tensor: I1 + I2 >= I3
-        has_violations = (I1 + I2 < I3)
-        
+        has_violations = I1 + I2 < I3
+
     except np.linalg.LinAlgError:
         warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
         was_corrected = True
@@ -592,7 +594,7 @@ def verify_and_correct_inertia(
             trace = 1e-6
         corrected_inertia = np.eye(3) * (trace / 3.0)
         has_violations = False
-        principal_moments = [trace/3.0, trace/3.0, trace/3.0]
+        principal_moments = [trace / 3.0, trace / 3.0, trace / 3.0]
 
     if has_violations:
         warnings.warn(
@@ -607,22 +609,22 @@ def verify_and_correct_inertia(
             if deficit > 0:
                 # Simple approach: add scalar to all eigenvalues to ensure validity
                 # This preserves eigenvectors exactly
-                # We need: (I1 + α) + (I2 + α) >= I3 + α
-                # Which simplifies to: I1 + I2 + α >= I3
-                # So: α >= I3 - I1 - I2 = deficit
+                # We need: (I1 + a) + (I2 + a) >= I3 + a
+                # Which simplifies to: I1 + I2 + a >= I3
+                # So: a >= I3 - I1 - I2 = deficit
                 adjustment = deficit + 1e-6
-                
+
                 # Add scalar*I to shift all eigenvalues equally
                 corrected_inertia = corrected_inertia + np.eye(3) * adjustment
-                
+
                 # Recompute eigenvalues for the warning message
                 new_eigenvalues = np.linalg.eigvals(corrected_inertia)
                 new_eigenvalues = np.sort(new_eigenvalues)
-                
+
                 warnings.warn(
                     f"Balanced principal moments{body_id} from ({I1:.6f}, {I2:.6f}, {I3:.6f}) to "
                     f"({new_eigenvalues[0]:.6f}, {new_eigenvalues[1]:.6f}, {new_eigenvalues[2]:.6f})",
-                    stacklevel=2
+                    stacklevel=2,
                 )
 
     # Final check: ensure the corrected inertia matrix is positive definite
@@ -690,7 +692,7 @@ def validate_and_correct_inertia_kernel(
         Ixx = inertia[0, 0]
         Iyy = inertia[1, 1]
         Izz = inertia[2, 2]
-        
+
         # Ensure diagonal elements meet minimum bound if specified
         if bound_inertia > 0.0:
             if Ixx < bound_inertia:
@@ -702,7 +704,7 @@ def validate_and_correct_inertia_kernel(
             if Izz < bound_inertia:
                 inertia[2, 2] = bound_inertia
                 was_corrected = 1
-        
+
         # Ensure positive trace
         trace = inertia[0, 0] + inertia[1, 1] + inertia[2, 2]
         if trace < 1e-6:
