@@ -21,12 +21,12 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 from newton.examples.example_mujoco import Example
 
 
-class InitializeModel:
-    params = [64, 128]
+class InitializeModelKPI:
+    params = [8192]
 
     number = 1
     repeat = 1
-    rounds = 5
+    rounds = 1
     min_run_count = 1
 
     def setup(self, num_envs):
@@ -37,16 +37,13 @@ class InitializeModel:
         _example = Example(stage_path=None, robot="humanoid", headless=True, num_envs=num_envs, use_cuda_graph=False)
 
 
-class MuJoCoSolverSimulate:
-    params = [4, 8, 16]
-    param_names = ["num_envs"]
-
+class MuJoCoSolverSimulateKPI:
     number = 1
     repeat = 1
-    rounds = 5
+    rounds = 4
     min_run_count = 1
 
-    def setup(self, num_envs):
+    def setup(self):
         self.num_frames = 50
         self.example = Example(
             stage_path=None,
@@ -54,12 +51,12 @@ class MuJoCoSolverSimulate:
             randomize=True,
             headless=True,
             actuation="random",
-            num_envs=num_envs,
+            num_envs=8192,
             use_cuda_graph=True,
         )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, num_envs):
+    def track_simulate(self):
         steps = self.num_frames * self.example.sim_substeps * self.example.num_envs
         start_time = time.time()
         for _ in range(self.num_frames):
