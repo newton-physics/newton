@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import time
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
@@ -23,7 +24,10 @@ from newton.examples.example_mujoco import Example
 class InitializeModel:
     params = [64, 128]
 
-    number = 10
+    number = 1
+    repeat = 1
+    rounds = 5
+    min_run_count = 1
 
     def setup(self, num_envs):
         wp.init()
@@ -34,24 +38,36 @@ class InitializeModel:
 
 
 class MuJoCoSolverSimulate:
-    repeat = 5
-    number = 1
+    params = [4, 8, 16]
+    param_names = ["num_envs"]
 
-    def setup(self):
+    number = 1
+    repeat = 1
+    rounds = 5
+    min_run_count = 1
+
+    def setup(self, num_envs):
         wp.init()
-        self.num_frames = 200
+        self.num_frames = 50
         self.example = Example(
             stage_path=None,
             robot="ant",
             randomize=True,
             headless=True,
             actuation="random",
-            num_envs=8,
+            num_envs=num_envs,
             use_cuda_graph=True,
         )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_simulate(self):
+    def track_simulate(self, num_envs):
+        steps = self.num_frames * self.example.sim_substeps * self.example.num_envs
+        start_time = time.time()
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
+        end_time = time.time()
+
+        return (end_time - start_time) * 1000 / steps
+
+    track_simulate.unit = "ms/env-step"
