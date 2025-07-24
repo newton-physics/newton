@@ -50,7 +50,7 @@ class Style3DModelBuilder(ModelBuilder):
     Example
     -------
 
-    .. testcode::
+    Example code::
 
         import newton
         from newton.solvers import Style3DSolver
