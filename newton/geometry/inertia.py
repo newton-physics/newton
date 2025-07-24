@@ -638,16 +638,14 @@ def verify_and_correct_inertia(
         except np.linalg.LinAlgError:
             warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
             eigenvalues = np.array([0.0, 0.0, 0.0])
-    
+
     # Check final eigenvalues
     if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
         warnings.warn(
             f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
         )
         # As a last resort, make it positive definite by adding a small value to diagonal
-        min_eigenvalue = (
-            np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
-        )
+        min_eigenvalue = np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
         epsilon = abs(min_eigenvalue) + 1e-6
         corrected_inertia[0, 0] += epsilon
         corrected_inertia[1, 1] += epsilon
