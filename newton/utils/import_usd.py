@@ -49,6 +49,7 @@ def parse_usd(
     root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
+    skip_mesh_approximation: bool = False,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -74,6 +75,7 @@ def parse_usd(
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
+        skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -123,6 +125,17 @@ def parse_usd(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
+
+    # mapping from physics:approximation attribute (lower case) to remeshing method
+    approximation_to_remeshing_method = {
+        "convexdecomposition": "coacd",
+        "convexhull": "convex_hull",
+        "boundingsphere": "bounding_sphere",
+        "boundingcube": "bounding_box",
+        "meshSimplification": "quadratic",
+    }
+    # mapping from remeshing method to a list of shape indices
+    remeshing_queue = {}
 
     def get_attribute(prim, name):
         return prim.GetAttribute(name)
@@ -908,12 +921,28 @@ def parse_usd(
                             )
                             continue
                         face_id += count
-                    m = newton.Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                    m = newton.Mesh(
+                        points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=newton.geometry.MESH_MAXHULLVERT
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
                         **shape_params,
                     )
+                    if not skip_mesh_approximation:
+                        approximation = parse_generic(prim, "physics:approximation", None)
+                        if approximation is not None:
+                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                            if remeshing_method is None:
+                                if verbose:
+                                    print(
+                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                    )
+                            else:
+                                if remeshing_method not in remeshing_queue:
+                                    remeshing_queue[remeshing_method] = []
+                                remeshing_queue[remeshing_method].append(shape_id)
+
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Z:
@@ -939,7 +968,12 @@ def parse_usd(
                 if "PhysicsCollisionAPI" not in schemas or not parse_generic(prim, "physics:collisionEnabled", True):
                     # print("no_collision_shapes : ", prim)
                     no_collision_shapes.add(shape_id)
+                    builder.shape_flags[shape_id] &= ~newton.SHAPE_FLAG_COLLIDE_SHAPES
             # print(path_shape_map)
+
+    # approximate meshes
+    for remeshing_method, shape_ids in remeshing_queue.items():
+        builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
 
     # apply collision filters now that we have added all shapes
     for path1, path2 in path_collision_filters:

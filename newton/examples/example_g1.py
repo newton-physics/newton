@@ -14,11 +14,14 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim G1
+# Example G1
 #
 # Shows how to set up a simulation of a rigid-body humanoid articulation
-# from a xml using the newton.ModelBuilder().
+# from a XML using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
+#
+# Users can pick bodies by right-clicking and dragging with the mouse.
+#
 ###########################################################################
 
 import warp as wp
@@ -26,7 +29,6 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
 import newton.utils
 
 
@@ -45,44 +47,14 @@ class Example:
             up_axis="Z",
             enable_self_collisions=False,
         )
-        simplified_meshes = {}
-        try:
-            import tqdm  # noqa: PLC0415
-
-            meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
-        except ImportError:
-            meshes = articulation_builder.shape_geo_src
-        for i, m in enumerate(meshes):
-            if m is None:
-                continue
-            hash_m = hash(m)
-            if hash_m in simplified_meshes:
-                articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
-            else:
-                simplified = newton.geometry.utils.remesh_mesh(
-                    m, visualize=False, method="convex_hull", recompute_inertia=False
-                )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     simplified, visualize=False, target_reduction=None, target_count=32, recompute_inertia=False
-                # )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     simplified, visualize=False, method="convex_hull", recompute_inertia=False
-                # )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     simplified, visualize=False, method="convex_hull", alpha=0.01, recompute_inertia=False
-                # )
-                # simplified = newton.geometry.utils.remesh_mesh(
-                #     m, visualize=False, method="ftetwild", edge_length_fac=0.5, optimize=True, recompute_inertia=False
-                # )
-                articulation_builder.shape_geo_src[i] = simplified
-                simplified_meshes[hash_m] = simplified
+        articulation_builder.approximate_meshes("bounding_box")
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
         builder = newton.ModelBuilder()
         for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 2)
+            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
@@ -90,16 +62,12 @@ class Example:
         fps = 600
         self.frame_dt = 1.0 / fps
 
-        self.sim_substeps = 5
-        self.sim_dt = self.frame_dt / self.sim_substeps
-
         # finalize model
         self.model = builder.finalize()
 
         self.control = self.model.control()
-        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
-        # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_kd=100, joint_attach_ke= 1000)
         if self.use_mujoco:
+            self.sim_substeps = 4
             self.solver = newton.solvers.MuJoCoSolver(
                 self.model,
                 use_mujoco=False,
@@ -111,7 +79,15 @@ class Example:
                 ncon_per_env=150,
             )
         else:
-            self.solver = newton.solvers.XPBDSolver(self.model, iterations=20)
+            self.sim_substeps = 10
+            self.solver = newton.solvers.XPBDSolver(
+                self.model,
+                iterations=20,
+                angular_damping=0.01,
+                joint_angular_compliance=1e-3,
+            )
+
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.renderer = None
 
@@ -120,7 +96,6 @@ class Example:
                 path=stage_path,
                 model=self.model,
                 scaling=1.0,
-                up_axis=str(newton.Axis.Z),
                 screen_width=1280,
                 screen_height=720,
                 camera_pos=(0, 1, 4),
@@ -146,6 +121,8 @@ class Example:
             self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            if self.renderer and hasattr(self.renderer, "apply_picking_force"):
+                self.renderer.apply_picking_force(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
