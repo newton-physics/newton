@@ -828,7 +828,8 @@ def test_cloth_sagging(test, device, solver):
     fixed_points = np.where(np.logical_not(example.model.particle_flags.numpy()))
     # examine that the simulation does not explode
     final_pos = example.state0.particle_q.numpy()
-    test.assertTrue((initial_pos[fixed_points, :] == final_pos[fixed_points, :]).all())
+    test.assertTrue((initial_pos[fixed_points, :] == example.state0.particle_q.numpy()[fixed_points, :]).all())
+    test.assertTrue((initial_pos[fixed_points, :] == example.state1.particle_q.numpy()[fixed_points, :]).all())
     test.assertTrue((final_pos < 1e5).all())
     # examine that the simulation has moved
     test.assertTrue((example.init_pos != final_pos).any())
