@@ -45,7 +45,8 @@ class MuJoCoSolverSimulateKPI:
     min_run_count = 1
 
     def setup(self):
-        self.num_frames = 50
+        wp.init()
+        self.num_frames = 100
         self.example = Example(
             stage_path=None,
             robot="humanoid",

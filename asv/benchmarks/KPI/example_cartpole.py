@@ -34,8 +34,8 @@ class InitializeModelKPI:
         wp.init()
 
     def time_initialize_model(self, num_envs):
-        with wp.ScopedDevice("cpu"):
-            _example = Example(stage_path=None, robot="cartpole", headless=True, num_envs=num_envs)
+        # use_cuda_graph is False to exclude kernel compilation
+        _example = Example(stage_path=None, robot="g1", headless=True, num_envs=num_envs, use_cuda_graph=False)
 
 
 class MuJoCoSolverSimulateKPI:
