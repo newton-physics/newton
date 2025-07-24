@@ -54,8 +54,9 @@ class Style3DModelBuilder(ModelBuilder):
 
         import newton
         from newton.solvers import Style3DSolver
+        from newton.sim import Style3DModelBuilder
 
-        builder = newton.Style3DModelBuilder()
+        builder = Style3DModelBuilder()
 
         builder.add_cloth_grid(
             pos=wp.vec3(-0.5, 2.0, 0.0),
