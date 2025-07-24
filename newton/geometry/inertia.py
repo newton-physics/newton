@@ -579,15 +579,15 @@ def verify_and_correct_inertia(
 
     # Check triangle inequality (principal moments must satisfy these constraints)
     # For a physically valid inertia tensor: Ixx + Iyy >= Izz, Iyy + Izz >= Ixx, Izz + Ixx >= Iyy
-    violations = []
+    has_violations = False
     if Ixx + Iyy < Izz:
-        violations.append((0, 1, 2))  # Ixx + Iyy < Izz
+        has_violations = True  # Ixx + Iyy < Izz
     if Iyy + Izz < Ixx:
-        violations.append((1, 2, 0))  # Iyy + Izz < Ixx
+        has_violations = True  # Iyy + Izz < Ixx
     if Izz + Ixx < Iyy:
-        violations.append((2, 0, 1))  # Izz + Ixx < Iyy
+        has_violations = True  # Izz + Ixx < Iyy
 
-    if violations:
+    if has_violations:
         warnings.warn(
             f"Inertia tensor violates triangle inequality with principal moments ({Ixx}, {Iyy}, {Izz})", stacklevel=2
         )
@@ -640,12 +640,11 @@ def verify_and_correct_inertia(
             warnings.warn("Corrected inertia matrix is not positive definite, this should not happen", stacklevel=2)
             # As a last resort, make it positive definite by adding a small value to diagonal
             min_eigenvalue = np.min(eigenvalues)
-            if min_eigenvalue <= 0:
-                epsilon = abs(min_eigenvalue) + 1e-6
-                corrected_inertia[0, 0] += epsilon
-                corrected_inertia[1, 1] += epsilon
-                corrected_inertia[2, 2] += epsilon
-                was_corrected = True
+            epsilon = abs(min_eigenvalue) + 1e-6
+            corrected_inertia[0, 0] += epsilon
+            corrected_inertia[1, 1] += epsilon
+            corrected_inertia[2, 2] += epsilon
+            was_corrected = True
     except np.linalg.LinAlgError:
         warnings.warn("Failed to compute eigenvalues of inertia matrix", stacklevel=2)
 
