@@ -48,6 +48,7 @@ class MuJoCoSolverSimulate:
     min_run_count = 1
 
     def setup(self, num_envs):
+        wp.init()
         self.num_frames = 50
         self.example = Example(
             stage_path=None,
