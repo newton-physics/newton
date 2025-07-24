@@ -20,16 +20,21 @@
 # from a URDF using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
 #
+# Users can pick bodies by right-clicking and dragging with the mouse.
+#
 ###########################################################################
-
 
 import numpy as np
 import warp as wp
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples
 import newton.sim
 import newton.utils
+from newton.utils.recorder import BasicRecorder
+from newton.utils.recorder_gui import RecorderImGuiManager
 
 
 class Example:
@@ -81,9 +86,14 @@ class Example:
         # self.solver = newton.solvers.MuJoCoSolver(self.model)
 
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
+            self.renderer = newton.utils.SimRendererOpenGL(self.model, path=stage_path)
+            self.recorder = BasicRecorder()
+            self.gui = RecorderImGuiManager(self.renderer, self.recorder, self)
+            self.renderer.render_2d_callbacks.append(self.gui.render_frame)
         else:
             self.renderer = None
+            self.recorder = None
+            self.gui = None
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -101,14 +111,34 @@ class Example:
         else:
             self.graph = None
 
+    @property
+    def paused(self):
+        if self.renderer:
+            return self.renderer.paused
+        return False
+
+    @paused.setter
+    def paused(self, value):
+        if self.renderer:
+            if self.renderer.paused == value:
+                return
+            self.renderer.paused = value
+            if self.gui:
+                self.gui._clear_contact_points()
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            if self.renderer and hasattr(self.renderer, "apply_picking_force"):
+                self.renderer.apply_picking_force(self.state_0)
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        if self.paused:
+            return
+
         with wp.ScopedTimer("step"):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
@@ -116,14 +146,26 @@ class Example:
                 self.simulate()
         self.sim_time += self.frame_dt
 
+        if self.recorder:
+            if self.renderer:
+                self.renderer.compute_contact_rendering_points(self.state_0.body_q, self.contacts)
+                contact_points = [self.renderer.contact_points0, self.renderer.contact_points1]
+                self.recorder.record(self.state_0.body_q, contact_points)
+            else:
+                self.recorder.record(self.state_0.body_q)
+
     def render(self):
         if self.renderer is None:
             return
 
         with wp.ScopedTimer("render"):
             self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.render_contacts(self.state_0, self.contacts, contact_point_radius=1e-2)
+            if not self.paused:
+                self.renderer.render(self.state_0)
+                self.renderer.render_computed_contacts(contact_point_radius=1e-2)
+            else:
+                # in paused mode, the GUI will handle rendering from the recorder
+                pass
             self.renderer.end_frame()
 
 
@@ -146,9 +188,14 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
         if example.renderer:
-            example.renderer.save()
+            while example.renderer.is_running():
+                example.step()
+                example.render()
+        else:
+            for _ in range(args.num_frames):
+                example.step()
+                example.render()
+
+        # if example.renderer:
+        #     example.renderer.save()

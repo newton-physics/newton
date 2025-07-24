@@ -33,10 +33,13 @@ def integrate_particles(
     v_new: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
+    x0 = x[tid]
+
     if (particle_flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
+        x_new[tid] = x0
+        v_new[tid] = wp.vec3(0.0)
         return
 
-    x0 = x[tid]
     v0 = v[tid]
     f0 = f[tid]
 
@@ -266,7 +269,7 @@ class SolverBase:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        ``NOTIFY_FLAG_*`` constants defined in :mod:`newton.core.types`.
+        ``NOTIFY_FLAG_*`` constants defined in :mod:`newton.sim.flags`.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its

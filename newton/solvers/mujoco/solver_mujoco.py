@@ -499,7 +499,6 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
-    joint_f: wp.array(dtype=wp.float32),
     axis_mode: wp.array(dtype=wp.int32),
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_env: int,
@@ -512,7 +511,7 @@ def apply_mjc_control_kernel(
         if axis_mode[axisid] != newton.JOINT_MODE_NONE:
             mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
         else:
-            mj_act[worldid, actuator_id] = joint_f[worldid * axes_per_env + axisid]
+            mj_act[worldid, actuator_id] = 0.0
 
 
 @wp.kernel
@@ -1018,12 +1017,46 @@ class MuJoCoSolver(SolverBase):
 
     .. code-block:: python
 
-        solver = newton.MuJoCoSolver(model)
+        solver = newton.solvers.MuJoCoSolver(model)
 
         # simulation loop
         for i in range(100):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
+
+    Debugging
+    ---------
+
+    To debug the MuJoCoSolver, you can save the MuJoCo model that is created from the :class:`newton.Model` in the constructor of the MuJoCoSolver:
+
+    .. code-block:: python
+
+        solver = newton.solvers.MuJoCoSolver(model, save_to_mjcf="model.xml")
+
+    This will save the MuJoCo model as an MJCF file, which can be opened in the MuJoCo simulator.
+
+    It is also possible to visualize the simulation running in the MuJoCoSolver through MuJoCo's own viewer.
+    This may help to debug the simulation and see how the MuJoCo model looks like when it is created from the Newton model.
+
+    .. code-block:: python
+
+        import mujoco
+        import mujoco.viewer
+        import mujoco_warp
+
+        solver = newton.solvers.MuJoCoSolver(model)
+        mjm, mjd = solver.mj_model, solver.mj_data
+        m, d = solver.mjw_model, solver.mjw_data
+        viewer = mujoco.viewer.launch_passive(mjm, mjd)
+
+        for _ in range(num_frames):
+            # step the solver
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+            if not solver.use_mujoco:
+                mujoco_warp.get_data_into(mjd, mjm, d)
+            viewer.sync()
     """
 
     def __init__(
@@ -1232,7 +1265,6 @@ class MuJoCoSolver(SolverBase):
                 dim=(nworld, axes_per_env),
                 inputs=[
                     control.joint_target,
-                    control.joint_f,
                     model.joint_dof_mode,
                     model.mjc_axis_to_actuator,  # pyright: ignore[reportAttributeAccessIssue]
                     axes_per_env,

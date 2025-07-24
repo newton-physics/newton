@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
+
+wp.config.enable_backward = False
 
 import newton
 import newton.examples

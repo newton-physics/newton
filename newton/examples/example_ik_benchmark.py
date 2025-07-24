@@ -25,6 +25,8 @@ from typing import Callable
 import numpy as np
 import warp as wp
 
+wp.config.enable_backward = False
+
 import newton
 import newton.sim.ik as ik
 import newton.utils
@@ -396,7 +398,7 @@ class Example:
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "--robot",
         type=str,
@@ -404,7 +406,7 @@ def main():
         choices=ROBOTS.keys(),
         help="Robot model to benchmark",
     )
-    args = parser.parse_args()
+    args = parser.parse_known_args()[0]
 
     example = Example(robot=args.robot, repeats=3)
     example.run()
