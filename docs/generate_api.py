@@ -96,6 +96,7 @@ def write_module_page(mod_name: str) -> None:
 
         if inspect.ismodule(attr):
             modules.append(name)
+            continue
 
         # ------------------------------------------------------------------
         # Everything else → functions section
