@@ -727,8 +727,7 @@ def validate_and_correct_inertia_kernel(
 
     # Update inverse inertia
     if mass > 0.0:
-        inv_inertia = wp.inverse(inertia)
-        body_inv_inertia[tid] = inv_inertia
+        body_inv_inertia[tid] = wp.inverse(inertia)
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
