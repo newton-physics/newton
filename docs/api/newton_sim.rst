@@ -39,7 +39,6 @@ newton.sim
    eval_fk
    eval_ik
    get_joint_dof_count
-   ik
    plot_graph
 
 .. rubric:: Constants
