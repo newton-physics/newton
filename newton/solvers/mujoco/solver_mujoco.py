@@ -1655,13 +1655,13 @@ class MuJoCoSolver(SolverBase):
 
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
         eq_constraint_body2 = model.equality_constraint_body2.numpy()
-        eq_constraint_anchor1 = model.equality_constraint_anchor1.numpy()
-        # eq_constraint_anchor2 = model.equality_constraint_anchor2.numpy()
-        # eq_constraint_distance = model.equality_constraint_distance.numpy()
+        eq_constraint_anchor = model.equality_constraint_anchor.numpy()
+        eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
+        eq_constraint_relpose = model.equality_constraint_relpose.numpy()
         eq_constraint_joint1 = model.equality_constraint_joint1.numpy()
         eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
         eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
-        # eq_constraint_enabled = model.equality_constraint_enabled.numpy()
+        eq_constraint_enabled = model.equality_constraint_enabled.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -2054,22 +2054,29 @@ class MuJoCoSolver(SolverBase):
         for i, typ in enumerate(model.equality_constraint_type):
             if typ == "connect":
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq.active = eq_constraint_enabled[i]
                 eq.name1 = model.body_key[eq_constraint_body1[i]]
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
-                eq.type = mujoco.mjtEq.mjEQ_CONNECT
-                eq.active = 1
-                eq.data[0:3] = eq_constraint_anchor1[i]
+                eq.data[0:3] = eq_constraint_anchor[i]
 
             elif typ == "joint":
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
-
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+                eq.active = eq_constraint_enabled[i]
                 eq.name1 = model.joint_key[eq_constraint_joint1[i]]
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
+                eq.data[0:5] = eq_constraint_polycoef[i]
 
-                eq.type = mujoco.mjtEq.mjEQ_JOINT
-
-                eq.active = 1
-                eq.data[0 : len(eq_constraint_polycoef[i])] = eq_constraint_polycoef[i]
+            elif typ == "weld":
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_WELD
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.data[0:3] = eq_constraint_anchor[i]
+                eq.data[3:10] = eq_constraint_relpose[i]
+                eq.data[10] = eq_constraint_torquescale[i]
 
         self.mj_model = spec.compile()
 

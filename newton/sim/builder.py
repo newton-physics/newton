@@ -448,9 +448,9 @@ class ModelBuilder:
         self.equality_constraint_type = []
         self.equality_constraint_body1 = []
         self.equality_constraint_body2 = []
-        self.equality_constraint_anchor1 = []
-        self.equality_constraint_anchor2 = []
-        self.equality_constraint_distance = []
+        self.equality_constraint_anchor = []
+        self.equality_constraint_relpose = []
+        self.equality_constraint_torquescale = []
         self.equality_constraint_joint1 = []
         self.equality_constraint_joint2 = []
         self.equality_constraint_polycoef = []
@@ -714,14 +714,16 @@ class ModelBuilder:
             "equality_constraint_type",
             "equality_constraint_body1",
             "equality_constraint_body2",
-            "equality_constraint_anchor1",
-            "equality_constraint_anchor2",
-            "equality_constraint_distance",
+            "equality_constraint_anchor",
+            "equality_constraint_torquescale",
+            "equality_constraint_relpose",
             "equality_constraint_joint1",
             "equality_constraint_joint2",
             "equality_constraint_polycoef",
             "equality_constraint_key",
             "equality_constraint_enabled",
+            # "equality_constraint_solref",
+            # "equality_constraint_solimp",
         ]
 
         for attr in more_builder_attrs:
@@ -1315,9 +1317,9 @@ class ModelBuilder:
         constraint_type: str,
         body1name: str | None = None,
         body2name: str | None = None,
-        anchor1: Vec3 | None = None,
-        anchor2: Vec3 | None = None,
-        distance: float | None = None,
+        anchor: Vec3 | None = None,
+        torquescale: float | None = None,
+        relpose: list[float] | None = None,
         joint1name: str | None = None,
         joint2name: str | None = None,
         polycoef: list[float] | None = None,
@@ -1327,12 +1329,12 @@ class ModelBuilder:
         """Adds a Mujoco equality constraint.
 
         Args:
-            constraint_type: Type of constraint ('connect', 'weld', 'joint', 'tendon', 'distance')
-            body1name: First body for body-based constraints
-            body2name: Second body for body-based constraints
-            anchor1: Anchor point on body1 (for connect constraints)
-            anchor2: Anchor point on body2 (for connect constraints)
-            distance: Target distance (for distance constraints)
+            constraint_type: Type of constraint ('connect', 'weld', 'joint')
+            body1name: First body participating in the constraint
+            body2name: Second body participating in the constraint
+            anchor: Anchor point on body1
+            torquescale: Scales the angular residual for weld
+            relpose: Relative pose of body2 for weld
             joint1name: First joint for joint coupling
             joint2name: Second joint for joint coupling
             polycoef: Polynomial coefficients for joint coupling
@@ -1343,20 +1345,20 @@ class ModelBuilder:
             Constraint index
         """
 
-        body1 = self.body_key.index(body1name) if body1name else -1
-        body2 = self.body_key.index(body2name) if body2name else -1
-        joint1 = self.joint_key.index(joint1name) if joint1name else -1
-        joint2 = self.joint_key.index(joint2name) if joint2name else -1
+        body1 = self.body_key.index(body1name) if body1name and body1name in self.body_key else -1
+        body2 = self.body_key.index(body2name) if body2name and body2name in self.body_key else -1
+        joint1 = self.joint_key.index(joint1name) if joint1name and joint1name in self.joint_key else -1
+        joint2 = self.joint_key.index(joint2name) if joint2name and joint2name in self.joint_key else -1
 
         self.equality_constraint_type.append(constraint_type)
         self.equality_constraint_body1.append(body1)
         self.equality_constraint_body2.append(body2)
-        self.equality_constraint_anchor1.append(anchor1 or wp.vec3())
-        self.equality_constraint_anchor2.append(anchor2 or wp.vec3())
-        self.equality_constraint_distance.append(distance or 0.0)
+        self.equality_constraint_anchor.append(anchor or wp.vec3())
+        self.equality_constraint_torquescale.append(torquescale)
+        self.equality_constraint_relpose.append(relpose or [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.equality_constraint_joint1.append(joint1)
         self.equality_constraint_joint2.append(joint2)
-        self.equality_constraint_polycoef.append(polycoef or [0.0, 1.0])
+        self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
         self.equality_constraint_key.append(key)
         self.equality_constraint_enabled.append(enabled)
 
@@ -3748,9 +3750,9 @@ class ModelBuilder:
             m.equality_constraint_type = self.equality_constraint_type
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
             m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
-            m.equality_constraint_anchor1 = wp.array(self.equality_constraint_anchor1, dtype=wp.vec3)
-            m.equality_constraint_anchor2 = wp.array(self.equality_constraint_anchor2, dtype=wp.vec3)
-            m.equality_constraint_distance = wp.array(self.equality_constraint_distance, dtype=wp.float32)
+            m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
+            m.equality_constraint_torquescale = wp.array(self.equality_constraint_torquescale, dtype=wp.float32)
+            m.equality_constraint_relpose = wp.array(self.equality_constraint_relpose, dtype=wp.float32)
             m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
             m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
             m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
