@@ -28,6 +28,8 @@ from .joints import (
 
 
 class JacobianMode(Enum):
+    """Jacobian back-end selection for :class:`IKSolver`."""
+
     AUTODIFF = "autodiff"
     ANALYTIC = "analytic"
     MIXED = "mixed"
@@ -81,7 +83,7 @@ class IKSolver:
 
 
     Supported joint types
-    ------
+    ---------------------
     ANALYTIC and MIXED modes currently only support models with revolute, prismatic, and fixed joints.
     For more complex joint types (e.g., free, ball, D6), use AUTODIFF mode.
     Velocity-space optimization is planned for broader analytic support in future updates.

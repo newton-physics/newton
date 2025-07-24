@@ -114,6 +114,9 @@ autodoc_default_options = {
     "autosummary": True,
 }
 
+# fixes errors with Enum docstrings
+autodoc_inherit_docstrings = False
+
 # Mock imports for modules that are not installed by default
 autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
 

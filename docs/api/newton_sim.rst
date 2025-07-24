@@ -34,12 +34,12 @@ newton.sim
    :toctree: _generated
    :signatures: long
 
-   ik
    color_graph
    count_rigid_contact_points
    eval_fk
    eval_ik
    get_joint_dof_count
+   ik
    plot_graph
 
 .. rubric:: Constants
