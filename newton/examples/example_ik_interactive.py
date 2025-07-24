@@ -74,11 +74,13 @@ class Example:
         num_envs: int = 4,
         tie_targets: bool = True,
         ik_iters: int = 20,
+        floating: bool = False,
     ):
         self.stage_path = stage_path
         self.num_envs = num_envs
         self.tie_targets = tie_targets
         self.ik_iters = ik_iters
+        self.floating = floating
 
         # timings ------------------------------------------------------
         self.fps = 60
@@ -88,19 +90,19 @@ class Example:
         # model(s) -----------------------------------------------------
         (
             self.model,
-            self.num_links,
+            self.body_count,
             self.ee_link_indices,
             self.ee_link_offsets,
-            self.num_coords,
+            self.num_dofs,
             self.env_offsets,
-        ) = self._build_model(num_envs)
+        ) = self._build_model(num_envs, self.floating)
 
         # dedicated 1-env model for IK
-        self.singleton_model, *_ = self._build_model(1)
+        self.singleton_model, *_ = self._build_model(1, self.floating)
 
         # simulation state --------------------------------------------
         self.state = self.model.state()
-        self.joint_q = wp.zeros((num_envs, self.singleton_model.joint_coord_count), dtype=wp.float32)
+        self.joint_q = wp.array(self.model.joint_q, shape=(num_envs, self.singleton_model.joint_coord_count), copy=True)
 
         # target buffers ----------------------------------------------
         self.target_positions, self.target_rotations = self._initialize_targets()
@@ -117,7 +119,7 @@ class Example:
             n_problems=num_envs,
             total_residuals=total_residuals,
             residual_offset=len(self.END_EFFECTOR_NAMES) * 3 * 2,
-            weight=0.1,
+            weight=1.0,
         )
 
         # IK solver ----------------------------------------------------
@@ -149,8 +151,8 @@ class Example:
     # -----------------------------------------------------------------
 
     @staticmethod
-    def _build_model(num_envs: int):
-        """Return (`model`, `num_links`, `ee_indices`, `ee_offsets`, `n_coords`, `env_offsets`)."""
+    def _build_model(num_envs: int, floating: bool):
+        """Return (`model`, `body_count`, `ee_indices`, `ee_offsets`, `n_dofs`, `env_offsets`)."""
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_shape_cfg.density = 100.0
         articulation_builder.default_joint_cfg.armature = 0.1
@@ -159,7 +161,7 @@ class Example:
         newton.utils.parse_mjcf(
             newton.utils.download_asset("h1_description") / "mjcf/h1_with_hand.xml",
             articulation_builder,
-            floating=False,
+            floating=floating,
         )
 
         # initial joint angles (same as original script) --------------
@@ -205,17 +207,23 @@ class Example:
             37,
             38,
         ]
-        for joint_idx, value in zip(joint_mapping, initial_joint_positions):
-            articulation_builder.joint_q[joint_idx - 7] = value
 
-        articulation_builder.joint_q[22 - 7] = 0.0  # left_hand_joint
-        articulation_builder.joint_q[39 - 7] = 0.0  # right_hand_joint
+        joint_q_offset = 0 if floating else -7
+        for joint_idx, value in zip(joint_mapping, initial_joint_positions):
+            articulation_builder.joint_q[joint_idx + joint_q_offset] = value
+
+        articulation_builder.joint_q[22 + joint_q_offset] = 0.0  # left_hand_joint
+        articulation_builder.joint_q[39 + joint_q_offset] = 0.0  # right_hand_joint
 
         # zero all finger joints
         for i in range(23, 35):
-            articulation_builder.joint_q[i - 7] = 0.0
+            articulation_builder.joint_q[i + joint_q_offset] = 0.0
         for i in range(40, 52):
-            articulation_builder.joint_q[i - 7] = 0.0
+            articulation_builder.joint_q[i + joint_q_offset] = 0.0
+
+        if floating:
+            for i in range(len(articulation_builder.joint_q)):
+                articulation_builder.joint_q[i] += 1e-3
 
         # wrap into batched ModelBuilder ------------------------------
         builder = newton.ModelBuilder()
@@ -234,10 +242,10 @@ class Example:
 
         return (
             model,
-            len(articulation_builder.body_q),
+            articulation_builder.body_count,
             ee_link_indices,
             ee_link_offsets,
-            len(articulation_builder.joint_q),
+            articulation_builder.joint_dof_count,
             env_offsets,
         )
 
@@ -246,7 +254,7 @@ class Example:
     # -----------------------------------------------------------------
 
     def _initialize_targets(self):
-        """Compute initial local-frame targets from current FK."""
+        """Compute initial targets from current FK. Local-frame for fixed base, world-frame for floating."""
         eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state, None)
 
         num_ees = len(self.END_EFFECTOR_NAMES)
@@ -255,18 +263,23 @@ class Example:
 
         body_q_np = self.state.body_q.numpy()
         for env in range(self.num_envs):
-            base = env * self.num_links
+            base = env * self.body_count
             for ee_idx, link_idx in enumerate(self.ee_link_indices):
                 tf = body_q_np[base + link_idx]
                 world_pos = wp.transform_point(wp.transform(tf[:3], wp.quat(*tf[3:])), self.ee_link_offsets[ee_idx])
-                tgt_pos[env, ee_idx] = np.array(world_pos) - self.env_offsets[env]  # ← LOCAL!
+
+                if self.floating:
+                    tgt_pos[env, ee_idx] = np.array(world_pos)
+                else:
+                    tgt_pos[env, ee_idx] = np.array(world_pos) - self.env_offsets[env]  # Convert to local
+
                 quat = tf[3:7] / np.linalg.norm(tf[3:7])
                 tgt_rot[env, ee_idx] = quat
         return tgt_pos, tgt_rot
 
     def _create_objectives(self):
         num_ees = len(self.END_EFFECTOR_NAMES)
-        total_residuals = num_ees * 3 * 2 + self.num_coords
+        total_residuals = num_ees * 3 * 2 + self.num_dofs
 
         position_objectives, rotation_objectives = [], []
         self.position_target_arrays, self.rotation_target_arrays = [], []
@@ -324,7 +337,8 @@ class Example:
 
         if self.tie_targets:
             for ee_idx in range(len(self.END_EFFECTOR_NAMES)):
-                world_pos = self._local_to_world(0, self.target_positions[0, ee_idx])
+                target_pos = self.target_positions[0, ee_idx]
+                world_pos = target_pos if self.floating else self._local_to_world(0, target_pos)
                 self.gizmo_system.create_target(
                     ee_idx,
                     world_pos,
@@ -335,7 +349,8 @@ class Example:
             for env in range(self.num_envs):
                 for ee_idx in range(len(self.END_EFFECTOR_NAMES)):
                     gid = env * len(self.END_EFFECTOR_NAMES) + ee_idx
-                    world_pos = self._local_to_world(env, self.target_positions[env, ee_idx])
+                    target_pos = self.target_positions[env, ee_idx]
+                    world_pos = target_pos if self.floating else self._local_to_world(env, target_pos)
                     self.gizmo_system.create_target(
                         gid,
                         world_pos,
@@ -381,7 +396,13 @@ class Example:
     def _on_position_dragged(self, global_id: int, new_world_pos: np.ndarray):
         env = global_id // len(self.END_EFFECTOR_NAMES)
         ee = global_id % len(self.END_EFFECTOR_NAMES)
-        local_pos = new_world_pos - self.env_offsets[env]
+
+        if self.floating:
+            # Targets are in world space
+            new_target_pos = new_world_pos
+        else:
+            # Targets are in local space, convert from world
+            new_target_pos = new_world_pos - self.env_offsets[env]
 
         if self.tie_targets:
             if not self._is_dragging_pos or self._last_drag_id != global_id:
@@ -389,14 +410,14 @@ class Example:
                 self._is_dragging_pos = True
                 self._last_drag_id = global_id
 
-            delta = local_pos - self._drag_start_positions[env, ee]
+            delta = new_target_pos - self._drag_start_positions[env, ee]
             new_local_targets = self._drag_start_positions[:, ee] + delta
             self.target_positions[:, ee] = new_local_targets
             self.position_objectives[ee].set_target_positions(wp.array(new_local_targets, dtype=wp.vec3))
             self._is_dragging_pos = False
         else:
-            self.target_positions[env, ee] = local_pos
-            self.position_objectives[ee].set_target_position(env, wp.vec3(*local_pos))
+            self.target_positions[env, ee] = new_target_pos
+            self.position_objectives[ee].set_target_position(env, wp.vec3(*new_target_pos))
 
         self._solve()
 
@@ -477,8 +498,7 @@ class Example:
 
     def run(self):
         # initial solve so joints match targets before first frame
-        if not self.use_cuda_graph:
-            self.ik_solver.solve(iterations=self.ik_iters)
+        self._solve()
 
         while self.renderer.is_running():
             self.sim_time += self.frame_dt
@@ -514,6 +534,12 @@ def main():
         default=False,
         help="Tie all envs together so dragging one EE moves the others.",
     )
+    parser.add_argument(
+        "--floating",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use a floating 6-dof base for the robot model.",
+    )
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
@@ -521,6 +547,7 @@ def main():
             stage_path=args.stage_path,
             num_envs=args.num_envs,
             tie_targets=args.tie_targets,
+            floating=args.floating,
         )
         example.run()
 
