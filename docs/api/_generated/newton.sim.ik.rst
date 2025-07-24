@@ -8,9 +8,7 @@
 
    .. autosummary::
    
-      Enum
       IKSolver
-      JacobianMode
       JointLimitObjective
       PositionObjective
       RotationObjective
