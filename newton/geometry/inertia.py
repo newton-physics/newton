@@ -562,8 +562,9 @@ def verify_and_correct_inertia(
             )
             # Make positive definite by adjusting eigenvalues
             min_eig = np.min(eigenvalues)
-            corrected_inertia += np.eye(3) * (-min_eig + 1e-6)
-            eigenvalues = np.linalg.eigvals(corrected_inertia)
+            adjustment = -min_eig + 1e-6
+            corrected_inertia += np.eye(3) * adjustment
+            eigenvalues += adjustment
             was_corrected = True
 
         # Apply inertia bounds to eigenvalues if specified
@@ -573,8 +574,9 @@ def verify_and_correct_inertia(
                 warnings.warn(
                     f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2
                 )
-                corrected_inertia += np.eye(3) * (bound_inertia - min_eig)
-                eigenvalues = np.linalg.eigvals(corrected_inertia)
+                adjustment = bound_inertia - min_eig
+                corrected_inertia += np.eye(3) * adjustment
+                eigenvalues += adjustment
                 was_corrected = True
 
         # Sort eigenvalues to get principal moments
@@ -617,34 +619,40 @@ def verify_and_correct_inertia(
                 corrected_inertia = corrected_inertia + np.eye(3) * adjustment
                 was_corrected = True
 
-                # Recompute eigenvalues for the warning message
-                new_eigenvalues = np.linalg.eigvals(corrected_inertia)
-                new_eigenvalues = np.sort(new_eigenvalues)
+                # Update principal moments
+                new_I1 = I1 + adjustment
+                new_I2 = I2 + adjustment
+                new_I3 = I3 + adjustment
 
                 warnings.warn(
                     f"Balanced principal moments{body_id} from ({I1:.6f}, {I2:.6f}, {I3:.6f}) to "
-                    f"({new_eigenvalues[0]:.6f}, {new_eigenvalues[1]:.6f}, {new_eigenvalues[2]:.6f})",
+                    f"({new_I1:.6f}, {new_I2:.6f}, {new_I3:.6f})",
                     stacklevel=2,
                 )
 
     # Final check: ensure the corrected inertia matrix is positive definite
-    try:
-        eigenvalues = np.linalg.eigvals(corrected_inertia)
-        if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
-            warnings.warn(
-                f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
-            )
-            # As a last resort, make it positive definite by adding a small value to diagonal
-            min_eigenvalue = (
-                np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
-            )
-            epsilon = abs(min_eigenvalue) + 1e-6
-            corrected_inertia[0, 0] += epsilon
-            corrected_inertia[1, 1] += epsilon
-            corrected_inertia[2, 2] += epsilon
-            was_corrected = True
-    except np.linalg.LinAlgError:
-        warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
+    if has_violations and balance_inertia:
+        # Need to recompute after balancing since we modified the matrix
+        try:
+            eigenvalues = np.linalg.eigvals(corrected_inertia)
+        except np.linalg.LinAlgError:
+            warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
+            eigenvalues = np.array([0.0, 0.0, 0.0])
+    
+    # Check final eigenvalues
+    if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
+        warnings.warn(
+            f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
+        )
+        # As a last resort, make it positive definite by adding a small value to diagonal
+        min_eigenvalue = (
+            np.min(eigenvalues[np.isfinite(eigenvalues)]) if np.any(np.isfinite(eigenvalues)) else -1e-6
+        )
+        epsilon = abs(min_eigenvalue) + 1e-6
+        corrected_inertia[0, 0] += epsilon
+        corrected_inertia[1, 1] += epsilon
+        corrected_inertia[2, 2] += epsilon
+        was_corrected = True
 
     return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
