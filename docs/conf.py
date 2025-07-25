@@ -4,8 +4,17 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import datetime
+import importlib
+import inspect
+import os
 import sys
 from pathlib import Path
+
+# Determine the Git version/tag from CI environment variables.
+# 1. Check for GitHub Actions' variable.
+# 2. Check for GitLab CI's variable.
+# 3. Fallback to 'main' for local builds.
+github_version = os.environ.get("GITHUB_REF_NAME") or os.environ.get("CI_COMMIT_REF_NAME") or "main"
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -52,11 +61,13 @@ extensions = [
     "sphinx.ext.githubpages",
     "sphinx.ext.doctest",  # Test code snippets in docs
     "sphinx.ext.mathjax",  # Math rendering support
+    "sphinx.ext.linkcode",  # Add GitHub source links to documentation
     "sphinxcontrib.mermaid",
     "sphinx_copybutton",
     "sphinx_design",
     "sphinx_tabs.tabs",
     "autodoc_filter",
+    "autodoc_wpfunc",
 ]
 
 templates_path = ["_templates"]
@@ -73,6 +84,10 @@ intersphinx_mapping = {
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
+}
+
+extlinks = {
+    "github": (f"https://github.com/newton-physics/newton/blob/{github_version}/%s", "%s"),
 }
 
 doctest_global_setup = """
@@ -99,17 +114,25 @@ autodoc_preserve_defaults = True
 
 autodoc_typehints_description_target = "documented"
 
-
 autodoc_default_options = {
     "members": True,
     "member-order": "bysource",
     "special-members": "__init__",
     "undoc-members": False,
     "exclude-members": "__weakref__",
+    "imported-members": True,
+    "autosummary": True,
 }
+
+# fixes errors with Enum docstrings
+autodoc_inherit_docstrings = False
 
 # Mock imports for modules that are not installed by default
 autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
+
+autosummary_generate = True
+autosummary_ignore_module_all = False
+autosummary_imported_members = True
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
@@ -128,10 +151,10 @@ html_theme_options = {
     # "navbar_end": ["search-button"],
     # Navigation configuration
     # "font_size": "14px",  # or smaller
-    "navigation_depth": 4,
-    "show_nav_level": 2,
+    "navigation_depth": 1,
+    "show_nav_level": 1,
     "show_toc_level": 2,
-    "collapse_navigation": True,
+    "collapse_navigation": False,
     # Show the indices in the sidebar
     "show_prev_next": False,
     "use_edit_page_button": False,
@@ -172,3 +195,90 @@ mathjax3_config = {
         "ignoreHtmlClass": "annotation",
     },
 }
+
+# -- Linkcode configuration --------------------------------------------------
+# create back links to the Github Python source file
+# called automatically by sphinx.ext.linkcode
+
+
+def linkcode_resolve(domain, info):
+    """
+    Determine the URL corresponding to Python object using introspection
+    """
+
+    if domain != "py":
+        return None
+    if not info["module"]:
+        return None
+
+    module_name = info["module"]
+
+    # Only handle newton modules
+    if not module_name.startswith("newton"):
+        return None
+
+    try:
+        # Import the module and get the object
+        module = importlib.import_module(module_name)
+
+        if "fullname" in info:
+            # Get the specific object (function, class, etc.)
+            obj_name = info["fullname"]
+            if hasattr(module, obj_name):
+                obj = getattr(module, obj_name)
+            else:
+                return None
+        else:
+            # No specific object, link to the module itself
+            obj = module
+
+        # Get the file where the object is actually defined
+        source_file = None
+        line_number = None
+
+        try:
+            source_file = inspect.getfile(obj)
+            # Get line number if possible
+            try:
+                _, line_number = inspect.getsourcelines(obj)
+            except (TypeError, OSError):
+                pass
+        except (TypeError, OSError):
+            # Check if it's a Warp function with wrapped original function
+            if hasattr(obj, "func") and callable(obj.func):
+                try:
+                    original_func = obj.func
+                    source_file = inspect.getfile(original_func)
+                    try:
+                        _, line_number = inspect.getsourcelines(original_func)
+                    except (TypeError, OSError):
+                        pass
+                except (TypeError, OSError):
+                    pass
+
+            # If still no source file, fall back to the module file
+            if not source_file:
+                try:
+                    source_file = inspect.getfile(module)
+                except (TypeError, OSError):
+                    return None
+
+        if not source_file:
+            return None
+
+        # Convert absolute path to relative path from project root
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        rel_path = os.path.relpath(source_file, project_root)
+
+        # Normalize path separators for URLs
+        rel_path = rel_path.replace("\\", "/")
+
+        # Add line fragment if we have a line number
+        line_fragment = f"#L{line_number}" if line_number else ""
+
+        # Construct GitHub URL
+        github_base = "https://github.com/newton-physics/newton"
+        return f"{github_base}/blob/{github_version}/{rel_path}{line_fragment}"
+
+    except (ImportError, AttributeError, TypeError):
+        return None
