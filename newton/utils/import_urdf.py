@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 import numpy as np
 import warp as wp
 
+import newton
 from newton.core import Axis, AxisType, quat_between_axes
 from newton.core.types import Transform
 from newton.geometry import Mesh
@@ -214,7 +215,7 @@ def parse_urdf(
                     for m_geom in m.geometry.values():
                         m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(m_vertices, m_faces)
+                        m_mesh = Mesh(m_vertices, m_faces, maxhullvert=newton.geometry.MESH_MAXHULLVERT)
                         s = builder.add_shape_mesh(
                             body=link,
                             xform=tf,
@@ -226,7 +227,7 @@ def parse_urdf(
                     # a single mesh
                     m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_mesh = Mesh(m_vertices, m_faces)
+                    m_mesh = Mesh(m_vertices, m_faces, maxhullvert=newton.geometry.MESH_MAXHULLVERT)
                     s = builder.add_shape_mesh(
                         body=link,
                         xform=tf,
