@@ -766,7 +766,8 @@ def create_soft_contacts(
 # region Rigid body collision detection
 
 
-@wp.kernel(enable_backward=False)
+# NOTE: Kernel is in a unique module to speed up cold-start ModelBuilder.finalize() time
+@wp.kernel(enable_backward=False, module="unique")
 def count_contact_points(
     contact_pairs: wp.array(dtype=wp.vec2i),
     shape_type: wp.array(dtype=int),

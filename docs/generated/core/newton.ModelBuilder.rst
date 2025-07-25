@@ -49,6 +49,7 @@
       ~ModelBuilder.add_tetrahedron
       ~ModelBuilder.add_triangle
       ~ModelBuilder.add_triangles
+      ~ModelBuilder.approximate_meshes
       ~ModelBuilder.collapse_fixed_joints
       ~ModelBuilder.color
       ~ModelBuilder.finalize
