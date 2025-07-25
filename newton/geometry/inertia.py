@@ -702,8 +702,8 @@ def validate_and_correct_inertia_kernel(
             I1, I2 = I2, I1
         if I2 > I3:
             I2, I3 = I3, I2
-        if I1 > I2:
-            I1, I2 = I2, I1
+            if I1 > I2:
+                I1, I2 = I2, I1
 
         # Check for negative eigenvalues
         if I1 < 0.0:
