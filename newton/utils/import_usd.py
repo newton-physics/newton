@@ -301,7 +301,12 @@ def parse_usd(
     )
 
     def load_visual_shapes(parent_body_id, prim, incoming_xform):
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if (
+            prim.HasAPI(UsdPhysics.RigidBodyAPI)
+            or prim.HasAPI(UsdPhysics.MassAPI)
+            or prim.HasAPI(UsdPhysics.CollisionAPI)
+            or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+        ):
             return
         xform = incoming_xform * parse_xform(prim)
         type_name = str(prim.GetTypeName()).lower()
@@ -432,12 +437,14 @@ def parse_usd(
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
-            elif type_name != "xform" and verbose:
+            elif len(type_name) > 0 and type_name != "xform" and verbose:
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
-            if shape_id > 0:
+            if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
+                if verbose:
+                    print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         if type_name == "xform":
             if prim.IsInstance():
@@ -948,6 +955,10 @@ def parse_usd(
                 # print(prim)
                 # print(shape_spec)
                 path = str(xpath)
+                if path in path_shape_map:
+                    if verbose:
+                        print(f"Shape at {path} already added, skipping.")
+                    continue
                 body_path = str(shape_spec.rigidBody)
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
@@ -1016,13 +1027,7 @@ def parse_usd(
                         axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
-                    # shape_id = builder.add_shape_cylinder(
-                    #     **shape_params,
-                    #     radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                    #     half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                    #     axis=int(shape_spec.axis),
-                    # )
-                    shape_id = builder.add_shape_capsule(
+                    shape_id = builder.add_shape_cylinder(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
@@ -1089,8 +1094,12 @@ def parse_usd(
                     )
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
+
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
+
+                if path == "/ant/torso/visuals/torso_geom":
+                    print()
 
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
