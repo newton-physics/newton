@@ -432,8 +432,8 @@ def parse_usd(
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
-            elif verbose:
-                print(f"Warning: Unsupported geometry type {type_name} at {path} while loading visual shapes.")
+            elif type_name != "xform" and verbose:
+                print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id > 0:
                 path_shape_map[path_name] = shape_id
@@ -454,7 +454,7 @@ def parse_usd(
             key=key,
             armature=armature,
         )
-        path_body_map[path] = b
+        path_body_map[key] = b
         if load_non_physics_prims:
             for child in prim.GetChildren():
                 load_visual_shapes(b, child, wp.transform_identity())
@@ -812,10 +812,10 @@ def parse_usd(
             current_body_id = 0
             art_bodies = []
             if verbose:
-                print("Articulated bodies for ", str(prim.GetPath()))
+                print(f"Bodies under articulation {path!s}:")
             for p in desc.articulatedBodies:
                 if verbose:
-                    print(p)
+                    print(f"\t{p!s}")
                 key = str(p)
 
                 if p == Sdf.Path.emptyPath:
