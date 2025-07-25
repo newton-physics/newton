@@ -778,7 +778,7 @@ def parse_usd(
                     if material.density > 0.0:
                         body_density[body_path] = material.density
 
-            if "PhysicsMassAPI" in prim.GetAppliedSchemas():
+            if prim.HasAPI(UsdPhysics.MassAPI):
                 if has_attribute(prim, "physics:density"):
                     d = parse_float(prim, "physics:density")
                     density = d * mass_unit  # / (linear_unit**3)
@@ -1092,17 +1092,16 @@ def parse_usd(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
-                schemas = set(prim.GetAppliedSchemas())
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
                     for other_path in other_paths:
                         path_collision_filters.add((path, str(other_path)))
 
-                if "PhysicsCollisionAPI" not in schemas or not parse_generic(prim, "physics:collisionEnabled", True):
-                    # print("no_collision_shapes : ", prim)
+                if not prim.HasAPI(UsdPhysics.CollisionAPI) or not parse_generic(
+                    prim, "physics:collisionEnabled", True
+                ):
                     no_collision_shapes.add(shape_id)
                     builder.shape_flags[shape_id] &= ~newton.SHAPE_FLAG_COLLIDE_SHAPES
-            # print(path_shape_map)
 
     # approximate meshes
     for remeshing_method, shape_ids in remeshing_queue.items():
@@ -1135,7 +1134,7 @@ def parse_usd(
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for path, _rigid_body_desc in zip(paths, rigid_body_descs):
             prim = stage.GetPrimAtPath(path)
-            if "PhysicsMassAPI" not in prim.GetAppliedSchemas():
+            if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
             body_path = str(path)
             body_id = path_body_map.get(body_path, -1)
