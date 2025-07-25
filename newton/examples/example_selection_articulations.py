@@ -23,6 +23,8 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
+from newton.sim.contacts import ContactInfo
+from newton.utils.contact_sensor import convert_contact_info
 from newton.utils.selection import ArticulationView
 
 USE_TORCH = False
@@ -108,6 +110,20 @@ class Example:
             builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
 
         builder.add_ground_plane()
+        self.torso_all_contact_sensor = builder.add_contact_sensor(sensor_body="torso", verbose=True)
+        self.arm_ground_contact_sensor = builder.add_contact_sensor(
+            sensor_body="*arm", contact_partners_shape="ground_plane", verbose=True
+        )
+        self.foot_arm_contact_sensor = builder.add_contact_sensor(
+            sensor_body="*foot",
+            contact_partners_shape="*arm",
+            include_total=False,
+            verbose=True,
+            prune_noncolliding=True,
+        )
+
+        # stores contact info required by contact sensors
+        self.contact_info = ContactInfo()
 
         # finalize model
         self.model = builder.finalize()
@@ -245,6 +261,11 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
+
+        convert_contact_info(self.model, self.contact_info, self.solver)
+        self.model.eval_contact_sensors(self.contact_info)
+        print(f"Torso net forces: {self.torso_all_contact_sensor.net_force}")
+
         self.sim_time += self.frame_dt
         self.step_count += 1
 
