@@ -1089,10 +1089,11 @@ def test_cloth_stitching(test, device, solver):
     # examine that the velocity has died out
     final_pos = example.state0.particle_q.numpy()
 
-    for spring_idx in range(len(self.springs)):
+    for spring_idx in range(len(example.springs)):
         test.assertTrue(
             (
-                np.linalg.norm(final_pos[self.springs[spring_idx][0]] - final_pos[self.springs[spring_idx][1]]) < 1.0
+                np.linalg.norm(final_pos[example.springs[spring_idx][0]] - final_pos[example.springs[spring_idx][1]])
+                < 1.0
             ).all()
         )
 
