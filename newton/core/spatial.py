@@ -21,7 +21,7 @@ from .types import Axis, AxisType
 @wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     """
-    Returns the velocity of a point relative to the frame that owns the
+    Return the velocity of a point relative to the frame that owns the
     provided spatial velocity.
 
     Args:
@@ -36,9 +36,7 @@ def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
 
 @wp.func
 def quat_twist(axis: wp.vec3, q: wp.quat):
-    """
-    Returns the twist around an axis.
-    """
+    """Return the twist around an axis."""
 
     # project imaginary part onto axis
     a = wp.vec3(q[0], q[1], q[2])
@@ -52,17 +50,28 @@ def quat_twist(axis: wp.vec3, q: wp.quat):
 
 @wp.func
 def quat_twist_angle(axis: wp.vec3, q: wp.quat):
-    """
-    Returns the angle of the twist around an axis.
-    """
+    """Return the angle of the twist around an axis."""
     return 2.0 * wp.acos(quat_twist(axis, q)[3])
 
 
 @wp.func
 def quat_decompose(q: wp.quat):
-    """
-    Decompose a quaternion into a sequence of three rotations around
-    ``x``, ``y'`` and ``z'`` respectively, i.e. ``q = q_z'' q_y' q_x``.
+    """Decompose a quaternion into extrinsic Euler angles.
+
+    Calculates Euler angles for a sequence of rotations around fixed world axes
+    in the order of X, then Y, then Z.
+
+    The corresponding matrix multiplication for a column vector :math:`v` is:
+
+    .. math::
+
+       v_{\\text{rotated}} = R_z(\\text{angle}_z) R_y(\\text{angle}_y) R_x(\\text{angle}_x) v
+
+    Args:
+        q (wp.quat): The input quaternion to decompose.
+
+    Returns:
+        wp.vec3: The Euler angles :math:`(\\text{angle}_x, \\text{angle}_y, \\text{angle}_z)` in radians.
     """
 
     R = wp.matrix_from_cols(
@@ -85,12 +94,25 @@ def quat_decompose(q: wp.quat):
 
 @wp.func
 def quat_to_rpy(q: wp.quat):
+    """Convert a quaternion into Euler angles (roll, pitch, yaw).
+
+    The returned angles represent a sequence of extrinsic rotations following the
+    Z-Y-X convention (Tait-Bryan angles).
+
+    - **yaw**: Rotation about the *z*-axis.
+    - **pitch**: Rotation about the *y*-axis.
+    - **roll**: Rotation about the *x*-axis.
+
+    All angles are in radians and are applied counter-clockwise. Note that Warp's
+    quaternion components are stored in `(x, y, z, w)` order.
+
+    Args:
+        q (wp.quat): The input quaternion to convert.
+
+    Returns:
+        wp.vec3: The Euler angles `(roll, pitch, yaw)` in radians.
     """
-    Convert a quaternion into Euler angles (roll, pitch, yaw)
-    roll is rotation around *x* in radians (counter-clockwise)
-    pitch is rotation around *y* in radians (counter-clockwise)
-    yaw is rotation around *z* in radians (counter-clockwise)
-    """
+
     x = q[0]
     y = q[1]
     z = q[2]
@@ -112,14 +134,12 @@ def quat_to_rpy(q: wp.quat):
 
 @wp.func
 def quat_to_euler(q: wp.quat, i: int, j: int, k: int) -> wp.vec3:
-    """
-    Convert a quaternion into Euler angles.
+    """Convert a quaternion into Euler angles.
 
     :math:`i, j, k` are the indices in :math:`[0, 1, 2]` of the axes to use
     (:math:`i \\neq j, j \\neq k`).
 
-    Reference: https://journals.plos.org/plosone/article?id=10.1371/
-    journal.pone.0276302
+    Reference: https://doi.org/10.1371/journal.pone.0276302
 
     Args:
         q (quat): The quaternion to convert
@@ -169,8 +189,7 @@ def quat_to_euler(q: wp.quat, i: int, j: int, k: int) -> wp.vec3:
 
 @wp.func
 def quat_from_euler(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
-    """
-    Convert Euler angles to a quaternion.
+    """Convert Euler angles to a quaternion.
 
     The integers ``i, j, k`` select axes in the set ``{0, 1, 2}`` that
     determine the Euler-sequence used.  They must satisfy ``i ≠ j`` and
@@ -285,15 +304,17 @@ __axis_rotations = {}
 
 
 def quat_between_axes(*axes: AxisType) -> wp.quat:
-    """
-    Returns a quaternion representing the rotations between the provided
-    sequence of axes.
+    """Compute the rotation between a sequence of axes.
+
+    This function returns a quaternion that represents the cumulative rotation
+    through a sequence of axes. For example, for axes (a, b, c), it computes
+    the rotation from a to c by composing the rotation from a to b and b to c.
 
     Args:
-        axes (AxisType): The axes between to rotate.
+        axes (AxisType): A sequence of axes, e.g., ('x', 'y', 'z').
 
     Returns:
-        wp.quat: The rotation quaternion.
+        wp.quat: The total rotation quaternion.
     """
     q = wp.quat_identity()
     for i in range(len(axes) - 1):
