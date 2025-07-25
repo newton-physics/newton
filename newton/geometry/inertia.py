@@ -584,8 +584,8 @@ def verify_and_correct_inertia(
         I1, I2, I3 = principal_moments
 
         # Check triangle inequality on principal moments
-        # For a physically valid inertia tensor: I1 + I2 >= I3
-        has_violations = I1 + I2 < I3
+        # For a physically valid inertia tensor: I1 + I2 >= I3 (with tolerance)
+        has_violations = I1 + I2 < I3 - 1e-10
 
     except np.linalg.LinAlgError:
         warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
@@ -693,32 +693,44 @@ def validate_and_correct_inertia_kernel(
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         was_corrected = 1
     else:
-        # For non-diagonal matrices, we can only do basic checks
-        # Extract diagonal elements
-        Ixx = inertia[0, 0]
-        Iyy = inertia[1, 1]
-        Izz = inertia[2, 2]
+        # Use eigendecomposition for proper validation
+        eigvecs, eigvals = wp.eig3(inertia)
 
-        # Ensure diagonal elements meet minimum bound if specified
-        if bound_inertia > 0.0:
-            if Ixx < bound_inertia:
-                inertia[0, 0] = bound_inertia
-                was_corrected = 1
-            if Iyy < bound_inertia:
-                inertia[1, 1] = bound_inertia
-                was_corrected = 1
-            if Izz < bound_inertia:
-                inertia[2, 2] = bound_inertia
-                was_corrected = 1
+        # Sort eigenvalues to get principal moments (I1 <= I2 <= I3)
+        I1, I2, I3 = eigvals[0], eigvals[1], eigvals[2]
+        if I1 > I2:
+            I1, I2 = I2, I1
+        if I2 > I3:
+            I2, I3 = I3, I2
+        if I1 > I2:
+            I1, I2 = I2, I1
 
-        # Ensure positive trace
-        trace = inertia[0, 0] + inertia[1, 1] + inertia[2, 2]
-        if trace < 1e-6:
-            # Add small value to diagonal to ensure positive definiteness
-            adjustment = (1e-6 - trace) / 3.0 + 1e-6
-            inertia[0, 0] += adjustment
-            inertia[1, 1] += adjustment
-            inertia[2, 2] += adjustment
+        # Check for negative eigenvalues
+        if I1 < 0.0:
+            adjustment = -I1 + 1e-6
+            # Add scalar to all eigenvalues
+            I1 += adjustment
+            I2 += adjustment
+            I3 += adjustment
+            inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
+            was_corrected = 1
+
+        # Apply eigenvalue bounds
+        if bound_inertia > 0.0 and I1 < bound_inertia:
+            adjustment = bound_inertia - I1
+            I1 += adjustment
+            I2 += adjustment
+            I3 += adjustment
+            inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
+            was_corrected = 1
+
+        # Check triangle inequality: I1 + I2 >= I3 (with tolerance)
+        # Use larger tolerance for float32 precision
+        if balance_inertia and (I1 + I2 < I3 - 1e-6):
+            deficit = I3 - I1 - I2
+            adjustment = deficit + 1e-6
+            # Add scalar*I to fix triangle inequality
+            inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = 1
 
     # Write back corrected values
