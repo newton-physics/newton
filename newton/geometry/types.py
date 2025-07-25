@@ -133,6 +133,26 @@ class Mesh:
             self.mass = 1.0
             self.com = wp.vec3()
 
+    def copy(
+        self,
+        vertices: Sequence[Vec3] | nparray | None = None,
+        indices: Sequence[int] | nparray | None = None,
+        recompute_inertia: bool = False,
+    ):
+        if vertices is None:
+            vertices = self.vertices
+        if indices is None:
+            indices = self.indices
+        m = Mesh(
+            vertices, indices, compute_inertia=recompute_inertia, is_solid=self.is_solid, maxhullvert=self.maxhullvert
+        )
+        if not recompute_inertia:
+            m.I = self.I
+            m.mass = self.mass
+            m.com = self.com
+            m.has_inertia = self.has_inertia
+        return m
+
     @property
     def vertices(self):
         return self._vertices
