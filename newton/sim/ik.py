@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
+from enum import Enum as _Enum  # keep private, avoids autodoc warnings
 from typing import ClassVar
 
 import numpy as np
@@ -27,10 +27,14 @@ from .joints import (
 )
 
 
-class JacobianMode(Enum):
+class JacobianMode(_Enum):
     AUTODIFF = "autodiff"
     ANALYTIC = "analytic"
     MIXED = "mixed"
+
+
+# Prevent Sphinx autodoc from documenting ``enum.Enum`` as a module member.
+# Importing as ``_Enum`` keeps it private and skips the std-lib warning.
 
 
 class IKSolver:
@@ -81,7 +85,7 @@ class IKSolver:
 
 
     Supported joint types
-    ------
+    ---------------------
     ANALYTIC and MIXED modes currently only support models with revolute, prismatic, and fixed joints.
     For more complex joint types (e.g., free, ball, D6), use AUTODIFF mode.
     Velocity-space optimization is planned for broader analytic support in future updates.
