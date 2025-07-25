@@ -10,6 +10,12 @@ import os
 import sys
 from pathlib import Path
 
+# Determine the Git version/tag from CI environment variables.
+# 1. Check for GitHub Actions' variable.
+# 2. Check for GitLab CI's variable.
+# 3. Fallback to 'main' for local builds.
+github_version = os.environ.get("GITHUB_REF_NAME") or os.environ.get("CI_COMMIT_REF_NAME") or "main"
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -78,6 +84,10 @@ intersphinx_mapping = {
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
+}
+
+extlinks = {
+    "github": (f"https://github.com/newton-physics/newton/blob/{github_version}/%s", "%s"),
 }
 
 doctest_global_setup = """
@@ -268,7 +278,7 @@ def linkcode_resolve(domain, info):
 
         # Construct GitHub URL
         github_base = "https://github.com/newton-physics/newton"
-        return f"{github_base}/blob/main/{rel_path}{line_fragment}"
+        return f"{github_base}/blob/{github_version}/{rel_path}{line_fragment}"
 
     except (ImportError, AttributeError, TypeError):
         return None
