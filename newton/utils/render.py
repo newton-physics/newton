@@ -463,7 +463,6 @@ def CreateSimRenderer(renderer):
                             parent_body=body,
                             is_template=True,
                         )
-                        scale = np.asarray(geo_scale, dtype=np.float32)
 
                     elif geo_type == newton.GEO_SDF:
                         continue
@@ -475,6 +474,9 @@ def CreateSimRenderer(renderer):
                     q_shape = X_bs.q
                     if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
                         q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
+                    if geo_type == newton.GEO_MESH:
+                        # ensure we use the correct scale for the mesh instance
+                        scale = np.asarray(geo_scale, dtype=np.float32)
                     self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
                 instance_count += 1
             return instance_count
