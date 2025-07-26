@@ -125,7 +125,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"asv/benchmarks/**/*" = ["RUF012"]
+"asv/benchmarks/**/*" = ["RUF012", "E402"]
 "newton/examples/**/*" = ["E402"]
 
 [tool.ruff.lint.pydocstyle]
