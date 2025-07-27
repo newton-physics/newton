@@ -23,8 +23,9 @@ import numpy as np
 import warp as wp
 
 from newton import Model
+from newton.core.types import nparray
 from newton.sim.contacts import ContactInfo, Contacts
-from newton.solvers import MuJoCoSolver, SolverBase
+from newton.solvers import SolverBase
 
 NUM_THREADS = 8192
 
@@ -38,7 +39,9 @@ class MatchAny(metaclass=SentinelMeta):
     """Sentinel class matching all contact partners."""
 
 
-EntityKind = Enum("EntityKind", [("SHAPE", 1), ("BODY", 2)])
+class EntityKind(Enum):
+    SHAPE = 1
+    BODY = 2
 
 
 Entity: TypeAlias = tuple[int, ...]
@@ -130,17 +133,16 @@ def _lol_to_arrays(list_of_lists: list[list], dtype) -> tuple[wp.array, wp.array
 def convert_contact_info(
     model: Model,
     contact_info: ContactInfo,
-    solver: SolverBase | None = None,
+    solver: SolverBase,
     contacts: Contacts | None = None,
 ):
-    """Populate ContactInfo object from the solver or from the Contacts object."""
-    if solver is not None:
-        if isinstance(solver, MuJoCoSolver):
-            solver.update_newton_contacts(model, solver.mjw_data, contact_info)
-        else:
-            raise NotImplementedError("Contact conversion not yet implemented for this solver")
+    """Populate ContactInfo object from the solver and the Contacts object.
+    Contact forces are populated from the solver state, while contacts are populated from the Contacts object, if given,
+    or from the solver state, where it contains them.
+    """
     if contacts is not None:
         raise NotImplementedError("Contact conversion not yet implemented for Contacts object")
+    solver.update_contact_info(contact_info)
 
 
 class ContactView:
@@ -154,7 +156,7 @@ class ContactView:
         self.finalized: bool = False
         self.shape: tuple[int, int] = None
 
-        self.net_force: wp.array(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
+        self.net_force: wp.array2d(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
         """Net force matrix, shape (n_sensors, n_contact_partners [+1 if total included])"""
 
         self.sensor_keys: list[str] = None
@@ -165,7 +167,7 @@ class ContactView:
         """Entities for the sensors in the query, n_sensors"""
         self.contact_partner_entities: list[Entity] = None
         """Entities for the contact partners in the query, n_contact_partners"""
-        self.entity_pairs: np.ndarray = None  # entity pair matrix
+        self.entity_pairs: nparray = None  # entity pair matrix
         """Pairs of sensor and contact partner indices for the query, shape (n_sensors, n_contact_partners, 2)"""
 
     def finalize(
@@ -175,7 +177,7 @@ class ContactView:
         contact_partner_keys: list[str],
         sensor_entities: list[Entity],
         contact_partner_entities: list[Entity],
-        entity_pairs: np.ndarray,
+        entity_pairs: nparray,
     ):
         assert not self.finalized
         self.net_force = net_force

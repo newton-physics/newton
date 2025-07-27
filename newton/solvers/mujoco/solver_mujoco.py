@@ -1540,9 +1540,10 @@ class MuJoCoSolver(SolverBase):
 
         return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
 
-    def update_newton_contacts(self, model: Model, mj_data: MjWarpData, contact_info: ContactInfo):
+    @override
+    def update_contact_info(self, contact_info: ContactInfo) -> None:
+        mj_data = self.mjw_data
         nconmax = mj_data.nconmax
-
         mj_contact = mj_data.contact
 
         contact_info.ncon = mj_data.ncon
@@ -1550,13 +1551,13 @@ class MuJoCoSolver(SolverBase):
         contact_info.separation = mj_contact.dist
 
         if contact_info.pair is None:
-            contact_info.pair = wp.empty(nconmax, dtype=wp.vec2i, device=model.device)
+            contact_info.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
 
         if contact_info.normal is None:
-            contact_info.normal = wp.empty(nconmax, dtype=wp.vec3f, device=model.device)
+            contact_info.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
 
         if contact_info.force is None:
-            contact_info.force = wp.empty(nconmax, dtype=wp.float32, device=model.device)
+            contact_info.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
 
         num_threads = min(mj_data.nconmax, 8192)
         wp.launch(
@@ -1579,7 +1580,7 @@ class MuJoCoSolver(SolverBase):
                 contact_info.normal,
                 contact_info.force,
             ],
-            device=model.device,
+            device=self.model.device,
         )
         contact_info.n_contacts = mj_data.ncon
 
