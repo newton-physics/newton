@@ -15,7 +15,6 @@
 
 import itertools
 from collections import defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeAlias
@@ -217,11 +216,10 @@ class ContactQuery:
     colliding_shape_pairs: set[tuple[int, int]] | None = None
 
 
-class ContactSensorManager:
+class ContactSensor:
     def __init__(self, model: Model):
         self.contact_queries: list[ContactQuery] = []
         self.contact_views: list[ContactView] = []
-        self.contact_reporter: ContactReporter | None = None
         self.model: Model = model
 
     def add_contact_query(
@@ -253,12 +251,12 @@ class ContactSensorManager:
         self.contact_views.append(contact_view)
 
     def eval_contact_sensors(self, contact_info: ContactInfo):
-        self.contact_reporter._select_aggregate_net_force(contact_info)
+        self._select_aggregate_net_force(contact_info)
 
     def finalize(self):
         self._build_entity_pair_list()
         with wp.ScopedDevice(self.model.device):
-            self.contact_reporter = ContactReporter([ep for query in self.entity_pairs for ep in query])
+            self._build_arrays([ep for query in self.entity_pairs for ep in query])
 
         for offset, count, view, shape, query, entity_pairs_idx in zip(
             self.query_offset,
@@ -268,7 +266,7 @@ class ContactSensorManager:
             self.contact_queries,
             self.entity_pairs_idx,
         ):
-            net_force = self.contact_reporter.net_force[offset : offset + count].reshape(shape)
+            net_force = self.net_force[offset : offset + count].reshape(shape)
             n_sens, n_sel = shape
             entity_pair_matrix = [
                 [entity_pairs_idx[sensor * n_sel + sel] or (None, None) for sel in range(n_sel)]
@@ -333,20 +331,12 @@ class ContactSensorManager:
         self.query_count = [n_sens * n_sel for n_sens, n_sel in self.query_shape]
         self.query_offset = [0, *np.cumsum(self.query_count[:-1]).tolist()]
 
+    def _build_arrays(self, entity_pairs: list[tuple[Entity, Entity]]):
+        # build the mapping from shape pairs to entity pairs ordered by shape pair
+        # accepts None as a filler value
 
-class ContactReporter:
-    """Aggregates contacts per entity pair"""
-
-    def __init__(self, entity_pairs: list[tuple[Entity, Entity]]):
         # initialize mapping from sp to eps & flips
         self.n_entity_pairs: int = len(entity_pairs)
-        self._create_sp_ep_arrays(entity_pairs)
-        # net force (1 vec3 per entity pair)
-        self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
-
-    def _create_sp_ep_arrays(self, entity_pairs: Iterable[tuple[Entity, Entity | MatchAny] | None]):
-        """Build a mapping from shape pairs to entity pairs ordered by shape pair.
-        None is accepted as a filler value."""
         sp_ep_map = defaultdict(list)
         for ep_idx, entity_pair in enumerate(entity_pairs):
             if entity_pair is None:
@@ -376,6 +366,8 @@ class ContactReporter:
         # initialize warp arrays
         self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i)
         self.sp_ep, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_ep, wp.vec2i)
+        # net force (1 vec3 per entity pair)
+        self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
 
     def _select_aggregate_net_force(self, contact: ContactInfo):
         self.net_force.zero_()

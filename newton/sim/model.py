@@ -265,7 +265,7 @@ class Model:
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
-        self.contact_sensor_manager = None
+        self.contact_sensor = None
         """Contact information between entities."""
 
         self.up_vector = np.array((0.0, 0.0, 1.0))
@@ -511,4 +511,4 @@ class Model:
         return frequency
 
     def eval_contact_sensors(self, contact_info):
-        self.contact_sensor_manager.eval_contact_sensors(contact_info)
+        self.contact_sensor.eval_contact_sensors(contact_info)

@@ -3679,7 +3679,7 @@ class ModelBuilder:
 
     def _create_sensor(
         self,
-        contact_sensor_manager,
+        contact_sensor,
         contact_view,
         sensor_shape,
         sensor_body,
@@ -3696,7 +3696,7 @@ class ModelBuilder:
 
         if verbose:
             print("Finding entities")
-        m = contact_sensor_manager.model
+        m = contact_sensor.model
 
         # Get entities matching the pattern
         sensor_entities, sensor_keys = [], []
@@ -3731,7 +3731,7 @@ class ModelBuilder:
             print(f"Contact partner entities found: {select_entities}")
             print(f"                          keys: {select_keys}")
 
-        contact_sensor_manager.add_contact_query(
+        contact_sensor.add_contact_query(
             sensor_entities=sensor_entities,
             select_entities=select_entities,
             sensor_keys=sensor_keys,
@@ -3741,14 +3741,13 @@ class ModelBuilder:
         )
 
     def _build_contact_sensors(self, model: Model):
-        from newton.utils.contact_sensor import ContactSensorManager  # noqa: PLC0415
+        from newton.utils.contact_sensor import ContactSensor  # noqa: PLC0415
 
-        # contact_reporter = ContactReporter(model)
-        model.contact_sensor_manager = ContactSensorManager(model)
+        model.contact_sensor = ContactSensor(model)
         for query in self.contact_queries:
-            self._create_sensor(model.contact_sensor_manager, query, **query.args)
+            self._create_sensor(model.contact_sensor, query, **query.args)
 
-        model.contact_sensor_manager.finalize()
+        model.contact_sensor.finalize()
 
     def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
