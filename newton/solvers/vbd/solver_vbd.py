@@ -180,25 +180,6 @@ def build_orthonormal_basis(n: wp.vec3):
 
 
 @wp.func
-def calculate_triangle_deformation_gradient(
-    face: int, tri_indices: wp.array(dtype=wp.int32, ndim=2), pos: wp.array(dtype=wp.vec3), tri_pose: wp.mat22
-):
-    v0 = tri_indices[face, 0]  # vertex 0
-    v1 = tri_indices[face, 1]  # vertex 1
-    v2 = tri_indices[face, 2]  # vertex 2
-
-    x0 = pos[v0]
-    x01 = pos[v1] - x0
-    x02 = pos[v2] - x0
-
-    # Compute F columns directly: F = [x01, x02] * tri_pose
-    f0 = x01 * tri_pose[0, 0] + x02 * tri_pose[1, 0]
-    f1 = x01 * tri_pose[0, 1] + x02 * tri_pose[1, 1]
-
-    return f0, f1
-
-
-@wp.func
 def evaluate_stvk_force_hessian(
     face: int,
     v_order: int,
@@ -215,7 +196,23 @@ def evaluate_stvk_force_hessian(
     # StVK energy density: psi = mu * ||G||_F^2 + 0.5 * lambda * (trace(G))^2
 
     # Deformation gradient F = [f0, f1] (3x2 matrix as two 3D column vectors)
-    f0, f1 = calculate_triangle_deformation_gradient(face, tri_indices, pos, tri_pose)
+    v0 = tri_indices[face, 0]
+    v1 = tri_indices[face, 1]
+    v2 = tri_indices[face, 2]
+
+    x0 = pos[v0]
+    x01 = pos[v1] - x0
+    x02 = pos[v2] - x0
+
+    # Cache tri_pose elements
+    DmInv00 = tri_pose[0, 0]
+    DmInv01 = tri_pose[0, 1]
+    DmInv10 = tri_pose[1, 0]
+    DmInv11 = tri_pose[1, 1]
+
+    # Compute F columns directly: F = [x01, x02] * tri_pose = [f0, f1]
+    f0 = x01 * DmInv00 + x02 * DmInv10
+    f1 = x01 * DmInv01 + x02 * DmInv11
 
     # Green strain tensor: G = 0.5(F^T F - I) = [[G00, G01], [G01, G11]] (symmetric 2x2)
     f0_dot_f0 = wp.dot(f0, f0)
@@ -231,147 +228,75 @@ def evaluate_stvk_force_hessian(
     if G_frobenius_sq < 1.0e-20:
         return wp.vec3(0.0), wp.mat33(0.0)
 
-    # FG = [FG_col0, FG_col1] (3x2)
-    FG_col0 = f0 * G00 + f1 * G01
-    FG_col1 = f0 * G01 + f1 * G11
+    trace_G = G00 + G11
 
     # First Piola-Kirchhoff stress tensor (StVK model)
     # PK1 = 2*mu*F*G + lambda*trace(G)*F = [PK1_col0, PK1_col1] (3x2)
-    trace_G = G00 + G11
-    PK1_col0 = 2.0 * mu * FG_col0 + lmbd * trace_G * f0
-    PK1_col1 = 2.0 * mu * FG_col1 + lmbd * trace_G * f1
+    lambda_trace_G = lmbd * trace_G
+    two_mu = 2.0 * mu
 
-    DmInv00 = tri_pose[0, 0]
-    DmInv01 = tri_pose[0, 1]
-    DmInv10 = tri_pose[1, 0]
-    DmInv11 = tri_pose[1, 1]
+    PK1_col0 = f0 * (two_mu * G00 + lambda_trace_G) + f1 * (two_mu * G01)
+    PK1_col1 = f0 * (two_mu * G01) + f1 * (two_mu * G11 + lambda_trace_G)
 
-    s0 = DmInv00 + DmInv10
-    s1 = DmInv01 + DmInv11
+    # Vertex selection using masks to avoid branching
+    mask0 = float(v_order == 0)
+    mask1 = float(v_order == 1)
+    mask2 = float(v_order == 2)
 
-    # Triangle vertex indexing: x0 = (d0,d1,d2), x1 = (d3,d4,d5), x2 = (d6,d7,d8)
+    # Deformation gradient derivatives w.r.t. current vertex position
+    df0_dx = DmInv00 * (mask1 - mask0) + DmInv10 * (mask2 - mask0)
+    df1_dx = DmInv01 * (mask1 - mask0) + DmInv11 * (mask2 - mask0)
 
-    # Deformation gradient Jacobian: dF/dd_i for each vertex coordinate
-    # vertex0: dF_dd0 = (-s0, 0, 0, -s1, 0, 0),         dF_dd1 = (0, -s0, 0, 0, -s1, 0),         dF_dd2 = (0, 0, -s0, 0, 0, -s1)
-    # vertex1: dF_dd3 = (DmInv00, 0, 0, DmInv01, 0, 0), dF_dd4 = (0, DmInv00, 0, 0, DmInv01, 0), dF_dd5 = (0, 0, DmInv00, 0, 0, DmInv01)
-    # vertex2: dF_dd6 = (DmInv10, 0, 0, DmInv11, 0, 0), dF_dd7 = (0, DmInv10, 0, 0, DmInv11, 0), dF_dd8 = (0, 0, DmInv10, 0, 0, DmInv11)
+    # Force via chain rule: force = -(dpsi/dF) : (dF/dx)
+    dpsi_dx = PK1_col0 * df0_dx + PK1_col1 * df1_dx
+    force = -dpsi_dx
 
-    # Energy density gradients via chain rule: dpsi/dd_i = (dpsi/dF) : (dF/dd_i) where : is double contraction
-    dpsi_dx0 = -(s0 * PK1_col0 + s1 * PK1_col1)  # vertex0
-    dpsi_dx1 = DmInv00 * PK1_col0 + DmInv01 * PK1_col1  # vertex1
-    dpsi_dx2 = DmInv10 * PK1_col0 + DmInv11 * PK1_col1  # vertex2
+    # Hessian computation using Cauchy-Green invariants
+    df0_dx_sq = df0_dx * df0_dx
+    df1_dx_sq = df1_dx * df1_dx
+    df0_df1_cross = df0_dx * df1_dx
 
-    # First Cauchy-Green invariant: Ic = tr(F^T F)
     Ic = f0_dot_f0 + f1_dot_f1
-
-    # Gradient of Ic w.r.t. F (vectorized): grad_Ic = [2*f0; 2*f1] (6x1)
-    # Hessian of Ic w.r.t. F: H_Ic = diag(2*I3, 2*I3) (6x6 block diagonal)
+    two_dpsi_dIc = -mu + (0.5 * Ic - 1.0) * lmbd
     I33 = wp.identity(n=3, dtype=float)
-    H_Ic_diag_block = 2.0 * I33  # Diagonal blocks of H_Ic
 
-    # Second Cauchy-Green invariant: IIc = ||F^T F||_F^2
-    # Gradient: grad_IIc = 4FF^TF (6x1 vectorized), Hessian: H_IIc (6x6)
-
-    # Outer products for Hessian computation
     f0_outer_f0 = wp.outer(f0, f0)
     f1_outer_f1 = wp.outer(f1, f1)
     f0_outer_f1 = wp.outer(f0, f1)
     f1_outer_f0 = wp.outer(f1, f0)
 
-    # Hessian blocks: H_IIc = [[H00, H01], [H10, H11]] where each block is 3x3
-    H_IIc00 = 4.0 * (f0_dot_f0 * I33 + 2.0 * f0_outer_f0 + f1_outer_f1)
-    H_IIc11 = 4.0 * (f1_dot_f1 * I33 + 2.0 * f1_outer_f1 + f0_outer_f0)
-    H_IIc01 = 4.0 * (f0_dot_f1 * I33 + f1_outer_f0)
+    H_IIc00_scaled = mu * (f0_dot_f0 * I33 + 2.0 * f0_outer_f0 + f1_outer_f1)
+    H_IIc11_scaled = mu * (f1_dot_f1 * I33 + 2.0 * f1_outer_f1 + f0_outer_f0)
+    H_IIc01_scaled = mu * (f0_dot_f1 * I33 + f1_outer_f0)
 
-    # Energy density in terms of invariants: psi = mu*(0.25*IIc - 0.5*Ic + 0.5) + lambda/8 * (Ic^2 - 4*Ic + 4)
-    dpsi_dIc = -0.5 * mu + (0.25 * Ic - 0.5) * lmbd
-    d2psi_dIc2 = 0.25 * lmbd
-    dpsi_dIIc = 0.25 * mu
+    # d2(psi)/dF^2 components
+    d2E_dF2_00 = lmbd * f0_outer_f0 + two_dpsi_dIc * I33 + H_IIc00_scaled
+    d2E_dF2_01 = lmbd * f0_outer_f1 + H_IIc01_scaled
+    d2E_dF2_11 = lmbd * f1_outer_f1 + two_dpsi_dIc * I33 + H_IIc11_scaled
 
-    # Chain rule for Hessian: d2psi/dF2 = sum_I (d2psi/dI2 * outer(dI/dF, dI/dF) + dpsi/dI * d2I/dF2) for I in {Ic, IIc}.
-    d2E_dF2_flattened00 = (
-        d2psi_dIc2 * 4.0 * f0_outer_f0 + dpsi_dIc * H_Ic_diag_block + dpsi_dIIc * H_IIc00
-    )  # d2psi/df0df0
-    d2E_dF2_flattened01 = d2psi_dIc2 * 4.0 * f0_outer_f1 + dpsi_dIIc * H_IIc01  # d2psi/df0df1
-    d2E_dF2_flattened11 = (
-        d2psi_dIc2 * 4.0 * f1_outer_f1 + dpsi_dIc * H_Ic_diag_block + dpsi_dIIc * H_IIc11
-    )  # d2psi/df1df1
-
-    # Compute force and deformation gradient derivatives
-    mask0 = float(v_order == 0)
-    mask1 = float(v_order == 1)
-    mask2 = float(v_order == 2)
-
-    # Select force vector for current vertex without branching
-    force = -(mask0 * dpsi_dx0 + mask1 * dpsi_dx1 + mask2 * dpsi_dx2) * area
-
-    # Derivatives of deformation gradient columns w.r.t. current vertex position
-    # vertex 0: (-s0, -s1), vertex 1: (DmInv00, DmInv01), vertex 2: (DmInv10, DmInv11)
-    df0_dx = mask0 * (-s0) + mask1 * DmInv00 + mask2 * DmInv10  # df0/dx for current vertex
-    df1_dx = mask0 * (-s1) + mask1 * DmInv01 + mask2 * DmInv11  # df1/dx for current vertex
-
-    df0_dx_sq = df0_dx * df0_dx
-    df1_dx_sq = df1_dx * df1_dx
-    df0_df1_cross = df0_dx * df1_dx
-
-    # Chain rule applied: d2E/ddi_ddj = (dF/ddi)^T * (d2E/dF2) * (dF/ddj)
-    # Diagonal elements (xx, yy, zz components)
-    H_00 = (
-        df0_dx_sq * d2E_dF2_flattened00[0, 0]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[0, 0]
-        + df1_dx_sq * d2E_dF2_flattened11[0, 0]
-    )
-
-    H_11 = (
-        df0_dx_sq * d2E_dF2_flattened00[1, 1]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[1, 1]
-        + df1_dx_sq * d2E_dF2_flattened11[1, 1]
-    )
-
-    H_22 = (
-        df0_dx_sq * d2E_dF2_flattened00[2, 2]
-        + 2.0 * df0_df1_cross * d2E_dF2_flattened01[2, 2]
-        + df1_dx_sq * d2E_dF2_flattened11[2, 2]
-    )
-
-    # Off-diagonal elements (xy, xz, yz components)
-    H_01 = (
-        df0_dx_sq * d2E_dF2_flattened00[0, 1]
-        + df0_df1_cross * (d2E_dF2_flattened01[0, 1] + d2E_dF2_flattened01[1, 0])
-        + df1_dx_sq * d2E_dF2_flattened11[0, 1]
-    )
-
-    H_02 = (
-        df0_dx_sq * d2E_dF2_flattened00[0, 2]
-        + df0_df1_cross * (d2E_dF2_flattened01[0, 2] + d2E_dF2_flattened01[2, 0])
-        + df1_dx_sq * d2E_dF2_flattened11[0, 2]
-    )
-
-    H_12 = (
-        df0_dx_sq * d2E_dF2_flattened00[1, 2]
-        + df0_df1_cross * (d2E_dF2_flattened01[1, 2] + d2E_dF2_flattened01[2, 1])
-        + df1_dx_sq * d2E_dF2_flattened11[1, 2]
-    )
-
-    # Assemble symmetric 3x3 Hessian: [[H_00, H_01, H_02], [H_01, H_11, H_12], [H_02, H_12, H_22]]
-    # Scale by triangle area to get total element contribution
-    hessian = area * wp.mat33(H_00, H_01, H_02, H_01, H_11, H_12, H_02, H_12, H_22)
+    # Chain rule: H = (dF/dx)^T * (d2(psi)/dF^2) * (dF/dx)
+    hessian = df0_dx_sq * d2E_dF2_00 + df1_dx_sq * d2E_dF2_11 + df0_df1_cross * (d2E_dF2_01 + wp.transpose(d2E_dF2_01))
 
     if damping > 0.0:
         inv_dt = 1.0 / dt
 
-        # F_prev = [f0_prev, f1_prev]
-        f0_prev, f1_prev = calculate_triangle_deformation_gradient(face, tri_indices, pos_prev, tri_pose)
-        df0_dt = (f0 - f0_prev) * inv_dt
-        df1_dt = (f1 - f1_prev) * inv_dt
+        # Previous deformation gradient for velocity
+        x0_prev = pos_prev[v0]
+        x01_prev = pos_prev[v1] - x0_prev
+        x02_prev = pos_prev[v2] - x0_prev
+
+        vel_x01 = (x01 - x01_prev) * inv_dt
+        vel_x02 = (x02 - x02_prev) * inv_dt
+
+        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
+        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
 
         # First constraint: Cmu = ||G||_F (Frobenius norm of Green strain)
         Cmu = wp.sqrt(G_frobenius_sq)
-        inv_Cmu = 1.0 / Cmu
 
-        G00_normalized = G00 * inv_Cmu
-        G01_normalized = G01 * inv_Cmu
-        G11_normalized = G11 * inv_Cmu
+        G00_normalized = G00 / Cmu
+        G01_normalized = G01 / Cmu
+        G11_normalized = G11 / Cmu
 
         # Time derivative of Green strain: dG/dt = 0.5 * (F^T * dF/dt + (dF/dt)^T * F)
         dG_dt_00 = wp.dot(f0, df0_dt)  # dG00/dt
@@ -388,11 +313,11 @@ def evaluate_stvk_force_hessian(
         # Gradient of constraint w.r.t. vertex position: dCmu/dx = (dCmu/dF) : (dF/dx)
         dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
 
-        # Damping force from first constraint: -mu * damping * area * (dCmu/dt) * (dCmu/dx)
-        kd_mu = mu * damping * area
+        # Damping force from first constraint: -mu * damping * (dCmu/dt) * (dCmu/dx)
+        kd_mu = mu * damping
         force += -kd_mu * dCmu_dt * dCmu_dx
 
-        # Damping Hessian: mu * damping * area * (1/dt) * (dCmu/dx) x (dCmu/dx)
+        # Damping Hessian: mu * damping * (1/dt) * (dCmu/dx) x (dCmu/dx)
         hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
 
         # Second constraint: Clmbd = trace(G) = G00 + G11 (trace of Green strain)
@@ -406,12 +331,16 @@ def evaluate_stvk_force_hessian(
         # Gradient of Clmbd w.r.t. vertex position: dClmbd/dx = (dClmbd/dF) : (dF/dx)
         dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
 
-        # Damping force from second constraint: -lambda * damping * area * (dClmbd/dt) * (dClmbd/dx)
-        kd_lmbd = lmbd * damping * area
+        # Damping force from second constraint: -lambda * damping * (dClmbd/dt) * (dClmbd/dx)
+        kd_lmbd = lmbd * damping
         force += -kd_lmbd * dClmbd_dt * dClmbd_dx
 
-        # Damping Hessian from second constraint: lambda * damping * area * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
+        # Damping Hessian from second constraint: lambda * damping * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
         hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
+
+    # Apply area scaling
+    force *= area
+    hessian *= area
 
     return force, hessian
 
@@ -1428,8 +1357,6 @@ def solve_trimesh_no_self_contact_tile(
     thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
     particle_index = particle_ids_in_color[block_idx]
 
-    # wp.printf("block_idx %d thread_idx %d particle_index %d\n", block_idx, thread_idx, particle_index)
-
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
         if thread_idx == 0:
             pos_new[particle_index] = pos[particle_index]
@@ -1475,8 +1402,6 @@ def solve_trimesh_no_self_contact_tile(
         f += f_tri
         h += h_tri
 
-        # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f_tri[0], f_tri[1], f_tri[2])
-
         # fmt: off
         if wp.static("elasticity_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
             wp.printf(
@@ -1514,17 +1439,13 @@ def solve_trimesh_no_self_contact_tile(
             f += f_edge
             h += h_edge
 
-    # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f[0], f[1], f[2])
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
-    # wp.printf("f_tile shape: %d | h_tile shape: %d\n", f_tile.shape[0], h_tile.shape[0])
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
 
     if thread_idx == 0:
-        # wp.printf(
-        #     "particle: %d, f_total:\n %f %f %f,\n", particle_index, f_total[0], f_total[1], f_total[2])
         h_total = (
             h_total
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
@@ -1532,12 +1453,6 @@ def solve_trimesh_no_self_contact_tile(
         )
         if abs(wp.determinant(h_total)) > 1e-5:
             h_inv = wp.inverse(h_total)
-            # wp.printf(
-            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
-            #     particle_index,
-            #     f_total[0], f_total[1], f_total[2],
-            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
-            # )
             f_total = (
                 f_total
                 + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
@@ -2195,17 +2110,13 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             f += f_edge
             h += h_edge
 
-    # wp.printf("particle: %d, thread_id: %d, f_total:\n %f %f %f,\n", particle_index, thread_idx, f[0], f[1], f[2])
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
-    # wp.printf("f_tile shape: %d | h_tile shape: %d\n", f_tile.shape[0], h_tile.shape[0])
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
 
     if thread_idx == 0:
-        # wp.printf(
-        #     "particle: %d, f_total:\n %f %f %f,\n", particle_index, f_total[0], f_total[1], f_total[2])
         h_total = (
             h_total
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
@@ -2213,12 +2124,6 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
         )
         if abs(wp.determinant(h_total)) > 1e-5:
             h_inv = wp.inverse(h_total)
-            # wp.printf(
-            #     "particle: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
-            #     particle_index,
-            #     f_total[0], f_total[1], f_total[2],
-            #     h_total[0, 0], h_total[0, 1], h_total[0, 2], h_total[1, 0], h_total[1, 1], h_total[1, 2], h_total[2, 0], h_total[2, 1], h_total[2, 2],
-            # )
             f_total = (
                 f_total
                 + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
