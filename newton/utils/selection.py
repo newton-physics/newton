@@ -542,9 +542,33 @@ class ArticulationView:
             raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
     def get_attribute(self, name: str, source: Model | State | Control):
+        """
+        Get an attribute from the source (Model, State, or Control).
+
+        Args:
+            name (str): The name of the attribute to get.
+            source (Model | State | Control): The source from which to get the attribute.
+
+        Returns:
+            array: The attribute values (dtype matches the attribute).
+        """
         return self._get_attribute_values(name, source)
 
     def set_attribute(self, name: str, target: Model | State | Control, values, mask=None):
+        """
+        Set an attribute in the target (Model, State, or Control).
+
+        Args:
+            name (str): The name of the attribute to set.
+            target (Model | State | Control): The target where to set the attribute.
+            values (array): The values to set for the attribute.
+            mask (array): Mask of articulations in this ArticulationView (all by default).
+
+        .. note::
+            When setting attributes on the Model, it may be necessary to inform the solver about
+            such changes by calling :meth:`newton.solvers.SolverBase.notify_model_changed` after finished
+            setting Model attributes.
+        """
         self._set_attribute_values(name, target, values, mask=mask)
 
     # ========================================================================================
@@ -575,7 +599,7 @@ class ArticulationView:
     def set_root_transforms(self, target: Model | State, values: wp.array, mask=None):
         """
         Set the root transforms of the articulations.
-        Call `eval_fk()` to apply changes to all articulation links.
+        Call :meth:`eval_fk` to apply changes to all articulation links.
 
         Args:
             target (Model | State): Where to set the root transforms (Model or State).
@@ -679,6 +703,7 @@ class ArticulationView:
         Evaluates forward kinematics given the joint coordinates and updates the body information.
 
         Args:
+            target (Model | State): The target where to evaluate forward kinematics (Model or State).
             mask (array): Mask of articulations in this ArticulationView (all by default).
         """
         # translate view mask to Model articulation mask

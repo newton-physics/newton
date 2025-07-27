@@ -463,7 +463,6 @@ def CreateSimRenderer(renderer):
                             parent_body=body,
                             is_template=True,
                         )
-                        scale = np.asarray(geo_scale, dtype=np.float32)
 
                     elif geo_type == newton.GEO_SDF:
                         continue
@@ -475,6 +474,9 @@ def CreateSimRenderer(renderer):
                     q_shape = X_bs.q
                     if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
                         q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
+                    if geo_type == newton.GEO_MESH:
+                        # ensure we use the correct scale for the mesh instance
+                        scale = np.asarray(geo_scale, dtype=np.float32)
                     self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
                 instance_count += 1
             return instance_count
@@ -857,18 +859,12 @@ def CreateSimRenderer(renderer):
                     color=(muscle_activation[m], 0.2, 0.5),
                 )
 
-        def render_contacts(
-            self,
-            body_q: wp.array,
-            contacts: newton.Contacts,
-            contact_point_radius: float = 1e-3,
-        ):
+        def compute_contact_rendering_points(self, body_q: wp.array, contacts: newton.Contacts):
             """
-            Render contact points between rigid bodies.
+            Computes the world-space positions of contact points for rendering.
             Args:
                 body_q (wp.array): Array of body transformations.
                 contacts (newton.Contacts): The contacts to render.
-                contact_point_radius (float, optional): The radius of the contact points.
             """
             if self._contact_points0 is None or len(self._contact_points0) < contacts.rigid_contact_max:
                 self._contact_points0 = wp.array(
@@ -897,18 +893,60 @@ def CreateSimRenderer(renderer):
                 device=self.model.device,
             )
 
-            self.render_points(
-                "contact_points0",
-                self._contact_points0,
-                radius=contact_point_radius * self.scaling,
-                colors=(1.0, 0.5, 0.0),
-            )
-            self.render_points(
-                "contact_points1",
-                self._contact_points1,
-                radius=contact_point_radius * self.scaling,
-                colors=(0.0, 0.5, 1.0),
-            )
+        def render_computed_contacts(self, contact_point_radius: float = 1e-3):
+            """
+            Renders the pre-computed contact points.
+            Args:
+                contact_point_radius (float, optional): The radius of the contact points.
+            """
+            if self._contact_points0:
+                self.render_points(
+                    "contact_points0",
+                    self._contact_points0,
+                    radius=contact_point_radius * self.scaling,
+                    colors=(1.0, 0.5, 0.0),
+                )
+            if self._contact_points1:
+                self.render_points(
+                    "contact_points1",
+                    self._contact_points1,
+                    radius=contact_point_radius * self.scaling,
+                    colors=(0.0, 0.5, 1.0),
+                )
+
+        def render_contacts(
+            self,
+            body_q: wp.array,
+            contacts: newton.Contacts,
+            contact_point_radius: float = 1e-3,
+        ):
+            """
+            Render contact points between rigid bodies.
+            Args:
+                body_q (wp.array): Array of body transformations.
+                contacts (newton.Contacts): The contacts to render.
+                contact_point_radius (float, optional): The radius of the contact points.
+            """
+            self.compute_contact_rendering_points(body_q, contacts)
+            self.render_computed_contacts(contact_point_radius)
+
+        @property
+        def contact_points0(self):
+            """Get the first set of contact points.
+
+            Returns:
+                wp.array: Array of contact point positions for the first body in each contact pair.
+            """
+            return self._contact_points0
+
+        @property
+        def contact_points1(self):
+            """Get the second set of contact points.
+
+            Returns:
+                wp.array: Array of contact point positions for the second body in each contact pair.
+            """
+            return self._contact_points1
 
     return SimRenderer
 

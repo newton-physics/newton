@@ -1017,12 +1017,46 @@ class MuJoCoSolver(SolverBase):
 
     .. code-block:: python
 
-        solver = newton.MuJoCoSolver(model)
+        solver = newton.solvers.MuJoCoSolver(model)
 
         # simulation loop
         for i in range(100):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
+
+    Debugging
+    ---------
+
+    To debug the MuJoCoSolver, you can save the MuJoCo model that is created from the :class:`newton.Model` in the constructor of the MuJoCoSolver:
+
+    .. code-block:: python
+
+        solver = newton.solvers.MuJoCoSolver(model, save_to_mjcf="model.xml")
+
+    This will save the MuJoCo model as an MJCF file, which can be opened in the MuJoCo simulator.
+
+    It is also possible to visualize the simulation running in the MuJoCoSolver through MuJoCo's own viewer.
+    This may help to debug the simulation and see how the MuJoCo model looks like when it is created from the Newton model.
+
+    .. code-block:: python
+
+        import mujoco
+        import mujoco.viewer
+        import mujoco_warp
+
+        solver = newton.solvers.MuJoCoSolver(model)
+        mjm, mjd = solver.mj_model, solver.mj_data
+        m, d = solver.mjw_model, solver.mjw_data
+        viewer = mujoco.viewer.launch_passive(mjm, mjd)
+
+        for _ in range(num_frames):
+            # step the solver
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+            if not solver.use_mujoco:
+                mujoco_warp.get_data_into(mjd, mjm, d)
+            viewer.sync()
     """
 
     def __init__(
@@ -2057,7 +2091,6 @@ class MuJoCoSolver(SolverBase):
             full_shape_mapping = shape_mapping
 
         self.mj_data = mujoco.MjData(self.mj_model)
-        self.mj_data.nefc = nefc_per_env
 
         self.mj_model.opt.tolerance = tolerance
         self.mj_model.opt.ls_tolerance = ls_tolerance
@@ -2140,7 +2173,7 @@ class MuJoCoSolver(SolverBase):
                 else:
                     rigid_contact_max = newton.sim.count_rigid_contact_points(model)
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
+            njmax = max(nefc_per_env, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
