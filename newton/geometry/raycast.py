@@ -377,7 +377,7 @@ def raycast_kernel(
 
     X_bs = shape_transform[tid]
 
-    geom_to_world = wp.transform_multiply(X_wb, X_bs)
+    geom_to_world = wp.mul(X_wb, X_bs)
 
     geomtype = geom_type[tid]
 
