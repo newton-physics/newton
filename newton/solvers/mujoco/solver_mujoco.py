@@ -2102,7 +2102,6 @@ class MuJoCoSolver(SolverBase):
         # m.opt.disableflags = disableflags
         self.mj_model.opt.impratio = impratio
         self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
-        self.mj_model.opt.ls_parallel = ls_parallel
 
         MuJoCoSolver.update_mjc_data(self.mj_data, model, state)
 
@@ -2144,6 +2143,10 @@ class MuJoCoSolver(SolverBase):
             model.to_mjc_geom_index = wp.array(to_mjc_geom_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+
+            # set mjwarp-only settings
+            self.mjw_model.opt.ls_parallel = ls_parallel
+
 
             if separate_envs_to_worlds:
                 nworld = model.num_envs
