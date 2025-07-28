@@ -60,6 +60,7 @@ def compute_pick_state_kernel(
 def apply_picking_force_kernel(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_com: wp.array(dtype=wp.vec3),
     body_f: wp.array(dtype=wp.spatial_vector),
     pick_body_arr: wp.array(dtype=int),
     pick_state: wp.array(dtype=float),
@@ -79,7 +80,7 @@ def apply_picking_force_kernel(
     pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
 
     # center of mass
-    com = wp.transform_get_translation(X_wb)
+    com = wp.transform_point(X_wb, body_com[pick_body])
 
     # get velocity of attachment point
     omega = wp.spatial_top(body_qd[pick_body])
@@ -593,6 +594,7 @@ def CreateSimRenderer(renderer):
                 inputs=[
                     state.body_q,
                     state.body_qd,
+                    self.model.body_com,
                     state.body_f,
                     self.pick_body,
                     self.pick_state,
