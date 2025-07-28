@@ -285,9 +285,26 @@ class ModelBuilder:
 
         # region compiler settings (similar to MuJoCo)
         self.balance_inertia = True
+        """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
+        When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
+        ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
+
         self.bound_mass = None
+        """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
+        clamped to this minimum. Set to None to disable mass clamping. Default: None."""
+
         self.bound_inertia = None
+        """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
+        moments of inertia are at least this value. Set to None to disable inertia eigenvalue
+        clamping. Default: None."""
+
         self.validate_inertia_detailed = False
+        """Whether to use detailed (slower) inertia validation that provides per-body warnings.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
+        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
+        When True, uses a CPU implementation that reports specific issues for each body and updates
+        the ModelBuilder's internal state.
+        Default: False."""
         # endregion
 
         # particles
@@ -3543,14 +3560,22 @@ class ModelBuilder:
                                 self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
                             else:
                                 self.body_inv_inertia[i] = corrected_inertia
+
+                    # For detailed validation, create arrays from builder data (which were updated)
+                    m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
                 else:
                     # Use fast Warp kernel validation
                     # First create arrays for the kernel
-                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=False)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=False)
-                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=False)
-                    body_inv_inertia_array = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=False)
-                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.int32)
+                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    body_inv_inertia_array = wp.array(
+                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+                    )
+                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
 
                     # Launch validation kernel
                     wp.launch(
@@ -3577,18 +3602,21 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Copy corrected values back
-                    self.body_mass = body_mass_array.numpy().tolist()
-                    self.body_inertia = [wp.mat33(m) for m in body_inertia_array.numpy()]
-                    self.body_inv_mass = body_inv_mass_array.numpy().tolist()
-                    self.body_inv_inertia = [wp.mat33(m) for m in body_inv_inertia_array.numpy()]
+                    # Directly use the corrected arrays on the Model (avoids double allocation)
+                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                    m.body_mass = body_mass_array
+                    m.body_inv_mass = body_inv_mass_array
+                    m.body_inertia = body_inertia_array
+                    m.body_inv_inertia = body_inv_inertia_array
+            else:
+                # No bodies, create empty arrays
+                m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_key = self.body_key
 

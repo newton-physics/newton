@@ -655,7 +655,7 @@ def verify_and_correct_inertia(
     return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False, module="unique")
 def validate_and_correct_inertia_kernel(
     body_mass: wp.array(dtype=wp.float32),
     body_inertia: wp.array(dtype=wp.mat33),
@@ -664,7 +664,7 @@ def validate_and_correct_inertia_kernel(
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
-    correction_flags: wp.array(dtype=wp.int32),  # Output: 1 if corrected, 0 otherwise
+    correction_flags: wp.array(dtype=wp.bool),  # Output: True if corrected, False otherwise
 ):
     """Warp kernel for parallel inertia validation and correction.
 
@@ -676,22 +676,22 @@ def validate_and_correct_inertia_kernel(
 
     mass = body_mass[tid]
     inertia = body_inertia[tid]
-    was_corrected = 0
+    was_corrected = False
 
     # Check for negative mass
     if mass < 0.0:
         mass = 0.0
-        was_corrected = 1
+        was_corrected = True
 
     # Apply mass bound
     if bound_mass > 0.0 and mass < bound_mass:
         mass = bound_mass
-        was_corrected = 1
+        was_corrected = True
 
     # For zero mass, inertia should be zero
     if mass == 0.0:
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        was_corrected = 1
+        was_corrected = True
     else:
         # Use eigendecomposition for proper validation
         eigvecs, eigvals = wp.eig3(inertia)
@@ -713,7 +713,7 @@ def validate_and_correct_inertia_kernel(
             I2 += adjustment
             I3 += adjustment
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
-            was_corrected = 1
+            was_corrected = True
 
         # Apply eigenvalue bounds
         if bound_inertia > 0.0 and I1 < bound_inertia:
@@ -722,7 +722,7 @@ def validate_and_correct_inertia_kernel(
             I2 += adjustment
             I3 += adjustment
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
-            was_corrected = 1
+            was_corrected = True
 
         # Check triangle inequality: I1 + I2 >= I3 (with tolerance)
         # Use larger tolerance for float32 precision
@@ -731,7 +731,7 @@ def validate_and_correct_inertia_kernel(
             adjustment = deficit + 1e-6
             # Add scalar*I to fix triangle inequality
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
-            was_corrected = 1
+            was_corrected = True
 
     # Write back corrected values
     body_mass[tid] = mass
