@@ -2102,6 +2102,7 @@ class MuJoCoSolver(SolverBase):
         # m.opt.disableflags = disableflags
         self.mj_model.opt.impratio = impratio
         self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        self.mj_model.opt.ls_parallel = ls_parallel
 
         MuJoCoSolver.update_mjc_data(self.mj_data, model, state)
 
