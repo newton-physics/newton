@@ -45,11 +45,10 @@ class Style3DSolver(SolverBase):
     Ref[1]. Large Steps in Cloth Simulation, Baraff & Witkin.
     Ref[2]. Fast Simulation of Mass-Spring Systems, Tiantian Liu etc.
 
-    Implicit-Euler method solves the following non-linear equation:
+    Implicit-Euler method solves the following non-linear equation::
 
         (M / dt^2 + H(x)) * dx = (M / dt^2) * (x_prev + v_prev * dt - x) + f_ext(x) + f_int(x)
                                = (M / dt^2) * (x_prev + v_prev * dt + (dt^2 / M) * f_ext(x) - x) + f_int(x)
-                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                                = (M / dt^2) * (x_inertia - x) + f_int(x)
 
     Notations:
@@ -58,8 +57,9 @@ class Style3DSolver(SolverBase):
         H:  hessian matrix (function of x)
         P:  PD-approximated hessian matrix (constant)
         A:  M / dt^2 + H(x) or M / dt^2 + P
-      rhs:  Right hand side of the equation: (M / dt^2) * (inertia_x - x) + f_int(x)
-      res:  Residual: rhs - A * dx_init, or rhs if dx_init == 0
+        rhs:  Right hand side of the equation: (M / dt^2) * (inertia_x - x) + f_int(x)
+        res:  Residual: rhs - A * dx_init, or rhs if dx_init == 0
+
     """
 
     def __init__(
