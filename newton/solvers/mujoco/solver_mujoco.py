@@ -2144,6 +2144,9 @@ class MuJoCoSolver(SolverBase):
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
+            # set mjwarp-only settings
+            self.mjw_model.opt.ls_parallel = ls_parallel
+
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:
