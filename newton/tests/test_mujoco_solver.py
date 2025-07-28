@@ -48,9 +48,13 @@ class TestMuJoCoSolver(unittest.TestCase):
 
     def test_ls_parallel_option(self):
         """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
-        # Create minimal model
+        # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0)
+        body = builder.add_body(
+            mass=1.0, 
+            com=(0.0, 0.0, 0.0), 
+            I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        )
         builder.add_joint_revolute(-1, body)
         model = builder.finalize()
         
