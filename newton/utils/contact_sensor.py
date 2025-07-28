@@ -30,13 +30,8 @@ from newton.solvers import SolverBase
 NUM_THREADS = 8192
 
 
-class SentinelMeta(type):
-    def __repr__(cls) -> str:
-        return f"<{cls.__name__}>"
-
-
-class MatchAny(metaclass=SentinelMeta):
-    """Sentinel class matching all contact partners."""
+class MatchAny:
+    """Matches all contact partners."""
 
 
 class EntityKind(Enum):
