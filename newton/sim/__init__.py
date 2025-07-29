@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from . import ik
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline, count_rigid_contact_points
@@ -77,5 +78,6 @@ __all__ = [
     "eval_fk",
     "eval_ik",
     "get_joint_dof_count",
+    "ik",
     "plot_graph",
 ]

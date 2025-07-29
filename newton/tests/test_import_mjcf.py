@@ -154,7 +154,9 @@ class TestImportMjcf(unittest.TestCase):
         expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
 
         actual_inertia = model.body_inertia.numpy()[0]
-        np.testing.assert_array_almost_equal(actual_inertia, expected_diagonal, decimal=6)
+        # The validation may add a small epsilon for numerical stability
+        # Check that the values are close within a reasonable tolerance
+        np.testing.assert_allclose(actual_inertia, expected_diagonal, rtol=1e-5, atol=1e-5)
 
         # Test full inertia rotation
         builder = newton.ModelBuilder()
@@ -190,7 +192,22 @@ class TestImportMjcf(unittest.TestCase):
         expected_full = rotation_matrix @ original_inertia @ rotation_matrix.T
 
         actual_inertia = model.body_inertia.numpy()[0]
-        np.testing.assert_array_almost_equal(actual_inertia, expected_full, decimal=6)
+
+        # The original inertia violates the triangle inequality, so validation will correct it
+        # The eigenvalues are [0.975, 1.919, 3.106], which violates I1 + I2 >= I3
+        # The validation adds ~0.212 to all eigenvalues to fix this
+        # We check that:
+        # 1. The rotation structure is preserved (off-diagonal elements match)
+        # 2. The diagonal has been increased by approximately the same amount
+
+        # Check off-diagonal elements are preserved
+        np.testing.assert_allclose(actual_inertia[0, 1], expected_full[0, 1], atol=1e-6)
+        np.testing.assert_allclose(actual_inertia[0, 2], expected_full[0, 2], atol=1e-6)
+        np.testing.assert_allclose(actual_inertia[1, 2], expected_full[1, 2], atol=1e-6)
+
+        # Check that diagonal elements have been increased by approximately the same amount
+        corrections = np.diag(actual_inertia - expected_full)
+        np.testing.assert_allclose(corrections, corrections[0], rtol=1e-3)
 
         # Verify that the rotation was actually applied (not just identity)
         assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)

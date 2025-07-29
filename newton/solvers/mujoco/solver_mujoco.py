@@ -2229,7 +2229,6 @@ class MuJoCoSolver(SolverBase):
             full_shape_mapping = shape_mapping
 
         self.mj_data = mujoco.MjData(self.mj_model)
-        self.mj_data.nefc = nefc_per_env
 
         self.mj_model.opt.tolerance = tolerance
         self.mj_model.opt.ls_tolerance = ls_tolerance
@@ -2289,6 +2288,9 @@ class MuJoCoSolver(SolverBase):
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
+            # set mjwarp-only settings
+            self.mjw_model.opt.ls_parallel = ls_parallel
+
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:
@@ -2318,7 +2320,7 @@ class MuJoCoSolver(SolverBase):
                 else:
                     rigid_contact_max = newton.sim.count_rigid_contact_points(model)
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
+            njmax = max(nefc_per_env, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
