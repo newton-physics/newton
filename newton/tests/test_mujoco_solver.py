@@ -46,6 +46,22 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
+    def test_ls_parallel_option(self):
+        """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
+        # Create minimal model with proper inertia
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, com=(0.0, 0.0, 0.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        builder.add_joint_revolute(-1, body)
+        model = builder.finalize()
+
+        # Test with ls_parallel=True
+        solver = MuJoCoSolver(model, ls_parallel=True)
+        self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+
+        # Test with ls_parallel=False (default)
+        solver_default = MuJoCoSolver(model, ls_parallel=False)
+        self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
