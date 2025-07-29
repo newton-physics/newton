@@ -44,11 +44,6 @@ from newton.tests.unittest_utils import (
 
 wp.init()
 
-supports_load_during_graph_capture = False
-
-if wp.context.runtime.driver_version >= (12, 3):
-    supports_load_during_graph_capture = True
-
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
     """Helper function to build command-line options from the test options dictionary."""
@@ -58,6 +53,8 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
         if isinstance(value, bool):
             # Default behavior expecting argparse.BooleanOptionalAction support
             additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
+        if isinstance(value, list):
+            additional_options.extend([f"--{key.replace('_', '-')}"] + [str(v) for v in value])
         else:
             # Just add --key value
             additional_options.extend(["--" + key.replace("_", "-"), str(value)])
@@ -233,33 +230,21 @@ add_example_test(
     TestBasicRobotExamples,
     name="example_cartpole",
     devices=test_devices,
-    test_options={
-        "stage_path": "None",
-        "num_frames": 100 if supports_load_during_graph_capture else 10,
-        "use_cuda_graph": supports_load_during_graph_capture,
-    },
+    test_options={"stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
     TestBasicRobotExamples,
     name="example_g1",
     devices=test_devices,
-    test_options={
-        "stage_path": "None",
-        "num_frames": 500 if supports_load_during_graph_capture else 20,
-        "use_cuda_graph": supports_load_during_graph_capture,
-    },
+    test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
     TestBasicRobotExamples,
     name="example_humanoid",
     devices=test_devices,
-    test_options={
-        "stage_path": "None",
-        "num_frames": 500 if supports_load_during_graph_capture else 20,
-        "use_cuda_graph": supports_load_during_graph_capture,
-    },
+    test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
@@ -304,21 +289,21 @@ add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_articulations",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options={"stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_cartpole",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options={"stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_materials",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options={"stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
 
@@ -338,6 +323,13 @@ add_example_test(
     name="example_rigid_force",
     devices=test_devices,
     test_options={"headless": True},
+)
+add_example_test(
+    TestOtherExamples,
+    name="example_ik_benchmark",
+    devices=test_devices,
+    test_options={"stage_path": "None"},
+    test_options_cpu={"batch_sizes": [1, 10]},
 )
 
 
