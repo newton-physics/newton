@@ -722,8 +722,6 @@ class ModelBuilder:
             "equality_constraint_polycoef",
             "equality_constraint_key",
             "equality_constraint_enabled",
-            # "equality_constraint_solref",
-            # "equality_constraint_solimp",
         ]
 
         for attr in more_builder_attrs:
@@ -1314,7 +1312,7 @@ class ModelBuilder:
 
     def add_equality_constraint(
         self,
-        constraint_type: str,
+        constraint_type: Any,
         body1name: str | None = None,
         body2name: str | None = None,
         anchor: Vec3 | None = None,
@@ -1329,7 +1327,7 @@ class ModelBuilder:
         """Adds a Mujoco equality constraint.
 
         Args:
-            constraint_type: Type of constraint ('connect', 'weld', 'joint')
+            constraint_type (constant): Type of constraint ('connect', 'weld', 'joint')
             body1name: First body participating in the constraint
             body2name: Second body participating in the constraint
             anchor: Anchor point on body1
@@ -3747,7 +3745,7 @@ class ModelBuilder:
             m.articulation_key = self.articulation_key
 
             # equality constraints
-            m.equality_constraint_type = self.equality_constraint_type
+            m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
             m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
             m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)

@@ -789,7 +789,7 @@ def parse_mjcf(
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()]) if anchor else None
 
                 builder.add_equality_constraint(
-                    constraint_type="connect",
+                    constraint_type=newton.EQ_CONNECT,
                     body1name=body1_name,
                     body2name=body2_name,
                     anchor=anchor_vec,
@@ -817,7 +817,7 @@ def parse_mjcf(
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
 
                 builder.add_equality_constraint(
-                    constraint_type="weld",
+                    constraint_type=newton.EQ_WELD,
                     body1name=body1_name,
                     body2name=body2_name,
                     anchor=anchor_vec,
@@ -841,7 +841,7 @@ def parse_mjcf(
                     print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
 
                 builder.add_equality_constraint(
-                    constraint_type="joint",
+                    constraint_type=newton.EQ_JOINT,
                     joint1name=joint1_name,
                     joint2name=joint2_name,
                     polycoef=[float(x) for x in polycoef.split()],

@@ -46,6 +46,11 @@ from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_FLEX",
+    "EQ_JOINT",
+    "EQ_TENDON",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",

@@ -46,6 +46,9 @@ from .geometry import (
 
 # Simulation functionality
 from .sim import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -66,6 +69,9 @@ from .sim import (
 )
 
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "GEO_BOX",
     "GEO_CAPSULE",
     "GEO_CONE",

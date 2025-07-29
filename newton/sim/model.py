@@ -295,8 +295,8 @@ class Model:
         self.gravity = np.array((0.0, 0.0, -9.81))
         """Gravity vector, shape [3], float."""
 
-        self.equality_constraint_type = []
-        """Type of equality constraint, shape [equality_constraint_count], str."""
+        self.equality_constraint_type = None
+        """Type of equality constraint, shape [equality_constraint_count], int."""
         self.equality_constraint_body1 = None
         """First body index, shape [equality_constraint_count], int."""
         self.equality_constraint_body2 = None

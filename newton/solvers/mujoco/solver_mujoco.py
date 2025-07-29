@@ -1653,6 +1653,7 @@ class MuJoCoSolver(SolverBase):
         shape_body = model.shape_body.numpy()
         shape_flags = model.shape_flags.numpy()
 
+        eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
         eq_constraint_body2 = model.equality_constraint_body2.numpy()
         eq_constraint_anchor = model.equality_constraint_anchor.numpy()
@@ -2051,8 +2052,8 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
-        for i, typ in enumerate(model.equality_constraint_type):
-            if typ == "connect":
+        for i, typ in enumerate(eq_constraint_type):
+            if typ == newton.EQ_CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
@@ -2060,7 +2061,7 @@ class MuJoCoSolver(SolverBase):
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
 
-            elif typ == "joint":
+            elif typ == newton.EQ_JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
@@ -2068,7 +2069,7 @@ class MuJoCoSolver(SolverBase):
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
                 eq.data[0:5] = eq_constraint_polycoef[i]
 
-            elif typ == "weld":
+            elif typ == newton.EQ_WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
