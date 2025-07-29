@@ -18,8 +18,6 @@ import warp as wp
 
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 
-from ..vbd.solver_vbd import evaluate_body_particle_contact
-
 
 @wp.func
 def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm: wp.mat22):
@@ -101,7 +99,7 @@ def eval_bend_kernel(
 
 
 @wp.kernel
-def eval_drag_kernel(
+def eval_drag_force_kernel(
     spring_stiff: float,
     face_index: wp.array(dtype=int),
     drag_pos: wp.array(dtype=wp.vec3),
@@ -110,7 +108,6 @@ def eval_drag_kernel(
     vert_pos: wp.array(dtype=wp.vec3),
     # outputs
     forces: wp.array(dtype=wp.vec3),
-    hessian_diags: wp.array(dtype=wp.mat33),
 ):
     fid = face_index[0]
     if fid != -1:
@@ -129,72 +126,36 @@ def eval_drag_kernel(
         wp.atomic_add(forces, face[2], force * coord[2])
 
         # add hessian
-        dir = wp.normalize(dir)
-        hessian = wp.outer(dir, dir) * spring_stiff
-        hessian_diags[face[0]] += hessian * coord[0]
-        hessian_diags[face[1]] += hessian * coord[1]
-        hessian_diags[face[2]] += hessian * coord[2]
+        # dir = wp.normalize(dir)
+        # hessian = wp.outer(dir, dir) * spring_stiff
+        # hessian_diags[face[0]] += hessian * coord[0]
+        # hessian_diags[face[1]] += hessian * coord[1]
+        # hessian_diags[face[2]] += hessian * coord[2]
 
 
 @wp.kernel
-def eval_body_contact_kernel(
-    # inputs
-    dt: float,
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    # body-particle contact
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    friction_mu: float,
-    friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_max: int,
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
-    # outputs: particle force and hessian
-    forces: wp.array(dtype=wp.vec3),
-    hessians: wp.array(dtype=wp.mat33),
+def accumulate_dragging_pd_diag_kernel(
+    spring_stiff: float,
+    face_index: wp.array(dtype=int),
+    drag_bary_coord: wp.array(dtype=wp.vec3),
+    faces: wp.array(dtype=wp.int32, ndim=2),
+    particle_flags: wp.array(dtype=wp.uint32),
+    # outputs
+    pd_diags: wp.array(dtype=float),
 ):
-    t_id = wp.tid()
+    fid = face_index[0]
+    if fid != -1:
+        coord = drag_bary_coord[0]
+        face = wp.vec3i(faces[fid, 0], faces[fid, 1], faces[fid, 2])
 
-    particle_body_contact_count = min(contact_max, contact_count[0])
+        if particle_flags[face[0]] & PARTICLE_FLAG_ACTIVE:
+            pd_diags[face[0]] += spring_stiff * coord[0]
 
-    if t_id < particle_body_contact_count:
-        particle_idx = soft_contact_particle[t_id]
-        body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
-            particle_idx,
-            pos[particle_idx],
-            pos_prev[particle_idx],
-            t_id,
-            soft_contact_ke,
-            soft_contact_kd,
-            friction_mu,
-            friction_epsilon,
-            particle_radius,
-            shape_material_mu,
-            shape_body,
-            body_q,
-            body_q_prev,
-            body_qd,
-            body_com,
-            contact_shape,
-            contact_body_pos,
-            contact_body_vel,
-            contact_normal,
-            dt,
-        )
-        wp.atomic_add(forces, particle_idx, body_contact_force)
-        wp.atomic_add(hessians, particle_idx, body_contact_hessian)
+        if particle_flags[face[1]] & PARTICLE_FLAG_ACTIVE:
+            pd_diags[face[1]] += spring_stiff * coord[1]
+
+        if particle_flags[face[2]] & PARTICLE_FLAG_ACTIVE:
+            pd_diags[face[2]] += spring_stiff * coord[2]
 
 
 @wp.kernel
@@ -251,14 +212,23 @@ def prepare_jacobi_preconditioner_kernel(
     contact_hessian_diags: wp.array(dtype=wp.mat33),
     # outputs
     inv_A_diags: wp.array(dtype=wp.mat33),
-    A_diags: wp.array(dtype=wp.mat33),
 ):
     tid = wp.tid()
     diag = wp.identity(3, float) * static_A_diags[tid]
     if static_A_diags[tid] > 0.0:
         diag += contact_hessian_diags[tid]
-    inv_A_diags[tid] = wp.inverse(diag)
-    A_diags[tid] = diag
+    inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
+
+
+@wp.kernel
+def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
+    static_A_diags: wp.array(dtype=float),
+    # outputs
+    inv_A_diags: wp.array(dtype=wp.mat33),
+):
+    tid = wp.tid()
+    diag = wp.identity(3, float) * static_A_diags[tid]
+    inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
 
 
 @wp.kernel
