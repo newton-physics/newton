@@ -53,6 +53,8 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
         if isinstance(value, bool):
             # Default behavior expecting argparse.BooleanOptionalAction support
             additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
+        if isinstance(value, list):
+            additional_options.extend([f"--{key.replace('_', '-')}"] + [str(v) for v in value])
         else:
             # Just add --key value
             additional_options.extend(["--" + key.replace("_", "-"), str(value)])
@@ -326,6 +328,8 @@ add_example_test(
     TestOtherExamples,
     name="example_ik_benchmark",
     devices=test_devices,
+    test_options={"stage_path": "None"},
+    test_options_cpu={"batch_sizes": [1, 10]},
 )
 
 
