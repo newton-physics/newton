@@ -3182,14 +3182,15 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
-    def add_free_joints_to_floating_bodies(self):
+    def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
         """
         Adds a free joint to every body that is not a child in any joint and has mass > 0.
         Should be called after all other joints have been added.
         """
-        connected_bodies = set(self.joint_child)
-        for body_id in range(self.body_count):
-            if body_id not in connected_bodies and self.body_mass[body_id] > 0:
+        # set(self.joint_child) is connected_bodies
+        floating_bodies = set(new_bodies) - set(self.joint_child)
+        for body_id in floating_bodies:
+            if self.body_mass[body_id] > 0:
                 self.add_joint_free(child=body_id)
 
     def set_coloring(self, particle_color_groups):
