@@ -158,13 +158,28 @@ class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
-        parse_usd(
+        import_results = parse_usd(
             os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
             builder,
             collapse_fixed_joints=True,
             invert_rotations=True,
         )
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 2)
         self.assertEqual(builder.joint_count, 1)
+
+        usd_path_to_shape = import_results["path_shape_map"]
+        expected = {
+            "/World/Cylinder_dynamic/cylinder_reverse/mesh_0": {"mu": 0.2, "restitution": 0.3},
+            "/World/Cube_static/cube2/mesh_0": {"mu": 0.75, "restitution": 0.3},
+        }
+        # Reverse mapping: shape index -> USD path
+        shape_idx_to_usd_path = {v: k for k, v in usd_path_to_shape.items()}
+        for shape_idx in range(builder.shape_count):
+            usd_path = shape_idx_to_usd_path[shape_idx]
+            if usd_path in expected:
+                self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
+                self.assertAlmostEqual(builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5)
 
 
 if __name__ == "__main__":
