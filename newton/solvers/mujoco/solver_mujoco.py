@@ -509,39 +509,37 @@ def convert_mjw_contact_to_warp_kernel(
     mj_contact_efc_address: wp.array2d(dtype=int),
     mj_contact_worldid: wp.array(dtype=wp.int32),
     mj_efc_force: wp.array(dtype=float),
-    num_threads: int,
     # outputs
     contact_pair: wp.array(dtype=wp.vec2i),
     contact_normal: wp.array(dtype=wp.vec3f),
     contact_force: wp.array(dtype=float),
 ):
     n_contacts = mj_ncon[0]
-    n_blocks = (n_contacts + num_threads - 1) // num_threads
-    for b in range(n_blocks):
-        contact_idx = wp.tid() + num_threads * b
-        if contact_idx >= n_contacts:
-            return
+    contact_idx = wp.tid()
 
-        worldid = mj_contact_worldid[contact_idx]
-        geoms_mjw = mj_contact_geom[contact_idx]
+    if contact_idx >= n_contacts:
+        return
 
-        normalforce = wp.float(-1.0)
+    worldid = mj_contact_worldid[contact_idx]
+    geoms_mjw = mj_contact_geom[contact_idx]
 
-        efc_address0 = mj_contact_efc_address[contact_idx, 0]
-        if efc_address0 >= 0:
-            normalforce = mj_efc_force[efc_address0]
+    normalforce = wp.float(-1.0)
 
-            if pyramidal_cone:
-                dim = mj_contact_dim[contact_idx]
-                for i in range(1, 2 * (dim - 1)):
-                    normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
+    efc_address0 = mj_contact_efc_address[contact_idx, 0]
+    if efc_address0 >= 0:
+        normalforce = mj_efc_force[efc_address0]
 
-        pair = wp.vec2i()
-        for i in range(2):
-            pair[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
-        contact_pair[contact_idx] = pair
-        contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
-        contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
+        if pyramidal_cone:
+            dim = mj_contact_dim[contact_idx]
+            for i in range(1, 2 * (dim - 1)):
+                normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
+
+    pair = wp.vec2i()
+    for i in range(2):
+        pair[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
+    contact_pair[contact_idx] = pair
+    contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
+    contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
 
 
 @wp.kernel
@@ -1559,10 +1557,9 @@ class MuJoCoSolver(SolverBase):
         if contact_info.force is None:
             contact_info.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
 
-        num_threads = min(mj_data.nconmax, 8192)
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
-            dim=num_threads,
+            dim=mj_data.nconmax,
             inputs=[
                 self.contact_geom_mapping,
                 self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
@@ -1573,7 +1570,6 @@ class MuJoCoSolver(SolverBase):
                 mj_contact.efc_address,
                 mj_contact.worldid,
                 mj_data.efc.force,
-                num_threads,
             ],
             outputs=[
                 contact_info.pair,

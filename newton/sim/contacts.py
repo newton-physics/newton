@@ -100,3 +100,7 @@ class ContactInfo:
         """Contact separation, shape [n_contacts], float"""
         self.force: wp.array(dtype=wp.float32) | None = None
         """Contact force, shape [n_contacts], float"""
+        
+    @property
+    def contact_max(self) -> int:
+        return self.pair.shape[0]

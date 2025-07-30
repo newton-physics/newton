@@ -27,8 +27,6 @@ from newton.core.types import nparray
 from newton.sim.contacts import ContactInfo, Contacts
 from newton.solvers import SolverBase
 
-NUM_THREADS = 8192
-
 
 class MatchAny:
     """Matches all contact partners."""
@@ -63,6 +61,7 @@ def bisect_shape_pairs(
 
 @wp.kernel
 def select_aggregate_net_force(
+    #input
     num_contacts: wp.array(dtype=wp.int32),
     sp_sorted: wp.array(dtype=wp.vec2i),
     num_sp: int,
@@ -75,42 +74,33 @@ def select_aggregate_net_force(
     # output
     net_force: wp.array(dtype=wp.vec3),
 ):
-    ncon = num_contacts[0]
-    n_blocks = (ncon + NUM_THREADS - 1) // NUM_THREADS
-    for b in range(n_blocks):
-        con_idx = wp.tid() + NUM_THREADS * b
-        if con_idx >= ncon:
-            return
+    con_idx = wp.tid()
+    if con_idx >= ncon:
+        return
 
-        pair = contact_pair[con_idx]
+    pair = contact_pair[con_idx]
 
-        # Find the entity pairs
-        smin, smax = wp.min(pair[0], pair[1]), wp.max(pair[0], pair[1])
+    # Find the entity pairs
+    smin, smax = wp.min(pair[0], pair[1]), wp.max(pair[0], pair[1])
 
-        # add contribution for shape pair
-        normalized_pair = wp.vec2i(smin, smax)
-        sp_flip = normalized_pair[0] != pair[0]
-        sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
+    # add contribution for shape pair
+    normalized_pair = wp.vec2i(smin, smax)
+    sp_flip = normalized_pair[0] != pair[0]
+    sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
-        force = contact_force[con_idx] * contact_normal[con_idx]
-        if sp_ord < num_sp and sp_sorted[sp_ord] == normalized_pair:
-            # add the force to the pair's force accumulators
-            offset = sp_ep_offset[sp_ord]
-            for i in range(sp_ep_count[sp_ord]):
-                ep = sp_ep[offset + i]
-                force_acc, flip = ep[0], ep[1]
-                wp.atomic_add(net_force, force_acc, wp.where(sp_flip != flip, -force, force))
+    force = contact_force[con_idx] * contact_normal[con_idx]
+    if sp_ord < num_sp and sp_sorted[sp_ord] == normalized_pair:
+        # add the force to the pair's force accumulators
+        offset = sp_ep_offset[sp_ord]
+        for i in range(sp_ep_count[sp_ord]):
+            ep = sp_ep[offset + i]
+            force_acc, flip = ep[0], ep[1]
+            wp.atomic_add(net_force, force_acc, wp.where(sp_flip != flip, -force, force))
 
-        # add contribution for shape a and b
-        for i in range(2):
-            mono_sp = wp.vec2i(-1, pair[i])
-            mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
-
-            # for shape vs all, only one accumulator is supported and flip is trivially true
-            if mono_ord < num_sp and sp_sorted[mono_ord] == mono_sp:
-                force_acc = sp_ep[sp_ep_offset[mono_ord]][0]
-                wp.atomic_add(net_force, force_acc, wp.where(bool(i), -force, force))
-
+    # add contribution for shape a and b
+    for i in range(2):
+        mono_sp = wp.vec2i(-1, pair[i])
+        mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
 
 def _lol_to_arrays(list_of_lists: list[list], dtype) -> tuple[wp.array, wp.array, wp.array]:
     """Convert a list of lists to three warp arrays containing the values, offsets and counts.
@@ -370,7 +360,7 @@ class ContactSensor:
         self.net_force.zero_()
         wp.launch(
             select_aggregate_net_force,
-            dim=NUM_THREADS,
+            dim=contact.contact_max,
             inputs=[
                 contact.n_contacts,
                 self.sp_sorted,
