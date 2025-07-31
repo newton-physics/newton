@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Many of these imports are mainly needed for graph capture to work on CUDA drivers < 12.3
-import importlib
 import unittest
 from functools import partial
 
@@ -22,12 +20,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.solvers.euler.kernels
-import newton.solvers.euler.particles
-import newton.solvers.euler.solver_euler
-import newton.solvers.solver
-import newton.solvers.vbd.solver_vbd
-import newton.solvers.xpbd.solver_xpbd
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -619,6 +611,7 @@ class ClothSim:
         )
 
         self.fixed_particles = fixed_particles if fixed_particles is not None else []
+        self.renderer_scale_factor = 1
 
         self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
 
@@ -709,6 +702,74 @@ class ClothSim:
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = stretching_stiffness
 
+    def set_up_stitching_experiment(self):
+        self.num_test_frames = 200
+        vs = [
+            # triangle 1
+            [0.0, 0.1, 0.0],
+            [0.0, 0.1, 1.0],
+            [1.0, 0.1, 1.0],
+            # triangle 2
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+        fs = [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+        ]
+
+        if self.solver_name != "semi_implicit":
+            stretching_stiffness = 1e4
+            spring_ke = 1e3
+            stitching_spring_ke = 1e4
+            bending_ke = 10
+        else:
+            stretching_stiffness = 1e2
+            spring_ke = 1e2
+            stitching_spring_ke = 1e3
+            bending_ke = 10
+        particle_radius = 0.2
+
+        vs = [wp.vec3(v) for v in vs]
+        self.builder.add_cloth_mesh(
+            vertices=vs,
+            indices=fs,
+            scale=1,
+            density=2,
+            pos=wp.vec3(0.0, 3, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            edge_ke=bending_ke,
+            edge_kd=0.0,
+            tri_ke=stretching_stiffness,
+            tri_ka=stretching_stiffness,
+            tri_kd=0.0,
+            add_springs=self.solver_name == "xpbd",
+            spring_ke=spring_ke,
+            spring_kd=0.0,
+            particle_radius=particle_radius,
+        )
+
+        self.springs = [
+            [2, 3],
+            [0, 5],
+        ]
+
+        for spring_idx in range(len(self.springs)):
+            self.builder.add_spring(*self.springs[spring_idx], stitching_spring_ke, 0, 0)
+        self.renderer_scale_factor = 1
+        self.fixed_particles = [1]
+
+        self.self_contact_radius = 0.1
+        self.self_contact_margin = 0.1
+
+        self.finalize(handle_self_contact=True, ground=False, use_gravity=True)
+
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
         builder.add_builder(self.builder)
@@ -749,33 +810,6 @@ class ClothSim:
 
         self.graph = None
         if self.use_cuda_graph:
-            # We need to set block_dim to 256 here because CPU launches will set block_dim to 1
-            if self.solver_name == "vbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.vbd.solver_vbd)
-                wp.load_module(newton.solvers.vbd.solver_vbd, device=self.device)
-
-                collide_module = importlib.import_module("newton.geometry.kernels")
-                # Also for some tile stuff
-                wp.set_module_options({"block_dim": 16}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-                wp.set_module_options({"block_dim": 256}, collide_module)
-                wp.load_module(collide_module, device=self.device)
-            elif self.solver_name == "xpbd":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.kernels)
-                wp.load_module(newton.solvers.xpbd.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.xpbd.solver_xpbd)
-                wp.load_module(newton.solvers.xpbd.solver_xpbd, device=self.device)
-            elif self.solver_name == "semi_implicit":
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.kernels)
-                wp.load_module(newton.solvers.euler.kernels, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.particles)
-                wp.load_module(newton.solvers.euler.particles, device=self.device)
-                wp.set_module_options({"block_dim": 256}, newton.solvers.euler.solver_euler)
-                wp.load_module(newton.solvers.euler.solver_euler, device=self.device)
-
-            wp.set_module_options({"block_dim": 256}, newton.solvers.solver)
-            wp.load_module(newton.solvers.solver, device=self.device)
-            wp.load_module(device=self.device)
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -862,7 +896,8 @@ def test_cloth_sagging(test, device, solver):
     fixed_points = np.where(np.logical_not(example.model.particle_flags.numpy()))
     # examine that the simulation does not explode
     final_pos = example.state0.particle_q.numpy()
-    test.assertTrue((initial_pos[fixed_points, :] == final_pos[fixed_points, :]).all())
+    test.assertTrue((initial_pos[fixed_points, :] == example.state0.particle_q.numpy()[fixed_points, :]).all())
+    test.assertTrue((initial_pos[fixed_points, :] == example.state1.particle_q.numpy()[fixed_points, :]).all())
     test.assertTrue((final_pos < 1e5).all())
     # examine that the simulation has moved
     test.assertTrue((example.init_pos != final_pos).any())
@@ -1045,6 +1080,24 @@ def test_cloth_body_collision(test, device, solver):
     test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
 
 
+def test_cloth_stitching(test, device, solver):
+    example = ClothSim(device, solver)
+    example.set_up_stitching_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_pos = example.state0.particle_q.numpy()
+
+    for spring_idx in range(len(example.springs)):
+        test.assertTrue(
+            (
+                np.linalg.norm(final_pos[example.springs[spring_idx][0]] - final_pos[example.springs[spring_idx][1]])
+                < 1.0
+            ).all()
+        )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -1062,6 +1115,7 @@ tests_to_run = {
         test_cloth_bending_with_complex_rest_angles,
         test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
+        test_cloth_stitching,
     ],
     "semi_implicit": [
         test_cloth_free_fall,
@@ -1083,6 +1137,7 @@ tests_to_run = {
         test_cloth_bending_with_complex_rest_angles,
         test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
+        test_cloth_stitching,
     ],
 }
 

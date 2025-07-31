@@ -21,6 +21,7 @@ import copy
 import ctypes
 import itertools
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -62,8 +63,9 @@ from newton.geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from newton.geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 
-from ..geometry.utils import RemeshingMethod, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_BALL,
@@ -279,6 +281,30 @@ class ModelBuilder:
 
         # Default body settings
         self.default_body_armature = 0.0
+        # endregion
+
+        # region compiler settings (similar to MuJoCo)
+        self.balance_inertia = True
+        """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
+        When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
+        ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
+
+        self.bound_mass = None
+        """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
+        clamped to this minimum. Set to None to disable mass clamping. Default: None."""
+
+        self.bound_inertia = None
+        """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
+        moments of inertia are at least this value. Set to None to disable inertia eigenvalue
+        clamping. Default: None."""
+
+        self.validate_inertia_detailed = False
+        """Whether to use detailed (slower) inertia validation that provides per-body warnings.
+        When False, uses a fast GPU kernel that reports only the total number of corrected bodies
+        and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
+        When True, uses a CPU implementation that reports specific issues for each body and updates
+        the ModelBuilder's internal state.
+        Default: False."""
         # endregion
 
         # particles
@@ -2130,19 +2156,59 @@ class ModelBuilder:
             key=key,
         )
 
-    def simplify_meshes(
+    def approximate_meshes(
         self,
-        method: Literal["coacd"] | RemeshingMethod = "convex_hull",
+        method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
         shape_indices: list[int] | None = None,
-        **remeshing_kwargs,
-    ):
-        """Simplifies the meshes of the model.
+        raise_on_failure: bool = False,
+        **remeshing_kwargs: dict[str, Any],
+    ) -> set[int]:
+        """Approximates the mesh shapes of the model.
+
+        The following methods are supported:
+
+        +------------------------+-------------------------------------------------------------------------------+
+        | Method                 | Description                                                                   |
+        +========================+===============================================================================+
+        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/wjakob/coacd>`_         |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"vhacd"``            | Convex decomposition using `V-HACD <https://github.com/trimesh/vhacdx>`_      |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"bounding_sphere"``  | Approximate the mesh with a sphere                                            |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"bounding_box"``     | Approximate the mesh with an oriented bounding box                            |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``"convex_hull"``      | Approximate the mesh with a convex hull (default)                             |
+        +------------------------+-------------------------------------------------------------------------------+
+        | ``<remeshing_method>`` | Any remeshing method supported by :func:`newton.geometry.utils.remesh_mesh`   |
+        +------------------------+-------------------------------------------------------------------------------+
+
+        .. note::
+
+            The ``coacd`` and ``vhacd`` methods require additional dependencies (``coacd`` or ``trimesh`` and ``vhacdx`` respectively) to be installed.
+            The convex hull approximation requires ``scipy`` to be installed.
+
+        The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
+            - If `True`, an exception is raised when the remeshing fails.
+            - If `False`, a warning is logged, and the method falls back to the next available method in the order of preference:
+                - If convex decomposition via CoACD or V-HACD fails or dependencies are not available, the method will fall back to using the ``convex_hull`` method.
+                - If convex hull approximation fails, it will fall back to the ``bounding_box`` method.
 
         Args:
-            method: The method to use for simplification. One of "coacd" or "convex_hull".
-            **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+            method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`SHAPE_FLAG_COLLIDE_SHAPES` flag set are simplified.
+            raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
+            **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+
+        Returns:
+            set[int]: A set of indices of the shapes that were successfully remeshed.
         """
+        remeshing_methods = [*RemeshingMethod.__args__, "coacd", "vhacd", "bounding_sphere", "bounding_box"]
+        if method not in remeshing_methods:
+            raise ValueError(
+                f"Unsupported remeshing method: {method}. Supported methods are: {', '.join(remeshing_methods)}."
+            )
+
         if shape_indices is None:
             shape_indices = [
                 i
@@ -2150,73 +2216,148 @@ class ModelBuilder:
                 if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
-        if method == "coacd":
-            # convex decomposition using CoACD
-            import coacd  # noqa: PLC0415
+        # keep track of remeshed shapes to handle fallbacks
+        remeshed_shapes = set()
 
-            decompositions = {}
-
-            for shape in shape_indices:
-                mesh: Mesh = self.shape_geo_src[shape]
-                hash_m = hash(mesh)
-                if hash_m in decompositions:
-                    decomposition = decompositions[hash_m]
+        if method == "coacd" or method == "vhacd":
+            try:
+                if method == "coacd":
+                    # convex decomposition using CoACD
+                    import coacd  # noqa: PLC0415
                 else:
-                    cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                    coacd_settings = {
-                        "threshold": 0.5,
-                        "mcts_nodes": 20,
-                        "mcts_iterations": 5,
-                        "mcts_max_depth": 1,
-                        "merge": False,
-                        "max_convex_hull": mesh.maxhullvert,
-                    }
-                    coacd_settings.update(remeshing_kwargs)
-                    decomposition = coacd.run_coacd(cmesh, **coacd_settings)
-                    decompositions[hash_m] = decomposition
-                if len(decomposition) == 0:
-                    continue
-                self.shape_geo_src[shape].vertices = decomposition[0][0].reshape(-1, 3)
-                self.shape_geo_src[shape].indices = decomposition[0][1].flatten()
-                if len(decomposition) > 1:
-                    body = self.shape_body[shape]
-                    xform = self.shape_transform[shape]
-                    cfg = ModelBuilder.ShapeConfig(
-                        density=0.0,  # do not add extra mass / inertia
-                        ke=self.shape_material_ke[shape],
-                        kd=self.shape_material_kd[shape],
-                        kf=self.shape_material_kf[shape],
-                        ka=self.shape_material_ka[shape],
-                        mu=self.shape_material_mu[shape],
-                        restitution=self.shape_material_restitution[shape],
-                        thickness=self.shape_geo_thickness[shape],
-                        is_solid=self.shape_geo_is_solid[shape],
-                        collision_group=self.shape_collision_group[shape],
-                        collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                    # convex decomposition using V-HACD
+                    import trimesh  # noqa: PLC0415
+
+                decompositions = {}
+
+                for shape in shape_indices:
+                    mesh: Mesh = self.shape_geo_src[shape]
+                    scale = self.shape_geo_scale[shape]
+                    hash_m = hash(mesh)
+                    if hash_m in decompositions:
+                        decomposition = decompositions[hash_m]
+                    else:
+                        if method == "coacd":
+                            cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                            coacd_settings = {
+                                "threshold": 0.5,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                                "max_convex_hull": mesh.maxhullvert,
+                            }
+                            coacd_settings.update(remeshing_kwargs)
+                            decomposition = coacd.run_coacd(cmesh, **coacd_settings)
+                        else:
+                            tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
+                            vhacd_settings = {
+                                "maxNumVerticesPerCH": mesh.maxhullvert,
+                            }
+                            vhacd_settings.update(remeshing_kwargs)
+                            decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
+                            decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
+                        decompositions[hash_m] = decomposition
+                    if len(decomposition) == 0:
+                        continue
+                    # note we need to copy the mesh to avoid modifying the original mesh
+                    self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                        vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
-                    cfg.flags = self.shape_flags[shape]
-                    for i in range(1, len(decomposition)):
-                        self.add_shape_mesh(
-                            body=body,
-                            xform=xform,
-                            cfg=cfg,
-                            mesh=Mesh(decomposition[i][0], decomposition[i][1]),
-                            key=f"{self.shape_key[shape]}_convex_{i}",
+                    if len(decomposition) > 1:
+                        body = self.shape_body[shape]
+                        xform = self.shape_transform[shape]
+                        cfg = ModelBuilder.ShapeConfig(
+                            density=0.0,  # do not add extra mass / inertia
+                            ke=self.shape_material_ke[shape],
+                            kd=self.shape_material_kd[shape],
+                            kf=self.shape_material_kf[shape],
+                            ka=self.shape_material_ka[shape],
+                            mu=self.shape_material_mu[shape],
+                            restitution=self.shape_material_restitution[shape],
+                            thickness=self.shape_geo_thickness[shape],
+                            is_solid=self.shape_geo_is_solid[shape],
+                            collision_group=self.shape_collision_group[shape],
+                            collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
                         )
-        elif method in RemeshingMethod.__args__:
+                        cfg.flags = self.shape_flags[shape]
+                        for i in range(1, len(decomposition)):
+                            self.add_shape_mesh(
+                                body=body,
+                                xform=xform,
+                                cfg=cfg,
+                                mesh=Mesh(decomposition[i][0], decomposition[i][1]),
+                                key=f"{self.shape_key[shape]}_convex_{i}",
+                                scale=scale,
+                            )
+                    remeshed_shapes.add(shape)
+            except Exception as e:
+                if raise_on_failure:
+                    raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
+                else:
+                    wp.warn(f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.")
+                    method = "convex_hull"
+
+        if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
             for shape in shape_indices:
+                if shape in remeshed_shapes:
+                    # already remeshed with coacd or vhacd
+                    continue
                 mesh: Mesh = self.shape_geo_src[shape]
                 hash_m = hash(mesh)
-                if hash_m in remeshed:
-                    mesh = remeshed[hash_m]
-                else:
-                    mesh = remesh_mesh(mesh, method=method, **remeshing_kwargs)
-                    remeshed[hash_m] = mesh
-                self.shape_geo_src[shape] = mesh
-        else:
-            raise ValueError(f"Unknown remeshing method: {method}")
+                rmesh = remeshed.get(hash_m, None)
+                if rmesh is None:
+                    try:
+                        rmesh = remesh_mesh(mesh, method=method, inplace=False, **remeshing_kwargs)
+                        remeshed[hash_m] = rmesh
+                    except Exception as e:
+                        if raise_on_failure:
+                            raise RuntimeError(f"Remeshing with method '{method}' failed for shape {shape}.") from e
+                        else:
+                            wp.warn(
+                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box."
+                            )
+                            continue
+                # note we need to copy the mesh to avoid modifying the original mesh
+                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    vertices=rmesh.vertices, indices=rmesh.indices
+                )
+                remeshed_shapes.add(shape)
+
+        if method == "bounding_box":
+            for shape in shape_indices:
+                if shape in remeshed_shapes:
+                    continue
+                mesh: Mesh = self.shape_geo_src[shape]
+                scale = self.shape_geo_scale[shape]
+                vertices = mesh.vertices * np.array([*scale])
+                tf, scale = compute_obb(vertices)
+                self.shape_geo_type[shape] = GEO_BOX
+                self.shape_geo_src[shape] = None
+                self.shape_geo_scale[shape] = scale
+                shape_tf = wp.transform(*self.shape_transform[shape])
+                self.shape_transform[shape] = shape_tf * tf
+                remeshed_shapes.add(shape)
+        elif method == "bounding_sphere":
+            for shape in shape_indices:
+                if shape in remeshed_shapes:
+                    continue
+                mesh: Mesh = self.shape_geo_src[shape]
+                scale = self.shape_geo_scale[shape]
+                vertices = mesh.vertices * np.array([*scale])
+                center = np.mean(vertices, axis=0)
+                radius = np.max(np.linalg.norm(vertices - center, axis=1))
+                self.shape_geo_type[shape] = GEO_SPHERE
+                self.shape_geo_src[shape] = None
+                self.shape_geo_scale[shape] = wp.vec3(radius, 0.0, 0.0)
+                tf = wp.transform(center, wp.quat_identity())
+                shape_tf = wp.transform(*self.shape_transform[shape])
+                self.shape_transform[shape] = shape_tf * tf
+                remeshed_shapes.add(shape)
+
+        return remeshed_shapes
 
     # endregion
 
@@ -3403,12 +3544,90 @@ class ModelBuilder:
             # --------------------------------------
             # rigid bodies
 
+            # Apply inertia verification and correction
+            # This catches negative masses/inertias and other critical issues
+            if len(self.body_mass) > 0:
+                if self.validate_inertia_detailed:
+                    # Use detailed Python validation with per-body warnings
+                    for i in range(len(self.body_mass)):
+                        mass = self.body_mass[i]
+                        inertia = self.body_inertia[i]
+                        body_key = self.body_key[i] if i < len(self.body_key) else f"body_{i}"
+
+                        corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+                            mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_key
+                        )
+
+                        if was_corrected:
+                            self.body_mass[i] = corrected_mass
+                            self.body_inertia[i] = corrected_inertia
+                            # Update inverse mass and inertia
+                            if corrected_mass > 0.0:
+                                self.body_inv_mass[i] = 1.0 / corrected_mass
+                            else:
+                                self.body_inv_mass[i] = 0.0
+
+                            if any(x for x in corrected_inertia):
+                                self.body_inv_inertia[i] = wp.inverse(corrected_inertia)
+                            else:
+                                self.body_inv_inertia[i] = corrected_inertia
+
+                    # For detailed validation, create arrays from builder data (which were updated)
+                    m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                else:
+                    # Use fast Warp kernel validation
+                    # First create arrays for the kernel
+                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                    body_inv_inertia_array = wp.array(
+                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+                    )
+                    correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
+
+                    # Launch validation kernel
+                    wp.launch(
+                        kernel=validate_and_correct_inertia_kernel,
+                        dim=len(self.body_mass),
+                        inputs=[
+                            body_mass_array,
+                            body_inertia_array,
+                            body_inv_mass_array,
+                            body_inv_inertia_array,
+                            self.balance_inertia,
+                            self.bound_mass if self.bound_mass is not None else 0.0,
+                            self.bound_inertia if self.bound_inertia is not None else 0.0,
+                            correction_flags,
+                        ],
+                    )
+
+                    # Check if any corrections were made
+                    num_corrections = int(np.sum(correction_flags.numpy()))
+                    if num_corrections > 0:
+                        warnings.warn(
+                            f"Inertia validation corrected {num_corrections} bodies. "
+                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                            stacklevel=2,
+                        )
+
+                    # Directly use the corrected arrays on the Model (avoids double allocation)
+                    # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
+                    m.body_mass = body_mass_array
+                    m.body_inv_mass = body_inv_mass_array
+                    m.body_inertia = body_inertia_array
+                    m.body_inv_inertia = body_inv_inertia_array
+            else:
+                # No bodies, create empty arrays
+                m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
+                m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_key = self.body_key
 

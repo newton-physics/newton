@@ -37,7 +37,6 @@ def parse_usd(
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
-    only_load_warp_scene: bool = False,
     joint_drive_gains_scaling: float = 1.0,
     invert_rotations: bool = False,
     verbose: bool = wp.config.verbose,
@@ -49,6 +48,8 @@ def parse_usd(
     root_path: str = "/",
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
+    skip_mesh_approximation: bool = False,
+    load_non_physics_prims: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -62,7 +63,6 @@ def parse_usd(
         default_density (float): The default density to use for bodies without a density attribute.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        only_load_warp_scene (bool): If True, only load bodies that belong to a PhysicsScene which is simulated by Warp as a simulation owner.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "warp:joint_drive_gains_scaling".
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file.
@@ -74,6 +74,8 @@ def parse_usd(
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
+        skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+        load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -123,6 +125,17 @@ def parse_usd(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
+
+    # mapping from physics:approximation attribute (lower case) to remeshing method
+    approximation_to_remeshing_method = {
+        "convexdecomposition": "coacd",
+        "convexhull": "convex_hull",
+        "boundingsphere": "bounding_sphere",
+        "boundingcube": "bounding_box",
+        "meshSimplification": "quadratic",
+    }
+    # mapping from remeshing method to a list of shape indices
+    remeshing_queue = {}
 
     def get_attribute(prim, name):
         return prim.GetAttribute(name)
@@ -257,11 +270,7 @@ def parse_usd(
         multi_env_builder = builder
         builder = ModelBuilder()
 
-    # ret_dict = PhysicsUtils.LoadUsdPhysicsFromRange(
-    #     stage, PhysicsUtils.ParsePrimIteratorRange(Usd.PrimRange(stage.GetPseudoRoot()))
-    # )
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
-    # print("********************** LoadUsdPhysicsFromRange")
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -285,39 +294,186 @@ def parse_usd(
 
     physics_scene_prim = None
 
-    def is_warp_scene(prim):
-        if "warpSceneAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-            # print(prim.GetPath(), "is a warp scene")
-            return True
-        else:
-            # print(prim.GetPath(), "is NOT a warp scene")
-            return False
+    visual_shape_cfg = ModelBuilder.ShapeConfig(
+        density=0.0,
+        has_shape_collision=False,
+        has_particle_collision=False,
+    )
 
-    def is_warp_body(prim):
-        if not only_load_warp_scene:
-            return True
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            rigidBodyAPI = UsdPhysics.RigidBodyAPI.Get(stage, prim.GetPath())
-            targets = rigidBodyAPI.GetSimulationOwnerRel().GetTargets()
-            if len(targets) > 0:
-                physics_scene = stage.GetPrimAtPath(targets[0])
-                # print("rigid body %s scene = %s" % (prim.GetPath(), targets[0]))
-                return is_warp_scene(physics_scene)
-        return False
+    def load_visual_shapes(parent_body_id, prim, incoming_xform):
+        if (
+            prim.HasAPI(UsdPhysics.RigidBodyAPI)
+            or prim.HasAPI(UsdPhysics.MassAPI)
+            or prim.HasAPI(UsdPhysics.CollisionAPI)
+            or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+        ):
+            return
+        xform = incoming_xform * parse_xform(prim)
+        type_name = str(prim.GetTypeName()).lower()
+        if type_name.endswith("joint"):
+            return
+        scale = parse_scale(prim)
+        path_name = str(prim.GetPath())
+        shape_id = -1
+        if path_name not in path_shape_map:
+            if type_name == "cube":
+                size = parse_float(prim, "size", 2.0)
+                if has_attribute(prim, "extents"):
+                    extents = parse_vec(prim, "extents") * scale
+                    # TODO position geom at extents center?
+                    # geo_pos = 0.5 * (extents[0] + extents[1])
+                    extents = extents[1] - extents[0]
+                else:
+                    extents = scale * size
+                shape_id = builder.add_shape_box(
+                    parent_body_id,
+                    xform,
+                    hx=extents[0] / 2,
+                    hy=extents[1] / 2,
+                    hz=extents[2] / 2,
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "sphere":
+                if not (scale[0] == scale[1] == scale[2]):
+                    print("Warning: Non-uniform scaling of spheres is not supported.")
+                if has_attribute(prim, "extents"):
+                    extents = parse_vec(prim, "extents") * scale
+                    # TODO position geom at extents center?
+                    # geo_pos = 0.5 * (extents[0] + extents[1])
+                    extents = extents[1] - extents[0]
+                    if not (extents[0] == extents[1] == extents[2]):
+                        print("Warning: Non-uniform extents of spheres are not supported.")
+                    radius = extents[0]
+                else:
+                    radius = parse_float(prim, "radius", 1.0) * scale[0]
+                shape_id = builder.add_shape_sphere(
+                    parent_body_id,
+                    xform,
+                    radius,
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "plane":
+                axis_str = parse_generic(prim, "axis", "Z").upper()
+                plane_xform = xform
+                if axis_str != "Z":
+                    axis_q = newton.core.spatial.quat_between_axes(Axis.Z, axis_str)
+                    plane_xform = wp.transform(xform.p, xform.q * axis_q)
+                width = parse_float(prim, "width", 0.0) * scale[0]
+                length = parse_float(prim, "length", 0.0) * scale[1]
+                shape_id = builder.add_shape_plane(
+                    body=parent_body_id,
+                    xform=plane_xform,
+                    width=width,
+                    length=length,
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "capsule":
+                axis_str = parse_generic(prim, "axis", "Z").upper()
+                radius = parse_float(prim, "radius", 0.5) * scale[0]
+                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not has_attribute(prim, "extents"), "Capsule extents are not supported."
+                shape_id = builder.add_shape_capsule(
+                    parent_body_id,
+                    xform,
+                    radius,
+                    half_height,
+                    axis="XYZ".index(axis_str),
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "cylinder":
+                axis_str = parse_generic(prim, "axis", "Z").upper()
+                radius = parse_float(prim, "radius", 0.5) * scale[0]
+                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not has_attribute(prim, "extents"), "Cylinder extents are not supported."
+                shape_id = builder.add_shape_cylinder(
+                    parent_body_id,
+                    xform,
+                    radius,
+                    half_height,
+                    axis="XYZ".index(axis_str),
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "cone":
+                axis_str = parse_generic(prim, "axis", "Z").upper()
+                radius = parse_float(prim, "radius", 0.5) * scale[0]
+                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not has_attribute(prim, "extents"), "Cone extents are not supported."
+                shape_id = builder.add_shape_cone(
+                    parent_body_id,
+                    xform,
+                    radius,
+                    half_height,
+                    axis="XYZ".index(axis_str),
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif type_name == "mesh":
+                mesh = UsdGeom.Mesh(prim)
+                points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
+                indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
+                counts = mesh.GetFaceVertexCountsAttr().Get()
+                faces = []
+                face_id = 0
+                for count in counts:
+                    if count == 3:
+                        faces.append(indices[face_id : face_id + 3])
+                    elif count == 4:
+                        faces.append(indices[face_id : face_id + 3])
+                        faces.append(indices[[face_id, face_id + 2, face_id + 3]])
+                    else:
+                        continue
+                    face_id += count
+                m = newton.Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                shape_id = builder.add_shape_mesh(
+                    parent_body_id,
+                    xform,
+                    scale=scale,
+                    mesh=m,
+                    cfg=visual_shape_cfg,
+                    key=path_name,
+                )
+            elif len(type_name) > 0 and type_name != "xform" and verbose:
+                print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
+
+            if shape_id >= 0:
+                path_shape_map[path_name] = shape_id
+                path_shape_scale[path_name] = scale
+                if verbose:
+                    print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
+
+        if type_name == "xform":
+            if prim.IsInstance():
+                proto = prim.GetPrototype()
+                for child in proto.GetChildren():
+                    load_visual_shapes(parent_body_id, child, xform)
+
+        for child in prim.GetChildren():
+            load_visual_shapes(parent_body_id, child, xform)
+
+    def add_body(prim, xform, key, armature):
+        b = builder.add_body(
+            xform=xform,
+            key=key,
+            armature=armature,
+        )
+        path_body_map[key] = b
+        if load_non_physics_prims:
+            for child in prim.GetChildren():
+                load_visual_shapes(b, child, wp.transform_identity())
+        return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
-        use_warp = is_warp_body(prim)
-        # print("is_warp_body ", prim, " ", use_warp)
-        if use_warp:
-            prim.CreateAttribute("physics:engine", Sdf.ValueTypeNames.String).Set("warp")
-        else:
-            return -1
-
         if not rigid_body_desc.rigidBodyEnabled and only_load_enabled_rigid_bodies:
             return -1
+
         rot = rigid_body_desc.rotation
         origin = wp.transform(rigid_body_desc.position, from_gfquat(rot))
         if incoming_xform is not None:
@@ -329,15 +485,10 @@ def parse_usd(
         )
 
         if add_body_to_builder:
-            b = builder.add_body(
-                xform=origin,
-                key=path,
-                armature=body_armature,
-            )
-            path_body_map[path] = b
-            return b
+            return add_body(prim, origin, path, body_armature)
         else:
             return {
+                "prim": prim,
                 "xform": origin,
                 "key": path,
                 "armature": body_armature,
@@ -634,7 +785,7 @@ def parse_usd(
                     if material.density > 0.0:
                         body_density[body_path] = material.density
 
-            if "PhysicsMassAPI" in prim.GetAppliedSchemas():
+            if prim.HasAPI(UsdPhysics.MassAPI):
                 if has_attribute(prim, "physics:density"):
                     d = parse_float(prim, "physics:density")
                     density = d * mass_unit  # / (linear_unit**3)
@@ -667,9 +818,11 @@ def parse_usd(
             body_ids = {}
             current_body_id = 0
             art_bodies = []
-            # print("Articulated bodies for ", str(prim.GetPath()))
+            if verbose:
+                print(f"Bodies under articulation {path!s}:")
             for p in desc.articulatedBodies:
-                # print(p)
+                if verbose:
+                    print(f"\t{p!s}")
                 key = str(p)
 
                 if p == Sdf.Path.emptyPath:
@@ -728,12 +881,12 @@ def parse_usd(
                 for jid in sorted_joints:
                     parent, child = joint_edges[jid]
                     if parent >= 0 and parent not in inserted_bodies:
-                        b = builder.add_body(**body_data[parent])
+                        b = add_body(**body_data[parent])
                         inserted_bodies.add(parent)
                         art_bodies.append(b)
                         path_body_map[body_data[parent]["key"]] = b
                     if child >= 0 and child not in inserted_bodies:
-                        b = builder.add_body(**body_data[child])
+                        b = add_body(**body_data[child])
                         inserted_bodies.add(child)
                         art_bodies.append(b)
                         path_body_map[body_data[child]["key"]] = b
@@ -802,6 +955,10 @@ def parse_usd(
                 # print(prim)
                 # print(shape_spec)
                 path = str(xpath)
+                if path in path_shape_map:
+                    if verbose:
+                        print(f"Shape at {path} already added, skipping.")
+                    continue
                 body_path = str(shape_spec.rigidBody)
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
@@ -870,13 +1027,7 @@ def parse_usd(
                         axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
-                    # shape_id = builder.add_shape_cylinder(
-                    #     **shape_params,
-                    #     radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                    #     half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                    #     axis=int(shape_spec.axis),
-                    # )
-                    shape_id = builder.add_shape_capsule(
+                    shape_id = builder.add_shape_cylinder(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
@@ -908,12 +1059,28 @@ def parse_usd(
                             )
                             continue
                         face_id += count
-                    m = newton.Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                    m = newton.Mesh(
+                        points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=newton.geometry.MESH_MAXHULLVERT
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
                         **shape_params,
                     )
+                    if not skip_mesh_approximation:
+                        approximation = parse_generic(prim, "physics:approximation", None)
+                        if approximation is not None:
+                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                            if remeshing_method is None:
+                                if verbose:
+                                    print(
+                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                    )
+                            else:
+                                if remeshing_method not in remeshing_queue:
+                                    remeshing_queue[remeshing_method] = []
+                                remeshing_queue[remeshing_method].append(shape_id)
+
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
                     if shape_spec.axis != UsdPhysics.Axis.Z:
@@ -927,19 +1094,24 @@ def parse_usd(
                     )
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
+
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
-                schemas = set(prim.GetAppliedSchemas())
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
                     for other_path in other_paths:
                         path_collision_filters.add((path, str(other_path)))
 
-                if "PhysicsCollisionAPI" not in schemas or not parse_generic(prim, "physics:collisionEnabled", True):
-                    # print("no_collision_shapes : ", prim)
+                if not prim.HasAPI(UsdPhysics.CollisionAPI) or not parse_generic(
+                    prim, "physics:collisionEnabled", True
+                ):
                     no_collision_shapes.add(shape_id)
-            # print(path_shape_map)
+                    builder.shape_flags[shape_id] &= ~newton.SHAPE_FLAG_COLLIDE_SHAPES
+
+    # approximate meshes
+    for remeshing_method, shape_ids in remeshing_queue.items():
+        builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
 
     # apply collision filters now that we have added all shapes
     for path1, path2 in path_collision_filters:
@@ -968,7 +1140,7 @@ def parse_usd(
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for path, _rigid_body_desc in zip(paths, rigid_body_descs):
             prim = stage.GetPrimAtPath(path)
-            if "PhysicsMassAPI" not in prim.GetAppliedSchemas():
+            if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
             body_path = str(path)
             body_id = path_body_map.get(body_path, -1)
@@ -984,7 +1156,7 @@ def parse_usd(
             if np.linalg.norm(i_diag) > 0.0:
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag) @ rot.T
-                builder.body_inertia[body_id] = inertia
+                builder.body_inertia[body_id] = wp.mat33(inertia)
                 if inertia.any():
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:

@@ -3,7 +3,7 @@ name: GPU Unit Tests on AWS EC2
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: g6.xlarge
+  AWS_INSTANCE_TYPE: g6e.xlarge
   AWS_VOLUME_SIZE: 64
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
@@ -17,7 +17,7 @@ on:
 # Cancels in-progress runs of this workflow for the same pull request,
 # but allows parallel runs for pushes to the main branch.
 concurrency:
-  group: ${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref }}
   cancel-in-progress: true
 
 jobs:
@@ -126,7 +126,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: instance-id-artifact
+          name: unittest-instance-id-artifact
           path: instance_id.txt
 
       - name: Generate script to run on instance
@@ -157,17 +157,8 @@ jobs:
               # This is escaped to run on the remote instance
               EXIT_CODE=\$?
               echo "--- Script finished with exit code \$EXIT_CODE ---"
-              ls -la /tmp
-              if [ \$EXIT_CODE -eq 0 ]; then
-                  echo "Success" > /tmp/status.txt
-              else
-                  echo "Failed" > /tmp/status.txt
-              fi
-              # These S3 variables are already hardcoded, but escaping is good practice
-              aws s3 cp /tmp/test_output.log "s3://\${S3_BUCKET}/\${S3_KEY}/test_output.log" 2>&1 || true
               aws s3 cp /tmp/rspec.xml "s3://\${S3_BUCKET}/\${S3_KEY}/rspec.xml" 2>&1 || true
               aws s3 cp /tmp/coverage.xml "s3://\${S3_BUCKET}/\${S3_KEY}/coverage.xml" 2>&1 || true
-              aws s3 cp /tmp/status.txt "s3://\${S3_BUCKET}/\${S3_KEY}/status.txt" 2>&1 || true
           }
           trap finish EXIT
 
@@ -196,7 +187,7 @@ jobs:
           fi
 
           echo "Running Newton test suite..."
-          uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback --failfast 2>&1 | tee /tmp/test_output.log
+          uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback --failfast 2>&1
           EOF
 
           # Prepare script to be passed as SSM parameters
@@ -258,21 +249,32 @@ jobs:
           echo "--- Downloading artifacts from S3 ---"
           aws s3 cp "s3://${S3_BUCKET}/${S3_KEY}/" . --recursive
 
-          echo "--- Displaying test_output.log ---"
-          if [ -f "test_output.log" ]; then
-            cat test_output.log
-          else
-            echo "test_output.log not found."
+          # --- Get the exact S3 output URL from the command invocation ---
+          S3_STDOUT_URL=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --query "StandardOutputUrl" --output text)
+
+          if [ -z "$S3_STDOUT_URL" ]; then
+            echo "❌ Could not retrieve S3 output URL. Cannot fetch logs."
+            exit 1
           fi
-          echo "--- End of test_output.log ---"
+
+          # Convert the https:// URL to an s3:// URI
+          BUCKET_AND_KEY=$(echo "$S3_STDOUT_URL" | sed 's|https://s3\.[^.]*\.amazonaws\.com/||')
+          S3_URI="s3://${BUCKET_AND_KEY}"
+
+          LOCAL_LOG_FILE="ssm_output.log"
+          echo "Downloading combined log from ${S3_URI}"
+
+          if ! aws s3 cp "${S3_URI}" "${LOCAL_LOG_FILE}"; then
+            echo "❌ Failed to download logs from S3."
+            exit 1
+          fi
+
+          echo "--- Downloaded Log Output ---"
+          cat "${LOCAL_LOG_FILE}"
 
           # --- Final status check ---
           if [[ "$final_status" == "Success" ]]; then
-            if [ ! -f "status.txt" ]; then
-              final_status="MissingStatusFile"
-            elif [ "$(cat status.txt)" == "Failed" ]; then
-              final_status="RemoteScriptFailed"
-            elif [ ! -f "rspec.xml" ]; then
+            if [ ! -f "rspec.xml" ]; then
               final_status="MissingRspecFile"
             elif [ ! -f "coverage.xml" ]; then
               final_status="MissingCoverageFile"
@@ -311,8 +313,7 @@ jobs:
           path: |
             rspec.xml
             coverage.xml
-            test_output.log
-            status.txt
+            ssm_output.log
 
   cleanup:
     # This runs as a separate job to ensure cleanup always occurs, even if the
@@ -328,7 +329,7 @@ jobs:
       - name: Download instance ID artifact
         uses: actions/download-artifact@v4
         with:
-          name: instance-id-artifact
+          name: unittest-instance-id-artifact
           path: .
 
       - name: Configure AWS Credentials

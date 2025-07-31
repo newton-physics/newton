@@ -20,7 +20,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.geometry.utils import create_box_mesh, transform_points
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
 
 devices = get_test_devices()
@@ -37,7 +38,40 @@ class TestImportUsd(unittest.TestCase):
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 9)
+        self.assertEqual(builder.shape_count, 26)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        # 8 joints + 1 free joint for the root body
+        self.assertEqual(builder.joint_count, 9)
+        self.assertEqual(builder.joint_dof_count, 14)
+        self.assertEqual(builder.joint_coord_count, 15)
+        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(len(results["path_body_map"]), 9)
+        self.assertEqual(len(results["path_shape_map"]), 26)
+
+        collision_shapes = [
+            i
+            for i in range(builder.shape_count)
+            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+        ]
+        self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_no_visuals(self):
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            load_non_physics_prims=False,
+        )
+        self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -45,6 +79,13 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
+
+        collision_shapes = [
+            i
+            for i in range(builder.shape_count)
+            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+        ]
+        self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_with_mesh(self):
@@ -181,7 +222,81 @@ class TestImportUsd(unittest.TestCase):
                 self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
                 self.assertAlmostEqual(builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5)
 
+    def test_mesh_approximation(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
+            vertices, indices = create_box_mesh(scale)
+            if transform is not None:
+                vertices = transform_points(vertices, transform)
+            return (vertices, indices)
+
+        def create_collision_mesh(name, vertices, indices, approximation_method):
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in vertices.tolist()])
+            mesh.CreateDoubleSidedAttr().Set(False)
+
+            prim = mesh.GetPrim()
+            meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(prim)
+            meshColAPI.GetApproximationAttr().Set(approximation_method)
+            return prim
+
+        def npsorted(x):
+            return np.array(sorted(x))
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        self.assertTrue(stage)
+
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        self.assertTrue(scene)
+
+        scale = wp.vec3(1.0, 3.0, 0.2)
+        tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
+        vertices, indices = box_mesh(scale=scale, transform=tf)
+
+        create_collision_mesh("/meshOriginal", vertices, indices, UsdPhysics.Tokens.none)
+        create_collision_mesh("/meshConvexHull", vertices, indices, UsdPhysics.Tokens.convexHull)
+        create_collision_mesh("/meshBoundingSphere", vertices, indices, UsdPhysics.Tokens.boundingSphere)
+        create_collision_mesh("/meshBoundingCube", vertices, indices, UsdPhysics.Tokens.boundingCube)
+
+        builder = newton.ModelBuilder()
+        newton.geometry.MESH_MAXHULLVERT = 4
+        parse_usd(
+            stage,
+            builder,
+        )
+
+        self.assertEqual(builder.body_count, 0)
+        self.assertEqual(builder.shape_count, 4)
+        self.assertEqual(builder.shape_geo_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+
+        # original mesh
+        mesh_original = builder.shape_geo_src[0]
+        self.assertEqual(mesh_original.vertices.shape, (8, 3))
+        assert_np_equal(mesh_original.vertices, vertices)
+        assert_np_equal(mesh_original.indices, indices)
+
+        # convex hull
+        mesh_convex_hull = builder.shape_geo_src[1]
+        self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
+
+        # bounding sphere
+        self.assertIsNone(builder.shape_geo_src[2])
+        self.assertEqual(builder.shape_geo_type[2], newton.geometry.GEO_SPHERE)
+        self.assertAlmostEqual(builder.shape_geo_scale[2][0], wp.length(scale))
+        assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
+
+        # bounding box
+        assert_np_equal(npsorted(builder.shape_geo_scale[3]), npsorted(scale), tol=1.0e-6)
+        # only compare the position since the rotation is not guaranteed to be the same
+        assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

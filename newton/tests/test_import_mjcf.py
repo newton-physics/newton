@@ -117,6 +117,101 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertEqual(meshes[1].maxhullvert, 128)
                 self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
 
+    def test_inertia_rotation(self):
+        """Test that inertia tensors are properly rotated using sandwich product R @ I @ R.T"""
+
+        # Test case 1: Diagonal inertia with rotation
+        mjcf_diagonal = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_diagonal">
+    <worldbody>
+        <body>
+            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
+                      mass="1.0" diaginertia="1.0 2.0 3.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        # Test case 2: Full inertia with rotation
+        mjcf_full = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_full">
+    <worldbody>
+        <body>
+            <inertial pos="0 0 0" quat="0.7071068 0 0 0.7071068"
+                      mass="1.0" fullinertia="1.0 2.0 3.0 0.1 0.2 0.3"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        # Test diagonal inertia rotation
+        builder = newton.ModelBuilder()
+        newton.utils.parse_mjcf(mjcf_diagonal, builder, ignore_inertial_definitions=False)
+        model = builder.finalize()
+
+        # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
+        # This transforms the diagonal inertia [1, 2, 3] to [2, 1, 3] via sandwich product R @ I @ R.T
+        expected_diagonal = np.array([[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]])
+
+        actual_inertia = model.body_inertia.numpy()[0]
+        # The validation may add a small epsilon for numerical stability
+        # Check that the values are close within a reasonable tolerance
+        np.testing.assert_allclose(actual_inertia, expected_diagonal, rtol=1e-5, atol=1e-5)
+
+        # Test full inertia rotation
+        builder = newton.ModelBuilder()
+        newton.utils.parse_mjcf(mjcf_full, builder, ignore_inertial_definitions=False)
+        model = builder.finalize()
+
+        # For full inertia, we need to compute the expected result manually
+        # Original inertia matrix:
+        # [1.0  0.1  0.2]
+        # [0.1  2.0  0.3]
+        # [0.2  0.3  3.0]
+
+        # The quaternion (0.7071068, 0, 0, 0.7071068) transforms the inertia
+        # We need to use the same quaternion-to-matrix conversion as the MJCF importer
+
+        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+
+        # For full inertia, calculate the expected result analytically using the same quaternion
+        # Original inertia matrix:
+        # [1.0  0.1  0.2]
+        # [0.1  2.0  0.3]
+        # [0.2  0.3  3.0]
+
+        # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
+        # Calculate the expected result analytically using the correct rotation matrix
+        # For a 90-degree Z-axis rotation: R = [0 -1 0; 1 0 0; 0 0 1]
+
+        original_inertia = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+
+        # Rotation matrix for 90-degree rotation around Z-axis
+        rotation_matrix = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
+        expected_full = rotation_matrix @ original_inertia @ rotation_matrix.T
+
+        actual_inertia = model.body_inertia.numpy()[0]
+
+        # The original inertia violates the triangle inequality, so validation will correct it
+        # The eigenvalues are [0.975, 1.919, 3.106], which violates I1 + I2 >= I3
+        # The validation adds ~0.212 to all eigenvalues to fix this
+        # We check that:
+        # 1. The rotation structure is preserved (off-diagonal elements match)
+        # 2. The diagonal has been increased by approximately the same amount
+
+        # Check off-diagonal elements are preserved
+        np.testing.assert_allclose(actual_inertia[0, 1], expected_full[0, 1], atol=1e-6)
+        np.testing.assert_allclose(actual_inertia[0, 2], expected_full[0, 2], atol=1e-6)
+        np.testing.assert_allclose(actual_inertia[1, 2], expected_full[1, 2], atol=1e-6)
+
+        # Check that diagonal elements have been increased by approximately the same amount
+        corrections = np.diag(actual_inertia - expected_full)
+        np.testing.assert_allclose(corrections, corrections[0], rtol=1e-3)
+
+        # Verify that the rotation was actually applied (not just identity)
+        assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

@@ -13,15 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
 
+wp.config.enable_backward = False
+
 import newton
 import newton.examples
-import newton.solvers.style3d.kernels
-import newton.solvers.style3d.linear_solver
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
 
@@ -148,10 +147,6 @@ class Example:
 
         self.cuda_graph = None
         if self.use_cuda_graph:
-            # Initial graph launch, load modules (necessary for drivers prior to CUDA 12.3)
-            wp.load_module(newton.solvers.style3d.kernels, device=wp.get_device())
-            wp.load_module(newton.solvers.style3d.linear_solver, device=wp.get_device())
-
             with wp.ScopedCapture() as capture:
                 self.integrate_frame_substeps()
             self.cuda_graph = capture.graph

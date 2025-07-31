@@ -110,6 +110,5 @@ __all__ = [
     "create_none",
     "create_plane",
     "create_sphere",
-    "get_shape_radius",
     "transform_inertia",
 ]
