@@ -220,7 +220,9 @@ class TestImportUsd(unittest.TestCase):
             usd_path = shape_idx_to_usd_path[shape_idx]
             if usd_path in expected:
                 self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
-                self.assertAlmostEqual(builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5)
+                self.assertAlmostEqual(
+                    builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
+                )
 
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
