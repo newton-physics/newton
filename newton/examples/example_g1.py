@@ -36,7 +36,7 @@ class Example:
     def __init__(self, stage_path="example_g1.usd", num_envs=8, use_cuda_graph=True):
         self.num_envs = num_envs
         self.use_mujoco = True
-        articulation_builder = newton.ModelBuilder(up_axis="Y")
+        articulation_builder = newton.ModelBuilder()
 
         asset_path = newton.utils.download_asset("g1_description")
 
@@ -52,7 +52,7 @@ class Example:
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
-        builder = newton.ModelBuilder(up_axis="Y")
+        builder = newton.ModelBuilder()
         for i in range(self.num_envs):
             pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
-        show_mujoco_viewer = True
+        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
         if show_mujoco_viewer:
             import mujoco
             import mujoco.viewer
