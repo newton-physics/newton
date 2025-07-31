@@ -1085,8 +1085,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertIsNotNone(solver)
 
         # Verify that the meshes retained their maxhullvert values
-        self.assertEqual(model.shape_src[0].maxhullvert, 32)
-        self.assertEqual(model.shape_src[1].maxhullvert, 128)
+        self.assertEqual(model.shape_source[0].maxhullvert, 32)
+        self.assertEqual(model.shape_source[1].maxhullvert, 128)
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):

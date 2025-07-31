@@ -275,7 +275,7 @@ def CreateSimRenderer(renderer):
                     self.body_names,
                     self.geo_shape,
                     model.shape_body.numpy(),
-                    model.shape_src,
+                    model.shape_source,
                     model.shape_type.numpy(),
                     model.shape_scale.numpy(),
                     model.shape_thickness.numpy(),
@@ -340,7 +340,7 @@ def CreateSimRenderer(renderer):
             body_names: list,
             geo_shape: dict,
             shape_body: np.ndarray,
-            shape_src: list,
+            shape_source: list,
             shape_type: np.ndarray,
             shape_scale: np.ndarray,
             shape_thickness: np.ndarray,
@@ -357,7 +357,7 @@ def CreateSimRenderer(renderer):
                 body_names (list): List of body names.
                 geo_shape (dict): A dictionary to cache geometry shapes.
                 shape_body (numpy.ndarray): Maps shape index to body index.
-                shape_src (list): Source geometry for each shape.
+                shape_source (list): Source geometry for each shape.
                 shape_type (numpy.ndarray): Type of each shape's geometry.
                 shape_scale (numpy.ndarray): Scale of each shape's geometry.
                 shape_thickness (numpy.ndarray): Thickness of each shape's geometry.
@@ -381,7 +381,7 @@ def CreateSimRenderer(renderer):
                 geo_scale = [float(v) for v in shape_scale[s]]
                 geo_thickness = float(shape_thickness[s])
                 geo_is_solid = bool(shape_is_solid[s])
-                geo_src = shape_src[s]
+                geo_src = shape_source[s]
                 name = shape_key[s]
                 count = self._instance_key_count.get(name, 0)
                 if count > 0:

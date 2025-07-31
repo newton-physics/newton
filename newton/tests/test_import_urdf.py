@@ -184,8 +184,8 @@ class TestImportUrdf(unittest.TestCase):
                 assert builder.shape_type[0] == newton.GEO_MESH
                 assert_np_equal(builder.shape_scale[0], np.array([1.0, 1.0, 1.0]))
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
-                assert builder.shape_src[0].vertices.shape[0] == 8
-                assert builder.shape_src[0].indices.shape[0] == 3 * 12
+                assert builder.shape_source[0].vertices.shape[0] == 8
+                assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()

@@ -325,7 +325,7 @@ class ModelBuilder:
         self.shape_flags = []
         self.shape_type = []
         self.shape_scale = []
-        self.shape_src = []
+        self.shape_source = []
         self.shape_is_solid = []
         self.shape_thickness = []
         self.shape_material_ke = []
@@ -670,7 +670,7 @@ class ModelBuilder:
             "shape_flags",
             "shape_type",
             "shape_scale",
-            "shape_src",
+            "shape_source",
             "shape_is_solid",
             "shape_thickness",
             "shape_material_ke",
@@ -1775,7 +1775,7 @@ class ModelBuilder:
         self.shape_flags.append(cfg.flags)
         self.shape_type.append(type)
         self.shape_scale.append((scale[0], scale[1], scale[2]))
-        self.shape_src.append(src)
+        self.shape_source.append(src)
         self.shape_thickness.append(cfg.thickness)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -2231,7 +2231,7 @@ class ModelBuilder:
                 decompositions = {}
 
                 for shape in shape_indices:
-                    mesh: Mesh = self.shape_src[shape]
+                    mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
                     hash_m = hash(mesh)
                     if hash_m in decompositions:
@@ -2261,7 +2261,7 @@ class ModelBuilder:
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_src[shape] = self.shape_src[shape].copy(
+                    self.shape_source[shape] = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
                     if len(decomposition) > 1:
@@ -2305,7 +2305,7 @@ class ModelBuilder:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
-                mesh: Mesh = self.shape_src[shape]
+                mesh: Mesh = self.shape_source[shape]
                 hash_m = hash(mesh)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
@@ -2321,19 +2321,19 @@ class ModelBuilder:
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_src[shape] = self.shape_src[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_src[shape]
+                mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 tf, scale = compute_obb(vertices)
                 self.shape_type[shape] = GEO_BOX
-                self.shape_src[shape] = None
+                self.shape_source[shape] = None
                 self.shape_scale[shape] = scale
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
@@ -2342,13 +2342,13 @@ class ModelBuilder:
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_src[shape]
+                mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 center = np.mean(vertices, axis=0)
                 radius = np.max(np.linalg.norm(vertices - center, axis=1))
                 self.shape_type[shape] = GEO_SPHERE
-                self.shape_src[shape] = None
+                self.shape_source[shape] = None
                 self.shape_scale[shape] = wp.vec3(radius, 0.0, 0.0)
                 tf = wp.transform(center, wp.quat_identity())
                 shape_tf = wp.transform(*self.shape_transform[shape])
@@ -3445,7 +3445,7 @@ class ModelBuilder:
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
             finalized_meshes = {}  # do not duplicate meshes
-            for geo in self.shape_src:
+            for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
                     if geo_hash not in finalized_meshes:
@@ -3456,7 +3456,7 @@ class ModelBuilder:
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
-            m.shape_source = wp.array(geo_sources, dtype=wp.uint64)
+            m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
@@ -3464,7 +3464,7 @@ class ModelBuilder:
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_src = self.shape_src  # used for rendering
+            m.shape_source = self.shape_source  # used for rendering
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)

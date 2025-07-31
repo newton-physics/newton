@@ -1786,7 +1786,7 @@ class MuJoCoSolver(SolverBase):
                 }
                 tf = wp.transform(*shape_transform[shape])
                 if stype == newton.GEO_MESH:
-                    mesh_src = model.shape_src[shape]
+                    mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
                     # apply scaling
