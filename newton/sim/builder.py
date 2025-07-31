@@ -68,6 +68,9 @@ from newton.geometry.inertia import validate_and_correct_inertia_kernel, verify_
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -80,7 +83,6 @@ from .joints import (
     get_joint_dof_count,
 )
 from .model import Model
-from .types import EQ_CONNECT, EQ_JOINT, EQ_WELD
 
 
 class ModelBuilder:

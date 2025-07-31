@@ -29,6 +29,9 @@ from .flags import (
 )
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
