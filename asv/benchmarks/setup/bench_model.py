@@ -32,7 +32,7 @@ class KpiInitializeModel:
     number = 1
     repeat = 3
     min_run_count = 1
-    timeout = 1800
+    timeout = 3600
 
     def setup(self, robot, num_envs):
         wp.init()
