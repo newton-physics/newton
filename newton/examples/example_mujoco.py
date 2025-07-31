@@ -413,7 +413,7 @@ if __name__ == "__main__":
             f"Simulating {args.num_envs} {args.robot} for {args.num_frames * example.sim_substeps} steps (dt={example.sim_dt:.6f}s)"
         )
         print(
-            f"CUDA graph: {str(example.use_cuda_graph)}, MuJoCo CPU: {str(example.use_mujoco)}, random init: {str(args.random_init)}"
+            f"CUDA graph: {example.use_cuda_graph!s}, MuJoCo CPU: {example.use_mujoco!s}, random init: {args.random_init!s}"
         )
         # Map MuJoCo solver enum back to string
         solver_value = example.solver.mj_model.opt.solver
