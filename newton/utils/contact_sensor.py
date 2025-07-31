@@ -24,7 +24,7 @@ import numpy as np
 import warp as wp
 
 from newton import Model
-from newton.sim.contacts import ContactInfo, Contacts
+from newton.sim.contacts import Contacts
 from newton.solvers import SolverBase
 
 
@@ -107,18 +107,15 @@ class MatchAny:
     """Matches all contact partners."""
 
 
-def populate_contact_info(
-    contact_info: ContactInfo,
+def populate_contacts(
+    contacts: Contacts,
     solver: SolverBase,
-    contacts: Contacts | None = None,
 ):
-    """Populate ContactInfo object from the solver and the Contacts object.
+    """Populate Contacts object from the solver and the Contacts object.
     Contact forces are populated from the solver state, while contacts are populated from the Contacts object, if given,
     or from the solver state, where it contains them.
     """
-    if contacts is not None:
-        raise NotImplementedError("Contact conversion not yet implemented for Contacts object")
-    solver.update_contact_info(contact_info)
+    solver.update_contacts(contacts)
 
 
 class ContactSensor:
@@ -204,8 +201,8 @@ class ContactSensor:
         self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
         self.net_force = self._net_force.reshape(self.shape)
 
-    def eval(self, contact_info: ContactInfo):
-        self._eval_net_force(contact_info)
+    def eval(self, contacts: Contacts):
+        self._eval_net_force(contacts)
 
     def get_total_force(self) -> wp.array2d(dtype=wp.vec3f):
         return self.net_force
@@ -281,13 +278,13 @@ class ContactSensor:
         shape = len(sensing_objs), n_readings
         return sp_sorted, sp_reading, shape, counterpart_indices, sensing_obj_kinds, counterpart_kinds
 
-    def _eval_net_force(self, contact: ContactInfo):
+    def _eval_net_force(self, contact: Contacts):
         self._net_force.zero_()
         wp.launch(
             select_aggregate_net_force,
-            dim=contact.contact_max,
+            dim=contact.rigid_contact_max,
             inputs=[
-                contact.n_contacts,
+                contact.rigid_contact_count,
                 self.sp_sorted,
                 self.n_shape_pairs,
                 self.sp_reading,

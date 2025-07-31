@@ -29,9 +29,9 @@ class MockModel:
         self.device = device or wp.get_device()
 
 
-def create_contact_info(device, pairs, nconmax, positions=None, normals=None, separations=None, forces=None):
-    """Helper to create ContactInfo with specified contacts"""
-    contact_info = newton.sim.contacts.ContactInfo()
+def create_contacts(device, pairs, nconmax, positions=None, normals=None, separations=None, forces=None):
+    """Helper to create Contacts with specified contacts"""
+    contacts = newton.sim.contacts.Contacts(0, 0)
 
     n_contacts = len(pairs)
 
@@ -51,15 +51,16 @@ def create_contact_info(device, pairs, nconmax, positions=None, normals=None, se
     forces_padded = forces + [0.0] * (nconmax - n_contacts)
 
     with wp.ScopedDevice(device):
-        contact_info.pair = wp.array(pairs_padded, dtype=wp.vec2i)
-        contact_info.position = wp.array(positions_padded, dtype=wp.vec3f)
-        contact_info.normal = wp.array(normals_padded, dtype=wp.vec3f)
-        contact_info.separation = wp.array(separations_padded, dtype=wp.float32)
-        contact_info.force = wp.array(forces_padded, dtype=wp.float32)
+        contacts.pair = wp.array(pairs_padded, dtype=wp.vec2i)
+        contacts.position = wp.array(positions_padded, dtype=wp.vec3f)
+        contacts.normal = wp.array(normals_padded, dtype=wp.vec3f)
+        contacts.separation = wp.array(separations_padded, dtype=wp.float32)
+        contacts.force = wp.array(forces_padded, dtype=wp.float32)
 
-        contact_info.n_contacts = wp.array([n_contacts], dtype=wp.int32)
+        contacts.rigid_contact_count = wp.array([n_contacts], dtype=wp.int32)
+        contacts.rigid_contact_max = nconmax
 
-    return contact_info
+    return contacts
 
 
 class TestContactSensor(unittest.TestCase):
@@ -77,7 +78,7 @@ class TestContactSensor(unittest.TestCase):
 
         contact_sensor = ContactSensor(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
-        contacts = [
+        test_contacts = [
             {
                 "pair": (0, 2),
                 "position": [0.0, 0.0, 0.0],
@@ -108,11 +109,11 @@ class TestContactSensor(unittest.TestCase):
             },
         ]
 
-        pairs = [contact["pair"] for contact in contacts]
-        positions = [contact["position"] for contact in contacts]
-        normals = [contact["normal"] for contact in contacts]
-        separations = [contact["separation"] for contact in contacts]
-        forces = [contact["force"] for contact in contacts]
+        pairs = [contact["pair"] for contact in test_contacts]
+        positions = [contact["position"] for contact in test_contacts]
+        normals = [contact["normal"] for contact in test_contacts]
+        separations = [contact["separation"] for contact in test_contacts]
+        forces = [contact["force"] for contact in test_contacts]
 
         test_scenarios = [
             {
@@ -179,7 +180,7 @@ class TestContactSensor(unittest.TestCase):
 
         for scenario in test_scenarios:
             with self.subTest(scenario=scenario["name"]):
-                contact_info = create_contact_info(
+                contacts = create_contacts(
                     device,
                     scenario["pairs"],
                     nconmax=10,
@@ -189,7 +190,7 @@ class TestContactSensor(unittest.TestCase):
                     forces=scenario["forces"],
                 )
 
-                contact_sensor.eval(contact_info)
+                contact_sensor.eval(contacts)
 
                 self.assertIsNotNone(contact_sensor.net_force)
                 self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)

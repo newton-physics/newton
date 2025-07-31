@@ -23,8 +23,8 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
-from newton.sim.contacts import ContactInfo
-from newton.utils.contact_sensor import ContactSensor, populate_contact_info
+from newton.sim.contacts import Contacts
+from newton.utils.contact_sensor import ContactSensor, populate_contacts
 from newton.utils.selection import ArticulationView
 
 USE_TORCH = False
@@ -109,7 +109,7 @@ class Example:
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors
-        self.contact_info = ContactInfo()
+        self.contacts = Contacts(0, 0)
 
         # finalize model
         self.model = builder.finalize()
@@ -261,11 +261,11 @@ class Example:
             else:
                 self.simulate()
 
-        populate_contact_info(self.contact_info, self.solver)
-        self.torso_all_contact_sensor.eval(self.contact_info)
+        populate_contacts(self.contacts, self.solver)
+        self.torso_all_contact_sensor.eval(self.contacts)
         print(f"Torso net forces: {self.torso_all_contact_sensor.net_force}")
-        self.arm_ground_contact_sensor.eval(self.contact_info)
-        self.foot_arm_contact_sensor.eval(self.contact_info)
+        self.arm_ground_contact_sensor.eval(self.contacts)
+        self.foot_arm_contact_sensor.eval(self.contacts)
 
         self.sim_time += self.frame_dt
         self.step_count += 1

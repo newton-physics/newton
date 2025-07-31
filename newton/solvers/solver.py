@@ -16,7 +16,7 @@
 import warp as wp
 
 from newton.geometry import PARTICLE_FLAG_ACTIVE
-from newton.sim import ContactInfo, Contacts, Control, Model, State
+from newton.sim import Contacts, Control, Model, State
 
 
 @wp.kernel
@@ -294,9 +294,10 @@ class SolverBase:
         """
         pass
 
-    def update_contact_info(self, contact_info: ContactInfo) -> None:
-        """Update a ContactInfo object with contacts and / or forces from the solver state.
+    def update_contacts(self, contacts: Contacts) -> None:
+        """Update a Contacts object with forces from the solver state. Where the solver state contains
+        other contact data, convert that data to the Contacts format.
         Args:
-            contact_info (ContactInfo): The object to update from the solver state.
+            contacts (Contacts): The object to update from the solver state.
         """
         raise NotImplementedError()

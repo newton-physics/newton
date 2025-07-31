@@ -82,29 +82,3 @@ class Contacts:
     @property
     def device(self):
         return self.rigid_contact_count.device
-
-
-class ContactInfo:
-    """Holds the contact information necessary for contact sensors."""
-
-    def __init__(self):
-        self.n_contacts: wp.array(dtype=wp.int32) | None = None
-        """Number of active contacts, shape [1]"""
-        self.pair: wp.array(dtype=wp.vec2i) | None = None
-        """Contact pair geometry indices, shape [n_contacts], vec2i"""
-        self.position: wp.array(dtype=wp.vec3f) | None = None
-        """Contact position, shape [n_contacts], vec3"""
-        self.normal: wp.array(dtype=wp.vec3f) | None = None
-        """Contact normal, shape [n_contacts], vec3"""
-        self.separation: wp.array(dtype=wp.float32) | None = None
-        """Contact separation, shape [n_contacts], float"""
-        self.force: wp.array(dtype=wp.float32) | None = None
-        """Contact force, shape [n_contacts], float"""
-
-    @property
-    def contact_max(self) -> int:
-        return self.pair.shape[0]
-
-    @property
-    def device(self) -> Devicelike:
-        return self.pair.device

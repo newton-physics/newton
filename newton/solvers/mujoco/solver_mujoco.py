@@ -27,7 +27,7 @@ import newton.utils
 from newton.core.types import nparray, override
 from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
-from newton.sim.contacts import ContactInfo
+from newton.sim.contacts import Contacts
 
 from ..solver import SolverBase
 
@@ -1539,23 +1539,26 @@ class MuJoCoSolver(SolverBase):
         return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
 
     @override
-    def update_contact_info(self, contact_info: ContactInfo) -> None:
+    def update_contacts(self, contacts: Contacts) -> None:
+        # TODO: ensure that class invariants are preserved
+        # TODO: fill actual contact arrays instead of creating new ones
         mj_data = self.mjw_data
         nconmax = mj_data.nconmax
         mj_contact = mj_data.contact
 
-        contact_info.ncon = mj_data.ncon
-        contact_info.position = mj_contact.pos
-        contact_info.separation = mj_contact.dist
+        contacts.rigid_contact_max = nconmax
+        contacts.rigid_contact_count = mj_data.ncon
+        contacts.position = mj_contact.pos
+        contacts.separation = mj_contact.dist
 
-        if contact_info.pair is None:
-            contact_info.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
+        if not hasattr(contacts, "pair"):
+            contacts.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
 
-        if contact_info.normal is None:
-            contact_info.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
+        if not hasattr(contacts, "normal"):
+            contacts.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
 
-        if contact_info.force is None:
-            contact_info.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
+        if not hasattr(contacts, "force"):
+            contacts.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
 
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
@@ -1572,13 +1575,13 @@ class MuJoCoSolver(SolverBase):
                 mj_data.efc.force,
             ],
             outputs=[
-                contact_info.pair,
-                contact_info.normal,
-                contact_info.force,
+                contacts.pair,
+                contacts.normal,
+                contacts.force,
             ],
             device=self.model.device,
         )
-        contact_info.n_contacts = mj_data.ncon
+        contacts.n_contacts = mj_data.ncon
 
     def convert_to_mjc(
         self,

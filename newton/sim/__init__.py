@@ -16,7 +16,7 @@
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline, count_rigid_contact_points
-from .contacts import ContactInfo, Contacts
+from .contacts import Contacts
 from .control import Control
 from .flags import (
     NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES,
@@ -63,7 +63,6 @@ __all__ = [
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "CollisionPipeline",
-    "ContactInfo",
     "Contacts",
     "Control",
     "Model",
