@@ -431,14 +431,10 @@ if __name__ == "__main__":
         print(
             f"Solver iter: {example.solver.mj_model.opt.iterations}, LS iter: {example.solver.mj_model.opt.ls_iterations}"
         )
-        # Get actual max constraints and contacts from MuJoCo Warp data, divide by num envs to get per-env values
-        actual_njmax = (
-            example.solver.mjw_data.njmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.njmax
-        )
-        actual_nconmax = (
-            example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
-        )
-        print(f"Max constraints: {actual_njmax}, max contacts: {actual_nconmax}")
+        # Get actual max constraints and contacts from MuJoCo Warp data
+        actual_njmax = example.solver.mjw_data.njmax
+        actual_nconmax = example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+        print(f"Max constraints: {actual_njmax} per env, max contacts: {actual_nconmax} per env")
         print(
             f"Joint DOFs: {example.model.joint_dof_count}, bodies: {example.model.body_count}, device: {wp.get_device()}"
         )
