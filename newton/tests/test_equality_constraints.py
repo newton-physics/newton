@@ -16,6 +16,7 @@
 import os
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -34,7 +35,7 @@ class TestEqualityConstraints(unittest.TestCase):
             builder,
             ignore_names=["floor", "ground"],
             up_axis="Z",
-            parse_equality=True,
+            skip_equality_constraints=False,
         )
 
         self.model = builder.finalize()
@@ -54,8 +55,8 @@ class TestEqualityConstraints(unittest.TestCase):
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        for _ in range(5):
-            for _ in range(5):
+        for _ in range(1000):
+            for _ in range(10):
                 self.state_0.clear_forces()
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
                 self.state_0, self.state_1 = self.state_1, self.state_0
@@ -65,6 +66,19 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertGreater(
             self.solver.mj_model.eq_type.shape[0], 0
         )  # check if number of equality constraints in mjModel > 0
+
+        # Check constraint violations
+        nefc = self.solver.mj_data.nefc  # number of active constraints
+        if nefc > 0:
+            efc_pos = self.solver.mj_data.efc_pos[:nefc]  # constraint violations
+            max_violation = np.max(np.abs(efc_pos))
+            self.assertLess(max_violation, 0.01, f"Maximum constraint violation {max_violation} exceeds threshold")
+
+        # Check constraint forces
+        if nefc > 0:
+            efc_force = self.solver.mj_data.efc_force[:nefc]
+            max_force = np.max(np.abs(efc_force))
+            self.assertLess(max_force, 1000.0, f"Maximum constraint force {max_force} seems unreasonably large")
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ def parse_mjcf(
     static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
-    parse_equality: bool = False,
+    skip_equality_constraints: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -83,7 +83,7 @@ def parse_mjcf(
         static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
-        parse_equality (bool): Whether <equality> tags should be parsed. If False, equality constraints are ignored.
+        skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
     """
     if xform is None:
         xform = wp.transform()
@@ -788,10 +788,12 @@ def parse_mjcf(
 
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()]) if anchor else None
 
-                builder.add_equality_constraint(
-                    constraint_type=newton.EQ_CONNECT,
-                    body1name=body1_name,
-                    body2name=body2_name,
+                body1_idx = builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
+                body2_idx = builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+
+                builder.add_equality_constraint_connect(
+                    body1=body1_idx,
+                    body2=body2_idx,
                     anchor=anchor_vec,
                     key=common["name"],
                     enabled=common["active"],
@@ -816,12 +818,20 @@ def parse_mjcf(
 
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
 
-                builder.add_equality_constraint(
-                    constraint_type=newton.EQ_WELD,
-                    body1name=body1_name,
-                    body2name=body2_name,
+                body1_idx = builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
+                body2_idx = builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+
+                relpose_list = [float(x) for x in relpose.split()]
+                relpose_transform = wp.transform(
+                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
+                )
+
+                builder.add_equality_constraint_weld(
+                    body1=body1_idx,
+                    body2=body2_idx,
                     anchor=anchor_vec,
-                    relpose=[float(x) for x in relpose.split()],
+                    relpose=relpose_transform,
                     torquescale=torquescale,
                     key=common["name"],
                     enabled=common["active"],
@@ -840,10 +850,16 @@ def parse_mjcf(
                 if verbose:
                     print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
 
-                builder.add_equality_constraint(
-                    constraint_type=newton.EQ_JOINT,
-                    joint1name=joint1_name,
-                    joint2name=joint2_name,
+                joint1_idx = (
+                    builder.joint_key.index(joint1_name) if joint1_name and joint1_name in builder.joint_key else -1
+                )
+                joint2_idx = (
+                    builder.joint_key.index(joint2_name) if joint2_name and joint2_name in builder.joint_key else -1
+                )
+
+                builder.add_equality_constraint_joint(
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
                     polycoef=[float(x) for x in polycoef.split()],
                     key=common["name"],
                     enabled=common["active"],
@@ -884,7 +900,7 @@ def parse_mjcf(
     # add equality constraints
 
     equality = root.find("equality")
-    if equality is not None and parse_equality:
+    if equality is not None and not skip_equality_constraints:
         parse_equality_constraints(equality)
 
     # -----------------

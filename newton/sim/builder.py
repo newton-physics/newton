@@ -80,6 +80,7 @@ from .joints import (
     get_joint_dof_count,
 )
 from .model import Model
+from .types import EQ_CONNECT, EQ_JOINT, EQ_WELD
 
 
 class ModelBuilder:
@@ -1313,28 +1314,95 @@ class ModelBuilder:
     def add_equality_constraint(
         self,
         constraint_type: Any,
-        body1name: str | None = None,
-        body2name: str | None = None,
+        body1: int = -1,
+        body2: int = -1,
         anchor: Vec3 | None = None,
         torquescale: float | None = None,
-        relpose: list[float] | None = None,
-        joint1name: str | None = None,
-        joint2name: str | None = None,
+        relpose: Transform | None = None,
+        joint1: int = -1,
+        joint2: int = -1,
         polycoef: list[float] | None = None,
         key: str | None = None,
         enabled: bool = True,
     ) -> int:
-        """Adds a Mujoco equality constraint.
+        """Generic method to add any type of equality constraint to this ModelBuilder.
 
         Args:
             constraint_type (constant): Type of constraint ('connect', 'weld', 'joint')
-            body1name: First body participating in the constraint
-            body2name: Second body participating in the constraint
+            body1 (int): Index of the first body participating in the constraint (-1 for world)
+            body2 (int): Index of the second body participating in the constraint (-1 for world)
+            anchor (Vec3): Anchor point on body1
+            torquescale (float): Scales the angular residual for weld
+            relpose (Transform): Relative pose of body2 for weld. If None, the identity transform is used.
+            joint1 (int): Index of the first joint for joint coupling
+            joint2 (int): Index of the second joint for joint coupling
+            polycoef (list[float]): Polynomial coefficients for joint coupling
+            key (str): Optional constraint name
+            enabled (bool): Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        self.equality_constraint_type.append(constraint_type)
+        self.equality_constraint_body1.append(body1)
+        self.equality_constraint_body2.append(body2)
+        self.equality_constraint_anchor.append(anchor or wp.vec3())
+        self.equality_constraint_torquescale.append(torquescale)
+        self.equality_constraint_relpose.append(relpose or wp.transform_identity())
+        self.equality_constraint_joint1.append(joint1)
+        self.equality_constraint_joint2.append(joint2)
+        self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
+        self.equality_constraint_key.append(key)
+        self.equality_constraint_enabled.append(enabled)
+
+        return len(self.equality_constraint_type) - 1
+
+    def add_equality_constraint_connect(
+        self,
+        body1: int = -1,
+        body2: int = -1,
+        anchor: Vec3 | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a connect equality constraint to the model.
+        This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
+
+        Args:
+            body1: Index of the first body participating in the constraint (-1 for world)
+            body2: Index of the second body participating in the constraint (-1 for world)
             anchor: Anchor point on body1
-            torquescale: Scales the angular residual for weld
-            relpose: Relative pose of body2 for weld
-            joint1name: First joint for joint coupling
-            joint2name: Second joint for joint coupling
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        return self.add_equality_constraint(
+            constraint_type=EQ_CONNECT,
+            body1=body1,
+            body2=body2,
+            anchor=anchor,
+            key=key,
+            enabled=enabled,
+        )
+
+    def add_equality_constraint_joint(
+        self,
+        joint1: int = -1,
+        joint2: int = -1,
+        polycoef: list[float] | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a joint equality constraint to the model.
+        Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (slide and hinge) can be used.
+
+        Args:
+            joint1: Index of the first joint
+            joint2: Index of the second joint
             polycoef: Polynomial coefficients for joint coupling
             key: Optional constraint name
             enabled: Whether constraint is active
@@ -1343,24 +1411,51 @@ class ModelBuilder:
             Constraint index
         """
 
-        body1 = self.body_key.index(body1name) if body1name and body1name in self.body_key else -1
-        body2 = self.body_key.index(body2name) if body2name and body2name in self.body_key else -1
-        joint1 = self.joint_key.index(joint1name) if joint1name and joint1name in self.joint_key else -1
-        joint2 = self.joint_key.index(joint2name) if joint2name and joint2name in self.joint_key else -1
+        return self.add_equality_constraint(
+            constraint_type=EQ_JOINT,
+            joint1=joint1,
+            joint2=joint2,
+            polycoef=polycoef,
+            key=key,
+            enabled=enabled,
+        )
 
-        self.equality_constraint_type.append(constraint_type)
-        self.equality_constraint_body1.append(body1)
-        self.equality_constraint_body2.append(body2)
-        self.equality_constraint_anchor.append(anchor or wp.vec3())
-        self.equality_constraint_torquescale.append(torquescale)
-        self.equality_constraint_relpose.append(relpose or [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        self.equality_constraint_joint1.append(joint1)
-        self.equality_constraint_joint2.append(joint2)
-        self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
-        self.equality_constraint_key.append(key)
-        self.equality_constraint_enabled.append(enabled)
+    def add_equality_constraint_weld(
+        self,
+        body1: int = -1,
+        body2: int = -1,
+        anchor: Vec3 | None = None,
+        torquescale: float | None = None,
+        relpose: Transform | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a weld equality constraint to the model.
+        Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
 
-        return len(self.equality_constraint_type) - 1
+        Args:
+            body1: Index of the first body participating in the constraint (-1 for world)
+            body2: Index of the second body participating in the constraint (-1 for world)
+            anchor: Coordinates of the weld point relative to body2
+            torquescale: Scales the angular residual for weld
+            relpose (Transform): Relative pose of body2 relative to body1. If None, the identity transform is used
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        return self.add_equality_constraint(
+            constraint_type=EQ_WELD,
+            body1=body1,
+            body2=body2,
+            anchor=anchor,
+            torquescale=torquescale,
+            relpose=relpose,
+            key=key,
+            enabled=enabled,
+        )
 
     # endregion
 
@@ -3750,7 +3845,9 @@ class ModelBuilder:
             m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
             m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
             m.equality_constraint_torquescale = wp.array(self.equality_constraint_torquescale, dtype=wp.float32)
-            m.equality_constraint_relpose = wp.array(self.equality_constraint_relpose, dtype=wp.float32)
+            m.equality_constraint_relpose = wp.array(
+                self.equality_constraint_relpose, dtype=wp.transform, requires_grad=requires_grad
+            )
             m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
             m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
             m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)

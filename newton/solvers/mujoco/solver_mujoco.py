@@ -2076,7 +2076,8 @@ class MuJoCoSolver(SolverBase):
                 eq.name1 = model.body_key[eq_constraint_body1[i]]
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
-                eq.data[3:10] = eq_constraint_relpose[i]
+                eq.data[3:6] = wp.transform_get_translation(eq_constraint_relpose[i])
+                eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
                 eq.data[10] = eq_constraint_torquescale[i]
 
         self.mj_model = spec.compile()
