@@ -447,7 +447,7 @@ class ArticulationView:
 
     @functools.lru_cache(maxsize=None)  # noqa
     def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
-        # support structured attributes (e.g., "shape_materials.mu")
+        # support structured attributes (e.g., "shape_material_mu")
         name_components = name.split(".")
         name = name_components[0]
 

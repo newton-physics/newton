@@ -57,6 +57,7 @@ class SDF:
         self.is_solid = True
 
     def finalize(self) -> wp.uint64:
+        """Returns the volume pointer of the SDF volume"""
         return self.volume.id
 
     @override

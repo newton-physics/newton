@@ -44,7 +44,6 @@ from .joints import (
 from .model import Model
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
-from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
     "JOINT_BALL",
@@ -68,8 +67,6 @@ __all__ = [
     "Control",
     "Model",
     "ModelBuilder",
-    "ShapeGeometry",
-    "ShapeMaterials",
     "State",
     "Style3DModel",
     "Style3DModelBuilder",

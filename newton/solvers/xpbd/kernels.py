@@ -23,7 +23,6 @@ from newton.sim.joints import (
     JOINT_MODE_TARGET_POSITION,
     JOINT_MODE_TARGET_VELOCITY,
 )
-from newton.sim.types import ShapeGeometry, ShapeMaterials
 from newton.utils import (
     vec_abs,
     vec_leaky_max,
@@ -47,9 +46,7 @@ def apply_particle_shape_restitution(
     body_com: wp.array(dtype=wp.vec3),
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
-    shape_geo: ShapeGeometry,
     shape_body: wp.array(dtype=int),
-    shape_materials: ShapeMaterials,
     particle_ka: float,
     restitution: float,
     contact_count: wp.array(dtype=int),
@@ -134,7 +131,7 @@ def solve_particle_shape_contacts(
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
     shape_body: wp.array(dtype=int),
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     particle_mu: float,
     particle_ka: float,
     contact_count: wp.array(dtype=int),
@@ -184,7 +181,7 @@ def solve_particle_shape_contacts(
         return
 
     # take average material properties of shape and particle parameters
-    mu = 0.5 * (particle_mu + shape_materials.mu[shape_index])
+    mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
 
     # body velocity
     body_v_s = wp.spatial_vector()
@@ -2083,7 +2080,7 @@ def solve_body_contact_positions(
     contact_thickness1: wp.array(dtype=float),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     relaxation: float,
     dt: float,
     contact_torsional_friction: float,
@@ -2166,10 +2163,10 @@ def solve_body_contact_positions(
     mu = 0.0
     if shape_a >= 0:
         mat_nonzero += 1
-        mu += shape_materials.mu[shape_a]
+        mu += shape_material_mu[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
-        mu += shape_materials.mu[shape_b]
+        mu += shape_material_mu[shape_b]
     if mat_nonzero > 0:
         mu /= float(mat_nonzero)
 
@@ -2318,12 +2315,13 @@ def apply_rigid_restitution(
     contact_normal: wp.array(dtype=wp.vec3),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
-    shape_materials: ShapeMaterials,
+    shape_material_restitution: wp.array(dtype=float),
     contact_point0: wp.array(dtype=wp.vec3),
     contact_point1: wp.array(dtype=wp.vec3),
     contact_offset0: wp.array(dtype=wp.vec3),
     contact_offset1: wp.array(dtype=wp.vec3),
-    contact_thickness: wp.array(dtype=float),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     contact_inv_weight: wp.array(dtype=float),
     gravity: wp.vec3,
     dt: float,
@@ -2347,11 +2345,11 @@ def apply_rigid_restitution(
     restitution = 0.0
     if shape_a >= 0:
         mat_nonzero += 1
-        restitution += shape_materials.restitution[shape_a]
+        restitution += shape_material_restitution[shape_a]
         body_a = shape_body[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
-        restitution += shape_materials.restitution[shape_b]
+        restitution += shape_material_restitution[shape_b]
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         restitution /= float(mat_nonzero)
@@ -2395,7 +2393,7 @@ def apply_rigid_restitution(
     bx_a = wp.transform_point(X_wb_a_prev, contact_point0[tid] + contact_offset0[tid])
     bx_b = wp.transform_point(X_wb_b_prev, contact_point1[tid] + contact_offset1[tid])
 
-    thickness = contact_thickness[tid]
+    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
     d = -wp.dot(n, bx_b - bx_a) - thickness
     if d >= 0.0:

@@ -22,7 +22,6 @@ import warp as wp
 
 from newton.sim.model import Model
 from newton.sim.state import State
-from newton.sim.types import ShapeGeometry, ShapeMaterials
 
 
 class BasicRecorder:
@@ -181,7 +180,7 @@ class ModelAndStateRecorder:
 
         Handles various types including primitives, numpy arrays, and warp arrays.
         Warp arrays are converted to numpy arrays and stored in a dictionary
-        with a type hint. Special handling for `ShapeMaterials` and `ShapeGeometry`.
+        with a type hint.
 
         Args:
             value: The value to serialize.
@@ -202,13 +201,6 @@ class ModelAndStateRecorder:
                 return {
                     "__type__": "wp.array",
                     "data": value.numpy(),
-                }
-        elif hasattr(type(value), "_wp_struct_meta_"):
-            type_name = type(value).__name__
-            if type_name in ("ShapeMaterials", "ShapeGeometry"):
-                return {
-                    "__type__": type_name,
-                    "data": self._serialize_object_attributes(value),
                 }
         return None
 
@@ -232,24 +224,7 @@ class ModelAndStateRecorder:
 
             if type_name == "wp.array":
                 return wp.array(obj_data, device=device)
-
-            instance = None
-            if type_name == "ShapeMaterials":
-                instance = ShapeMaterials()
-            elif type_name == "ShapeGeometry":
-                instance = ShapeGeometry()
-
-            if instance:
-                for name, s_value in obj_data.items():
-                    # For wp.structs, we need to handle attribute setting carefully.
-                    if hasattr(type(instance), "_wp_struct_meta_"):
-                        restored_value = self._deserialize_and_restore_value(s_value, device)
-                        if restored_value is not None:
-                            setattr(instance, name, restored_value)
-                    else:
-                        setattr(instance, name, self._deserialize_and_restore_value(s_value, device))
-                return instance
-        elif isinstance(value, np.ndarray):
+        if isinstance(value, np.ndarray):
             return value
         return value
 
