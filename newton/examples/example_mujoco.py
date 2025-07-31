@@ -407,6 +407,26 @@ if __name__ == "__main__":
             nconmax=args.nconmax,
         )
 
+        # Print simulation configuration summary
+        print("\n=== Simulation Configuration ===")
+        print(f"Simulating {args.num_envs} {args.robot} for {args.num_frames * example.sim_substeps} steps (dt={example.sim_dt:.6f}s)")
+        print(f"CUDA graph: {str(example.use_cuda_graph)}, MuJoCo CPU: {str(example.use_mujoco)}, random init: {str(args.random_init)}")
+        # Map MuJoCo solver enum back to string
+        solver_value = example.solver.mj_model.opt.solver
+        solver_map = {0: "PGSs", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
+        actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
+        # Map MuJoCo integrator enum back to string
+        integrator_map = {0: "Euler", 1: "RK4", 2: "Implicit", 3: "Implicitfast"}  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
+        actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
+        print(f"Solver: {actual_solver}, integrator: {actual_integrator}, actuation: {args.actuation}")
+        print(f"Solver iter: {example.solver.mj_model.opt.iterations}, LS iter: {example.solver.mj_model.opt.ls_iterations}")
+        # Get actual max constraints and contacts from MuJoCo Warp data, divide by num envs to get per-env values
+        actual_njmax = example.solver.mjw_data.njmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.njmax
+        actual_nconmax = example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+        print(f"Max constraints: {actual_njmax}, max contacts: {actual_nconmax}")
+        print(f"Joint DOFs: {example.model.joint_dof_count}, bodies: {example.model.body_count}, device: {wp.get_device()}")
+        print("================================\n")
+
         show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
         if show_mujoco_viewer:
             import mujoco
