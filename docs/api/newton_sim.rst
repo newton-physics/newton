@@ -22,8 +22,6 @@ newton.sim
    Control
    Model
    ModelBuilder
-   ShapeGeometry
-   ShapeMaterials
    State
    Style3DModel
    Style3DModelBuilder
