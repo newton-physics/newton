@@ -765,7 +765,7 @@ def parse_mjcf(
     # start articulation
 
     visual_shapes = []
-    start_shape_count = len(builder.shape_geo_type)
+    start_shape_count = len(builder.shape_type)
     builder.add_articulation(key=root.attrib.get("model"))
 
     world = root.find("worldbody")
@@ -790,7 +790,7 @@ def parse_mjcf(
         incoming_xform=xform,
     )
 
-    end_shape_count = len(builder.shape_geo_type)
+    end_shape_count = len(builder.shape_type)
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:

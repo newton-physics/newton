@@ -323,11 +323,11 @@ class ModelBuilder:
         # maps from shape index to body index
         self.shape_body = []
         self.shape_flags = []
-        self.shape_geo_type = []
-        self.shape_geo_scale = []
-        self.shape_geo_src = []
-        self.shape_geo_is_solid = []
-        self.shape_geo_thickness = []
+        self.shape_type = []
+        self.shape_scale = []
+        self.shape_src = []
+        self.shape_is_solid = []
+        self.shape_thickness = []
         self.shape_material_ke = []
         self.shape_material_kd = []
         self.shape_material_kf = []
@@ -458,7 +458,7 @@ class ModelBuilder:
     # region counts
     @property
     def shape_count(self):
-        return len(self.shape_geo_type)
+        return len(self.shape_type)
 
     @property
     def body_count(self):
@@ -668,11 +668,11 @@ class ModelBuilder:
             "joint_friction",
             "shape_key",
             "shape_flags",
-            "shape_geo_type",
-            "shape_geo_scale",
-            "shape_geo_src",
-            "shape_geo_is_solid",
-            "shape_geo_thickness",
+            "shape_type",
+            "shape_scale",
+            "shape_src",
+            "shape_is_solid",
+            "shape_thickness",
             "shape_material_ke",
             "shape_material_kd",
             "shape_material_kf",
@@ -1359,7 +1359,7 @@ class ModelBuilder:
             for i in range(self.shape_count):
                 shape_label = f"shape_{i}"
                 if show_shape_types:
-                    shape_label += f"\n({shape_type_str(self.shape_geo_type[i])})"
+                    shape_label += f"\n({shape_type_str(self.shape_type[i])})"
                 vertices.append(shape_label)
         edges = []
         edge_labels = []
@@ -1773,11 +1773,11 @@ class ModelBuilder:
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
         self.shape_flags.append(cfg.flags)
-        self.shape_geo_type.append(type)
-        self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
-        self.shape_geo_src.append(src)
-        self.shape_geo_thickness.append(cfg.thickness)
-        self.shape_geo_is_solid.append(cfg.is_solid)
+        self.shape_type.append(type)
+        self.shape_scale.append((scale[0], scale[1], scale[2]))
+        self.shape_src.append(src)
+        self.shape_thickness.append(cfg.thickness)
+        self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
         self.shape_material_kd.append(cfg.kd)
         self.shape_material_kf.append(cfg.kf)
@@ -2212,7 +2212,7 @@ class ModelBuilder:
         if shape_indices is None:
             shape_indices = [
                 i
-                for i, stype in enumerate(self.shape_geo_type)
+                for i, stype in enumerate(self.shape_type)
                 if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
@@ -2231,8 +2231,8 @@ class ModelBuilder:
                 decompositions = {}
 
                 for shape in shape_indices:
-                    mesh: Mesh = self.shape_geo_src[shape]
-                    scale = self.shape_geo_scale[shape]
+                    mesh: Mesh = self.shape_src[shape]
+                    scale = self.shape_scale[shape]
                     hash_m = hash(mesh)
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
@@ -2261,7 +2261,7 @@ class ModelBuilder:
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    self.shape_src[shape] = self.shape_src[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
                     if len(decomposition) > 1:
@@ -2275,8 +2275,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
-                            thickness=self.shape_geo_thickness[shape],
-                            is_solid=self.shape_geo_is_solid[shape],
+                            thickness=self.shape_thickness[shape],
+                            is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
                             collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
                         )
@@ -2305,7 +2305,7 @@ class ModelBuilder:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
+                mesh: Mesh = self.shape_src[shape]
                 hash_m = hash(mesh)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
@@ -2321,7 +2321,7 @@ class ModelBuilder:
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                self.shape_src[shape] = self.shape_src[shape].copy(
                     vertices=rmesh.vertices, indices=rmesh.indices
                 )
                 remeshed_shapes.add(shape)
@@ -2330,13 +2330,13 @@ class ModelBuilder:
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
-                scale = self.shape_geo_scale[shape]
+                mesh: Mesh = self.shape_src[shape]
+                scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 tf, scale = compute_obb(vertices)
-                self.shape_geo_type[shape] = GEO_BOX
-                self.shape_geo_src[shape] = None
-                self.shape_geo_scale[shape] = scale
+                self.shape_type[shape] = GEO_BOX
+                self.shape_src[shape] = None
+                self.shape_scale[shape] = scale
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
@@ -2344,14 +2344,14 @@ class ModelBuilder:
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
-                scale = self.shape_geo_scale[shape]
+                mesh: Mesh = self.shape_src[shape]
+                scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 center = np.mean(vertices, axis=0)
                 radius = np.max(np.linalg.norm(vertices - center, axis=1))
-                self.shape_geo_type[shape] = GEO_SPHERE
-                self.shape_geo_src[shape] = None
-                self.shape_geo_scale[shape] = wp.vec3(radius, 0.0, 0.0)
+                self.shape_type[shape] = GEO_SPHERE
+                self.shape_src[shape] = None
+                self.shape_scale[shape] = wp.vec3(radius, 0.0, 0.0)
                 tf = wp.transform(center, wp.quat_identity())
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
@@ -3447,7 +3447,7 @@ class ModelBuilder:
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
             finalized_meshes = {}  # do not duplicate meshes
-            for geo in self.shape_geo_src:
+            for geo in self.shape_src:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
                     if geo_hash not in finalized_meshes:
@@ -3457,23 +3457,23 @@ class ModelBuilder:
                     # add null pointer
                     geo_sources.append(0)
 
-            m.shape_geo.type = wp.array(self.shape_geo_type, dtype=wp.int32)
-            m.shape_geo.source = wp.array(geo_sources, dtype=wp.uint64)
-            m.shape_geo.scale = wp.array(self.shape_geo_scale, dtype=wp.vec3, requires_grad=requires_grad)
-            m.shape_geo.is_solid = wp.array(self.shape_geo_is_solid, dtype=wp.bool)
-            m.shape_geo.thickness = wp.array(self.shape_geo_thickness, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
+            m.shape_source = wp.array(geo_sources, dtype=wp.uint64)
+            m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
+            m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_geo_src = self.shape_geo_src  # used for rendering
+            m.shape_src = self.shape_src  # used for rendering
 
-            m.shape_materials.ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.restitution = wp.array(
+            m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
 
@@ -3676,7 +3676,7 @@ class ModelBuilder:
             m.joint_coord_count = self.joint_coord_count
             m.particle_count = len(self.particle_q)
             m.body_count = len(self.body_q)
-            m.shape_count = len(self.shape_geo_type)
+            m.shape_count = len(self.shape_type)
             m.tri_count = len(self.tri_poses)
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)

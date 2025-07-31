@@ -93,7 +93,6 @@ __all__ = [
     "Mesh",
     "Model",
     "ModelBuilder",
-    "ShapeMaterials",
     "State",
     "__version__",
     "create_box",

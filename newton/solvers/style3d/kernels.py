@@ -17,7 +17,6 @@
 import warp as wp
 
 from newton.geometry import PARTICLE_FLAG_ACTIVE
-from newton.sim.model import ShapeMaterials
 
 from ..vbd.solver_vbd import evaluate_body_particle_contact
 
@@ -149,7 +148,7 @@ def eval_body_contact_kernel(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -179,7 +178,7 @@ def eval_body_contact_kernel(
             friction_mu,
             friction_epsilon,
             particle_radius,
-            shape_materials,
+            shape_material_mu,
             shape_body,
             body_q,
             body_q_prev,

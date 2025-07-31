@@ -249,19 +249,19 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="bounding_box", shape_indices=[s1])
         builder.approximate_meshes(method="bounding_sphere", shape_indices=[s2])
         # convex hull
-        self.assertEqual(len(builder.shape_geo_src[s0].vertices), 5)
+        self.assertEqual(len(builder.shape_src[s0].vertices), 5)
         # the convex hull maintains the original transform
         assert_np_equal(np.array(builder.shape_transform[s0]), np.array(wp.transform_identity()), tol=1.0e-4)
         # bounding box
-        self.assertIsNone(builder.shape_geo_src[s1])
-        self.assertEqual(builder.shape_geo_type[s1], newton.geometry.GEO_BOX)
-        assert_np_equal(npsorted(builder.shape_geo_scale[s1]), npsorted(scale), tol=1.0e-6)
+        self.assertIsNone(builder.shape_src[s1])
+        self.assertEqual(builder.shape_type[s1], newton.geometry.GEO_BOX)
+        assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[s1].p), np.array(tf.p), tol=1.0e-4)
         # bounding sphere
-        self.assertIsNone(builder.shape_geo_src[s2])
-        self.assertEqual(builder.shape_geo_type[s2], newton.geometry.GEO_SPHERE)
-        self.assertAlmostEqual(builder.shape_geo_scale[s2][0], wp.length(scale))
+        self.assertIsNone(builder.shape_src[s2])
+        self.assertEqual(builder.shape_type[s2], newton.geometry.GEO_SPHERE)
+        self.assertAlmostEqual(builder.shape_scale[s2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[s2]), np.array(tf), tol=1.0e-4)
         # make sure the original mesh is not modified
         self.assertEqual(len(mesh.vertices), 8)

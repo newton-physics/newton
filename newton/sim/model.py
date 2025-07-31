@@ -24,7 +24,6 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
-from .types import ShapeGeometry, ShapeMaterials
 
 
 class Model:
@@ -92,11 +91,36 @@ class Model:
         """Rigid shape flags, shape [shape_count], uint32."""
         self.body_shapes = {}
         """Mapping from body index to list of attached shape indices."""
-        self.shape_materials = ShapeMaterials()
-        """Rigid shape contact materials."""
-        self.shape_geo = ShapeGeometry()
-        """Shape geometry properties (geo type, scale, thickness, etc.)."""
-        self.shape_geo_src = []
+        
+        # Shape material properties
+        self.shape_material_ke = None
+        """Shape contact elastic stiffness, shape [shape_count], float."""
+        self.shape_material_kd = None
+        """Shape contact damping stiffness, shape [shape_count], float."""
+        self.shape_material_kf = None
+        """Shape contact friction stiffness, shape [shape_count], float."""
+        self.shape_material_ka = None
+        """Shape contact adhesion distance, shape [shape_count], float."""
+        self.shape_material_mu = None
+        """Shape coefficient of friction, shape [shape_count], float."""
+        self.shape_material_restitution = None
+        """Shape coefficient of restitution, shape [shape_count], float."""
+        
+        # Shape geometry properties
+        self.shape_type = None
+        """Shape geometry type, shape [shape_count], int32."""
+        self.shape_is_solid = None
+        """Whether shape is solid or hollow, shape [shape_count], bool."""
+        self.shape_thickness = None
+        """Shape thickness, shape [shape_count], float."""
+        self.shape_source = None
+        """Source geometry pointer, shape [shape_count], uint64."""
+        self.shape_scale = None
+        """Shape 3D scale, shape [shape_count, 3], float."""
+        self.shape_filter = None
+        """Shape filter group, shape [shape_count], int."""
+        
+        self.shape_src = []
         """List of source geometry objects (e.g., `wp.Mesh`, `SDF`) used for rendering and broadphase."""
 
         self.shape_collision_group = []
@@ -356,8 +380,18 @@ class Model:
         self.attribute_frequency["shape_transform"] = "shape"
         self.attribute_frequency["shape_body"] = "shape"
         self.attribute_frequency["shape_flags"] = "shape"
-        self.attribute_frequency["shape_materials"] = "shape"
-        self.attribute_frequency["shape_geo"] = "shape"
+        self.attribute_frequency["shape_material_ke"] = "shape"
+        self.attribute_frequency["shape_material_kd"] = "shape"
+        self.attribute_frequency["shape_material_kf"] = "shape"
+        self.attribute_frequency["shape_material_ka"] = "shape"
+        self.attribute_frequency["shape_material_mu"] = "shape"
+        self.attribute_frequency["shape_material_restitution"] = "shape"
+        self.attribute_frequency["shape_type"] = "shape"
+        self.attribute_frequency["shape_is_solid"] = "shape"
+        self.attribute_frequency["shape_thickness"] = "shape"
+        self.attribute_frequency["shape_source"] = "shape"
+        self.attribute_frequency["shape_scale"] = "shape"
+        self.attribute_frequency["shape_filter"] = "shape"
 
     def state(self, requires_grad: bool | None = None) -> State:
         """Returns a state object for the model

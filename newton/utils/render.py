@@ -275,7 +275,7 @@ def CreateSimRenderer(renderer):
                     self.body_names,
                     self.geo_shape,
                     model.shape_body.numpy(),
-                    model.shape_geo_src,
+                    model.shape_src,
                     model.shape_geo.type.numpy(),
                     model.shape_geo.scale.numpy(),
                     model.shape_geo.thickness.numpy(),
@@ -340,11 +340,11 @@ def CreateSimRenderer(renderer):
             body_names: list,
             geo_shape: dict,
             shape_body: np.ndarray,
-            shape_geo_src: list,
-            shape_geo_type: np.ndarray,
-            shape_geo_scale: np.ndarray,
-            shape_geo_thickness: np.ndarray,
-            shape_geo_is_solid: np.ndarray,
+            shape_src: list,
+            shape_type: np.ndarray,
+            shape_scale: np.ndarray,
+            shape_thickness: np.ndarray,
+            shape_is_solid: np.ndarray,
             shape_transform: np.ndarray,
             shape_flags: np.ndarray,
             shape_key: list,
@@ -357,11 +357,11 @@ def CreateSimRenderer(renderer):
                 body_names (list): List of body names.
                 geo_shape (dict): A dictionary to cache geometry shapes.
                 shape_body (numpy.ndarray): Maps shape index to body index.
-                shape_geo_src (list): Source geometry for each shape.
-                shape_geo_type (numpy.ndarray): Type of each shape's geometry.
-                shape_geo_scale (numpy.ndarray): Scale of each shape's geometry.
-                shape_geo_thickness (numpy.ndarray): Thickness of each shape's geometry.
-                shape_geo_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
+                shape_src (list): Source geometry for each shape.
+                shape_type (numpy.ndarray): Type of each shape's geometry.
+                shape_scale (numpy.ndarray): Scale of each shape's geometry.
+                shape_thickness (numpy.ndarray): Thickness of each shape's geometry.
+                shape_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
                 shape_transform (numpy.ndarray): Local transform of each shape.
                 shape_flags (numpy.ndarray): Visibility and other flags for each shape.
                 shape_key (list): List of shape names.
@@ -377,11 +377,11 @@ def CreateSimRenderer(renderer):
             # loop over shapes
             for s in range(shape_count):
                 scale = np.ones(3, dtype=np.float32)
-                geo_type = shape_geo_type[s]
-                geo_scale = [float(v) for v in shape_geo_scale[s]]
-                geo_thickness = float(shape_geo_thickness[s])
-                geo_is_solid = bool(shape_geo_is_solid[s])
-                geo_src = shape_geo_src[s]
+                geo_type = shape_type[s]
+                geo_scale = [float(v) for v in shape_scale[s]]
+                geo_thickness = float(shape_thickness[s])
+                geo_is_solid = bool(shape_is_solid[s])
+                geo_src = shape_src[s]
                 name = shape_key[s]
                 count = self._instance_key_count.get(name, 0)
                 if count > 0:

@@ -110,7 +110,7 @@ class TestImportMjcf(unittest.TestCase):
 
             # Check that meshes have correct maxhullvert values
             # Note: This assumes meshes are added in order they appear in MJCF
-            meshes = [model.shape_geo_src[i] for i in range(3) if hasattr(model.shape_geo_src[i], "maxhullvert")]
+            meshes = [model.shape_src[i] for i in range(3) if hasattr(model.shape_src[i], "maxhullvert")]
 
             if len(meshes) >= 3:
                 self.assertEqual(meshes[0].maxhullvert, 32)

@@ -248,7 +248,7 @@ def parse_urdf(
 
     builder.add_articulation(key=root.attrib.get("name"))
 
-    start_shape_count = len(builder.shape_geo_type)
+    start_shape_count = len(builder.shape_type)
 
     # add links
     for urdf_link in root.findall("link"):
@@ -317,7 +317,7 @@ def parse_urdf(
             builder.body_inertia[link] = I_m
             builder.body_inv_inertia[link] = wp.inverse(I_m)
 
-    end_shape_count = len(builder.shape_geo_type)
+    end_shape_count = len(builder.shape_type)
 
     # find joints per body
     body_children = {name: [] for name in link_index.keys()}
