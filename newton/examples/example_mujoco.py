@@ -417,7 +417,7 @@ if __name__ == "__main__":
         )
         # Map MuJoCo solver enum back to string
         solver_value = example.solver.mj_model.opt.solver
-        solver_map = {0: "PGSs", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
+        solver_map = {0: "PGS", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
         actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
         # Map MuJoCo integrator enum back to string
         integrator_map = {
