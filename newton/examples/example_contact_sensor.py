@@ -24,7 +24,7 @@ import newton.examples
 import newton.utils
 from newton.examples import compute_env_offsets
 from newton.sim.contacts import ContactInfo
-from newton.utils.contact_sensor import populate_contact_info, ContactSensor
+from newton.utils.contact_sensor import ContactSensor, populate_contact_info
 from newton.utils.selection import ArticulationView
 
 USE_TORCH = False

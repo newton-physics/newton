@@ -19,7 +19,7 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.contact_sensor import ContactSensor, MatchAny
+from newton.utils.contact_sensor import ContactSensor
 
 
 class MockModel:
@@ -71,12 +71,6 @@ class TestContactSensor(unittest.TestCase):
         entity_A = (0, 1)
         entity_B = (2,)
 
-        entity_pairs = [
-            (entity_A, entity_B),
-            (entity_B, entity_A),
-            (entity_A, MatchAny),
-            (entity_B, MatchAny),
-        ]
         model = MockModel()
         model.body_key = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]

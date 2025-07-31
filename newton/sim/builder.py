@@ -21,7 +21,6 @@ import copy
 import ctypes
 import itertools
 import math
-import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
