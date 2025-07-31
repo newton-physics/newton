@@ -50,6 +50,13 @@ class Control:
         The joint targets are defined for any joint type, except for free joints.
         """
 
+        self.tendon_target: wp.array | None = None
+        """
+        Array of tendon targets with shape ``(tendon_count,)`` and type ``float``.
+        Tendon targets define the target length or target velocity for each tendon actuator,
+        depending on the tendon actuator configuration.
+        """
+
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
 
