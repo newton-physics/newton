@@ -15,31 +15,26 @@
 
 import itertools
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, TypeAlias
+from fnmatch import fnmatch
+from typing import Any
 
 import numpy as np
 import warp as wp
 
 from newton import Model
-from newton.core.types import nparray
 from newton.sim.contacts import ContactInfo, Contacts
 from newton.solvers import SolverBase
 
 
-class MatchAny:
-    """Matches all contact partners."""
-
-
-class EntityKind(Enum):
+class MatchKind(Enum):
+    MATCH_ANY = 0
     SHAPE = 1
     BODY = 2
 
 
-Entity: TypeAlias = tuple[int, ...]
-
-
+# TODO: merge with broadphase_common.binary_search
 @wp.func
 def bisect_shape_pairs(
     # inputs
@@ -61,7 +56,7 @@ def bisect_shape_pairs(
 
 @wp.kernel
 def select_aggregate_net_force(
-    #input
+    # input
     num_contacts: wp.array(dtype=wp.int32),
     sp_sorted: wp.array(dtype=wp.vec2i),
     num_sp: int,
@@ -75,7 +70,7 @@ def select_aggregate_net_force(
     net_force: wp.array(dtype=wp.vec3),
 ):
     con_idx = wp.tid()
-    if con_idx >= ncon:
+    if con_idx >= num_contacts[0]:
         return
 
     pair = contact_pair[con_idx]
@@ -102,21 +97,17 @@ def select_aggregate_net_force(
         mono_sp = wp.vec2i(-1, pair[i])
         mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
 
-def _lol_to_arrays(list_of_lists: list[list], dtype) -> tuple[wp.array, wp.array, wp.array]:
-    """Convert a list of lists to three warp arrays containing the values, offsets and counts.
-    Does nothing and returns None, None, None if the list is empty.
-    """
-    if not list_of_lists:
-        return None, None, None
-    a = wp.array([el for l in list_of_lists for el in l], dtype=dtype)
-    count_list = list(map(len, list_of_lists))
-    offset = wp.array(np.cumsum([0, *count_list[:-1]]), dtype=wp.int32)
-    count = wp.array(count_list, dtype=wp.int32)
-    return a, offset, count
+        # for shape vs all, only one accumulator is supported and flip is trivially true
+        if mono_ord < num_sp and sp_sorted[mono_ord] == mono_sp:
+            force_acc = sp_ep[sp_ep_offset[mono_ord]][0]
+            wp.atomic_add(net_force, force_acc, wp.where(bool(i), -force, force))
 
 
-def convert_contact_info(
-    model: Model,
+class MatchAny:
+    """Matches all contact partners."""
+
+
+def populate_contact_info(
     contact_info: ContactInfo,
     solver: SolverBase,
     contacts: Contacts | None = None,
@@ -130,234 +121,168 @@ def convert_contact_info(
     solver.update_contact_info(contact_info)
 
 
-class ContactView:
-    """A view for querying contacts between entities in the simulation.
-    This class stores the parameters of the query and provides a view of the results.
-    """
-
-    def __init__(self, query_id: int, args: dict[str, Any]):
-        self.query_id: int = query_id
-        self.args: dict[str, Any] = args
-        self.finalized: bool = False
-        self.shape: tuple[int, int] = None
-
-        self.net_force: wp.array2d(dtype=wp.vec3) = None  # force matrix, aliased to contact reporter
-        """Net force matrix, shape (n_sensors, n_contact_partners [+1 if total included])"""
-
-        self.sensor_keys: list[str] = None
-        """Keys for the sensors in the query, n_sensors"""
-        self.contact_partner_keys: list[str] = None
-        """Keys for the contact partners in the query, n_contact_partners"""
-        self.sensor_entities: list[Entity] = None
-        """Entities for the sensors in the query, n_sensors"""
-        self.contact_partner_entities: list[Entity] = None
-        """Entities for the contact partners in the query, n_contact_partners"""
-        self.entity_pairs: nparray = None  # entity pair matrix
-        """Pairs of sensor and contact partner indices for the query, shape (n_sensors, n_contact_partners, 2)"""
-
-    def finalize(
-        self,
-        net_force: wp.array(dtype=wp.vec3),
-        sensor_keys: list[str],
-        contact_partner_keys: list[str],
-        sensor_entities: list[Entity],
-        contact_partner_entities: list[Entity],
-        entity_pairs: nparray,
-    ):
-        assert not self.finalized
-        self.net_force = net_force
-        self.shape = self.net_force.shape
-        self.sensor_keys = sensor_keys
-        self.contact_partner_keys = contact_partner_keys
-        self.sensor_entities = sensor_entities
-        self.contact_partner_entities = contact_partner_entities
-        self.entity_pairs = entity_pairs
-
-        self.finalized = True
-
-
-@dataclass
-class ContactQuery:
-    """Contact Query data
-    sensor_entities: List of entity tuples representing the sensor entities.
-        These are indexed by the first element of sensor_matrix tuples.
-    select_entities: List of entity tuples representing the contact partners.
-        These are indexed by the values in the second element of the sensor_matrix tuples.
-    sensor_matrix: List of tuples defining which sensors interact with which select entities.
-        Each tuple is (sensor_index, tuple of select_indices) where:
-        - sensor_index: Index into sensor_entities list.
-        - select_indices: Tuple of indices into select_entities list.
-        The resulting contact matrix will have shape (len(sensor_matrix), max_selects)
-        where max_selects is the maximum length of select_indices tuples.
-    """
-
-    sensor_entities: list[Entity]
-    select_entities: list[Entity]
-
-    sensor_list: list[tuple[int, tuple[int, ...]]] | None = None
-    """List of sensors. Indexes sensor_entities and select_entities"""
-
-    sensor_keys: list[str] | None = None
-    select_keys: list[str] | None = None
-
-    colliding_shape_pairs: set[tuple[int, int]] | None = None
-
-
 class ContactSensor:
-    def __init__(self, model: Model):
-        self.contact_queries: list[ContactQuery] = []
-        self.contact_views: list[ContactView] = []
-        self.model: Model = model
-
-    def add_contact_query(
+    def __init__(
         self,
-        sensor_entities: list[Entity],
-        select_entities: list[Entity | MatchAny],
-        sensor_keys: list[tuple[Any, ...]],
-        select_keys: list[tuple[Any, ...]],
-        contact_view: ContactView,
-        colliding_shape_pairs: set[tuple[int, int]] | None = None,
+        model: Model,
+        sensing_obj_bodies: str | list[str] | None = None,
+        sensing_obj_shapes: str | list[str] | None = None,
+        counterpart_bodies: str | list[str] | None = None,
+        counterpart_shapes: str | list[str] | None = None,
+        match_fn: Callable[[str, str], bool] | None = None,
+        include_total: bool = True,
+        prune_noncolliding: bool = False,
+        verbose: bool | None = None,
     ):
-        """Add a contact query to track contact forces between specified entities.
+        """Add a contact sensor view to the model.
+        Exactly one of `sensing_obj_shapes` or `sensor_body` must be specified to define the sensor. If contact partners
+        are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
+        the total contact force.
 
         Args:
-            query: ContactQuery object containing sensor and select indices and keys.
-            contact_view: ContactView object that will reference the results of this query.
+            sensing_obj_shapes: pattern to match sensor shape names; one entity per matching shape.
+            sensor_body: pattern to match sensor body names; one entity per matching body.
+            contact_partners_shape: pattern to match contact partner shape names; one entity per matching shape.
+            contact_partners_body: pattern to match contact partner body names; one entity per matching body.
+            match_fn: function taking a name and a pattern and returning true if the name matches the pattern;
+            fnmatch.fnmatch is used if `match_fn` is `None`.
+            include_total: If contact partners are defined, include the total contact force as the first reading of each sensor.
+            prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
+            verbose: print details
         """
-        query = ContactQuery(
-            sensor_entities=sensor_entities,
-            select_entities=select_entities,
-            sensor_keys=sensor_keys,
-            select_keys=select_keys,
-            colliding_shape_pairs=colliding_shape_pairs,
+
+        if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
+            raise ValueError("Exactly one of `sensing_obj_bodies` and `sensing_obj_shapes` must be specified")
+
+        if (counterpart_bodies is not None) and (counterpart_shapes is not None):
+            raise ValueError("At most one of `counterpart_bodies` and `counterpart_shapes` may be specified.")
+
+        self.device = model.device
+        self.verbose = verbose if verbose is not None else wp.config.verbose
+
+        if match_fn is None:
+            match_fn = fnmatch
+
+        if sensing_obj_bodies is not None:
+            sensing_obj_bodies = self._match_elem_key(match_fn, model, model.body_key, sensing_obj_bodies)
+            sensing_obj_shapes = []
+        else:
+            sensing_obj_bodies = []
+            sensing_obj_shapes = self._match_elem_key(match_fn, model, model.shape_key, sensing_obj_shapes)
+
+        if counterpart_bodies is not None:
+            counterpart_bodies = self._match_elem_key(match_fn, model, model.body_key, counterpart_bodies)
+            counterpart_shapes = []
+            if include_total:
+                counterpart_bodies = [MatchAny, *counterpart_bodies]
+        elif counterpart_shapes is not None:
+            counterpart_bodies = []
+            counterpart_shapes = self._match_elem_key(match_fn, model, model.shape_key, counterpart_shapes)
+            if include_total:
+                counterpart_shapes = [MatchAny, *counterpart_shapes]
+        else:
+            counterpart_shapes = [MatchAny]
+            counterpart_bodies = []
+
+        sp_sorted, sp_reading, self.shape, self.reading_indices, self.sensing_obj_kinds, self.counterpart_kinds = (
+            self._assemble_sensor_mappings(
+                sensing_obj_bodies,
+                sensing_obj_shapes,
+                counterpart_bodies,
+                counterpart_shapes,
+                model.body_shapes,
+                set(map(tuple, model.shape_contact_pairs.list())) if prune_noncolliding else None,
+            )
         )
 
-        query.sensor_list = self._build_sensor_list(query)
+        # initialize warp arrays
+        self.n_shape_pairs: int = len(sp_sorted)
+        self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i, device=self.device)
+        self.sp_reading, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_reading, wp.vec2i, device=self.device)
 
-        self.contact_queries.append(query)
-        self.contact_views.append(contact_view)
+        # net force (one vec3 per sensor-contactee pair)
+        self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
+        self.net_force = self._net_force.reshape(self.shape)
 
-    def eval_contact_sensors(self, contact_info: ContactInfo):
-        self._select_aggregate_net_force(contact_info)
+    def eval(self, contact_info: ContactInfo):
+        self._eval_net_force(contact_info)
 
-    def finalize(self):
-        self._build_entity_pair_list()
-        with wp.ScopedDevice(self.model.device):
-            self._build_arrays([ep for query in self.entity_pairs for ep in query])
-
-        for offset, count, view, shape, query, entity_pairs_idx in zip(
-            self.query_offset,
-            self.query_count,
-            self.contact_views,
-            self.query_shape,
-            self.contact_queries,
-            self.entity_pairs_idx,
-        ):
-            net_force = self.net_force[offset : offset + count].reshape(shape)
-            n_sens, n_sel = shape
-            entity_pair_matrix = [
-                [entity_pairs_idx[sensor * n_sel + sel] or (None, None) for sel in range(n_sel)]
-                for sensor in range(n_sens)
-            ]
-            view_entity_pairs = np.array(entity_pair_matrix)
-
-            view.finalize(
-                net_force,
-                query.sensor_keys,
-                query.select_keys,
-                query.sensor_entities,
-                query.select_entities,
-                view_entity_pairs,
-            )
+    def get_total_force(self) -> wp.array2d(dtype=wp.vec3f):
+        return self.net_force
 
     @staticmethod
-    def _build_sensor_list(
-        query: ContactQuery,
-    ) -> list[tuple[int, tuple[int, ...]]]:
-        """Build the list of sensor - select combinations, as tuples of (sensor_idx, (select_indices...)).
-        If colliding_shape_pairs is provided, for each sensor, keep only valid select indices."""
-        sensor_list = []
-
-        def check_ep_can_collide(a: Entity, b: Entity) -> bool:
-            ep_sps = {(min(pair), max(pair)) for pair in itertools.product(a, b)}
-            return not query.colliding_shape_pairs.isdisjoint(ep_sps)
-
-        for sensor_idx, sensor_entity in enumerate(query.sensor_entities):
-            select_indices = tuple(
-                select_idx
-                for select_idx, select_entity in enumerate(query.select_entities)
-                if query.colliding_shape_pairs is None or check_ep_can_collide(sensor_entity, select_entity)
+    def _assemble_sensor_mappings(
+        sensing_obj_bodies: list[int],
+        sensing_obj_shapes: list[int],
+        counterpart_bodies: list[int | MatchAny],
+        counterpart_shapes: list[int | MatchAny],
+        body_shapes: dict[int, list[int]],
+        shape_contact_pairs: set[tuple[int, int]] | None,
+    ):
+        # MatchAny, then bodies, then shapes
+        # TODO: in addition to kind, return index
+        def expand_bodies(bodies, shapes):
+            has_matchany = MatchAny in bodies or MatchAny in shapes
+            body = [tuple(body_shapes[b]) for b in bodies if b is not MatchAny]
+            shape = [(s,) for s in shapes if s is not MatchAny]
+            match_kind = (
+                [MatchKind.MATCH_ANY] * has_matchany + [MatchKind.BODY] * len(body) + [MatchKind.SHAPE] * len(shape)
             )
-            sensor_list.append((sensor_idx, select_indices))
-        return sensor_list
+            entities = [MatchAny] * has_matchany + body + shape
+            return match_kind, entities
 
-    def _build_entity_pair_list(self):
-        self.entity_pairs = []
-        self.entity_pairs_idx = []
-        self.query_shape = []
+        def get_colliding_sps(a, b) -> dict[tuple[int, int], bool]:
+            all_pairs_flip = {
+                (min(pair), max(pair)): min(pair) == pair[1] for pair in itertools.product(a, b) if pair[0] != pair[1]
+            }
+            if shape_contact_pairs is None:
+                return all_pairs_flip
+            return {pair: all_pairs_flip[pair] for pair in shape_contact_pairs.intersection(all_pairs_flip)}
 
-        for query in self.contact_queries:
-            n_query_sensors = len(query.sensor_list)
-            n_query_selects = max(len(selects) for _, selects in query.sensor_list)
-            query_eps = []
-            query_eps_idx = []
+        sensing_obj_kinds, sensing_objs = expand_bodies(sensing_obj_bodies, sensing_obj_shapes)
+        counterpart_kinds, counterparts = expand_bodies(counterpart_bodies, counterpart_shapes)
+        counterpart_indices = []
+        sp_to_reading = defaultdict(list)
 
-            for sensor_idx, selects in query.sensor_list:
-                for select_idx in selects:
-                    query_eps.append((query.sensor_entities[sensor_idx], query.select_entities[select_idx]))
-                    query_eps_idx.append((sensor_idx, select_idx))
-                padding = (None,) * (n_query_selects - len(selects))  # fill up with None
-                query_eps.extend(padding)
-                query_eps_idx.extend(padding)
+        # build list of counterpart indices for each sensing_obj
+        # build list of shape pairs for each reading of each sensing_obj
+        # build the mapping from shape pair to tuples of reading index and flip indicator
+        # the mapping is ordered lexicographically by sorted shape pair
+        for sensing_obj_idx, sensing_obj in enumerate(sensing_objs):
+            if sensing_obj is MatchAny:
+                raise ValueError("Sensing object cannot be MatchAny")
+            sens_counterparts: list[tuple[int, MatchKind], ...] = []
+            reading_idx = 0
+            for counterpart_idx, counterpart in enumerate(counterparts):
+                if counterpart is MatchAny:
+                    sp_flips = dict.fromkeys(itertools.product((-1,), sensing_obj), True)
+                elif not (sp_flips := get_colliding_sps(sensing_obj, counterpart)):
+                    continue
 
-            assert n_query_selects * n_query_sensors == len(query_eps)
-            self.query_shape.append((n_query_sensors, n_query_selects))
-            self.entity_pairs.append(query_eps)
-            self.entity_pairs_idx.append(query_eps_idx)
+                for sp, flip in sp_flips.items():
+                    sp_to_reading[sp].append((sensing_obj_idx, reading_idx, flip))
+                sens_counterparts.append(counterpart_idx)
+                reading_idx += 1
+            counterpart_indices.append(sens_counterparts)
 
-        self.query_count = [n_sens * n_sel for n_sens, n_sel in self.query_shape]
-        self.query_offset = [0, *np.cumsum(self.query_count[:-1]).tolist()]
+        # maximum number of readings for any sensing object
+        n_readings = max(map(len, counterpart_indices))
 
-    def _build_arrays(self, entity_pairs: list[tuple[Entity, Entity]]):
-        # build the mapping from shape pairs to entity pairs ordered by shape pair
-        # accepts None as a filler value
+        sp_sorted = sorted(sp_to_reading)
+        sp_reading = []
+        for sp in sp_sorted:
+            sp_reading.append(
+                [
+                    (sensing_obj_idx * n_readings + reading_idx, flip)
+                    for sensing_obj_idx, reading_idx, flip in sp_to_reading[sp]
+                ]
+            )
 
-        # initialize mapping from sp to eps & flips
-        self.n_entity_pairs: int = len(entity_pairs)
-        sp_ep_map = defaultdict(list)
-        for ep_idx, entity_pair in enumerate(entity_pairs):
-            if entity_pair is None:
-                continue
-            e1, e2 = entity_pair
-            assert e1 is not MatchAny, "Sensor cannot be attached to wildcard entity"
+        shape = len(sensing_objs), n_readings
+        return sp_sorted, sp_reading, shape, counterpart_indices, sensing_obj_kinds, counterpart_kinds
 
-            # pair e1 shapes with e2 shapes, or with -1 if e2 is MatchAny
-            shape_pairs = itertools.product(e1, ((-1,) if e2 is MatchAny else e2))
-            for sp in shape_pairs:
-                flip_pair = sp[0] > sp[1]
-                if flip_pair:
-                    sp = sp[1], sp[0]  # noqa
-
-                sp_ep_map[sp].append((ep_idx, flip_pair))
-
-        # sort by shape pair for fast retrieval
-        sp_sorted = sorted(sp_ep_map)
-        sp_ep = [sp_ep_map[sp] for sp in sp_sorted]
-
-        # store for debugging
-        self.sp_sorted_list = sp_sorted
-        self.sp_ep_list = sp_ep
-
-        self.n_shape_pairs: int = len(sp_sorted)
-
-        # initialize warp arrays
-        self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i)
-        self.sp_ep, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_ep, wp.vec2i)
-        # net force (1 vec3 per entity pair)
-        self.net_force = wp.zeros(self.n_entity_pairs, dtype=wp.vec3)
-
-    def _select_aggregate_net_force(self, contact: ContactInfo):
-        self.net_force.zero_()
+    def _eval_net_force(self, contact: ContactInfo):
+        self._net_force.zero_()
         wp.launch(
             select_aggregate_net_force,
             dim=contact.contact_max,
@@ -365,12 +290,50 @@ class ContactSensor:
                 contact.n_contacts,
                 self.sp_sorted,
                 self.n_shape_pairs,
-                self.sp_ep,
+                self.sp_reading,
                 self.sp_ep_offset,
                 self.sp_ep_count,
                 contact.pair,
                 contact.normal,
                 contact.force,
             ],
-            outputs=[self.net_force],
+            outputs=[self._net_force],
+            device=contact.device,
         )
+
+    @classmethod
+    def _match_elem_key(
+        cls,
+        match_fn: Callable[[str, str], bool],
+        model: Model,
+        elem_key: dict[str, Any],
+        pattern: str | list[str],
+    ) -> list[int]:
+        """Find the indices of elements matching the pattern."""
+        matches = []
+
+        if isinstance(pattern, list):
+            for single_pattern in pattern:
+                matches.extend(cls._match_bodies_shapes(match_fn, model, elem_key, single_pattern))
+            return matches
+
+        for idx, elem in enumerate(elem_key):
+            if match_fn(elem, pattern):
+                matches.append(idx)
+
+        return matches
+
+
+def _lol_to_arrays(list_of_lists: list[list], dtype, **kwargs) -> tuple[wp.array, wp.array, wp.array]:
+    """Convert a list of lists to three warp arrays containing the values, offsets and counts.
+    Does nothing and returns None, None, None if the list is empty.
+    """
+    if not list_of_lists:
+        return None, None, None
+    value_list = [val for l in list_of_lists for val in l]
+    count_list = [len(l) for l in list_of_lists]
+
+    values = wp.array(value_list, dtype=dtype, **kwargs)
+    offset = wp.array(np.cumsum([0, *count_list[:-1]]), dtype=wp.int32, **kwargs)
+    count = wp.array(count_list, dtype=wp.int32, **kwargs)
+    return values, offset, count

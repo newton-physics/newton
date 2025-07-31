@@ -22,10 +22,7 @@ import ctypes
 import itertools
 import math
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
-from fnmatch import fnmatch
 from typing import Any, Literal
 
 import numpy as np
@@ -82,17 +79,6 @@ from .joints import (
     get_joint_dof_count,
 )
 from .model import Model
-
-
-class EntityNotFoundError(Exception):
-    def __init__(self, message: str = "", pattern: str = "", match_type: str | None = None, hint: str = ""):
-        self.message = message
-        self.pattern = pattern
-        self.match_type = match_type
-        self.hint = hint
-
-    def __str__(self) -> str:
-        return " ".join((self.message, self.hint))
 
 
 class ModelBuilder:
@@ -3279,69 +3265,6 @@ class ModelBuilder:
             except np.linalg.LinAlgError:
                 continue
 
-    def add_contact_sensor(
-        self,
-        sensor_shape: str | list[str] | None = None,
-        sensor_body: str | list[str] | None = None,
-        contact_partners_shape: str | list[str] | None = None,
-        contact_partners_body: str | list[str] | None = None,
-        match_fun: Callable[[str, str], bool] | None = None,
-        include_total: bool = True,
-        prune_noncolliding: bool = False,
-        verbose: bool | None = None,
-    ):
-        """Add a contact sensor view to the model. Return a ContactView.
-        Exactly one of `sensor_shape` or `sensor_body` must be specified to define the sensor. If contact partners
-        are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
-        the total contact force.
-
-        Args:
-            sensor_shape: pattern to match sensor shape names; one entity per matching shape.
-            sensor_body: pattern to match sensor body names; one entity per matching body.
-            contact_partners_shape: pattern to match contact partner shape names; one entity per matching shape.
-            contact_partners_body: pattern to match contact partner body names; one entity per matching body.
-            match_fun: function taking a name and a pattern and returning true if the name matches the pattern;
-            defaults to fnmatch. Accepts "re" for `re.match()`.
-            include_total: If contact partners are defined, include the total contact force as the first reading of each sensor.
-            prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
-            verbose: print details
-        """
-        from newton.utils.contact_sensor import ContactView  # noqa: PLC0415
-
-        if (sensor_shape is None) == (sensor_body is None):
-            raise ValueError("Exactly one of sensor_shape and sensor_body must be specified")
-
-        if (contact_partners_shape is not None) and (contact_partners_body is not None):
-            raise ValueError("At most one of contact_partners_shape and contact_partners_body must be specified.")
-
-        if match_fun is None:
-            match_fun = fnmatch
-        elif match_fun == "re":
-
-            def match_fun(name, pat):
-                return re.match(pat, name)
-
-        query_args = {
-            "sensor_shape": sensor_shape,
-            "sensor_body": sensor_body,
-            "contact_partners_shape": contact_partners_shape,
-            "contact_partners_body": contact_partners_body,
-            "match_fun": match_fun,
-            "include_total": include_total,
-            "prune_noncolliding": prune_noncolliding,
-            "verbose": verbose if verbose is not None else wp.config.verbose,
-        }
-
-        query_id = len(self.contact_queries)
-        contact_view = ContactView(
-            query_id,
-            query_args,
-        )
-        self.contact_queries.append(contact_view)
-        if verbose:
-            print(f"Added contact query #{query_id}: {query_args}")
-        return contact_view
-
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
         if i == -1:
@@ -3671,83 +3594,7 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
-            m.contact_reporter = None
-            if self.contact_queries:
-                self._build_contact_sensors(m)
-
             return m
-
-    def _create_sensor(
-        self,
-        contact_sensor,
-        contact_view,
-        sensor_shape,
-        sensor_body,
-        contact_partners_shape,
-        contact_partners_body,
-        match_fun,
-        include_total,
-        prune_noncolliding,
-        verbose,
-    ):
-        """Create the list of individual sensors for a query and add the query to the manager."""
-
-        from newton.utils.contact_sensor import MatchAny  # noqa: PLC0415
-
-        if verbose:
-            print("Finding entities")
-        m = contact_sensor.model
-
-        # Get entities matching the pattern
-        sensor_entities, sensor_keys = [], []
-        sensor_entities, sensor_keys = self._get_entities(
-            match_fun,
-            m,
-            shape_pattern=sensor_shape,
-            body_pattern=sensor_body,
-            raise_if_not_found=True,
-        )
-        if verbose:
-            print(f"Sensor entities found: {sensor_entities}")
-            print(f"                 keys: {sensor_keys}")
-
-        if contact_partners_body or contact_partners_shape:
-            select_entities, select_keys = self._get_entities(
-                match_fun,
-                m,
-                shape_pattern=contact_partners_shape,
-                body_pattern=contact_partners_body,
-                raise_if_not_found=True,
-            )
-
-            if include_total:
-                select_entities = (MatchAny, *select_entities)
-                select_keys = (MatchAny, *select_keys)
-        else:
-            select_entities = (MatchAny,)
-            select_keys = (MatchAny,)
-
-        if verbose:
-            print(f"Contact partner entities found: {select_entities}")
-            print(f"                          keys: {select_keys}")
-
-        contact_sensor.add_contact_query(
-            sensor_entities=sensor_entities,
-            select_entities=select_entities,
-            sensor_keys=sensor_keys,
-            select_keys=select_keys,
-            contact_view=contact_view,
-            colliding_shape_pairs=self.contact_pairs if prune_noncolliding else None,
-        )
-
-    def _build_contact_sensors(self, model: Model):
-        from newton.utils.contact_sensor import ContactSensor  # noqa: PLC0415
-
-        model.contact_sensor = ContactSensor(model)
-        for query in self.contact_queries:
-            self._create_sensor(model.contact_sensor, query, **query.args)
-
-        model.contact_sensor.finalize()
 
     def find_shape_contact_pairs(self, model: Model):
         # find potential contact pairs based on collision groups and collision mask (pairwise filtering)
@@ -3779,78 +3626,5 @@ class ModelBuilder:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
 
-        self.contact_pairs = set(contact_pairs)
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
-
-    def _get_entities(
-        self,
-        match_fn: Callable[[str, str], bool],
-        model: Model,
-        shape_pattern: str | None = None,
-        body_pattern: str | None = None,
-        raise_if_not_found: bool = False,
-    ) -> tuple[list[tuple[int, ...]], list[tuple[Enum, str]]] | tuple[None, None]:
-        """Find shapes or bodies matching the pattern. Return entities, i.e. matching shapes in individual tuples,
-        and matching bodies as tuples including all their shapes."""
-        from newton.utils.contact_sensor import EntityKind  # noqa: PLC0415
-
-        entities, entity_keys = [], []
-
-        match_shapes, match_bodies = shape_pattern is not None, body_pattern is not None
-        assert match_shapes != match_bodies, "Exactly one of shape_pattern or body_pattern must be specified"
-
-        if isinstance(shape_pattern, list) or isinstance(body_pattern, list):
-            pattern_list = shape_pattern if match_shapes else body_pattern
-            arg = "shape_pattern" if match_shapes else "body_pattern"
-
-            for pattern in pattern_list:
-                e, k = self._get_entities(match_fn, model, **{arg: pattern}, raise_if_not_found=raise_if_not_found)
-                entities.extend(e)
-                entity_keys.extend(k)
-            return entities, entity_keys
-
-        if match_shapes:
-            for shape_id, shape_key in enumerate(model.shape_key):
-                if match_fn(shape_key, shape_pattern):
-                    entities.append((shape_id,))
-                    entity_keys.append((EntityKind.SHAPE, shape_key))
-        else:
-            for body_id, body_key in enumerate(model.body_key):
-                if match_fn(body_key, body_pattern):
-                    body_shapes = tuple(model.body_shapes[body_id])
-                    if not body_shapes:
-                        continue
-                    entities.append(body_shapes)
-                    entity_keys.append((EntityKind.BODY, body_key))
-
-        if raise_if_not_found and not entities:
-            # check for possible confusion of shape vs body
-            confusion_hint = (
-                self._get_entities(
-                    match_fn,
-                    model,
-                    body_pattern,
-                    shape_pattern,
-                    False,
-                )[0]
-                is not None
-            )
-
-            if match_shapes:
-                sought, other, pattern, kind = "shapes", "bodies", shape_pattern, "shape"
-            else:
-                sought, other, pattern, kind = "bodies (with shapes)", "shapes", body_pattern, "body"
-
-            raise EntityNotFoundError(
-                f'No matching {sought} for pattern "{pattern}".',
-                pattern,
-                kind,
-                hint=f"Did you mean to match {other}?" if confusion_hint else "",
-            )
-
-        if not entities:
-            return None, None
-
-        entities, entity_keys = zip(*sorted(zip(entities, entity_keys)))
-        return entities, entity_keys
