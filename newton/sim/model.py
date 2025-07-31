@@ -265,9 +265,6 @@ class Model:
         self.rigid_contact_rolling_friction = 0.0
         """Rolling friction coefficient for rigid body contacts (used by :class:`XPBDSolver`)."""
 
-        self.contact_sensor = None
-        """Contact information between entities."""
-
         self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
