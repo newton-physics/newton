@@ -340,6 +340,14 @@ add_example_test(
     test_options={"headless": True},
 )
 
+add_example_test(
+    TestOtherExamples,
+    name="example_contact_sensor",
+    devices=test_devices,
+    test_options={"stage_path": "None", "num_frames": 100, "use_cuda_graph": supports_load_during_graph_capture},
+    test_options_cpu={"num_frames": 10},
+)
+
 
 if __name__ == "__main__":
     # force rebuild of all kernels
