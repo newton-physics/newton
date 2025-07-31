@@ -1648,8 +1648,8 @@ class MuJoCoSolver(SolverBase):
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
         shape_transform = model.shape_transform.numpy()
-        shape_type = model.shape_geo.type.numpy()
-        shape_size = model.shape_geo.scale.numpy()
+        shape_type = model.shape_type.numpy()
+        shape_size = model.shape_scale.numpy()
         shape_body = model.shape_body.numpy()
         shape_flags = model.shape_flags.numpy()
 
@@ -1829,8 +1829,8 @@ class MuJoCoSolver(SolverBase):
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
                 # use shape materials instead of defaults if available
-                if model.shape_materials.mu is not None:
-                    shape_mu = model.shape_materials.mu.numpy()
+                if model.shape_material_mu is not None:
+                    shape_mu = model.shape_material_mu.numpy()
                     if shape < len(shape_mu):
                         # set friction from Newton shape materials using model's friction parameters
                         mu = shape_mu[shape]
@@ -2163,7 +2163,7 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
 
-            if model.shape_materials.mu is not None:
+            if model.shape_material_mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
 
@@ -2368,12 +2368,12 @@ class MuJoCoSolver(SolverBase):
             dim=(num_worlds, num_geoms),
             inputs=[
                 self.model.shape_collision_radius,
-                self.model.shape_materials.mu,
-                self.model.shape_materials.ke,
-                self.model.shape_materials.kd,
-                self.model.shape_geo.scale,
+                self.model.shape_material_mu,
+                self.model.shape_material_ke,
+                self.model.shape_material_kd,
+                self.model.shape_scale,
                 self.model.shape_transform,
-                self.model.shape_geo.type,
+                self.model.shape_type,
                 self.model.to_newton_shape_index,
                 self.model.shape_incoming_xform,
                 self.model.rigid_contact_torsional_friction,

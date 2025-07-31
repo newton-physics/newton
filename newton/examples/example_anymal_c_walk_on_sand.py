@@ -171,7 +171,7 @@ class Example:
         collider_points, collider_indices, collider_v_shape_ids = _merge_meshes(
             [self.model.shape_src[m].vertices for m in collider_shape_ids],
             [self.model.shape_src[m].indices for m in collider_shape_ids],
-            [self.model.shape_geo.scale.numpy()[m] for m in collider_shape_ids],
+            [self.model.shape_scale.numpy()[m] for m in collider_shape_ids],
             collider_shape_ids,
         )
 

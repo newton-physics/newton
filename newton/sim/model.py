@@ -91,7 +91,7 @@ class Model:
         """Rigid shape flags, shape [shape_count], uint32."""
         self.body_shapes = {}
         """Mapping from body index to list of attached shape indices."""
-        
+
         # Shape material properties
         self.shape_material_ke = None
         """Shape contact elastic stiffness, shape [shape_count], float."""
@@ -105,7 +105,7 @@ class Model:
         """Shape coefficient of friction, shape [shape_count], float."""
         self.shape_material_restitution = None
         """Shape coefficient of restitution, shape [shape_count], float."""
-        
+
         # Shape geometry properties
         self.shape_type = None
         """Shape geometry type, shape [shape_count], int32."""
@@ -119,7 +119,7 @@ class Model:
         """Shape 3D scale, shape [shape_count, 3], float."""
         self.shape_filter = None
         """Shape filter group, shape [shape_count], int."""
-        
+
         self.shape_src = []
         """List of source geometry objects (e.g., `wp.Mesh`, `SDF`) used for rendering and broadphase."""
 

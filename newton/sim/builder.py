@@ -2321,9 +2321,7 @@ class ModelBuilder:
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_src[shape] = self.shape_src[shape].copy(
-                    vertices=rmesh.vertices, indices=rmesh.indices
-                )
+                self.shape_src[shape] = self.shape_src[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":

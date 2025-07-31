@@ -2320,7 +2320,8 @@ def apply_rigid_restitution(
     contact_point1: wp.array(dtype=wp.vec3),
     contact_offset0: wp.array(dtype=wp.vec3),
     contact_offset1: wp.array(dtype=wp.vec3),
-    contact_thickness: wp.array(dtype=float),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
     contact_inv_weight: wp.array(dtype=float),
     gravity: wp.vec3,
     dt: float,
@@ -2392,7 +2393,7 @@ def apply_rigid_restitution(
     bx_a = wp.transform_point(X_wb_a_prev, contact_point0[tid] + contact_offset0[tid])
     bx_b = wp.transform_point(X_wb_b_prev, contact_point1[tid] + contact_offset1[tid])
 
-    thickness = contact_thickness[tid]
+    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
     d = -wp.dot(n, bx_b - bx_a) - thickness
     if d >= 0.0:
