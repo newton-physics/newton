@@ -19,11 +19,11 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.contact_sensor import ContactReporter, ContactSensorManager, ContactView, MatchAny
+from newton.utils.contact_sensor import ContactSensor, MatchAny
 
 
 class MockModel:
-    """Minimal mock model for testing ContactReporter"""
+    """Minimal mock model for testing ContactSensor"""
 
     def __init__(self, device=None):
         self.device = device or wp.get_device()
@@ -77,7 +77,11 @@ class TestContactSensor(unittest.TestCase):
             (entity_A, MatchAny),
             (entity_B, MatchAny),
         ]
-        contact_reporter = ContactReporter(entity_pairs)
+        model = MockModel()
+        model.body_key = ["A", "B"]
+        model.body_shapes = [entity_A, entity_B]
+
+        contact_sensor = ContactSensor(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
         contacts = [
             {
@@ -191,153 +195,19 @@ class TestContactSensor(unittest.TestCase):
                     forces=scenario["forces"],
                 )
 
-                contact_reporter._select_aggregate_net_force(contact_info)
+                contact_sensor.eval(contact_info)
 
-                self.assertIsNotNone(contact_reporter.net_force)
-                self.assertEqual(contact_reporter.net_force.shape[0], contact_reporter.n_entity_pairs)
+                self.assertIsNotNone(contact_sensor.net_force)
+                self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)
 
-                self.assertTrue(contact_reporter.net_force.dtype == wp.vec3)
+                self.assertTrue(contact_sensor.net_force.dtype == wp.vec3)
 
-                net_forces = contact_reporter.net_force.numpy()
+                net_forces = contact_sensor.net_force.numpy()
 
-                assert_np_equal(net_forces[0], scenario["force_A_vs_B"])
-                assert_np_equal(net_forces[1], scenario["force_B_vs_A"])
-                assert_np_equal(net_forces[2], scenario["force_A_vs_All"])
-                assert_np_equal(net_forces[3], scenario["force_B_vs_All"])
-
-
-class TestContactSensorManager(unittest.TestCase):
-    def setUp(self):
-        """Set up test fixtures"""
-        self.device = wp.get_device()
-        self.model = MockModel(self.device)
-        self.cm = ContactSensorManager(self.model)
-
-    def test_add_contact_query(self):
-        """Test sensor list building"""
-        contact_view = ContactView(query_id=0, args={})
-        sensor_entities = [(0,), (1,)]
-        select_entities = [(2,), (3,)]
-
-        colliding_shape_pairs = {(0, 2)}
-
-        self.cm.add_contact_query(
-            sensor_entities=sensor_entities,
-            select_entities=select_entities,
-            sensor_keys=["sensor_0", "sensor_1"],
-            select_keys=["target_2", "target_3"],
-            contact_view=contact_view,
-            colliding_shape_pairs=colliding_shape_pairs,
-        )
-
-        query = self.cm.contact_queries[0]
-        sensor_list = query.sensor_list
-
-        self.assertEqual(sensor_list[0], (0, (0,)))
-        self.assertEqual(sensor_list[1], (1, ()))
-
-    def test_finalize(self):
-        """Test finalizing ContactSensorManager"""
-        views = [ContactView(query_id=0, args={}), ContactView(query_id=1, args={})]
-        queries = [
-            {
-                "sensor_entities": [(0,)],
-                "select_entities": [(1,)],
-                "sensor_keys": ["sensor_1"],
-                "select_keys": ["target_1"],
-                "contact_view": views[0],
-            },
-            {
-                "sensor_entities": [(2,), (3,)],
-                "select_entities": [(4,), MatchAny],
-                "sensor_keys": ["sensor_2", "sensor_3"],
-                "select_keys": ["target_4", "all"],
-                "contact_view": views[1],
-            },
-        ]
-        for q in queries:
-            self.cm.add_contact_query(**q)
-        self.cm.finalize()
-        self.assertTrue(all(v.finalized for v in views))
-        self.assertEqual(views[0].sensor_keys, ["sensor_1"])
-        self.assertEqual(views[0].contact_partner_keys, ["target_1"])
-        self.assertEqual(views[0].shape, (1, 1))
-        self.assertEqual(views[1].sensor_keys, ["sensor_2", "sensor_3"])
-        self.assertEqual(views[1].contact_partner_keys, ["target_4", "all"])
-        self.assertEqual(views[1].shape, (2, 2))
-
-    def test_eval_contact_sensors(self):
-        """Test evaluating contact sensors"""
-        contact_view = ContactView(query_id=0, args={})
-
-        self.cm.add_contact_query(
-            sensor_entities=[(0,)],
-            select_entities=[(1,)],
-            sensor_keys=["sensor_A"],
-            select_keys=["entity_B"],
-            contact_view=contact_view,
-        )
-
-        self.cm.finalize()
-
-        contact_info = create_contact_info(
-            self.device,
-            [(0, 1)],
-            nconmax=10,
-            forces=[2.0],
-            normals=[[1.0, 0.0, 0.0]],
-        )
-
-        self.cm.eval_contact_sensors(contact_info)
-
-        net_forces = self.cm.contact_reporter.net_force.numpy()
-        expected_force = [2.0, 0.0, 0.0]
-        assert_np_equal(net_forces[0], expected_force)
-
-    def test_build_entity_pair_list(self):
-        """Test building entity pair list"""
-        contact_view = ContactView(query_id=0, args={})
-
-        self.cm.add_contact_query(
-            sensor_entities=[(0,), (1, 2)],
-            select_entities=[(3,), MatchAny],
-            sensor_keys=["sensor_0", "sensor_12"],
-            select_keys=["target_3", "all"],
-            contact_view=contact_view,
-        )
-
-        self.cm._build_entity_pair_list()
-
-        self.assertEqual(self.cm.query_shape[0], (2, 2))
-
-        entity_pairs = self.cm.entity_pairs[0]
-        expected_pairs = [
-            ((0,), (3,)),
-            ((0,), MatchAny),
-            ((1, 2), (3,)),
-            ((1, 2), MatchAny),
-        ]
-        self.assertEqual(entity_pairs, expected_pairs)
-
-    def test_empty_query_handling(self):
-        """Test handling of queries with no valid sensor-select pairs"""
-        contact_view = ContactView(query_id=0, args={})
-
-        colliding_shape_pairs = set()
-
-        self.cm.add_contact_query(
-            sensor_entities=[(0,)],
-            select_entities=[(1,)],
-            sensor_keys=["sensor_0"],
-            select_keys=["target_1"],
-            contact_view=contact_view,
-            colliding_shape_pairs=colliding_shape_pairs,
-        )
-
-        query = self.cm.contact_queries[0]
-        sensor_list = query.sensor_list
-
-        self.assertEqual(sensor_list[0], (0, ()))
+                assert_np_equal(net_forces[0, 2], scenario["force_A_vs_B"])
+                assert_np_equal(net_forces[1, 1], scenario["force_B_vs_A"])
+                assert_np_equal(net_forces[0, 0], scenario["force_A_vs_All"])
+                assert_np_equal(net_forces[1, 0], scenario["force_B_vs_All"])
 
 
 if __name__ == "__main__":
