@@ -29,6 +29,9 @@ from .flags import (
 )
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -46,6 +49,9 @@ from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",
