@@ -281,8 +281,6 @@ class ModelBuilder:
         self.default_body_armature = 0.0
         # endregion
 
-        self.contact_queries = []
-
         # particles
         self.particle_q = []
         self.particle_qd = []
@@ -3624,6 +3622,5 @@ class ModelBuilder:
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
-
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
