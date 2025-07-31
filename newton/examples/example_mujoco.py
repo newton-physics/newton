@@ -433,7 +433,9 @@ if __name__ == "__main__":
         )
         # Get actual max constraints and contacts from MuJoCo Warp data
         actual_njmax = example.solver.mjw_data.njmax
-        actual_nconmax = example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+        actual_nconmax = (
+            example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+        )
         print(f"Max constraints: {actual_njmax} per env, max contacts: {actual_nconmax} per env")
         print(
             f"Joint DOFs: {example.model.joint_dof_count}, bodies: {example.model.body_count}, device: {wp.get_device()}"
