@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from . import ik
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline, count_rigid_contact_points
@@ -28,6 +29,9 @@ from .flags import (
 )
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -43,9 +47,11 @@ from .joints import (
 from .model import Model
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
-from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",
@@ -67,8 +73,6 @@ __all__ = [
     "Control",
     "Model",
     "ModelBuilder",
-    "ShapeGeometry",
-    "ShapeMaterials",
     "State",
     "Style3DModel",
     "Style3DModelBuilder",
@@ -77,5 +81,6 @@ __all__ = [
     "eval_fk",
     "eval_ik",
     "get_joint_dof_count",
+    "ik",
     "plot_graph",
 ]

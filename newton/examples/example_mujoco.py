@@ -104,20 +104,20 @@ def _setup_g1(articulation_builder):
     try:
         import tqdm  # noqa: PLC0415
 
-        meshes = tqdm.tqdm(articulation_builder.shape_geo_src, desc="Simplifying meshes")
+        meshes = tqdm.tqdm(articulation_builder.shape_source, desc="Simplifying meshes")
     except ImportError:
-        meshes = articulation_builder.shape_geo_src
+        meshes = articulation_builder.shape_source
     for i, m in enumerate(meshes):
         if m is None:
             continue
         hash_m = hash(m)
         if hash_m in simplified_meshes:
-            articulation_builder.shape_geo_src[i] = simplified_meshes[hash_m]
+            articulation_builder.shape_source[i] = simplified_meshes[hash_m]
         else:
             simplified = newton.geometry.utils.remesh_mesh(
                 m, visualize=False, method="convex_hull", recompute_inertia=False
             )
-            articulation_builder.shape_geo_src[i] = simplified
+            articulation_builder.shape_source[i] = simplified
             simplified_meshes[hash_m] = simplified
     root_dofs = 7
 
@@ -212,6 +212,7 @@ class Example:
         ls_iteration=None,
         njmax=None,
         nconmax=None,
+        builder=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -233,32 +234,8 @@ class Example:
         if not stage_path:
             stage_path = "example_" + robot + ".usd"
 
-        articulation_builder = newton.ModelBuilder()
-        if robot == "humanoid":
-            root_dofs = _setup_humanoid(articulation_builder)
-        elif robot == "g1":
-            root_dofs = _setup_g1(articulation_builder)
-        elif robot == "h1":
-            root_dofs = _setup_h1(articulation_builder)
-        elif robot == "cartpole":
-            root_dofs = _setup_cartpole(articulation_builder)
-        elif robot == "ant":
-            root_dofs = _setup_ant(articulation_builder)
-        elif robot == "quadruped":
-            root_dofs = _setup_quadruped(articulation_builder)
-        else:
-            raise ValueError(f"Name of the provided robot not recognized: {robot}")
-
-        builder = newton.ModelBuilder()
-        offsets = newton.examples.compute_env_offsets(self.num_envs)
-        for i in range(self.num_envs):
-            if randomize:
-                articulation_builder.joint_q[root_dofs:] = self.rng.uniform(
-                    -1.0, 1.0, size=(len(articulation_builder.joint_q) - root_dofs,)
-                ).tolist()
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
-
-        builder.add_ground_plane()
+        if builder is None:
+            builder = Example.create_model_builder(robot, num_envs, randomize, self.seed)
 
         # finalize model
         self.model = builder.finalize()
@@ -322,6 +299,38 @@ class Example:
         self.renderer.begin_frame(self.sim_time)
         self.renderer.render(self.state_0)
         self.renderer.end_frame()
+
+    @staticmethod
+    def create_model_builder(robot, num_envs, randomize=False, seed=123) -> newton.ModelBuilder:
+        rng = np.random.default_rng(seed)
+
+        articulation_builder = newton.ModelBuilder()
+        if robot == "humanoid":
+            root_dofs = _setup_humanoid(articulation_builder)
+        elif robot == "g1":
+            root_dofs = _setup_g1(articulation_builder)
+        elif robot == "h1":
+            root_dofs = _setup_h1(articulation_builder)
+        elif robot == "cartpole":
+            root_dofs = _setup_cartpole(articulation_builder)
+        elif robot == "ant":
+            root_dofs = _setup_ant(articulation_builder)
+        elif robot == "quadruped":
+            root_dofs = _setup_quadruped(articulation_builder)
+        else:
+            raise ValueError(f"Name of the provided robot not recognized: {robot}")
+
+        builder = newton.ModelBuilder()
+        offsets = newton.examples.compute_env_offsets(num_envs)
+        for i in range(num_envs):
+            if randomize:
+                articulation_builder.joint_q[root_dofs:] = rng.uniform(
+                    -1.0, 1.0, size=(len(articulation_builder.joint_q) - root_dofs,)
+                ).tolist()
+            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+
+        builder.add_ground_plane()
+        return builder
 
 
 if __name__ == "__main__":

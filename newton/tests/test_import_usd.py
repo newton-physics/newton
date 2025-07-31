@@ -38,7 +38,40 @@ class TestImportUsd(unittest.TestCase):
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 9)
+        self.assertEqual(builder.shape_count, 26)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        # 8 joints + 1 free joint for the root body
+        self.assertEqual(builder.joint_count, 9)
+        self.assertEqual(builder.joint_dof_count, 14)
+        self.assertEqual(builder.joint_coord_count, 15)
+        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(len(results["path_body_map"]), 9)
+        self.assertEqual(len(results["path_shape_map"]), 26)
+
+        collision_shapes = [
+            i
+            for i in range(builder.shape_count)
+            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+        ]
+        self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_no_visuals(self):
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            load_non_physics_prims=False,
+        )
+        self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -46,6 +79,13 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
+
+        collision_shapes = [
+            i
+            for i in range(builder.shape_count)
+            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+        ]
+        self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_with_mesh(self):
@@ -209,26 +249,26 @@ class TestImportUsd(unittest.TestCase):
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
-        self.assertEqual(builder.shape_geo_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+        self.assertEqual(builder.shape_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
 
         # original mesh
-        mesh_original = builder.shape_geo_src[0]
+        mesh_original = builder.shape_source[0]
         self.assertEqual(mesh_original.vertices.shape, (8, 3))
         assert_np_equal(mesh_original.vertices, vertices)
         assert_np_equal(mesh_original.indices, indices)
 
         # convex hull
-        mesh_convex_hull = builder.shape_geo_src[1]
+        mesh_convex_hull = builder.shape_source[1]
         self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
 
         # bounding sphere
-        self.assertIsNone(builder.shape_geo_src[2])
-        self.assertEqual(builder.shape_geo_type[2], newton.geometry.GEO_SPHERE)
-        self.assertAlmostEqual(builder.shape_geo_scale[2][0], wp.length(scale))
+        self.assertIsNone(builder.shape_source[2])
+        self.assertEqual(builder.shape_type[2], newton.geometry.GEO_SPHERE)
+        self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
         # bounding box
-        assert_np_equal(npsorted(builder.shape_geo_scale[3]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 

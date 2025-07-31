@@ -70,9 +70,12 @@ def build_ccd_generic(support_func: Any):
     for performing collision detection between geometric primitives. The support function is used
     to find the furthest point on a geometry in a given direction.
 
-    The support function must have the following signature:
+    The support function must have the following signature::
+
         def support_func(geom: Any, geom_type: int, dir: wp.vec3) -> tuple[int, wp.vec3]:
-    The type of geom must be a struct that can look as follows:
+
+    The type of geom must be a struct that can look as follows::
+
         @wp.struct
         class Geom:
             pos: wp.vec3
@@ -80,7 +83,8 @@ def build_ccd_generic(support_func: Any):
             normal: wp.vec3
             size: wp.vec3
             index: int
-    Note that only the index member is mandatory. All other members can be chosen as needed for
+
+    Note that only the ``index`` member is mandatory. All other members can be chosen as needed for
     the support function.
 
     The returned functions implement the GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm)
@@ -99,6 +103,7 @@ def build_ccd_generic(support_func: Any):
         - _linear_combine: Performs linear combination of vertices
         - _almost_equal: Checks if two vectors are approximately equal
         - _subdistance: Computes closest point on simplex to origin
+
         And other internal functions used by GJK/EPA algorithms.
     """
 

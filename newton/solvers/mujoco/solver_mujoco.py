@@ -1762,10 +1762,21 @@ class MuJoCoSolver(SolverBase):
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
         shape_transform = model.shape_transform.numpy()
-        shape_type = model.shape_geo.type.numpy()
-        shape_size = model.shape_geo.scale.numpy()
+        shape_type = model.shape_type.numpy()
+        shape_size = model.shape_scale.numpy()
         shape_body = model.shape_body.numpy()
         shape_flags = model.shape_flags.numpy()
+
+        eq_constraint_type = model.equality_constraint_type.numpy()
+        eq_constraint_body1 = model.equality_constraint_body1.numpy()
+        eq_constraint_body2 = model.equality_constraint_body2.numpy()
+        eq_constraint_anchor = model.equality_constraint_anchor.numpy()
+        eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
+        eq_constraint_relpose = model.equality_constraint_relpose.numpy()
+        eq_constraint_joint1 = model.equality_constraint_joint1.numpy()
+        eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
+        eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
+        eq_constraint_enabled = model.equality_constraint_enabled.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1901,7 +1912,7 @@ class MuJoCoSolver(SolverBase):
                 }
                 tf = wp.transform(*shape_transform[shape])
                 if stype == newton.GEO_MESH:
-                    mesh_src = model.shape_geo_src[shape]
+                    mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
                     # apply scaling
@@ -1944,8 +1955,8 @@ class MuJoCoSolver(SolverBase):
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
                 # use shape materials instead of defaults if available
-                if model.shape_materials.mu is not None:
-                    shape_mu = model.shape_materials.mu.numpy()
+                if model.shape_material_mu is not None:
+                    shape_mu = model.shape_material_mu.numpy()
                     if shape < len(shape_mu):
                         # set friction from Newton shape materials using model's friction parameters
                         mu = shape_mu[shape]
@@ -2156,6 +2167,34 @@ class MuJoCoSolver(SolverBase):
 
             add_geoms(child, incoming_xform=child_tf)
 
+        for i, typ in enumerate(eq_constraint_type):
+            if typ == newton.EQ_CONNECT:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.data[0:3] = eq_constraint_anchor[i]
+
+            elif typ == newton.EQ_JOINT:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.joint_key[eq_constraint_joint1[i]]
+                eq.name2 = model.joint_key[eq_constraint_joint2[i]]
+                eq.data[0:5] = eq_constraint_polycoef[i]
+
+            elif typ == newton.EQ_WELD:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_WELD
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.data[0:3] = eq_constraint_anchor[i]
+                eq.data[3:6] = wp.transform_get_translation(eq_constraint_relpose[i])
+                eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
+                eq.data[10] = eq_constraint_torquescale[i]
+
         self.mj_model = spec.compile()
         mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
 
@@ -2221,7 +2260,6 @@ class MuJoCoSolver(SolverBase):
             full_shape_mapping = shape_mapping
 
         self.mj_data = mujoco.MjData(self.mj_model)
-        self.mj_data.nefc = nefc_per_env
 
         self.mj_model.opt.tolerance = tolerance
         self.mj_model.opt.ls_tolerance = ls_tolerance
@@ -2275,6 +2313,9 @@ class MuJoCoSolver(SolverBase):
 
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
+            # set mjwarp-only settings
+            self.mjw_model.opt.ls_parallel = ls_parallel
+
             if separate_envs_to_worlds:
                 nworld = model.num_envs
             else:
@@ -2291,7 +2332,7 @@ class MuJoCoSolver(SolverBase):
                 | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
             )
 
-            if model.shape_materials.mu is not None:
+            if model.shape_material_mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
 
@@ -2304,7 +2345,7 @@ class MuJoCoSolver(SolverBase):
                 else:
                     rigid_contact_max = newton.sim.count_rigid_contact_points(model)
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(nworld * nefc_per_env, nworld * self.mj_data.nefc)
+            njmax = max(nefc_per_env, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
@@ -2496,12 +2537,12 @@ class MuJoCoSolver(SolverBase):
             dim=(num_worlds, num_geoms),
             inputs=[
                 self.model.shape_collision_radius,
-                self.model.shape_materials.mu,
-                self.model.shape_materials.ke,
-                self.model.shape_materials.kd,
-                self.model.shape_geo.scale,
+                self.model.shape_material_mu,
+                self.model.shape_material_ke,
+                self.model.shape_material_kd,
+                self.model.shape_scale,
                 self.model.shape_transform,
-                self.model.shape_geo.type,
+                self.model.shape_type,
                 self.model.to_newton_shape_index,
                 self.model.shape_incoming_xform,
                 self.model.rigid_contact_torsional_friction,

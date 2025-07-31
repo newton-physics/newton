@@ -60,6 +60,7 @@ def compute_pick_state_kernel(
 def apply_picking_force_kernel(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_com: wp.array(dtype=wp.vec3),
     body_f: wp.array(dtype=wp.spatial_vector),
     pick_body_arr: wp.array(dtype=int),
     pick_state: wp.array(dtype=float),
@@ -79,7 +80,7 @@ def apply_picking_force_kernel(
     pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
 
     # center of mass
-    com = wp.transform_get_translation(X_wb)
+    com = wp.transform_point(X_wb, body_com[pick_body])
 
     # get velocity of attachment point
     omega = wp.spatial_top(body_qd[pick_body])
@@ -274,11 +275,11 @@ def CreateSimRenderer(renderer):
                     self.body_names,
                     self.geo_shape,
                     model.shape_body.numpy(),
-                    model.shape_geo_src,
-                    model.shape_geo.type.numpy(),
-                    model.shape_geo.scale.numpy(),
-                    model.shape_geo.thickness.numpy(),
-                    model.shape_geo.is_solid.numpy(),
+                    model.shape_source,
+                    model.shape_type.numpy(),
+                    model.shape_scale.numpy(),
+                    model.shape_thickness.numpy(),
+                    model.shape_is_solid.numpy(),
                     model.shape_transform.numpy(),
                     model.shape_flags.numpy(),
                     self.model.shape_key,
@@ -339,11 +340,11 @@ def CreateSimRenderer(renderer):
             body_names: list,
             geo_shape: dict,
             shape_body: np.ndarray,
-            shape_geo_src: list,
-            shape_geo_type: np.ndarray,
-            shape_geo_scale: np.ndarray,
-            shape_geo_thickness: np.ndarray,
-            shape_geo_is_solid: np.ndarray,
+            shape_source: list,
+            shape_type: np.ndarray,
+            shape_scale: np.ndarray,
+            shape_thickness: np.ndarray,
+            shape_is_solid: np.ndarray,
             shape_transform: np.ndarray,
             shape_flags: np.ndarray,
             shape_key: list,
@@ -356,11 +357,11 @@ def CreateSimRenderer(renderer):
                 body_names (list): List of body names.
                 geo_shape (dict): A dictionary to cache geometry shapes.
                 shape_body (numpy.ndarray): Maps shape index to body index.
-                shape_geo_src (list): Source geometry for each shape.
-                shape_geo_type (numpy.ndarray): Type of each shape's geometry.
-                shape_geo_scale (numpy.ndarray): Scale of each shape's geometry.
-                shape_geo_thickness (numpy.ndarray): Thickness of each shape's geometry.
-                shape_geo_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
+                shape_source (list): Source geometry for each shape.
+                shape_type (numpy.ndarray): Type of each shape's geometry.
+                shape_scale (numpy.ndarray): Scale of each shape's geometry.
+                shape_thickness (numpy.ndarray): Thickness of each shape's geometry.
+                shape_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
                 shape_transform (numpy.ndarray): Local transform of each shape.
                 shape_flags (numpy.ndarray): Visibility and other flags for each shape.
                 shape_key (list): List of shape names.
@@ -376,11 +377,11 @@ def CreateSimRenderer(renderer):
             # loop over shapes
             for s in range(shape_count):
                 scale = np.ones(3, dtype=np.float32)
-                geo_type = shape_geo_type[s]
-                geo_scale = [float(v) for v in shape_geo_scale[s]]
-                geo_thickness = float(shape_geo_thickness[s])
-                geo_is_solid = bool(shape_geo_is_solid[s])
-                geo_src = shape_geo_src[s]
+                geo_type = shape_type[s]
+                geo_scale = [float(v) for v in shape_scale[s]]
+                geo_thickness = float(shape_thickness[s])
+                geo_is_solid = bool(shape_is_solid[s])
+                geo_src = shape_source[s]
                 name = shape_key[s]
                 count = self._instance_key_count.get(name, 0)
                 if count > 0:
@@ -593,6 +594,7 @@ def CreateSimRenderer(renderer):
                 inputs=[
                     state.body_q,
                     state.body_qd,
+                    self.model.body_com,
                     state.body_f,
                     self.pick_body,
                     self.pick_state,
@@ -784,8 +786,8 @@ def CreateSimRenderer(renderer):
                         self.state.body_q,
                         self.model.shape_body,
                         self.model.shape_transform,
-                        self.model.shape_geo.type,
-                        self.model.shape_geo.scale,
+                        self.model.shape_type,
+                        self.model.shape_scale,
                         p,
                         d,
                         self.lock,

@@ -46,7 +46,15 @@ JOINT_MODE_NONE = wp.constant(0)
 JOINT_MODE_TARGET_POSITION = wp.constant(1)
 JOINT_MODE_TARGET_VELOCITY = wp.constant(2)
 
+# (temporary) equality constraint types
+EQ_CONNECT = wp.constant(0)
+EQ_WELD = wp.constant(1)
+EQ_JOINT = wp.constant(2)
+
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",

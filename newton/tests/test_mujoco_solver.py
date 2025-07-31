@@ -46,6 +46,22 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
+    def test_ls_parallel_option(self):
+        """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
+        # Create minimal model with proper inertia
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, com=(0.0, 0.0, 0.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        builder.add_joint_revolute(-1, body)
+        model = builder.finalize()
+
+        # Test with ls_parallel=True
+        solver = MuJoCoSolver(model, ls_parallel=True)
+        self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+
+        # Test with ls_parallel=False (default)
+        solver_default = MuJoCoSolver(model, ls_parallel=False)
+        self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and renderer are available."""
@@ -650,14 +666,14 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings and arrays
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_types = self.model.shape_geo.type.numpy()
+        shape_types = self.model.shape_type.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Get all property arrays from Newton
-        shape_mu = self.model.shape_materials.mu.numpy()
-        shape_ke = self.model.shape_materials.ke.numpy()
-        shape_kd = self.model.shape_materials.kd.numpy()
-        shape_sizes = self.model.shape_geo.scale.numpy()
+        shape_mu = self.model.shape_material_mu.numpy()
+        shape_ke = self.model.shape_material_ke.numpy()
+        shape_kd = self.model.shape_material_kd.numpy()
+        shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
         shape_incoming_xform = self.model.shape_incoming_xform.numpy()
@@ -832,13 +848,13 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         new_mu = np.zeros(shape_count)
         for i in range(shape_count):
             new_mu[i] = 0.1 + i * 0.05  # Pattern: 0.1, 0.15, 0.2, ...
-        self.model.shape_materials.mu.assign(new_mu)
+        self.model.shape_material_mu.assign(new_mu)
 
         # 2. Update contact stiffness/damping
         new_ke = np.ones(shape_count) * 1000.0  # High stiffness
         new_kd = np.ones(shape_count) * 10.0  # Some damping
-        self.model.shape_materials.ke.assign(new_ke)
-        self.model.shape_materials.kd.assign(new_kd)
+        self.model.shape_material_ke.assign(new_ke)
+        self.model.shape_material_kd.assign(new_kd)
 
         # 3. Update collision radius
         new_radii = self.model.shape_collision_radius.numpy() * 1.5
@@ -847,10 +863,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # 4. Update sizes
         new_sizes = []
         for i in range(shape_count):
-            old_size = self.model.shape_geo.scale.numpy()[i]
+            old_size = self.model.shape_scale.numpy()[i]
             new_size = wp.vec3(old_size[0] * 1.2, old_size[1] * 1.2, old_size[2] * 1.2)
             new_sizes.append(new_size)
-        self.model.shape_geo.scale.assign(wp.array(new_sizes, dtype=wp.vec3, device=self.model.device))
+        self.model.shape_scale.assign(wp.array(new_sizes, dtype=wp.vec3, device=self.model.device))
 
         # 5. Update transforms (position and orientation)
         new_transforms = []
@@ -1069,8 +1085,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertIsNotNone(solver)
 
         # Verify that the meshes retained their maxhullvert values
-        self.assertEqual(model.shape_geo_src[0].maxhullvert, 32)
-        self.assertEqual(model.shape_geo_src[1].maxhullvert, 128)
+        self.assertEqual(model.shape_source[0].maxhullvert, 32)
+        self.assertEqual(model.shape_source[1].maxhullvert, 128)
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
