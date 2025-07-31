@@ -165,12 +165,12 @@ class Example:
         ## Grab meshes for collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
-            [[m for m in self.model.body_shapes[b] if self.model.shape_src[m]] for b in collider_body_idx]
+            [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
         )
 
         collider_points, collider_indices, collider_v_shape_ids = _merge_meshes(
-            [self.model.shape_src[m].vertices for m in collider_shape_ids],
-            [self.model.shape_src[m].indices for m in collider_shape_ids],
+            [self.model.shape_source[m].vertices for m in collider_shape_ids],
+            [self.model.shape_source[m].indices for m in collider_shape_ids],
             [self.model.shape_scale.numpy()[m] for m in collider_shape_ids],
             collider_shape_ids,
         )

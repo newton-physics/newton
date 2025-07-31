@@ -104,20 +104,20 @@ def _setup_g1(articulation_builder):
     try:
         import tqdm  # noqa: PLC0415
 
-        meshes = tqdm.tqdm(articulation_builder.shape_src, desc="Simplifying meshes")
+        meshes = tqdm.tqdm(articulation_builder.shape_source, desc="Simplifying meshes")
     except ImportError:
-        meshes = articulation_builder.shape_src
+        meshes = articulation_builder.shape_source
     for i, m in enumerate(meshes):
         if m is None:
             continue
         hash_m = hash(m)
         if hash_m in simplified_meshes:
-            articulation_builder.shape_src[i] = simplified_meshes[hash_m]
+            articulation_builder.shape_source[i] = simplified_meshes[hash_m]
         else:
             simplified = newton.geometry.utils.remesh_mesh(
                 m, visualize=False, method="convex_hull", recompute_inertia=False
             )
-            articulation_builder.shape_src[i] = simplified
+            articulation_builder.shape_source[i] = simplified
             simplified_meshes[hash_m] = simplified
     root_dofs = 7
 
