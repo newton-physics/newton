@@ -20,11 +20,6 @@ import numpy as np
 import warp as wp
 
 from .articulation import eval_single_articulation_fk
-from .joints import (
-    JOINT_FIXED,
-    JOINT_PRISMATIC,
-    JOINT_REVOLUTE,
-)
 
 
 class JacobianMode(_Enum):
@@ -82,24 +77,17 @@ class IKSolver:
 
     - Shared across problems: `model`, `objectives`
     - Per-problem data: each row of `joint_q`, objective parameters (e.g. targets)
-
-
-    Supported joint types
-    ---------------------
-    ANALYTIC and MIXED modes currently only support models with revolute, prismatic, and fixed joints.
-    For more complex joint types (e.g., free, ball, D6), use AUTODIFF mode.
-    Velocity-space optimization is planned for broader analytic support in future updates.
     """
 
-    TILE_N_COORDS = None
+    TILE_N_DOFS = None
     TILE_N_RESIDUALS = None
     _cache: ClassVar[dict[tuple[int, int], type]] = {}
 
     def __new__(cls, model, joint_q, objectives, *a, **kw):
-        n_coords = model.joint_coord_count
+        n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         arch = model.device.arch
-        key = (n_coords, n_residuals, arch)
+        key = (n_dofs, n_residuals, arch)
 
         spec_cls = cls._cache.get(key)
         if spec_cls is None:
@@ -138,31 +126,21 @@ class IKSolver:
         self.objectives = objectives
         self.jacobian_mode = jacobian_mode
 
-        if self.jacobian_mode in (JacobianMode.ANALYTIC, JacobianMode.MIXED):
-            joint_types = set(self.model.joint_type.numpy())
-            supported = {JOINT_REVOLUTE, JOINT_PRISMATIC, JOINT_FIXED}
-            unsupported = joint_types - supported
-            if unsupported:
-                raise ValueError(
-                    f"Analytic/Mixed Jacobians currently only support revolute, prismatic, and fixed joints. "
-                    f"Unsupported types found: {unsupported}. Use AUTODIFF mode as a workaround."
-                )
-
         self.lambda_initial = lambda_initial
         self.lambda_factor = lambda_factor
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
         self.rho_min = rho_min
 
-        if self.TILE_N_COORDS is not None:
-            assert self.n_coords == self.TILE_N_COORDS
+        if self.TILE_N_DOFS is not None:
+            assert self.n_dofs == self.TILE_N_DOFS
         if self.TILE_N_RESIDUALS is not None:
             assert self.n_residuals == self.TILE_N_RESIDUALS
 
         grad = jacobian_mode in (JacobianMode.AUTODIFF, JacobianMode.MIXED)
 
         self.joint_q = joint_q
-        self.joint_qd = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.qd_zero = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
         self.body_q = wp.zeros(
             (self.n_problems, model.body_count), dtype=wp.transform, requires_grad=grad, device=self.device
         )
@@ -172,13 +150,11 @@ class IKSolver:
         self.residuals = wp.zeros(
             (self.n_problems, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=self.device
         )
-        self.jacobian = wp.zeros(
-            (self.n_problems, self.n_residuals, self.n_coords), dtype=wp.float32, device=self.device
-        )
-        self.delta_q = wp.zeros((self.n_problems, self.n_coords), dtype=wp.float32, device=self.device)
+        self.jacobian = wp.zeros((self.n_problems, self.n_residuals, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.dq_dof = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, requires_grad=grad, device=self.device)
         self.residuals_3d = wp.zeros((self.n_problems, self.n_residuals, 1), dtype=wp.float32, device=self.device)
         self.residuals_proposed = wp.zeros_like(self.residuals, device=self.device)
-        self.joint_q_proposed = wp.zeros_like(self.joint_q, device=self.device)
+        self.joint_q_proposed = wp.zeros_like(self.joint_q, requires_grad=grad, device=self.device)
         self.costs = wp.zeros(self.n_problems, dtype=wp.float32, device=self.device)
         self.costs_proposed = wp.zeros_like(self.costs, device=self.device)
         self.lambda_values = wp.zeros(self.n_problems, dtype=wp.float32, device=self.device)
@@ -267,7 +243,7 @@ class IKSolver:
         output_residuals = output_residuals or self.residuals
 
         if self.jacobian_mode in [JacobianMode.AUTODIFF, JacobianMode.MIXED]:
-            _eval_fk_batched(self.model, joint_q, self.joint_qd, self.body_q, self.body_qd)
+            _eval_fk_batched(self.model, joint_q, self.qd_zero, self.body_q, self.body_qd)
         else:
             self._fk_two_pass(self.model, joint_q, self.body_q, self.X_local, self.n_problems)
 
@@ -285,38 +261,21 @@ class IKSolver:
 
         if self.jacobian_mode == JacobianMode.AUTODIFF:
             self.tape.reset()
+            self.dq_dof.zero_()
             with self.tape:
-                residuals_2d = self.compute_residuals(self.joint_q)
+                # integrate with dq=0 to build autodiff tape
+                self._integrate_dq()
+                residuals_2d = self.compute_residuals(self.joint_q_proposed)
                 current_residuals_wp = residuals_2d.flatten()
 
             self.tape.outputs = [current_residuals_wp]
 
             for obj, offset in zip(self.objectives, self.residual_offsets):
-                obj.compute_jacobian_autodiff(self.tape, self.model, self.jacobian, offset, self.joint_q)
+                obj.compute_jacobian_autodiff(self.tape, self.model, self.jacobian, offset, self.dq_dof)
                 self.tape.zero()
 
         elif self.jacobian_mode == JacobianMode.ANALYTIC:
-            n_joints = self.model.joint_count
-
-            wp.launch(
-                self._compute_motion_subspace_2d,
-                dim=self.n_problems * n_joints,
-                inputs=[
-                    self.n_problems,
-                    self.model.joint_type,
-                    self.model.joint_parent,
-                    self.model.joint_qd_start,
-                    self.joint_qd,
-                    self.model.joint_axis,
-                    self.model.joint_dof_dim,
-                    self.body_q,
-                    self.model.joint_X_p,
-                ],
-                outputs=[
-                    self.joint_S_s,
-                ],
-                device=self.device,
-            )
+            self._compute_motion_subspace()
 
             def _do_analytic(obj, off, body_q, q, model, jac, joint_S_s):
                 if obj.supports_analytic():
@@ -334,32 +293,16 @@ class IKSolver:
             need_analytic = any(obj.supports_analytic() for obj in self.objectives)
 
             if need_autodiff:
+                self.dq_dof.zero_()
                 with self.tape:
-                    residuals_2d = self.compute_residuals(self.joint_q)
+                    # integrate with dq=0 to build autodiff tape
+                    self._integrate_dq()
+                    residuals_2d = self.compute_residuals(self.joint_q_proposed)
                     current_residuals_wp = residuals_2d.flatten()
                 self.tape.outputs = [current_residuals_wp]
 
             if need_analytic:
-                n_joints = self.model.joint_count
-                wp.launch(
-                    self._compute_motion_subspace_2d,
-                    dim=self.n_problems * n_joints,
-                    inputs=[
-                        self.n_problems,
-                        self.model.joint_type,
-                        self.model.joint_parent,
-                        self.model.joint_qd_start,
-                        self.joint_qd,
-                        self.model.joint_axis,
-                        self.model.joint_dof_dim,
-                        self.body_q,
-                        self.model.joint_X_p,
-                    ],
-                    outputs=[
-                        self.joint_S_s,
-                    ],
-                    device=self.device,
-                )
+                self._compute_motion_subspace()
 
             for obj, offset in zip(self.objectives, self.residual_offsets):
                 if obj.supports_analytic():
@@ -367,9 +310,52 @@ class IKSolver:
                         self.body_q, self.joint_q, self.model, self.jacobian, self.joint_S_s, offset
                     )
                 else:
-                    obj.compute_jacobian_autodiff(self.tape, self.model, self.jacobian, offset, self.joint_q)
+                    obj.compute_jacobian_autodiff(self.tape, self.model, self.jacobian, offset, self.dq_dof)
 
         return self.jacobian
+
+    def _compute_motion_subspace(self):
+        n_joints = self.model.joint_count
+        wp.launch(
+            self._compute_motion_subspace_2d,
+            dim=[self.n_problems, n_joints],
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_qd_start,
+                self.qd_zero,
+                self.model.joint_axis,
+                self.model.joint_dof_dim,
+                self.body_q,
+                self.model.joint_X_p,
+            ],
+            outputs=[
+                self.joint_S_s,
+            ],
+            device=self.device,
+        )
+
+    def _integrate_dq(self, step_size=1.0):
+        wp.launch(
+            self._integrate_dq_dof,
+            dim=[self.n_problems, self.model.joint_count],
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_q_start,
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.joint_q,
+                self.dq_dof,
+                self.qd_zero,
+                step_size,
+            ],
+            outputs=[
+                self.joint_q_proposed,
+                self.qd_zero,
+            ],
+            device=self.device,
+        )
+        self.qd_zero.zero_()
 
     def _step(self, step_size=1.0, iteration=0):
         """Execute one Levenberg-Marquardt iteration with adaptive damping."""
@@ -388,17 +374,11 @@ class IKSolver:
         flat_3d_view = self.residuals_3d.flatten()
         wp.copy(flat_3d_view, residuals_flat)
 
-        self.delta_q.zero_()
+        self.dq_dof.zero_()
 
-        self._solve_tiled(self.jacobian, self.residuals_3d, self.lambda_values, self.delta_q, self.pred_reduction)
-        total_coords = self.n_problems * self.n_coords
-        wp.launch(
-            _compute_q_proposed,
-            dim=total_coords,
-            inputs=[self.joint_q, self.delta_q, step_size, self.n_coords],
-            outputs=[self.joint_q_proposed],
-            device=self.device,
-        )
+        self._solve_tiled(self.jacobian, self.residuals_3d, self.lambda_values, self.dq_dof, self.pred_reduction)
+
+        self._integrate_dq(step_size)
 
         self.compute_residuals(self.joint_q_proposed, self.residuals_proposed)
         wp.launch(
@@ -435,7 +415,7 @@ class IKSolver:
             device=self.device,
         )
 
-    def _solve_tiled(self, jacobian, residuals, lambda_values, delta_q, pred_reduction):
+    def _solve_tiled(self, jacobian, residuals, lambda_values, dq_dof, pred_reduction):
         raise NotImplementedError("This method should be overridden by specialized solver")
 
     @classmethod
@@ -443,42 +423,42 @@ class IKSolver:
         """Build a specialized IKSolver subclass with tiled solver for given dimensions."""
         C, R, _ = key
 
-        @wp.kernel(enable_backward=False, module="unique")
-        def _lm_solve_tiled(
-            jacobians: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+        def _template(
+            jacobians: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
             residuals: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, 1)
             lambda_values: wp.array1d(dtype=wp.float32),  # (n_problems)
             # outputs
-            delta_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            dq_dof: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
             pred_reduction_out: wp.array1d(dtype=wp.float32),  # (n_problems)
         ):
             problem_idx = wp.tid()
 
             RES = _Specialised.TILE_N_RESIDUALS
-            COORD = _Specialised.TILE_N_COORDS
-            J = wp.tile_load(jacobians[problem_idx], shape=(RES, COORD))
+            DOF = _Specialised.TILE_N_DOFS
+            J = wp.tile_load(jacobians[problem_idx], shape=(RES, DOF))
             r = wp.tile_load(residuals[problem_idx], shape=(RES, 1))
             lam = lambda_values[problem_idx]
+
             Jt = wp.tile_transpose(J)
-            JtJ = wp.tile_zeros(shape=(COORD, COORD), dtype=wp.float32)
+            JtJ = wp.tile_zeros(shape=(DOF, DOF), dtype=wp.float32)
             wp.tile_matmul(Jt, J, JtJ)
 
-            diag = wp.tile_zeros(shape=(COORD,), dtype=wp.float32)
-            for i in range(COORD):
+            diag = wp.tile_zeros(shape=(DOF,), dtype=wp.float32)
+            for i in range(DOF):
                 diag[i] = lam
             A = wp.tile_diag_add(JtJ, diag)
-            g = wp.tile_zeros(shape=(COORD,), dtype=wp.float32)
-            tmp2d = wp.tile_zeros(shape=(COORD, 1), dtype=wp.float32)
+            g = wp.tile_zeros(shape=(DOF,), dtype=wp.float32)
+            tmp2d = wp.tile_zeros(shape=(DOF, 1), dtype=wp.float32)
             wp.tile_matmul(Jt, r, tmp2d)
-            for i in range(COORD):
+            for i in range(DOF):
                 g[i] = tmp2d[i, 0]
 
             rhs = wp.tile_map(wp.neg, g)
             L = wp.tile_cholesky(A)
             delta = wp.tile_cholesky_solve(L, rhs)
-            wp.tile_store(delta_q[problem_idx], delta)
-            lambda_delta = wp.tile_zeros(shape=(COORD,), dtype=wp.float32)
-            for i in range(COORD):
+            wp.tile_store(dq_dof[problem_idx], delta)
+            lambda_delta = wp.tile_zeros(shape=(DOF,), dtype=wp.float32)
+            for i in range(DOF):
                 lambda_delta[i] = lam * delta[i]
 
             diff = wp.tile_map(wp.sub, lambda_delta, g)
@@ -486,15 +466,79 @@ class IKSolver:
             red = wp.tile_sum(prod)[0]
             pred_reduction_out[problem_idx] = 0.5 * red
 
+        _template.__name__ = f"_lm_solve_tiled_{C}_{R}"
+        _template.__qualname__ = f"_lm_solve_tiled_{C}_{R}"
+        _lm_solve_tiled = wp.kernel(enable_backward=False, module="unique")(_template)
+
         # late-import jcalc_motion, jcalc_transform to avoid circular import error
         from newton.solvers.featherstone.kernels import (  # noqa: PLC0415
+            jcalc_integrate,
             jcalc_motion,
             jcalc_transform,
         )
 
+        @wp.kernel
+        def _integrate_dq_dof(
+            # model-wide
+            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
+            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
+            # per-problem
+            joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)  (typically all-zero)
+            dq_dof: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)  ← LM update (q̇)
+            dt: float,  # LM step (usually 1.0)
+            # outputs
+            joint_q_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+        ):
+            """
+            Integrate the candidate update `dq_dof` (interpreted as a joint-space
+            velocity times `dt`) into a new configuration.
+
+            q_out  = integrate(q_curr, dq_dof)
+
+            One thread handles one joint of one problem.  All joint types supported by
+            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
+            box.
+            """
+            problem_idx, joint_idx = wp.tid()
+
+            # Static joint metadata
+            t = joint_type[joint_idx]
+            coord_start = joint_q_start[joint_idx]
+            dof_start = joint_qd_start[joint_idx]
+            lin_axes = joint_dof_dim[joint_idx, 0]
+            ang_axes = joint_dof_dim[joint_idx, 1]
+
+            # Views into the per-problem rows
+            q_row = joint_q_curr[problem_idx]
+            qd_row = joint_qd_curr[problem_idx]  # typically zero
+            delta_row = dq_dof[problem_idx]  # update vector
+
+            q_out_row = joint_q_out[problem_idx]
+            qd_out_row = joint_qd_out[problem_idx]
+
+            # Treat `delta_row` as acceleration with dt=1:
+            #   qd_new = 0 + delta           (qd ← delta)
+            #   q_new  = q + qd_new * dt     (q ← q + delta)
+            jcalc_integrate(
+                t,
+                q_row,
+                qd_row,
+                delta_row,  # passed as joint_qdd
+                coord_start,
+                dof_start,
+                lin_axes,
+                ang_axes,
+                dt,
+                q_out_row,
+                qd_out_row,
+            )
+
         @wp.kernel(module="unique")
         def _compute_motion_subspace_2d(
-            n_problems: int,
             joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
             joint_parent: wp.array1d(dtype=wp.int32),  # (n_joints)
             joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
@@ -506,14 +550,7 @@ class IKSolver:
             # outputs
             joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_joint_dof_count)
         ):
-            tid = wp.tid()
-
-            n_joints = len(joint_type)
-            problem_idx = tid / n_joints
-            joint_idx = tid % n_joints
-
-            if problem_idx >= n_problems:
-                return
+            problem_idx, joint_idx = wp.tid()
 
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
@@ -555,9 +592,7 @@ class IKSolver:
             # outputs
             X_local_out: wp.array2d(dtype=wp.transform),  # (n_problems, n_joints)
         ):
-            global_joint_idx = wp.tid()
-            problem_idx = global_joint_idx / joint_count
-            local_joint_idx = global_joint_idx % joint_count
+            problem_idx, local_joint_idx = wp.tid()
 
             t = joint_type[local_joint_idx]
             q_start = joint_q_start[local_joint_idx]
@@ -588,10 +623,9 @@ class IKSolver:
                 X_local: 2D array [n_problems, joint_count] (workspace)
                 n_problems: Number of problems
             """
-            total_joints = n_problems * model.joint_count
             wp.launch(
                 _fk_local,
-                dim=total_joints,
+                dim=[n_problems, model.joint_count],
                 inputs=[
                     model.joint_type,
                     joint_q,
@@ -611,7 +645,7 @@ class IKSolver:
 
             wp.launch(
                 _fk_accum,
-                dim=total_joints,
+                dim=[n_problems, model.joint_count],
                 inputs=[
                     model.joint_parent,
                     X_local,
@@ -624,7 +658,7 @@ class IKSolver:
             )
 
         class _Specialised(IKSolver):
-            TILE_N_COORDS = wp.constant(C)
+            TILE_N_DOFS = wp.constant(C)
             TILE_N_RESIDUALS = wp.constant(R)
             TILE_THREADS = wp.constant(32)
 
@@ -638,6 +672,7 @@ class IKSolver:
                 )
 
         _Specialised.__name__ = f"IK_{C}x{R}"
+        _Specialised._integrate_dq_dof = staticmethod(_integrate_dq_dof)
         _Specialised._compute_motion_subspace_2d = staticmethod(_compute_motion_subspace_2d)
         _Specialised._fk_two_pass = staticmethod(_fk_two_pass)
         return _Specialised
@@ -645,7 +680,6 @@ class IKSolver:
 
 @wp.kernel
 def _eval_fk_articulation_batched(
-    n_problems: int,
     articulation_start: wp.array1d(dtype=wp.int32),  # (n_articulations + 1)
     joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
     joint_qd: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
@@ -663,14 +697,7 @@ def _eval_fk_articulation_batched(
     body_q: wp.array2d(dtype=wp.transform),  # (n_problems, n_bodies)
     body_qd: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_bodies)
 ):
-    tid = wp.tid()
-
-    num_articulations = len(articulation_start) - 1
-    problem_idx = tid // num_articulations
-    articulation_idx = tid % num_articulations
-
-    if problem_idx >= n_problems:
-        return
+    problem_idx, articulation_idx = wp.tid()
 
     joint_start = articulation_start[articulation_idx]
     joint_end = articulation_start[articulation_idx + 1]
@@ -706,9 +733,8 @@ def _eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 
     wp.launch(
         kernel=_eval_fk_articulation_batched,
-        dim=n_problems * model.articulation_count,
+        dim=[n_problems, model.articulation_count],
         inputs=[
-            n_problems,
             model.articulation_start,
             joint_q,
             joint_qd,
@@ -739,9 +765,7 @@ def _fk_accum(
     # outputs
     body_q: wp.array2d(dtype=wp.transform),  # (n_problems, n_bodies)
 ):
-    global_joint_idx = wp.tid()
-    problem_idx = global_joint_idx / joint_count
-    local_joint_idx = global_joint_idx % joint_count
+    problem_idx, local_joint_idx = wp.tid()
 
     Xw = X_local[problem_idx, local_joint_idx]
     parent = joint_parent[local_joint_idx]
@@ -769,25 +793,6 @@ def _compute_costs(
         cost += r * r
 
     costs[problem_idx] = cost
-
-
-@wp.kernel
-def _compute_q_proposed(
-    joint_q_current: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    delta_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    step_size: float,
-    n_coords: int,
-    # outputs
-    joint_q_proposed: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-):
-    global_coord_idx = wp.tid()
-
-    problem_idx = global_coord_idx / n_coords
-    coord_idx = global_coord_idx % n_coords
-
-    joint_q_proposed[problem_idx, coord_idx] = (
-        joint_q_current[problem_idx, coord_idx] + step_size * delta_q[problem_idx, coord_idx]
-    )
 
 
 @wp.kernel
@@ -845,7 +850,7 @@ class IKObjective:
     def compute_residuals(self, body_q, joint_q, model, residuals, start_idx):
         raise NotImplementedError
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, joint_q):
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
         raise NotImplementedError
 
     def supports_analytic(self):
@@ -885,18 +890,18 @@ def _pos_residuals(
 
 @wp.kernel
 def _pos_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    n_coords: int,
+    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+    n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
 
     residual_idx = start_idx + component
 
-    for j in range(n_coords):
+    for j in range(n_dofs):
         jacobian[problem_idx, residual_idx, j] = q_grad[problem_idx, j]
 
 
@@ -924,57 +929,38 @@ def _update_position_targets(
 def _pos_jac_analytic(
     link_index: int,
     link_offset: wp.vec3,
-    joint_child: wp.array1d(dtype=wp.int32),  # (n_joints)
-    coord_to_joint: wp.array1d(dtype=wp.int32),  # (n_coords)
-    affects_coord: wp.array1d(dtype=wp.uint8),  # (n_coords)
-    joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-    joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-    joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_dofs)
+    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
     body_q: wp.array2d(dtype=wp.transform),  # (n_problems, n_bodies)
+    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_dofs)
     start_idx: int,
-    n_coords: int,
+    n_dofs: int,
     weight: float,
-    # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    # output
+    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
 ):
-    global_coord = wp.tid()
+    # one thread per (problem, dof)
+    problem_idx, dof_idx = wp.tid()
 
-    problem_idx = global_coord // n_coords
-    coord_idx = global_coord % n_coords
-
-    if affects_coord[coord_idx] == 0:
+    # skip if this DoF cannot move the EE
+    if affects_dof[dof_idx] == 0:
         return
 
-    joint_idx = coord_to_joint[coord_idx]
-
-    joint_coord_start = joint_q_start[joint_idx]
-    joint_coord_end = joint_q_start[joint_idx + 1]
-    local_coord = coord_idx - joint_coord_start
-
+    # world-space EE position
     body_tf = body_q[problem_idx, link_index]
-
     rot_w = wp.quat(body_tf[3], body_tf[4], body_tf[5], body_tf[6])
     pos_w = wp.vec3(body_tf[0], body_tf[1], body_tf[2])
     ee_pos_world = pos_w + wp.quat_rotate(rot_w, link_offset)
 
-    col = coord_idx
-
-    # General twist-based Jacobian (supports revolute/prismatic/fixed only)
-    dof_start = joint_qd_start[joint_idx]
-    dof_local = local_coord
-    dof = dof_start + dof_local
-
-    if dof >= dof_start and dof < dof_start + (joint_coord_end - joint_coord_start):
-        S = joint_S_s[problem_idx, dof]
-        omega = wp.vec3(S[0], S[1], S[2])
-        v_orig = wp.vec3(S[3], S[4], S[5])
-
+    # motion sub-space column S
+    S = joint_S_s[problem_idx, dof_idx]
+    omega = wp.vec3(S[0], S[1], S[2])
+    v_orig = wp.vec3(S[3], S[4], S[5])
     v_ee = v_orig + wp.cross(omega, ee_pos_world)
 
-    jacobian[problem_idx, start_idx + 0, col] = -weight * v_ee[0]
-    jacobian[problem_idx, start_idx + 1, col] = -weight * v_ee[1]
-    jacobian[problem_idx, start_idx + 2, col] = -weight * v_ee[2]
+    # write three Jacobian rows (x, y, z)
+    jacobian[problem_idx, start_idx + 0, dof_idx] = -weight * v_ee[0]
+    jacobian[problem_idx, start_idx + 1, dof_idx] = -weight * v_ee[1]
+    jacobian[problem_idx, start_idx + 2, dof_idx] = -weight * v_ee[2]
 
 
 class PositionObjective(IKObjective):
@@ -1010,35 +996,26 @@ class PositionObjective(IKObjective):
         self.total_residuals = total_residuals
         self.residual_offset = residual_offset
 
-        self.body_to_joint = None
-        self.coord_to_joint = None
-        self.affects_coord = None
+        self.affects_dof = None
+        self.e_arrays = None
 
     def init_buffers(self, model, jacobian_mode):
         """Precompute lookup tables for analytic jacobian computation."""
         if jacobian_mode == JacobianMode.ANALYTIC:
-            links_per_problem = model.body_count
-            n_coords = model.joint_coord_count
+            joint_qd_start_np = model.joint_qd_start.numpy()
+            dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
+            for j in range(len(joint_qd_start_np) - 1):
+                dof_to_joint_np[joint_qd_start_np[j] : joint_qd_start_np[j + 1]] = j
 
+            links_per_problem = model.body_count
             joint_child_np = model.joint_child.numpy()
             body_to_joint_np = np.full(links_per_problem, -1, np.int32)
-
             for j in range(model.joint_count):
                 child = joint_child_np[j]
                 if child != -1:
                     body_to_joint_np[child] = j
 
-            self.body_to_joint = wp.array(body_to_joint_np, dtype=wp.int32, device=self.device)
-
-            coord_to_joint_np = np.empty(n_coords, dtype=np.int32)
             joint_q_start_np = model.joint_q_start.numpy()
-
-            for j in range(len(joint_q_start_np) - 1):
-                start, end = joint_q_start_np[j : j + 2]
-                coord_to_joint_np[start:end] = j
-
-            self.coord_to_joint = wp.array(coord_to_joint_np, dtype=wp.int32, device=self.device)
-
             ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
             joint_parent_np = model.joint_parent.numpy()
             body = self.link_index
@@ -1047,9 +1024,8 @@ class PositionObjective(IKObjective):
                 if j != -1:
                     ancestors[j] = True
                 body = joint_parent_np[j] if j != -1 else -1
-
-            affects_coord_np = ancestors[coord_to_joint_np]
-            self.affects_coord = wp.array(affects_coord_np.astype(np.uint8), device=self.device)
+            affects_dof_np = ancestors[dof_to_joint_np]
+            self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == JacobianMode.AUTODIFF:
             self.e_arrays = []
             for component in range(3):
@@ -1098,20 +1074,20 @@ class PositionObjective(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, joint_q):
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
         for component in range(3):
             tape.backward(grads={tape.outputs[0]: self.e_arrays[component].flatten()})
 
-            q_grad = tape.gradients[joint_q]
+            q_grad = tape.gradients[dq_dof]
 
-            n_coords = model.joint_coord_count
+            n_dofs = model.joint_dof_count
 
             wp.launch(
                 _pos_jac_fill,
                 dim=self.n_problems,
                 inputs=[
                     q_grad,
-                    n_coords,
+                    n_dofs,
                     start_idx,
                     component,
                 ],
@@ -1124,29 +1100,22 @@ class PositionObjective(IKObjective):
             tape.zero()
 
     def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
-        n_coords = model.joint_coord_count
+        n_dofs = model.joint_dof_count
 
         wp.launch(
             _pos_jac_analytic,
-            dim=self.n_problems * n_coords,
+            dim=[self.n_problems, n_dofs],
             inputs=[
                 self.link_index,
                 self.link_offset,
-                model.joint_child,
-                self.coord_to_joint,
-                self.affects_coord,
-                model.joint_qd_start,
-                model.joint_q_start,
-                model.joint_type,
-                joint_S_s,
+                self.affects_dof,
                 body_q,
+                joint_S_s,
                 start_idx,
-                n_coords,
+                n_dofs,
                 self.weight,
             ],
-            outputs=[
-                jacobian,
-            ],
+            outputs=[jacobian],
             device=self.device,
         )
 
@@ -1154,63 +1123,70 @@ class PositionObjective(IKObjective):
 @wp.kernel
 def _limit_residuals(
     joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_coords)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_coords)
-    n_coords: int,
+    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
+    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
+    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    n_dofs: int,
     weight: float,
     start_idx: int,
     # outputs
     residuals: wp.array2d(dtype=wp.float32),  # (n_problems, n_residuals)
 ):
-    global_coord_idx = wp.tid()
-    problem_idx = global_coord_idx / n_coords
-    coord_idx = global_coord_idx % n_coords
+    problem, dof_idx = wp.tid()
+    coord_idx = dof_to_coord[dof_idx]
 
-    q = joint_q[problem_idx, coord_idx]
-    lower = joint_limit_lower[coord_idx]
-    upper = joint_limit_upper[coord_idx]
+    if coord_idx < 0:
+        return
 
-    upper_violation = wp.max(0.0, q - upper)
-    lower_violation = wp.max(0.0, lower - q)
+    q = joint_q[problem, coord_idx]
+    lower = joint_limit_lower[dof_idx]
+    upper = joint_limit_upper[dof_idx]
 
-    residuals[problem_idx, start_idx + coord_idx] = weight * (upper_violation + lower_violation)
+    # treat huge ranges as no limit
+    if upper - lower > 9.9e5:
+        return
+
+    viol = wp.max(0.0, q - upper) + wp.max(0.0, lower - q)
+    residuals[problem, start_idx + dof_idx] = weight * viol
 
 
 @wp.kernel
 def _limit_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    n_coords: int,
+    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+    n_dofs: int,
     start_idx: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    jacobian: wp.array3d(dtype=wp.float32),
 ):
-    global_coord_idx = wp.tid()
-    problem_idx = global_coord_idx / n_coords
-    coord_idx = global_coord_idx % n_coords
+    problem_idx, dof_idx = wp.tid()
 
-    residual_idx = start_idx + coord_idx
-
-    jacobian[problem_idx, residual_idx, coord_idx] = q_grad[problem_idx, coord_idx]
+    jacobian[problem_idx, start_idx + dof_idx, dof_idx] = q_grad[problem_idx, dof_idx]
 
 
 @wp.kernel
 def _limit_jac_analytic(
     joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_coords)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_coords)
-    n_coords: int,
+    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
+    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
+    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    n_dofs: int,
     start_idx: int,
     weight: float,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
 ):
-    global_coord_idx = wp.tid()
-    problem_idx = global_coord_idx / n_coords
-    coord_idx = global_coord_idx % n_coords
+    problem, dof_idx = wp.tid()
+    coord_idx = dof_to_coord[dof_idx]
 
-    q = joint_q[problem_idx, coord_idx]
-    lower = joint_limit_lower[coord_idx]
-    upper = joint_limit_upper[coord_idx]
+    if coord_idx < 0:
+        return
+
+    q = joint_q[problem, coord_idx]
+    lower = joint_limit_lower[dof_idx]
+    upper = joint_limit_upper[dof_idx]
+
+    if upper - lower > 9.9e5:
+        return
 
     grad = float(0.0)
     if q >= upper:
@@ -1218,8 +1194,7 @@ def _limit_jac_analytic(
     elif q <= lower:
         grad = -weight
 
-    residual_idx = start_idx + coord_idx
-    jacobian[problem_idx, residual_idx, coord_idx] = grad
+    jacobian[problem, start_idx + dof_idx, dof_idx] = grad
 
 
 class JointLimitObjective(IKObjective):
@@ -1229,9 +1204,9 @@ class JointLimitObjective(IKObjective):
     Parameters
     ----------
     joint_limit_lower : wp.array(dtype=float)
-        Lower bounds for each joint coordinate.
+        Lower bounds for each joint dof
     joint_limit_upper : wp.array(dtype=float)
-        Upper bounds for each joint coordinate.
+        Upper bounds for each joint dof
     n_problems : int, optional
         Number of parallel IK problems.
     total_residuals : int, optional
@@ -1259,31 +1234,47 @@ class JointLimitObjective(IKObjective):
         self.residual_offset = residual_offset
         self.weight = weight
 
-        self.n_coords = len(joint_limit_lower)
+        self.n_dofs = len(joint_limit_lower)
+
+        self.e_array = None
+        self.dof_to_coord = None
 
     def init_buffers(self, model, jacobian_mode):
         if jacobian_mode == JacobianMode.AUTODIFF:
             e = np.zeros((self.n_problems, self.total_residuals), dtype=np.float32)
             for prob_idx in range(self.n_problems):
-                for coord_idx in range(self.n_coords):
-                    e[prob_idx, self.residual_offset + coord_idx] = 1.0
+                for dof_idx in range(self.n_dofs):
+                    e[prob_idx, self.residual_offset + dof_idx] = 1.0
             self.e_array = wp.array(e.flatten(), dtype=wp.float32, device=self.device)
+
+        dof_to_coord_np = np.full(self.n_dofs, -1, dtype=np.int32)
+        q_start_np = model.joint_q_start.numpy()
+        qd_start_np = model.joint_qd_start.numpy()
+        joint_dof_dim_np = model.joint_dof_dim.numpy()
+        for j in range(model.joint_count):
+            dof0 = qd_start_np[j]
+            coord0 = q_start_np[j]
+            lin, ang = joint_dof_dim_np[j]  # (#transl, #rot)
+            for k in range(lin + ang):
+                dof_to_coord_np[dof0 + k] = coord0 + k
+        self.dof_to_coord = wp.array(dof_to_coord_np, dtype=wp.int32, device=self.device)
 
     def supports_analytic(self):
         return True
 
     def residual_dim(self):
-        return self.n_coords
+        return self.n_dofs
 
     def compute_residuals(self, body_q, joint_q, model, residuals, start_idx):
         wp.launch(
             _limit_residuals,
-            dim=self.n_problems * self.n_coords,
+            dim=[self.n_problems, self.n_dofs],
             inputs=[
                 joint_q,
                 self.joint_limit_lower,
                 self.joint_limit_upper,
-                self.n_coords,
+                self.dof_to_coord,
+                self.n_dofs,
                 self.weight,
                 start_idx,
             ],
@@ -1291,17 +1282,17 @@ class JointLimitObjective(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, joint_q):
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
         tape.backward(grads={tape.outputs[0]: self.e_array})
 
-        q_grad = tape.gradients[joint_q]
+        q_grad = tape.gradients[dq_dof]
 
         wp.launch(
             _limit_jac_fill,
-            dim=self.n_problems * self.n_coords,
+            dim=[self.n_problems, self.n_dofs],
             inputs=[
                 q_grad,
-                self.n_coords,
+                self.n_dofs,
                 start_idx,
             ],
             outputs=[jacobian],
@@ -1311,12 +1302,13 @@ class JointLimitObjective(IKObjective):
     def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
         wp.launch(
             _limit_jac_analytic,
-            dim=self.n_problems * self.n_coords,
+            dim=[self.n_problems, self.n_dofs],
             inputs=[
                 joint_q,
                 self.joint_limit_lower,
                 self.joint_limit_upper,
-                self.n_coords,
+                self.dof_to_coord,
+                self.n_dofs,
                 start_idx,
                 self.weight,
             ],
@@ -1331,6 +1323,7 @@ def _rot_residuals(
     target_rot: wp.array1d(dtype=wp.vec4),  # (n_problems)
     link_index: int,
     link_offset_rotation: wp.quat,
+    canonicalize_quat_err: wp.bool,
     start_idx: int,
     weight: float,
     # outputs
@@ -1347,6 +1340,8 @@ def _rot_residuals(
     target_quat = wp.quat(target_quat_vec[0], target_quat_vec[1], target_quat_vec[2], target_quat_vec[3])
 
     q_err = actual_rot * wp.quat_inverse(target_quat)
+    if canonicalize_quat_err and wp.dot(actual_rot, target_quat) < 0.0:
+        q_err = -q_err
 
     v_norm = wp.sqrt(q_err[0] * q_err[0] + q_err[1] * q_err[1] + q_err[2] * q_err[2])
 
@@ -1368,18 +1363,18 @@ def _rot_residuals(
 
 @wp.kernel
 def _rot_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
-    n_coords: int,
+    q_grad: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+    n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
 
     residual_idx = start_idx + component
 
-    for j in range(n_coords):
+    for j in range(n_dofs):
         jacobian[problem_idx, residual_idx, j] = q_grad[problem_idx, j]
 
 
@@ -1405,43 +1400,29 @@ def _update_rotation_targets(
 
 @wp.kernel
 def _rot_jac_analytic(
-    coord_to_joint: wp.array1d(dtype=wp.int32),  # (n_coords)
-    affects_coord: wp.array1d(dtype=wp.uint8),  # (n_coords)
-    joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-    joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
     joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_dofs)
-    start_idx: int,
-    n_coords: int,
+    start_idx: int,  # first residual row for this objective
+    n_dofs: int,  # width of the global Jacobian
     weight: float,
-    # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_coords)
+    # output
+    jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
 ):
-    global_coord = wp.tid()
-    problem_idx = global_coord // n_coords
-    coord_idx = global_coord % n_coords
+    # one thread per (problem, dof)
+    problem_idx, dof_idx = wp.tid()
 
-    if affects_coord[coord_idx] == 0:
+    # skip if this DoF cannot influence the EE rotation
+    if affects_dof[dof_idx] == 0:
         return
 
-    joint_idx = coord_to_joint[coord_idx]
-    if joint_idx < 0:
-        return
-
-    joint_coord_start = joint_q_start[joint_idx]
-
-    # General omega-based Jacobian (supports revolute/prismatic/fixed only)
-    dof_start = joint_qd_start[joint_idx]
-
-    local_coord = coord_idx - joint_coord_start
-    dof = dof_start + local_coord
-
-    S = joint_S_s[problem_idx, dof]
+    # ω column from motion sub-space
+    S = joint_S_s[problem_idx, dof_idx]
     omega = wp.vec3(S[0], S[1], S[2])
 
-    col = coord_idx
-    jacobian[problem_idx, start_idx + 0, col] = weight * omega[0]
-    jacobian[problem_idx, start_idx + 1, col] = weight * omega[1]
-    jacobian[problem_idx, start_idx + 2, col] = weight * omega[2]
+    # write three Jacobian rows (rx, ry, rz)
+    jacobian[problem_idx, start_idx + 0, dof_idx] = weight * omega[0]
+    jacobian[problem_idx, start_idx + 1, dof_idx] = weight * omega[1]
+    jacobian[problem_idx, start_idx + 2, dof_idx] = weight * omega[2]
 
 
 class RotationObjective(IKObjective):
@@ -1462,6 +1443,11 @@ class RotationObjective(IKObjective):
         Global residual vector length (for autodiff bookkeeping).
     residual_offset : int
         Starting index of this objective inside the residual vector.
+    canonicalize_quat_err: bool, default True
+        If true, the error quaternion is flipped so its scalar part is non-negative,
+        yielding the short-arc residual in SO(3).
+        When false, the quaternion is used exactly as computed, preserving any
+        sign convention from the forward kinematics.
     weight : float, default 1.0
         Scalar weight multiplying both residual and Jacobian rows.
     """
@@ -1474,6 +1460,7 @@ class RotationObjective(IKObjective):
         n_problems,
         total_residuals,
         residual_offset,
+        canonicalize_quat_err=True,
         weight=1.0,
     ):
         self.link_index = link_index
@@ -1483,36 +1470,28 @@ class RotationObjective(IKObjective):
         self.weight = weight
         self.total_residuals = total_residuals
         self.residual_offset = residual_offset
+        self.canonicalize_quat_err = canonicalize_quat_err
 
-        self.body_to_joint = None
-        self.coord_to_joint = None
-        self.affects_coord = None
+        self.affects_dof = None
+        self.e_arrays = None
 
     def init_buffers(self, model, jacobian_mode):
         """Precompute lookup tables for analytic jacobian computation."""
         if jacobian_mode == JacobianMode.ANALYTIC:
-            links_per_problem = model.body_count
-            n_coords = model.joint_coord_count
+            joint_qd_start_np = model.joint_qd_start.numpy()
+            dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
+            for j in range(len(joint_qd_start_np) - 1):
+                dof_to_joint_np[joint_qd_start_np[j] : joint_qd_start_np[j + 1]] = j
 
+            links_per_problem = model.body_count
             joint_child_np = model.joint_child.numpy()
             body_to_joint_np = np.full(links_per_problem, -1, np.int32)
-
             for j in range(model.joint_count):
                 child = joint_child_np[j]
                 if child != -1:
                     body_to_joint_np[child] = j
 
-            self.body_to_joint = wp.array(body_to_joint_np, dtype=wp.int32, device=self.device)
-
-            coord_to_joint_np = np.empty(n_coords, dtype=np.int32)
             joint_q_start_np = model.joint_q_start.numpy()
-
-            for j in range(len(joint_q_start_np) - 1):
-                start, end = joint_q_start_np[j : j + 2]
-                coord_to_joint_np[start:end] = j
-
-            self.coord_to_joint = wp.array(coord_to_joint_np, dtype=wp.int32, device=self.device)
-
             ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
             joint_parent_np = model.joint_parent.numpy()
             body = self.link_index
@@ -1521,9 +1500,8 @@ class RotationObjective(IKObjective):
                 if j != -1:
                     ancestors[j] = True
                 body = joint_parent_np[j] if j != -1 else -1
-
-            affects_coord_np = ancestors[coord_to_joint_np]
-            self.affects_coord = wp.array(affects_coord_np.astype(np.uint8), device=self.device)
+            affects_dof_np = ancestors[dof_to_joint_np]
+            self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == JacobianMode.AUTODIFF:
             self.e_arrays = []
             for component in range(3):
@@ -1565,6 +1543,7 @@ class RotationObjective(IKObjective):
                 self.target_rotations,
                 self.link_index,
                 self.link_offset_rotation,
+                self.canonicalize_quat_err,
                 start_idx,
                 self.weight,
             ],
@@ -1572,20 +1551,20 @@ class RotationObjective(IKObjective):
             device=self.device,
         )
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, joint_q):
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
         for component in range(3):
             tape.backward(grads={tape.outputs[0]: self.e_arrays[component].flatten()})
 
-            q_grad = tape.gradients[joint_q]
+            q_grad = tape.gradients[dq_dof]
 
-            n_coords = model.joint_coord_count
+            n_dofs = model.joint_dof_count
 
             wp.launch(
                 _rot_jac_fill,
                 dim=self.n_problems,
                 inputs=[
                     q_grad,
-                    n_coords,
+                    n_dofs,
                     start_idx,
                     component,
                 ],
@@ -1598,23 +1577,18 @@ class RotationObjective(IKObjective):
             tape.zero()
 
     def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
-        n_coords = model.joint_coord_count
+        n_dofs = model.joint_dof_count
 
         wp.launch(
             _rot_jac_analytic,
-            dim=self.n_problems * n_coords,
+            dim=[self.n_problems, n_dofs],
             inputs=[
-                self.coord_to_joint,
-                self.affects_coord,
-                model.joint_qd_start,
-                model.joint_q_start,
+                self.affects_dof,  # lookup mask
                 joint_S_s,
                 start_idx,
-                n_coords,
+                n_dofs,
                 self.weight,
             ],
-            outputs=[
-                jacobian,
-            ],
+            outputs=[jacobian],
             device=self.device,
         )
