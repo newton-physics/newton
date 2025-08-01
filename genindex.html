@@ -1,0 +1,2246 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Index &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="_static/documentation_options.js?v=3521d46b"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'genindex';</script>
+    <link rel="index" title="Index" href="#" />
+    <link rel="search" title="Search" href="search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.1.1.a2)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_core.html">
+    newton.core
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_sim.html">
+    newton.sim
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/quickstart.html">
+    Quickstart
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_core.html">
+    newton.core
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_sim.html">
+    newton.sim
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="changelog.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development-guide.html">
+    Developer Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none"></div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+
+<h1 id="index">Index</h1>
+
+<div class="genindex-jumpbox">
+ 
+ <a href="#_"><strong>_</strong></a> | 
+ 
+ <a href="#A"><strong>A</strong></a> | 
+ 
+ <a href="#B"><strong>B</strong></a> | 
+ 
+ <a href="#C"><strong>C</strong></a> | 
+ 
+ <a href="#D"><strong>D</strong></a> | 
+ 
+ <a href="#E"><strong>E</strong></a> | 
+ 
+ <a href="#F"><strong>F</strong></a> | 
+ 
+ <a href="#G"><strong>G</strong></a> | 
+ 
+ <a href="#H"><strong>H</strong></a> | 
+ 
+ <a href="#I"><strong>I</strong></a> | 
+ 
+ <a href="#J"><strong>J</strong></a> | 
+ 
+ <a href="#K"><strong>K</strong></a> | 
+ 
+ <a href="#L"><strong>L</strong></a> | 
+ 
+ <a href="#M"><strong>M</strong></a> | 
+ 
+ <a href="#N"><strong>N</strong></a> | 
+ 
+ <a href="#P"><strong>P</strong></a> | 
+ 
+ <a href="#Q"><strong>Q</strong></a> | 
+ 
+ <a href="#R"><strong>R</strong></a> | 
+ 
+ <a href="#S"><strong>S</strong></a> | 
+ 
+ <a href="#T"><strong>T</strong></a> | 
+ 
+ <a href="#U"><strong>U</strong></a> | 
+ 
+ <a href="#V"><strong>V</strong></a> | 
+ 
+ <a href="#X"><strong>X</strong></a> | 
+ 
+ <a href="#Y"><strong>Y</strong></a> | 
+ 
+ <a href="#Z"><strong>Z</strong></a> 
+ 
+</div>
+<h2 id="_">_</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.BroadPhaseAllPairs.html#newton.geometry.BroadPhaseAllPairs.__init__">__init__() (newton.geometry.BroadPhaseAllPairs method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.BroadPhaseExplicit.html#newton.geometry.BroadPhaseExplicit.__init__">(newton.geometry.BroadPhaseExplicit method)</a></dt>
+            <dt><a href="api/_generated/newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP.__init__">(newton.geometry.BroadPhaseSAP method)</a></dt>
+            <dt><a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.__init__">(newton.geometry.Mesh method)</a></dt>
+            <dt><a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.__init__">(newton.geometry.SDF method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.CollisionPipeline.html#newton.sim.CollisionPipeline.__init__">(newton.sim.CollisionPipeline method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Contacts.html#newton.sim.Contacts.__init__">(newton.sim.Contacts method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Control.html#newton.sim.Control.__init__">(newton.sim.Control method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.IKSolver.__init__">(newton.sim.ik.IKSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.__init__">(newton.sim.ik.JointLimitObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.__init__">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.__init__">(newton.sim.ik.RotationObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.__init__">(newton.sim.Model method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.__init__">(newton.sim.ModelBuilder method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.__init__">(newton.sim.ModelBuilder.JointDofConfig method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.__init__">(newton.sim.ModelBuilder.ShapeConfig method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.__init__">(newton.sim.State method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Style3DModel.html#newton.sim.Style3DModel.__init__">(newton.sim.Style3DModel method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.__init__">(newton.sim.Style3DModelBuilder method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.__init__">(newton.solvers.FeatherstoneSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.__init__">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.__init__">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.__init__">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.Style3DSolver.html#newton.solvers.Style3DSolver.__init__">(newton.solvers.Style3DSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.__init__">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.__init__">(newton.solvers.XPBDSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd.__init__">(newton.utils.SimRendererUsd method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="A">A</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.add_aniso_cloth_grid">add_aniso_cloth_grid() (newton.sim.Style3DModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.add_aniso_cloth_mesh">add_aniso_cloth_mesh() (newton.sim.Style3DModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.add_aniso_edges">add_aniso_edges() (newton.sim.Style3DModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.add_aniso_triangles">add_aniso_triangles() (newton.sim.Style3DModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.add_attribute">add_attribute() (newton.sim.Model method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_body">add_body() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_builder">add_builder() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.add_builder">(newton.sim.Style3DModelBuilder method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_cloth_grid">add_cloth_grid() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_cloth_mesh">add_cloth_mesh() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_edge">add_edge() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_edges">add_edges() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_equality_constraint">add_equality_constraint() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_equality_constraint_connect">add_equality_constraint_connect() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_equality_constraint_joint">add_equality_constraint_joint() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_equality_constraint_weld">add_equality_constraint_weld() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_free_joints_to_floating_bodies">add_free_joints_to_floating_bodies() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_ground_plane">add_ground_plane() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint">add_joint() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_ball">add_joint_ball() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_d6">add_joint_d6() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_distance">add_joint_distance() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_fixed">add_joint_fixed() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_free">add_joint_free() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_prismatic">add_joint_prismatic() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_joint_revolute">add_joint_revolute() (newton.sim.ModelBuilder method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_muscle">add_muscle() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_particle">add_particle() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_particles">add_particles() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape">add_shape() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_box">add_shape_box() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_capsule">add_shape_capsule() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_cone">add_shape_cone() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_cylinder">add_shape_cylinder() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_mesh">add_shape_mesh() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_plane">add_shape_plane() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_sdf">add_shape_sdf() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_shape_sphere">add_shape_sphere() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_soft_grid">add_soft_grid() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_soft_mesh">add_soft_mesh() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_spring">add_spring() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_tetrahedron">add_tetrahedron() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_triangle">add_triangle() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.add_triangles">add_triangles() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.approximate_meshes">approximate_meshes() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.armature">armature (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.articulation_count">articulation_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.articulation_key">articulation_key (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.articulation_start">articulation_start (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.attribute_frequency">attribute_frequency (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.Axis.html#newton.core.Axis">Axis (class in newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.axis">axis (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.AxisType.html#newton.core.AxisType">AxisType (in module newton.core)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="B">B</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.balance_inertia">balance_inertia (newton.sim.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_com">body_com (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_count">body_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.body_count">(newton.sim.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.State.html#newton.sim.State.body_f">body_f (newton.sim.State attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_inertia">body_inertia (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_inv_inertia">body_inv_inertia (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_inv_mass">body_inv_mass (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_key">body_key (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_mass">body_mass (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_q">body_q (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.body_q">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_qd">body_qd (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.body_qd">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.body_shapes">body_shapes (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.boltzmann.html#newton.utils.boltzmann">boltzmann() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.bound_inertia">bound_inertia (newton.sim.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.bound_mass">bound_mass (newton.sim.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.BroadPhaseAllPairs.html#newton.geometry.BroadPhaseAllPairs">BroadPhaseAllPairs (class in newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.BroadPhaseExplicit.html#newton.geometry.BroadPhaseExplicit">BroadPhaseExplicit (class in newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP">BroadPhaseSAP (class in newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.build_ccd_generic.html#newton.geometry.build_ccd_generic">build_ccd_generic() (in module newton.geometry)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="C">C</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.check_conditional_graph_support.html#newton.utils.check_conditional_graph_support">check_conditional_graph_support() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Contacts.html#newton.sim.Contacts.clear">clear() (newton.sim.Contacts method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Control.html#newton.sim.Control.clear">(newton.sim.Control method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.State.html#newton.sim.State.clear_forces">clear_forces() (newton.sim.State method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.clear_git_cache.html#newton.utils.clear_git_cache">clear_git_cache() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.collapse_fixed_joints">collapse_fixed_joints() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.collide">collide() (newton.sim.Model method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.collision_filter_parent">collision_filter_parent (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.collision_group">collision_group (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.CollisionPipeline.html#newton.sim.CollisionPipeline">CollisionPipeline (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.color">color() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.color_collision_shapes">color_collision_shapes() (newton.solvers.MuJoCoSolver static method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.color_graph.html#newton.sim.color_graph">color_graph() (in module newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.com">com (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.com">(newton.geometry.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.compute_convex_hull">compute_convex_hull() (newton.geometry.Mesh method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.compute_jacobian_analytic">compute_jacobian_analytic() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.compute_jacobian_analytic">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.compute_jacobian_analytic">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.compute_jacobian_autodiff">compute_jacobian_autodiff() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.compute_jacobian_autodiff">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.compute_jacobian_autodiff">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.compute_residuals">compute_residuals() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.compute_residuals">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.compute_residuals">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.geometry.compute_shape_inertia.html#newton.geometry.compute_shape_inertia">compute_shape_inertia() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.compute_shape_radius.html#newton.geometry.compute_shape_radius">compute_shape_radius() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Contacts.html#newton.sim.Contacts">Contacts (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control">Control (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.control">control() (newton.sim.Model method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.convert_to_mjc">convert_to_mjc() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.convex_hull">convex_hull (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.count_rigid_contact_points.html#newton.sim.count_rigid_contact_points">count_rigid_contact_points() (in module newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_box.html#newton.geometry.create_box">create_box() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_capsule.html#newton.geometry.create_capsule">create_capsule() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_cone.html#newton.geometry.create_cone">create_cone() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_cylinder.html#newton.geometry.create_cylinder">create_cylinder() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_none.html#newton.geometry.create_none">create_none() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_plane.html#newton.geometry.create_plane">create_plane() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.create_sphere.html#newton.geometry.create_sphere">create_sphere() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.create_unlimited">create_unlimited() (newton.sim.ModelBuilder.JointDofConfig class method)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="D">D</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.density">density (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.device">device (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.device">(newton.solvers.SolverBase property)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.download_asset.html#newton.utils.download_asset">download_asset() (in module newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="E">E</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModel.html#newton.sim.Style3DModel.edge_bending_cot">edge_bending_cot (newton.sim.Style3DModel attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_bending_properties">edge_bending_properties (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_constraint_lambdas">edge_constraint_lambdas (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_count">edge_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_indices">edge_indices (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_rest_angle">edge_rest_angle (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModel.html#newton.sim.Style3DModel.edge_rest_area">edge_rest_area (newton.sim.Style3DModel attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.edge_rest_length">edge_rest_length (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.effort_limit">effort_limit (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_anchor">equality_constraint_anchor (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_body1">equality_constraint_body1 (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_body2">equality_constraint_body2 (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_count">equality_constraint_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_enabled">equality_constraint_enabled (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_joint1">equality_constraint_joint1 (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_joint2">equality_constraint_joint2 (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_key">equality_constraint_key (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_polycoef">equality_constraint_polycoef (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_relpose">equality_constraint_relpose (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_torquescale">equality_constraint_torquescale (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.equality_constraint_type">equality_constraint_type (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="concepts/articulations.html#newton.eval_fk">eval_fk() (in module newton)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.eval_fk.html#newton.sim.eval_fk">(in module newton.sim)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="concepts/articulations.html#newton.eval_ik">eval_ik() (in module newton)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.eval_ik.html#newton.sim.eval_ik">(in module newton.sim)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="F">F</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver">FeatherstoneSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.finalize">finalize() (newton.geometry.Mesh method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.finalize">(newton.geometry.SDF method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.finalize">(newton.sim.ModelBuilder method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.finalize">(newton.sim.Style3DModelBuilder method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.flags">flags (newton.sim.ModelBuilder.ShapeConfig property)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.friction">friction (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="G">G</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.get_attribute_frequency">get_attribute_frequency() (newton.sim.Model method)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.get_joint_dof_count.html#newton.sim.get_joint_dof_count">get_joint_dof_count() (in module newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.gravity">gravity (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="H">H</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.has_particle_collision">has_particle_collision (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.has_shape_collision">has_shape_collision (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="I">I</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.I">I (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.I">(newton.geometry.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.IKSolver">IKSolver (class in newton.sim.ik)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.indices">indices (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.init_buffers">init_buffers() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.init_buffers">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.init_buffers">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.integrate_bodies">integrate_bodies() (newton.solvers.SolverBase method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.integrate_particles">integrate_particles() (newton.solvers.SolverBase method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.is_solid">is_solid (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.is_visible">is_visible (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="J">J</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_ancestor">joint_ancestor (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_armature">joint_armature (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_axis">joint_axis (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_child">joint_child (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_coord_count">joint_coord_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.joint_coord_count">(newton.sim.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_count">joint_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_dof_count">joint_dof_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.joint_dof_count">(newton.sim.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_dof_dim">joint_dof_dim (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_dof_mode">joint_dof_mode (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_effort_limit">joint_effort_limit (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_enabled">joint_enabled (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control.joint_f">joint_f (newton.sim.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_f">(newton.sim.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_friction">joint_friction (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_key">joint_key (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_limit_kd">joint_limit_kd (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_limit_ke">joint_limit_ke (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_limit_lower">joint_limit_lower (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_limit_upper">joint_limit_upper (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_parent">joint_parent (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_q">joint_q (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.joint_q">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_q_start">joint_q_start (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_qd">joint_qd (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.joint_qd">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_qd_start">joint_qd_start (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control.joint_target">joint_target (newton.sim.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_target">(newton.sim.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_target_kd">joint_target_kd (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_target_ke">joint_target_ke (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_twist_lower">joint_twist_lower (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_twist_upper">joint_twist_upper (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_type">joint_type (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_velocity_limit">joint_velocity_limit (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_X_c">joint_X_c (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.joint_X_p">joint_X_p (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective">JointLimitObjective (class in newton.sim.ik)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="K">K</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.ka">ka (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.kd">kd (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.ke">ke (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.kf">kf (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="L">L</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.BroadPhaseAllPairs.html#newton.geometry.BroadPhaseAllPairs.launch">launch() (newton.geometry.BroadPhaseAllPairs method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.BroadPhaseExplicit.html#newton.geometry.BroadPhaseExplicit.launch">(newton.geometry.BroadPhaseExplicit method)</a></dt>
+            <dt><a href="api/_generated/newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP.launch">(newton.geometry.BroadPhaseSAP method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.utils.leaky_max.html#newton.utils.leaky_max">leaky_max() (in module newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.leaky_min.html#newton.utils.leaky_min">leaky_min() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.limit_kd">limit_kd (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.limit_ke">limit_ke (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.limit_lower">limit_lower (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.limit_upper">limit_upper (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="M">M</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.mass">mass (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.mass">(newton.geometry.SDF attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.maxhullvert">maxhullvert (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh">Mesh (class in newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.mode">mode (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model">Model (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder">ModelBuilder (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig">ModelBuilder.JointDofConfig (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig">ModelBuilder.ShapeConfig (class in newton.sim)</a>
+        </dt>
+        <dt>
+          module
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#module-newton.sim.ik">newton.sim.ik</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.mu">mu (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver">MuJoCoSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control.muscle_activations">muscle_activations (newton.sim.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_activations">(newton.sim.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_bodies">muscle_bodies (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_count">muscle_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_params">muscle_params (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_points">muscle_points (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.muscle_start">muscle_start (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="N">N</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          newton.sim.ik
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#module-newton.sim.ik">module</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.notify_model_changed">notify_model_changed() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.notify_model_changed">(newton.solvers.SolverBase method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.num_envs">num_envs (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="P">P</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.parse_mjcf.html#newton.utils.parse_mjcf">parse_mjcf() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.parse_urdf.html#newton.utils.parse_urdf">parse_urdf() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.parse_usd.html#newton.utils.parse_usd">parse_usd() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_adhesion">particle_adhesion (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_cohesion">particle_cohesion (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_color_groups">particle_color_groups (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_colors">particle_colors (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_count">particle_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.particle_count">(newton.sim.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.State.html#newton.sim.State.particle_f">particle_f (newton.sim.State attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_flags">particle_flags (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_grid">particle_grid (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_inv_mass">particle_inv_mass (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_kd">particle_kd (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_ke">particle_ke (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_kf">particle_kf (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_mass">particle_mass (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_max_radius">particle_max_radius (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_max_velocity">particle_max_velocity (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_mu">particle_mu (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_q">particle_q (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.particle_q">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_qd">particle_qd (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.particle_qd">(newton.sim.State attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.particle_radius">particle_radius (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.plot_articulation">plot_articulation() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.plot_graph.html#newton.sim.plot_graph">plot_graph() (in module newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective">PositionObjective (class in newton.sim.ik)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="Q">Q</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.core.quat_between_axes.html#newton.core.quat_between_axes">quat_between_axes() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.quat_decompose.html#newton.core.quat_decompose">quat_decompose() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.quat_from_euler.html#newton.core.quat_from_euler">quat_from_euler() (in module newton.core)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.core.quat_to_euler.html#newton.core.quat_to_euler">quat_to_euler() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.quat_to_rpy.html#newton.core.quat_to_rpy">quat_to_rpy() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.quat_twist.html#newton.core.quat_twist">quat_twist() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.quat_twist_angle.html#newton.core.quat_twist_angle">quat_twist_angle() (in module newton.core)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="R">R</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.rebuild_bvh">rebuild_bvh() (newton.solvers.VBDSolver method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.requires_grad">requires_grad (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.State.html#newton.sim.State.requires_grad">(newton.sim.State property)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.residual_dim">residual_dim() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.residual_dim">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.residual_dim">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.restitution">restitution (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.rigid_contact_max">rigid_contact_max (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.rigid_contact_rolling_friction">rigid_contact_rolling_friction (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.rigid_contact_torsional_friction">rigid_contact_torsional_friction (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective">RotationObjective (class in newton.sim.ik)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="S">S</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF">SDF (class in newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver">SemiImplicitSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.set_coloring">set_coloring() (newton.sim.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder.sew_close_vertices">sew_close_vertices() (newton.sim.Style3DModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_body">shape_body (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_collision_filter_pairs">shape_collision_filter_pairs (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_collision_group">shape_collision_group (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_collision_group_map">shape_collision_group_map (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_collision_radius">shape_collision_radius (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_contact_pair_count">shape_contact_pair_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_contact_pairs">shape_contact_pairs (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_count">shape_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_filter">shape_filter (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_flags">shape_flags (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_is_solid">shape_is_solid (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_key">shape_key (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_ka">shape_material_ka (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_kd">shape_material_kd (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_ke">shape_material_ke (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_kf">shape_material_kf (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_mu">shape_material_mu (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_material_restitution">shape_material_restitution (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_scale">shape_scale (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_source">shape_source (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_source_ptr">shape_source_ptr (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_thickness">shape_thickness (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_transform">shape_transform (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.shape_type">shape_type (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.SimRenderer.html#newton.utils.SimRenderer">SimRenderer (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.SimRendererOpenGL.html#newton.utils.SimRendererOpenGL">SimRendererOpenGL (class in newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.SimRendererUsd.html#newton.utils.SimRendererUsd">SimRendererUsd (class in newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.smooth_max.html#newton.utils.smooth_max">smooth_max() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.smooth_min.html#newton.utils.smooth_min">smooth_min() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.soft_contact_kd">soft_contact_kd (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.soft_contact_ke">soft_contact_ke (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.soft_contact_kf">soft_contact_kf (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.soft_contact_mu">soft_contact_mu (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.soft_contact_restitution">soft_contact_restitution (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.IKSolver.solve">solve() (newton.sim.ik.IKSolver method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase">SolverBase (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_constraint_lambdas">spring_constraint_lambdas (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_control">spring_control (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_count">spring_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_damping">spring_damping (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_indices">spring_indices (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_rest_length">spring_rest_length (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.spring_stiffness">spring_stiffness (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.State.html#newton.sim.State">State (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.state">state() (newton.sim.Model method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.FeatherstoneSolver.html#newton.solvers.FeatherstoneSolver.step">step() (newton.solvers.FeatherstoneSolver method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.step">(newton.solvers.MuJoCoSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SemiImplicitSolver.html#newton.solvers.SemiImplicitSolver.step">(newton.solvers.SemiImplicitSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step">(newton.solvers.SolverBase method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.Style3DSolver.html#newton.solvers.Style3DSolver.step">(newton.solvers.Style3DSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver.step">(newton.solvers.VBDSolver method)</a></dt>
+            <dt><a href="api/_generated/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver.step">(newton.solvers.XPBDSolver method)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModel.html#newton.sim.Style3DModel">Style3DModel (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModelBuilder.html#newton.sim.Style3DModelBuilder">Style3DModelBuilder (class in newton.sim)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.Style3DSolver.html#newton.solvers.Style3DSolver">Style3DSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ik.html#newton.sim.ik.JointLimitObjective.supports_analytic">supports_analytic() (newton.sim.ik.JointLimitObjective method)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.PositionObjective.supports_analytic">(newton.sim.ik.PositionObjective method)</a></dt>
+            <dt><a href="api/_generated/newton.sim.ik.html#newton.sim.ik.RotationObjective.supports_analytic">(newton.sim.ik.RotationObjective method)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="T">T</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.target">target (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.target_kd">target_kd (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.target_ke">target_ke (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control.tet_activations">tet_activations (newton.sim.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tet_activations">(newton.sim.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tet_count">tet_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tet_indices">tet_indices (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tet_materials">tet_materials (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tet_poses">tet_poses (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.ShapeConfig.thickness">thickness (newton.sim.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.topological_sort.html#newton.utils.topological_sort">topological_sort() (in module newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.geometry.transform_inertia.html#newton.geometry.transform_inertia">transform_inertia() (in module newton.geometry)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.transform_twist.html#newton.core.transform_twist">transform_twist() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.transform_wrench.html#newton.core.transform_wrench">transform_wrench() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Control.html#newton.sim.Control.tri_activations">tri_activations (newton.sim.Control attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_activations">(newton.sim.Model attribute)</a></dt>
+          </dl>
+        </dd>
+        <dt>
+          <a href="api/_generated/newton.sim.Style3DModel.html#newton.sim.Style3DModel.tri_aniso_ke">tri_aniso_ke (newton.sim.Style3DModel attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_areas">tri_areas (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_count">tri_count (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_indices">tri_indices (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_materials">tri_materials (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.tri_poses">tri_poses (newton.sim.Model attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="U">U</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.up_axis">up_axis (newton.sim.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.Model.html#newton.sim.Model.up_vector">up_vector (newton.sim.Model attribute)</a>
+        </dt>
+        <dd>
+          <dl>
+            <dt><a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.up_vector">(newton.sim.ModelBuilder property)</a></dt>
+          </dl>
+        </dd>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.Style3DSolver.html#newton.solvers.Style3DSolver.update_drag_info">update_drag_info() (newton.solvers.Style3DSolver method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.update_geom_properties">update_geom_properties() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.MuJoCoSolver.html#newton.solvers.MuJoCoSolver.update_joint_properties">update_joint_properties() (newton.solvers.MuJoCoSolver method)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="V">V</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.validate_inertia_detailed">validate_inertia_detailed (newton.sim.ModelBuilder attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.solvers.VBDSolver.html#newton.solvers.VBDSolver">VBDSolver (class in newton.solvers)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.vec_abs.html#newton.utils.vec_abs">vec_abs() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.vec_leaky_max.html#newton.utils.vec_leaky_max">vec_leaky_max() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.vec_leaky_min.html#newton.utils.vec_leaky_min">vec_leaky_min() (in module newton.utils)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.utils.vec_max.html#newton.utils.vec_max">vec_max() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.utils.vec_min.html#newton.utils.vec_min">vec_min() (in module newton.utils)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.core.velocity_at_point.html#newton.core.velocity_at_point">velocity_at_point() (in module newton.core)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.sim.ModelBuilder.html#newton.sim.ModelBuilder.JointDofConfig.velocity_limit">velocity_limit (newton.sim.ModelBuilder.JointDofConfig attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.Mesh.html#newton.geometry.Mesh.vertices">vertices (newton.geometry.Mesh attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.geometry.SDF.html#newton.geometry.SDF.volume">volume (newton.geometry.SDF attribute)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="X">X</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.core.Axis.html#newton.core.Axis.X">X (newton.core.Axis attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.solvers.XPBDSolver.html#newton.solvers.XPBDSolver">XPBDSolver (class in newton.solvers)</a>
+        </dt>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="Y">Y</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.core.Axis.html#newton.core.Axis.Y">Y (newton.core.Axis attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+<h2 id="Z">Z</h2>
+<table style="width: 100%" class="indextable genindextable">
+  <tr>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+        <dt>
+          <a href="api/_generated/newton.core.Axis.html#newton.core.Axis.Z">Z (newton.core.Axis attribute)</a>
+        </dt>
+      </dl>
+    </td>
+    <td style="width: 33%; vertical-align: top;">
+      <dl>
+      </dl>
+    </td>
+  </tr>
+</table>
+
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
