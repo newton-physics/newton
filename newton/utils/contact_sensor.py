@@ -111,10 +111,7 @@ def populate_contacts(
     contacts: Contacts,
     solver: SolverBase,
 ):
-    """Populate Contacts object from the solver and the Contacts object.
-    Contact forces are populated from the solver state, while contacts are populated from the Contacts object, if given,
-    or from the solver state, where it contains them.
-    """
+    """Populate Contacts object from the solver."""
     solver.update_contacts(contacts)
 
 
@@ -311,7 +308,7 @@ class ContactSensor:
 
         if isinstance(pattern, list):
             for single_pattern in pattern:
-                matches.extend(cls._match_bodies_shapes(match_fn, model, elem_key, single_pattern))
+                matches.extend(cls._match_elem_key(match_fn, model, elem_key, single_pattern))
             return matches
 
         for idx, elem in enumerate(elem_key):

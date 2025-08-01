@@ -27,7 +27,6 @@ import newton.utils
 from newton.core.types import nparray, override
 from newton.geometry import MESH_MAXHULLVERT
 from newton.sim import Contacts, Control, Model, State, color_graph, plot_graph
-from newton.sim.contacts import Contacts
 
 from ..solver import SolverBase
 
