@@ -1,0 +1,246 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (2.65069671420763, -2.152297546483383, 1.3280812735778755)
+                double3 target = (-2.6645352591003757e-15, 0, -0.7463218077594247)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/World/Camera"
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./cube_cylinder_new.usda"
+            dictionary locked = {
+            }
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+            double "rtx:translucency:worldEps" = 0.005
+        }
+    }
+    defaultPrim = "World"
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+over "Render" (
+    hide_in_stage_window = true
+)
+{
+}
+
+def PhysicsScene "physicsScene"
+{
+    bool warp:collapse_fixed_joints = 0
+}
+
+def Xform "World"
+{
+    def Xform "Cylinder_dynamic" (
+        prepend apiSchemas = ["SemanticsAPI:Semantics_Himt", "SemanticsAPI:Semantics_3y9s", "SemanticsAPI:Semantics_8TFT", "SemanticsAPI:QWQQ", "SemanticsAPI:QWQL", "SemanticsAPI:QWQC", "MaterialBindingAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        kind = "component"
+    )
+    {
+        custom rel material:binding
+        uniform token physics:approximation = "convexHull"
+        string semantic:QWQC:params:semanticData = "container/vessel/bottle"
+        string semantic:QWQC:params:semanticType = "hierarchy"
+        string semantic:QWQL:params:semanticData = "bottle"
+        string semantic:QWQL:params:semanticType = "class"
+        string semantic:QWQQ:params:semanticData = "Q80228"
+        string semantic:QWQQ:params:semanticType = "qcode"
+        string semantic:Semantics_3y9s:params:semanticData = "bottle"
+        string semantic:Semantics_3y9s:params:semanticType = "prop_general_type"
+        string semantic:Semantics_8TFT:params:semanticData = "Q80228"
+        string semantic:Semantics_8TFT:params:semanticType = "prop_general_qcode"
+        string semantic:Semantics_Himt:params:semanticData = "prop_general"
+        string semantic:Semantics_Himt:params:semanticType = "class"
+        float3 xformOp:rotateXYZ = (320.41278, 30.864384, -17.834925)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.04081685096025467, 0.3882038203736343)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Scope "PhysicsMaterials"
+        {
+            def Material "plastic" (
+                apiSchemas = ["PhysicsMaterialAPI"]
+            )
+            {
+                float physics:density = 800
+                float physics:dynamicFriction = 0.2
+                float physics:restitution = 0.3
+                float physics:staticFriction = 0.2
+            }
+        }
+
+        def Xform "cylinder_reverse" (
+            kind = "component"
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double xformOp:rotateX:unitsResolve = 90
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale", "xformOp:rotateX:unitsResolve"]
+
+            def Mesh "mesh_0" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-0.05, -0.1, -0.05), (0.05, 0.1, 0.05)]
+                int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                int[] faceVertexIndices = [6, 4, 5, 17, 19, 18, 0, 13, 1, 1, 14, 2, 2, 15, 3, 3, 16, 4, 4, 17, 5, 5, 18, 6, 6, 19, 7, 7, 20, 8, 8, 21, 9, 9, 22, 10, 10, 23, 11, 11, 12, 0, 12, 11, 23, 23, 10, 22, 22, 9, 21, 21, 8, 20, 20, 7, 19, 19, 6, 18, 18, 5, 17, 17, 4, 16, 16, 3, 15, 15, 2, 14, 14, 1, 13, 13, 0, 12, 12, 23, 13, 13, 23, 14, 14, 23, 22, 14, 22, 15, 15, 22, 21, 15, 21, 16, 16, 21, 20, 16, 20, 17, 17, 20, 19, 11, 0, 10, 10, 0, 9, 9, 0, 1, 9, 1, 8, 8, 1, 2, 8, 2, 7, 7, 2, 3, 7, 3, 6, 6, 3, 4]
+                rel material:binding:physics = </World/Cylinder_dynamic/PhysicsMaterials/plastic> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token orientation = "leftHanded"
+                token physics:approximation = "convexDecomposition"
+                point3f[] points = [(0.05, 0.1, 0), (0.04330127, 0.1, -0.025), (0.024999999, 0.1, -0.043301273), (-2.1855695e-9, 0.1, -0.05), (-0.025000004, 0.1, -0.04330127), (-0.04330127, 0.1, -0.025000004), (-0.05, 0.1, 4.371139e-9), (-0.043301266, 0.1, 0.02500001), (-0.024999997, 0.1, 0.043301273), (5.9624405e-10, 0.1, 0.05), (0.024999997, 0.1, 0.043301273), (0.04330128, 0.1, 0.02499999), (0.05, -0.1, 0), (0.04330127, -0.1, -0.025), (0.024999999, -0.1, -0.043301273), (-2.1855695e-9, -0.1, -0.05), (-0.025000004, -0.1, -0.04330127), (-0.04330127, -0.1, -0.025000004), (-0.05, -0.1, 4.371139e-9), (-0.043301266, -0.1, 0.02500001), (-0.024999997, -0.1, 0.043301273), (5.9624405e-10, -0.1, 0.05), (0.024999997, -0.1, 0.043301273), (0.04330128, -0.1, 0.02499999)] (
+                    interpolation = "vertex"
+                )
+                uniform token subdivisionScheme = "none"
+            }
+        }
+    }
+
+    def Xform "Cube_static" (
+        prepend apiSchemas = ["SemanticsAPI:Semantics_qnhc", "SemanticsAPI:Semantics_qZdh", "SemanticsAPI:Semantics_6oTl", "SemanticsAPI:QWQQ", "SemanticsAPI:QWQL", "SemanticsAPI:QWQC"]
+        kind = "component"
+    )
+    {
+        string semantic:QWQC:params:semanticData = "container/crate"
+        string semantic:QWQC:params:semanticType = "hierarchy"
+        string semantic:QWQL:params:semanticData = "crate"
+        string semantic:QWQL:params:semanticType = "class"
+        string semantic:QWQQ:params:semanticData = "Q605384"
+        string semantic:QWQQ:params:semanticType = "qcode"
+        string semantic:Semantics_6oTl:params:semanticData = "Q605384"
+        string semantic:Semantics_6oTl:params:semanticType = "prop_general_qcode"
+        string semantic:Semantics_qnhc:params:semanticData = "prop_general"
+        string semantic:Semantics_qnhc:params:semanticType = "class"
+        string semantic:Semantics_qZdh:params:semanticData = "crate"
+        string semantic:Semantics_qZdh:params:semanticType = "prop_general_type"
+        float3 xformOp:rotateXYZ = (0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, -1.5)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Scope "PhysicsMaterials"
+        {
+            def Material "wood" (
+                apiSchemas = ["PhysicsMaterialAPI"]
+            )
+            {
+                float physics:density = 1500
+                float physics:dynamicFriction = 0.75
+                float physics:restitution = 0.3
+                float physics:staticFriction = 0.75
+            }
+        }
+
+        def Xform "cube2" (
+            kind = "component"
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double xformOp:rotateX:unitsResolve = 90
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale", "xformOp:rotateX:unitsResolve"]
+
+            def Mesh "mesh_0" (
+                prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+            )
+            {
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+                int[] faceVertexIndices = [0, 3, 1, 0, 2, 3, 4, 7, 5, 4, 6, 7, 6, 2, 7, 6, 3, 2, 5, 1, 4, 5, 0, 1, 5, 2, 0, 5, 7, 2, 1, 6, 4, 1, 3, 6]
+                rel material:binding = None (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                rel material:binding:physics = </World/Cube_static/PhysicsMaterials/wood> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0)] (
+                    interpolation = "faceVarying"
+                )
+                uniform token orientation = "rightHanded"
+                token physics:approximation = "meshSimplification"
+                point3f[] points = [(0.5, -0.5, 0.5), (-0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)] (
+                    interpolation = "vertex"
+                )
+                uniform token subdivisionScheme = "none"
+            }
+        }
+    }
+
+    def Camera "Camera" (
+        hide_in_stage_window = false
+        no_delete = false
+    )
+    {
+        float4[] clippingPlanes = []
+        float2 clippingRange = (0.01, 10000000)
+        float exposure = 0
+        float focalLength = 18.147562
+        float focusDistance = 400
+        float fStop = 0
+        float horizontalAperture = 20.955
+        float horizontalApertureOffset = 0
+        custom vector3d omni:kit:centerOfInterest = (-3.075077614927928e-16, -1.1102230246251565e-16, -3.995212878329666)
+        token projection = "perspective"
+        uniform token purpose = "default"
+        double shutter:close = 0
+        double shutter:open = 0
+        uniform token stereoRole = "mono"
+        float verticalAperture = 15.2908
+        float verticalApertureOffset = 0
+        token visibility = "inherited"
+        float3 xformOp:rotateYXZ = (58.71991, 3.6753685e-14, 50.92429)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (2.65069671420763, -2.152297546483383, 1.3280812735778755)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateYXZ", "xformOp:scale"]
+    }
+}
+
+def Xform "Environment"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def DistantLight "defaultLight" (
+        apiSchemas = ["ShapingAPI"]
+    )
+    {
+        float inputs:angle = 1
+        float inputs:intensity = 3000
+        float inputs:shaping:cone:angle = 180
+        float inputs:shaping:cone:softness
+        float inputs:shaping:focus
+        color3f inputs:shaping:focusTint
+        asset inputs:shaping:ies:file
+        quatd xformOp:orient = (0.6532814824381883, 0.27059805007309856, 0.27059805007309856, 0.6532814824381883)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
