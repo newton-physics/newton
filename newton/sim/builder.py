@@ -2468,7 +2468,9 @@ class ModelBuilder:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
                 else:
-                    wp.warn(f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.")
+                    warnings.warn(
+                        f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
+                    )
                     method = "convex_hull"
 
         if method in RemeshingMethod.__args__:
@@ -2489,8 +2491,9 @@ class ModelBuilder:
                         if raise_on_failure:
                             raise RuntimeError(f"Remeshing with method '{method}' failed for shape {shape}.") from e
                         else:
-                            wp.warn(
-                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box."
+                            warnings.warn(
+                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
+                                stacklevel=2,
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
@@ -3493,6 +3496,17 @@ class ModelBuilder:
             self.body_inv_inertia[i] = wp.inverse(new_inertia)
         else:
             self.body_inv_inertia[i] = new_inertia
+
+    def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
+        """
+        Adds a free joint to every body that is not a child in any joint and has mass > 0.
+        Should be called after all other joints have been added.
+        """
+        # set(self.joint_child) is connected_bodies
+        floating_bodies = set(new_bodies) - set(self.joint_child)
+        for body_id in floating_bodies:
+            if self.body_mass[body_id] > 0:
+                self.add_joint_free(child=body_id)
 
     def set_coloring(self, particle_color_groups):
         """

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import warnings
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote, urlsplit
 
@@ -189,8 +190,9 @@ def parse_urdf(
                     if package_name in urdf_folder:
                         filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
                     else:
-                        wp.utils.warn(
-                            f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"'
+                        warnings.warn(
+                            f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"',
+                            stacklevel=2,
                         )
                 elif filename.startswith(("http://", "https://")):
                     # download mesh
@@ -200,7 +202,7 @@ def parse_urdf(
                 else:
                     filename = os.path.join(os.path.dirname(urdf_filename), filename)
                 if not os.path.exists(filename):
-                    wp.utils.warn(f"Warning: mesh file {filename} does not exist")
+                    warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
                     continue
 
                 import trimesh  # noqa: PLC0415

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import warp as wp
 from warp.types import float32, matrix
@@ -2330,7 +2332,7 @@ class VBDSolver(SolverBase):
         self.self_contact_margin = self_contact_margin
 
         if model.device.is_cpu and use_tile_solve:
-            wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+            warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
 
         self.use_tile_solve = use_tile_solve and model.device.is_cuda
 
