@@ -276,26 +276,26 @@ class TestImportUsd(unittest.TestCase):
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
-        self.assertEqual(builder.shape_geo_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+        self.assertEqual(builder.shape_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
 
         # original mesh
-        mesh_original = builder.shape_geo_src[0]
+        mesh_original = builder.shape_source[0]
         self.assertEqual(mesh_original.vertices.shape, (8, 3))
         assert_np_equal(mesh_original.vertices, vertices)
         assert_np_equal(mesh_original.indices, indices)
 
         # convex hull
-        mesh_convex_hull = builder.shape_geo_src[1]
+        mesh_convex_hull = builder.shape_source[1]
         self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
 
         # bounding sphere
-        self.assertIsNone(builder.shape_geo_src[2])
-        self.assertEqual(builder.shape_geo_type[2], newton.geometry.GEO_SPHERE)
-        self.assertAlmostEqual(builder.shape_geo_scale[2][0], wp.length(scale))
+        self.assertIsNone(builder.shape_source[2])
+        self.assertEqual(builder.shape_type[2], newton.geometry.GEO_SPHERE)
+        self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
         # bounding box
-        assert_np_equal(npsorted(builder.shape_geo_scale[3]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 

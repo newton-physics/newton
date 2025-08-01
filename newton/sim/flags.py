@@ -35,7 +35,7 @@ NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(1 << 4)
 """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
 NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 5)
-"""Indicates shape property updates: shape_transform, shape_geo."""
+"""Indicates shape property updates: shape_transform, shape geometry and material properties"""
 
 
 __all__ = [

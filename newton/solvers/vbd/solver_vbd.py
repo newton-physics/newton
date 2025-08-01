@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import warp as wp
 from warp.types import float32, matrix
@@ -23,7 +25,6 @@ from newton.core.types import override
 from newton.geometry import PARTICLE_FLAG_ACTIVE
 from newton.geometry.kernels import triangle_closest_point
 from newton.sim import Contacts, Control, Model, State
-from newton.sim.model import ShapeMaterials
 
 from ..solver import SolverBase
 from .tri_mesh_collision import (
@@ -538,7 +539,7 @@ def evaluate_body_particle_contact(
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array(dtype=float),
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -570,7 +571,7 @@ def evaluate_body_particle_contact(
         body_contact_force = n * body_contact_force_norm
         body_contact_hessian = soft_contact_ke * wp.outer(n, n)
 
-        mu = shape_materials.mu[shape_index]
+        mu = shape_material_mu[shape_index]
 
         dx = particle_pos - particle_prev_pos
 
@@ -1662,7 +1663,7 @@ def accumulate_contact_force_and_hessian(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1813,7 +1814,7 @@ def accumulate_contact_force_and_hessian(
                 friction_mu,
                 friction_epsilon,
                 particle_radius,
-                shape_materials,
+                shape_material_mu,
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -1924,7 +1925,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     soft_contact_particle: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_max: int,
-    shape_materials: ShapeMaterials,
+    shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1956,7 +1957,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 friction_mu,
                 friction_epsilon,
                 particle_radius,
-                shape_materials,
+                shape_material_mu,
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -2331,7 +2332,7 @@ class VBDSolver(SolverBase):
         self.self_contact_margin = self_contact_margin
 
         if model.device.is_cpu and use_tile_solve:
-            wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+            warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
 
         self.use_tile_solve = use_tile_solve and model.device.is_cuda
 
@@ -2550,7 +2551,7 @@ class VBDSolver(SolverBase):
                         contacts.soft_contact_particle,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
-                        self.model.shape_materials,
+                        self.model.shape_material_mu,
                         self.model.shape_body,
                         state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
                         state_in.body_q if self.integrate_with_external_rigid_solver else None,
@@ -2726,7 +2727,7 @@ class VBDSolver(SolverBase):
                             contacts.soft_contact_particle,
                             contacts.soft_contact_count,
                             contacts.soft_contact_max,
-                            self.model.shape_materials,
+                            self.model.shape_material_mu,
                             self.model.shape_body,
                             state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
                             state_in.body_q if self.integrate_with_external_rigid_solver else None,

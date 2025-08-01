@@ -15,6 +15,7 @@
 
 import contextlib
 import os
+import warnings
 from collections import defaultdict
 from typing import Literal
 
@@ -339,7 +340,9 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
     new_faces = np.array(surface_faces, dtype=np.int32)
 
     if len(new_vertices) == 0 or len(new_faces) == 0:
-        wp.utils.warn("Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.")
+        warnings.warn(
+            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.", stacklevel=2
+        )
         return vertices, faces
 
     return new_vertices, new_faces

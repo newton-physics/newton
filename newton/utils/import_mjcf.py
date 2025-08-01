@@ -54,6 +54,7 @@ def parse_mjcf(
     static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
+    skip_equality_constraints: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -82,6 +83,7 @@ def parse_mjcf(
         static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
+        skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
     """
     if xform is None:
         xform = wp.transform()
@@ -761,11 +763,115 @@ def parse_mjcf(
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
             parse_body(child, link, _incoming_defaults, childclass=_childclass)
 
+    def parse_equality_constraints(equality):
+        def parse_common_attributes(element):
+            return {
+                "name": element.attrib.get("name"),
+                "active": element.attrib.get("active", "true").lower() == "true",
+                "solref": element.attrib.get("solref"),
+                "solimp": element.attrib.get("solimp"),
+            }
+
+        for connect in equality.findall("connect"):
+            common = parse_common_attributes(connect)
+            body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
+            body2_name = (
+                connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
+            )
+            anchor = connect.attrib.get("anchor")
+
+            site1 = connect.attrib.get("site1")
+
+            if body1_name and anchor:
+                if verbose:
+                    print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor}")
+
+                anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()]) if anchor else None
+
+                body1_idx = builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
+                body2_idx = builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+
+                builder.add_equality_constraint_connect(
+                    body1=body1_idx,
+                    body2=body2_idx,
+                    anchor=anchor_vec,
+                    key=common["name"],
+                    enabled=common["active"],
+                )
+
+            if site1:  # Implement site-based connect after Newton supports sites
+                print("Warning: MuJoCo sites are not yet supported in Newton.")
+
+        for weld in equality.findall("weld"):
+            common = parse_common_attributes(weld)
+            body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
+            body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
+            anchor = weld.attrib.get("anchor", "0 0 0")
+            relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
+            torquescale = weld.attrib.get("torquescale")
+
+            site1 = weld.attrib.get("site1")
+
+            if body1_name:
+                if verbose:
+                    print(f"Weld constraint: {body1_name} to {body2_name}")
+
+                anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
+
+                body1_idx = builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
+                body2_idx = builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+
+                relpose_list = [float(x) for x in relpose.split()]
+                relpose_transform = wp.transform(
+                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
+                )
+
+                builder.add_equality_constraint_weld(
+                    body1=body1_idx,
+                    body2=body2_idx,
+                    anchor=anchor_vec,
+                    relpose=relpose_transform,
+                    torquescale=torquescale,
+                    key=common["name"],
+                    enabled=common["active"],
+                )
+
+            if site1:  # Implement site-based weld after Newton supports sites
+                print("Warning: MuJoCo sites are not yet supported in Newton.")
+
+        for joint in equality.findall("joint"):
+            common = parse_common_attributes(joint)
+            joint1_name = joint.attrib.get("joint1")
+            joint2_name = joint.attrib.get("joint2")
+            polycoef = joint.attrib.get("polycoef", "0 1 0 0 0")
+
+            if joint1_name:
+                if verbose:
+                    print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
+
+                joint1_idx = (
+                    builder.joint_key.index(joint1_name) if joint1_name and joint1_name in builder.joint_key else -1
+                )
+                joint2_idx = (
+                    builder.joint_key.index(joint2_name) if joint2_name and joint2_name in builder.joint_key else -1
+                )
+
+                builder.add_equality_constraint_joint(
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
+                    polycoef=[float(x) for x in polycoef.split()],
+                    key=common["name"],
+                    enabled=common["active"],
+                )
+
+        # add support for types "tendon" and "flex" once Newton supports them
+
     # -----------------
     # start articulation
 
     visual_shapes = []
-    start_shape_count = len(builder.shape_geo_type)
+    start_shape_count = len(builder.shape_type)
     builder.add_articulation(key=root.attrib.get("model"))
 
     world = root.find("worldbody")
@@ -790,7 +896,16 @@ def parse_mjcf(
         incoming_xform=xform,
     )
 
-    end_shape_count = len(builder.shape_geo_type)
+    # -----------------
+    # add equality constraints
+
+    equality = root.find("equality")
+    if equality is not None and not skip_equality_constraints:
+        parse_equality_constraints(equality)
+
+    # -----------------
+
+    end_shape_count = len(builder.shape_type)
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:
