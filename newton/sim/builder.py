@@ -2468,7 +2468,9 @@ class ModelBuilder:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
                 else:
-                    wp.warn(f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.")
+                    warnings.warn(
+                        f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
+                    )
                     method = "convex_hull"
 
         if method in RemeshingMethod.__args__:
@@ -2489,8 +2491,9 @@ class ModelBuilder:
                         if raise_on_failure:
                             raise RuntimeError(f"Remeshing with method '{method}' failed for shape {shape}.") from e
                         else:
-                            wp.warn(
-                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box."
+                            warnings.warn(
+                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
+                                stacklevel=2,
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh

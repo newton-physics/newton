@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from itertools import product
 from typing import TYPE_CHECKING, Any
 
@@ -1764,8 +1765,9 @@ class MuJoCoSolver(SolverBase):
         joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints]))
         joint_order = newton.utils.topological_sort(joints_simple, use_dfs=True)
         if any(joint_order != np.arange(len(joints_simple))):
-            wp.utils.warn(
-                "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
+            warnings.warn(
+                "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",
+                stacklevel=2,
             )
 
         # maps from Newton body index to the transform to be applied to its children
@@ -2111,9 +2113,10 @@ class MuJoCoSolver(SolverBase):
         if separate_envs_to_worlds and model.num_envs > 1:
             shapes_per_env = model.shape_count // model.num_envs
             if model.shape_count % model.num_envs != 0:
-                wp.utils.warn(
+                warnings.warn(
                     f"Total shape count {model.shape_count} is not divisible by number of environments {model.num_envs}. "
-                    "Shape mapping to MuJoCo geoms may be incorrect."
+                    "Shape mapping to MuJoCo geoms may be incorrect.",
+                    stacklevel=2,
                 )
 
             full_shape_mapping = {}
