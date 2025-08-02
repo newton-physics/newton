@@ -1162,6 +1162,11 @@ def parse_usd(
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
 
+    # add free joints to floating bodies that's just been added by import_usd
+    new_bodies = path_body_map.values()
+    builder.add_free_joints_to_floating_bodies(new_bodies)
+
+    # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
     merged_body_data = {}
     path_body_relative_transform = {}
