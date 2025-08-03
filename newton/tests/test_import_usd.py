@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.examples
 from newton.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
@@ -298,6 +299,33 @@ class TestImportUsd(unittest.TestCase):
         assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_match_collision_shapes(self):
+        builder = newton.ModelBuilder()
+        parse_usd(
+            newton.examples.get_asset("humanoid.usda"),
+            builder,
+        )
+        self.assertEqual(builder.shape_count, 38)
+        self.assertEqual(builder.body_count, 16)
+        visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
+        collision_shape_keys = [k for k in builder.shape_key if "collisions" in k]
+        self.assertEqual(len(visual_shape_keys), 19)
+        self.assertEqual(len(collision_shape_keys), 19)
+        visual_shapes = [i for i, k in enumerate(builder.shape_key) if "visuals" in k]
+        # corresponding collision shapes
+        collision_shapes = [builder.shape_key.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
+        # ensure that the visual and collision shapes match
+        for i in range(len(visual_shapes)):
+            vi = visual_shapes[i]
+            ci = collision_shapes[i]
+            self.assertEqual(builder.shape_type[vi], builder.shape_type[ci])
+            self.assertEqual(builder.shape_source[vi], builder.shape_source[ci])
+            assert_np_equal(np.array(builder.shape_transform[vi]), np.array(builder.shape_transform[ci]), tol=1e-5)
+            assert_np_equal(np.array(builder.shape_scale[vi]), np.array(builder.shape_scale[ci]), tol=1e-5)
+            self.assertFalse(builder.shape_flags[vi] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            self.assertTrue(builder.shape_flags[ci] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
 
 
 if __name__ == "__main__":
