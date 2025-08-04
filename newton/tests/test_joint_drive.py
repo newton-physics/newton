@@ -210,7 +210,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new values of ke and kd
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -253,7 +253,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -288,7 +288,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES)
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)

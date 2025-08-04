@@ -22,27 +22,23 @@ import warp as wp
 NOTIFY_FLAG_JOINT_PROPERTIES = wp.constant(1 << 0)
 """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
 
-NOTIFY_FLAG_JOINT_AXIS_PROPERTIES = wp.constant(1 << 1)
-"""Indicates joint axis property updates: joint_target, joint_target_ke, joint_target_kd, joint_dof_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd."""
+NOTIFY_FLAG_JOINT_DOF_PROPERTIES = wp.constant(1 << 1)
+"""Indicates joint DOF property updates: joint_target, joint_target_ke, joint_target_kd, joint_dof_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd, joint_qd, joint_f, joint_armature."""
 
-NOTIFY_FLAG_DOF_PROPERTIES = wp.constant(1 << 2)
-"""Indicates degree-of-freedom property updates: joint_qd, joint_f, joint_armature."""
-
-NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 3)
+NOTIFY_FLAG_BODY_PROPERTIES = wp.constant(1 << 2)
 """Indicates body property updates: body_q, body_qd."""
 
-NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(1 << 4)
+NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES = wp.constant(1 << 3)
 """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
-NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 5)
+NOTIFY_FLAG_SHAPE_PROPERTIES = wp.constant(1 << 4)
 """Indicates shape property updates: shape_transform, shape geometry and material properties"""
 
 
 __all__ = [
     "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
     "NOTIFY_FLAG_BODY_PROPERTIES",
-    "NOTIFY_FLAG_DOF_PROPERTIES",
-    "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_DOF_PROPERTIES",
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
 ]
