@@ -154,6 +154,101 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(builder.body_inertia[0]), np.array(I_sphere), tol=4e2)
         self.assertAlmostEqual(builder.body_mass[0], mass_sphere, delta=1e2)
 
+    def test_capsule_cylinder_cone_axis_inertia(self):
+        """Test that capsules, cylinders, and cones have correct inertia for different axis orientations."""
+        # Test parameters
+        radius = 0.5
+        half_height = 1.0
+        density = 1000.0
+
+        # Test capsule inertia for different axes
+        # Z-axis capsule (default)
+        builder_z = newton.ModelBuilder()
+        body_z = builder_z.add_body()
+        builder_z.add_shape_capsule(
+            body=body_z,
+            radius=radius,
+            half_height=half_height,
+            axis=newton.Axis.Z,
+            cfg=newton.ModelBuilder.ShapeConfig(density=density),
+        )
+        model_z = builder_z.finalize()
+        I_z = model_z.body_inertia.numpy()[0]
+
+        # For Z-axis aligned capsule, I_xx should equal I_yy, and I_zz should be different
+        self.assertAlmostEqual(I_z[0, 0], I_z[1, 1], delta=1e-6, msg="I_xx should equal I_yy for Z-axis capsule")
+        self.assertNotAlmostEqual(I_z[0, 0], I_z[2, 2], delta=1e-3, msg="I_xx should not equal I_zz for Z-axis capsule")
+
+        # Y-axis capsule
+        builder_y = newton.ModelBuilder()
+        body_y = builder_y.add_body()
+        builder_y.add_shape_capsule(
+            body=body_y,
+            radius=radius,
+            half_height=half_height,
+            axis=newton.Axis.Y,
+            cfg=newton.ModelBuilder.ShapeConfig(density=density),
+        )
+        model_y = builder_y.finalize()
+        I_y = model_y.body_inertia.numpy()[0]
+
+        # For Y-axis aligned capsule, I_xx should equal I_zz, and I_yy should be different
+        self.assertAlmostEqual(I_y[0, 0], I_y[2, 2], delta=1e-6, msg="I_xx should equal I_zz for Y-axis capsule")
+        self.assertNotAlmostEqual(I_y[0, 0], I_y[1, 1], delta=1e-3, msg="I_xx should not equal I_yy for Y-axis capsule")
+
+        # X-axis capsule
+        builder_x = newton.ModelBuilder()
+        body_x = builder_x.add_body()
+        builder_x.add_shape_capsule(
+            body=body_x,
+            radius=radius,
+            half_height=half_height,
+            axis=newton.Axis.X,
+            cfg=newton.ModelBuilder.ShapeConfig(density=density),
+        )
+        model_x = builder_x.finalize()
+        I_x = model_x.body_inertia.numpy()[0]
+
+        # For X-axis aligned capsule, I_yy should equal I_zz, and I_xx should be different
+        self.assertAlmostEqual(I_x[1, 1], I_x[2, 2], delta=1e-6, msg="I_yy should equal I_zz for X-axis capsule")
+        self.assertNotAlmostEqual(I_x[0, 0], I_x[1, 1], delta=1e-3, msg="I_xx should not equal I_yy for X-axis capsule")
+
+        # Test cylinder inertia for Z-axis
+        builder_cyl = newton.ModelBuilder()
+        body_cyl = builder_cyl.add_body()
+        builder_cyl.add_shape_cylinder(
+            body=body_cyl,
+            radius=radius,
+            half_height=half_height,
+            axis=newton.Axis.Z,
+            cfg=newton.ModelBuilder.ShapeConfig(density=density),
+        )
+        model_cyl = builder_cyl.finalize()
+        I_cyl = model_cyl.body_inertia.numpy()[0]
+
+        self.assertAlmostEqual(I_cyl[0, 0], I_cyl[1, 1], delta=1e-6, msg="I_xx should equal I_yy for Z-axis cylinder")
+        self.assertNotAlmostEqual(
+            I_cyl[0, 0], I_cyl[2, 2], delta=1e-3, msg="I_xx should not equal I_zz for Z-axis cylinder"
+        )
+
+        # Test cone inertia for Z-axis
+        builder_cone = newton.ModelBuilder()
+        body_cone = builder_cone.add_body()
+        builder_cone.add_shape_cone(
+            body=body_cone,
+            radius=radius,
+            half_height=half_height,
+            axis=newton.Axis.Z,
+            cfg=newton.ModelBuilder.ShapeConfig(density=density),
+        )
+        model_cone = builder_cone.finalize()
+        I_cone = model_cone.body_inertia.numpy()[0]
+
+        self.assertAlmostEqual(I_cone[0, 0], I_cone[1, 1], delta=1e-6, msg="I_xx should equal I_yy for Z-axis cone")
+        self.assertNotAlmostEqual(
+            I_cone[0, 0], I_cone[2, 2], delta=1e-3, msg="I_xx should not equal I_zz for Z-axis cone"
+        )
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
