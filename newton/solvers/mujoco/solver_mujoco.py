@@ -508,7 +508,7 @@ def convert_mjw_contact_to_warp_kernel(
     mj_contact_geom: wp.array(dtype=wp.vec2i),
     mj_contact_efc_address: wp.array2d(dtype=int),
     mj_contact_worldid: wp.array(dtype=wp.int32),
-    mj_efc_force: wp.array(dtype=float),
+    mj_efc_force: wp.array2d(dtype=float),
     # outputs
     contact_pair: wp.array(dtype=wp.vec2i),
     contact_normal: wp.array(dtype=wp.vec3f),
@@ -527,12 +527,12 @@ def convert_mjw_contact_to_warp_kernel(
 
     efc_address0 = mj_contact_efc_address[contact_idx, 0]
     if efc_address0 >= 0:
-        normalforce = mj_efc_force[efc_address0]
+        normalforce = mj_efc_force[worldid, efc_address0]
 
         if pyramidal_cone:
             dim = mj_contact_dim[contact_idx]
             for i in range(1, 2 * (dim - 1)):
-                normalforce += mj_efc_force[mj_contact_efc_address[contact_idx, i]]
+                normalforce += mj_efc_force[worldid, mj_contact_efc_address[contact_idx, i]]
 
     pair = wp.vec2i()
     for i in range(2):
