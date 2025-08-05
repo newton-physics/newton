@@ -294,7 +294,6 @@ class ArticulationView:
                 else:
                     raise TypeError(f"Tendon ids must be strings or integers, got {id} of type {type(id)}")
 
-
         # compute selected indices
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
