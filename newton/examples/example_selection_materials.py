@@ -202,16 +202,16 @@ class Example:
                 self.default_ant_root_velocities.fill_(wp.spatial_vector(0.0, 0.0, 0.0, 0.0, -5.0, 0.0))
 
             # randomize materials
-            material_mu = self.ants.get_attribute("shape_materials.mu", self.model)
+            material_mu = self.ants.get_attribute("shape_material_mu", self.model)
             wp.launch(
                 reset_materials_kernel, dim=material_mu.shape, inputs=[material_mu, self.reset_count, self.num_envs]
             )
 
-        self.ants.set_attribute("shape_materials.mu", self.model, material_mu)
+        self.ants.set_attribute("shape_material_mu", self.model, material_mu)
 
         # check values in model
-        # print(self.ants.get_attribute("shape_materials.mu", self.model))
-        # print(self.model.shape_materials.mu)
+        # print(self.ants.get_attribute("shape_material_mu", self.model))
+        # print(self.model.shape_material_mu)
 
         # !!! Notify solver of material changes !!!
         self.solver.notify_model_changed(newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES)

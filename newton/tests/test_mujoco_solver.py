@@ -596,9 +596,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_armature.assign(updated_armature)
 
         # Step 5: Notify MuJoCo of changes
-        solver.notify_model_changed(
-            newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
-        )
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
 
         # Step 6: Verify all changes were applied
 
@@ -666,14 +664,14 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings and arrays
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_types = self.model.shape_geo.type.numpy()
+        shape_types = self.model.shape_type.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Get all property arrays from Newton
-        shape_mu = self.model.shape_materials.mu.numpy()
-        shape_ke = self.model.shape_materials.ke.numpy()
-        shape_kd = self.model.shape_materials.kd.numpy()
-        shape_sizes = self.model.shape_geo.scale.numpy()
+        shape_mu = self.model.shape_material_mu.numpy()
+        shape_ke = self.model.shape_material_ke.numpy()
+        shape_kd = self.model.shape_material_kd.numpy()
+        shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
         shape_incoming_xform = self.model.shape_incoming_xform.numpy()
@@ -848,13 +846,13 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         new_mu = np.zeros(shape_count)
         for i in range(shape_count):
             new_mu[i] = 0.1 + i * 0.05  # Pattern: 0.1, 0.15, 0.2, ...
-        self.model.shape_materials.mu.assign(new_mu)
+        self.model.shape_material_mu.assign(new_mu)
 
         # 2. Update contact stiffness/damping
         new_ke = np.ones(shape_count) * 1000.0  # High stiffness
         new_kd = np.ones(shape_count) * 10.0  # Some damping
-        self.model.shape_materials.ke.assign(new_ke)
-        self.model.shape_materials.kd.assign(new_kd)
+        self.model.shape_material_ke.assign(new_ke)
+        self.model.shape_material_kd.assign(new_kd)
 
         # 3. Update collision radius
         new_radii = self.model.shape_collision_radius.numpy() * 1.5
@@ -863,10 +861,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # 4. Update sizes
         new_sizes = []
         for i in range(shape_count):
-            old_size = self.model.shape_geo.scale.numpy()[i]
+            old_size = self.model.shape_scale.numpy()[i]
             new_size = wp.vec3(old_size[0] * 1.2, old_size[1] * 1.2, old_size[2] * 1.2)
             new_sizes.append(new_size)
-        self.model.shape_geo.scale.assign(wp.array(new_sizes, dtype=wp.vec3, device=self.model.device))
+        self.model.shape_scale.assign(wp.array(new_sizes, dtype=wp.vec3, device=self.model.device))
 
         # 5. Update transforms (position and orientation)
         new_transforms = []
@@ -1085,8 +1083,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertIsNotNone(solver)
 
         # Verify that the meshes retained their maxhullvert values
-        self.assertEqual(model.shape_geo_src[0].maxhullvert, 32)
-        self.assertEqual(model.shape_geo_src[1].maxhullvert, 128)
+        self.assertEqual(model.shape_source[0].maxhullvert, 32)
+        self.assertEqual(model.shape_source[1].maxhullvert, 128)
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):

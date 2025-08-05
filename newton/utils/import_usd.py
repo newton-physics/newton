@@ -38,7 +38,7 @@ def parse_usd(
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
-    invert_rotations: bool = False,
+    invert_rotations: bool = True,
     verbose: bool = wp.config.verbose,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
@@ -314,6 +314,8 @@ def parse_usd(
             return
         scale = parse_scale(prim)
         path_name = str(prim.GetPath())
+        if any(re.match(path, path_name) for path in ignore_paths):
+            return
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -1162,6 +1164,11 @@ def parse_usd(
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
 
+    # add free joints to floating bodies that's just been added by import_usd
+    new_bodies = path_body_map.values()
+    builder.add_free_joints_to_floating_bodies(new_bodies)
+
+    # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
     merged_body_data = {}
     path_body_relative_transform = {}

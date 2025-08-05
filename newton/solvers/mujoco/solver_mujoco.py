@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from itertools import product
 from typing import TYPE_CHECKING, Any
 
@@ -1244,7 +1245,7 @@ class MuJoCoSolver(SolverBase):
     def notify_model_changed(self, flags: int):
         if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
-        if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
+        if flags & newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES:
             self.update_joint_properties()
         if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
             self.update_geom_properties()
@@ -1687,10 +1688,21 @@ class MuJoCoSolver(SolverBase):
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
         shape_transform = model.shape_transform.numpy()
-        shape_type = model.shape_geo.type.numpy()
-        shape_size = model.shape_geo.scale.numpy()
+        shape_type = model.shape_type.numpy()
+        shape_size = model.shape_scale.numpy()
         shape_body = model.shape_body.numpy()
         shape_flags = model.shape_flags.numpy()
+
+        eq_constraint_type = model.equality_constraint_type.numpy()
+        eq_constraint_body1 = model.equality_constraint_body1.numpy()
+        eq_constraint_body2 = model.equality_constraint_body2.numpy()
+        eq_constraint_anchor = model.equality_constraint_anchor.numpy()
+        eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
+        eq_constraint_relpose = model.equality_constraint_relpose.numpy()
+        eq_constraint_joint1 = model.equality_constraint_joint1.numpy()
+        eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
+        eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
+        eq_constraint_enabled = model.equality_constraint_enabled.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1794,8 +1806,9 @@ class MuJoCoSolver(SolverBase):
         joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints]))
         joint_order = newton.utils.topological_sort(joints_simple, use_dfs=True)
         if any(joint_order != np.arange(len(joints_simple))):
-            wp.utils.warn(
-                "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton."
+            warnings.warn(
+                "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",
+                stacklevel=2,
             )
 
         # maps from Newton body index to the transform to be applied to its children
@@ -1827,7 +1840,7 @@ class MuJoCoSolver(SolverBase):
                 }
                 tf = wp.transform(*shape_transform[shape])
                 if stype == newton.GEO_MESH:
-                    mesh_src = model.shape_geo_src[shape]
+                    mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
                     # apply scaling
@@ -1870,8 +1883,8 @@ class MuJoCoSolver(SolverBase):
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
                 # use shape materials instead of defaults if available
-                if model.shape_materials.mu is not None:
-                    shape_mu = model.shape_materials.mu.numpy()
+                if model.shape_material_mu is not None:
+                    shape_mu = model.shape_material_mu.numpy()
                     if shape < len(shape_mu):
                         # set friction from Newton shape materials using model's friction parameters
                         mu = shape_mu[shape]
@@ -2179,6 +2192,34 @@ class MuJoCoSolver(SolverBase):
                 tendon_actuator_to_actuator[act_idx] = actuator_count
                 actuator_count += 1
 
+        for i, typ in enumerate(eq_constraint_type):
+            if typ == newton.EQ_CONNECT:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.data[0:3] = eq_constraint_anchor[i]
+
+            elif typ == newton.EQ_JOINT:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.joint_key[eq_constraint_joint1[i]]
+                eq.name2 = model.joint_key[eq_constraint_joint2[i]]
+                eq.data[0:5] = eq_constraint_polycoef[i]
+
+            elif typ == newton.EQ_WELD:
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.type = mujoco.mjtEq.mjEQ_WELD
+                eq.active = eq_constraint_enabled[i]
+                eq.name1 = model.body_key[eq_constraint_body1[i]]
+                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.data[0:3] = eq_constraint_anchor[i]
+                eq.data[3:6] = wp.transform_get_translation(eq_constraint_relpose[i])
+                eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
+                eq.data[10] = eq_constraint_torquescale[i]
+
         self.mj_model = spec.compile()
 
         if target_filename:
@@ -2210,9 +2251,10 @@ class MuJoCoSolver(SolverBase):
         if separate_envs_to_worlds and model.num_envs > 1:
             shapes_per_env = model.shape_count // model.num_envs
             if model.shape_count % model.num_envs != 0:
-                wp.utils.warn(
+                warnings.warn(
                     f"Total shape count {model.shape_count} is not divisible by number of environments {model.num_envs}. "
-                    "Shape mapping to MuJoCo geoms may be incorrect."
+                    "Shape mapping to MuJoCo geoms may be incorrect.",
+                    stacklevel=2,
                 )
 
             full_shape_mapping = {}
@@ -2301,13 +2343,9 @@ class MuJoCoSolver(SolverBase):
 
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
-            flags = (
-                newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
-                | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
-                | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
-            )
+            flags = newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES | newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES
 
-            if model.shape_materials.mu is not None:
+            if model.shape_material_mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
             self.notify_model_changed(flags)
 
@@ -2512,12 +2550,12 @@ class MuJoCoSolver(SolverBase):
             dim=(num_worlds, num_geoms),
             inputs=[
                 self.model.shape_collision_radius,
-                self.model.shape_materials.mu,
-                self.model.shape_materials.ke,
-                self.model.shape_materials.kd,
-                self.model.shape_geo.scale,
+                self.model.shape_material_mu,
+                self.model.shape_material_ke,
+                self.model.shape_material_kd,
+                self.model.shape_scale,
                 self.model.shape_transform,
-                self.model.shape_geo.type,
+                self.model.shape_type,
                 self.model.to_newton_shape_index,
                 self.model.shape_incoming_xform,
                 self.model.rigid_contact_torsional_friction,
