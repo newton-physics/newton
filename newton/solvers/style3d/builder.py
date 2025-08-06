@@ -79,8 +79,10 @@ def add_bend_constraints_kernel(
                     # Add off-diagonal symmetric entries
                     slot_ij = add_connection(edge[i], edge[j], neighbor_counts, neighbors)
                     slot_ji = add_connection(edge[j], edge[i], neighbor_counts, neighbors)
-                    nz_values[edge[i], slot_ij] += weight
-                    nz_values[edge[j], slot_ji] += weight
+                    if slot_ij >= 0:
+                        nz_values[edge[i], slot_ij] += weight
+                    if slot_ji >= 0:
+                        nz_values[edge[j], slot_ji] += weight
                 else:
                     # Diagonal contribution
                     diags[edge[i]] += weight
@@ -120,8 +122,10 @@ def add_stretch_constraints_kernel(
                     # Off-diagonal symmetric terms
                     slot_ij = add_connection(face[i], face[j], neighbor_counts, neighbors)
                     slot_ji = add_connection(face[j], face[i], neighbor_counts, neighbors)
-                    nz_values[face[i], slot_ij] += weight
-                    nz_values[face[j], slot_ji] += weight
+                    if slot_ij >= 0:
+                        nz_values[face[i], slot_ij] += weight
+                    if slot_ji >= 0:
+                        nz_values[face[j], slot_ji] += weight
                 else:
                     # Diagonal contribution
                     diags[face[i]] += weight
@@ -166,6 +170,9 @@ class PDMatrixBuilder:
         tri_aniso_ke: list[list[float]],
         tri_areas: list[float],
     ):
+        if len(tri_indices) == 0:
+            return
+
         # Convert inputs to Warp arrays
         tri_inds_wp = wp.array2d(tri_indices, dtype=int, device="cpu").reshape((-1, 3))
         tri_poses_wp = wp.array3d(tri_poses, dtype=float, device="cpu").reshape((-1, 2, 2))
@@ -194,6 +201,9 @@ class PDMatrixBuilder:
         edge_rest_area: list[float],
         edge_bending_cot: list[list[float]],
     ):
+        if len(edge_indices) == 0:
+            return
+
         num_edge = len(edge_indices)
         edge_inds = np.array(edge_indices).reshape(-1, 4)
         edge_area = np.array(edge_rest_area)
