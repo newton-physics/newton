@@ -272,7 +272,8 @@ class Style3DSolver(SolverBase):
             self.collision.frame_end(state_out.particle_q, state_out.particle_qd, dt)
 
     def rebuild_bvh(self, state: State):
-        self.collision.rebuild_bvh(state.particle_q)
+        if self.collision is not None:
+            self.collision.rebuild_bvh(state.particle_q)
 
     def precompute(self, builder: Style3DModelBuilder):
         with wp.ScopedTimer("Style3DSolver::precompute()"):
