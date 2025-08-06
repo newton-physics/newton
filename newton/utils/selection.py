@@ -196,7 +196,7 @@ class ArticulationView:
 
         for idx in range(model_tendon_count):
             arti_tendon_indices.append(int(idx))
-            arti_tendon_names.append(model.tendon_name[idx])
+            arti_tendon_names.append(get_name_from_key(model.tendon_key[idx]))
 
         # create joint inclusion set
         if include_joints is None and include_joint_types is None:
