@@ -596,9 +596,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_armature.assign(updated_armature)
 
         # Step 5: Notify MuJoCo of changes
-        solver.notify_model_changed(
-            newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
-        )
+        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
 
         # Step 6: Verify all changes were applied
 
