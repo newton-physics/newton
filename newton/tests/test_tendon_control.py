@@ -21,6 +21,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.utils.selection import ArticulationView
 
 
 class TestTendonControl(unittest.TestCase):
@@ -55,14 +56,6 @@ class TestTendonControl(unittest.TestCase):
             mjcf_path = os.path.join(tmpdir, "test_tendon.xml")
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
-
-            try:
-                can_test = True
-            except ImportError:
-                can_test = False
-
-            if not can_test:
-                self.skipTest("MuJoCo or MuJoCo-Warp not available")
 
             # Parse with Newton
             builder = newton.ModelBuilder()
@@ -138,6 +131,108 @@ class TestTendonControl(unittest.TestCase):
 
         # Check initial values are zero
         self.assertEqual(control.tendon_target.numpy()[0], 0.0)
+
+    def test_tendon_control_selection(self):
+        """Test that tendon can be controlled via Selection API"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <geom type="capsule" pos="-.2 0 0" size="0.1 0.1" axisangle="0 1 0 90"/>
+        <site name="site0" pos="-.2 .0 .1"/>
+        <body>
+            <geom type="capsule" pos="0.21 0 0" size="0.1 0.1" axisangle="0 1 0 90"/>
+            <joint type="hinge" axis="0 1 0" name="hinge0"/>
+            <site name="site1" pos=".2 .0 .1"/>
+            <body>
+                <geom type="capsule" pos="0.62 0 0" size="0.1 0.1" axisangle="0 1 0 90"/>
+                <joint type="hinge" pos="0.5 0 0" axis="0 1 0" name="hinge1"/>
+                <site name="site2" pos=".6 .0 .1"/>
+            </body>
+        </body>
+    </worldbody>
+
+     <tendon>
+        <spatial name="spatial0">
+            <site site="site0"/>
+            <site site="site1"/>
+        </spatial>
+        <spatial name="spatial1">
+            <site site="site1"/>
+            <site site="site2"/>
+        </spatial>
+    </tendon>
+
+    <actuator>
+        <position name="spatial0_act" tendon="spatial0" kp="300" />
+         <position name="spatial1_act" tendon="spatial1" kp="300" />
+    </actuator>
+</mujoco>
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test_tendon.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            # Parse with Newton
+            builder = newton.ModelBuilder()
+            newton.utils.parse_mjcf(
+                mjcf_path,
+                builder,
+                collapse_fixed_joints=True,
+                up_axis="Z",
+                enable_self_collisions=False,
+            )
+            model = builder.finalize()
+
+            # Verify model structure
+            self.assertEqual(model.site_count, 3)
+            self.assertEqual(model.tendon_count, 2)
+            self.assertEqual(model.tendon_actuator_count, 2)
+            self.assertEqual(model.joint_count, 2)
+
+            # Create states and control
+            state_0 = model.state()
+            state_1 = model.state()
+            control = model.control()
+
+            # Verify control has tendon arrays
+            self.assertIsNotNone(control.tendon_target)
+            self.assertIsNotNone(control.tendon_f)
+            self.assertEqual(len(control.tendon_target), 2)
+
+            # Set tendon target via selection
+            tendons = ArticulationView(model, "articulation_1")
+            self.assertEqual(tendons.get_attribute("tendon_target", control).numpy()[0][0], 0)
+            self.assertEqual(tendons.get_attribute("tendon_target", control).numpy()[0][1], 0)
+            tendons.set_attribute("tendon_target", control, [[-1.0, -1.0]])
+            self.assertEqual(tendons.get_attribute("tendon_target", control).numpy()[0][0], -1.0)
+            self.assertEqual(tendons.get_attribute("tendon_target", control).numpy()[0][1], -1.0)
+
+            tendons = ArticulationView(model, "articulation_1", exclude_tendons=[0])
+            tendons.set_attribute("tendon_target", control, [[-1.0]])
+
+            # Create solver - let it handle MuJoCo model creation internally
+            solver = newton.solvers.MuJoCoSolver(model)
+
+            # Record initial joint position
+            initial_joint0_pos = state_0.joint_q.numpy()[0]
+            initial_joint1_pos = state_0.joint_q.numpy()[1]
+
+            # Simulate
+            dt = 0.001
+            for _ in range(100):
+                solver.step(state_0, state_1, control, None, dt)
+                state_0, state_1 = state_1, state_0
+
+            # Verify joint moved due to tendon actuation
+            final_joint0_pos = state_0.joint_q.numpy()[0]
+            final_joint1_pos = state_0.joint_q.numpy()[1]
+            self.assertNotAlmostEqual(initial_joint0_pos, final_joint0_pos, places=3)
+            self.assertNotAlmostEqual(initial_joint1_pos, final_joint1_pos, places=3)
+            # Joint should have rotated (positive direction due to gravity)
+            self.assertGreater(final_joint0_pos, initial_joint0_pos)
+            # Joint should have rotated (negative direction due to tendon contraction pulling site2 towards site1)
+            self.assertLess(final_joint1_pos, initial_joint1_pos)
 
 
 if __name__ == "__main__":

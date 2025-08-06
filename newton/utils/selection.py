@@ -135,6 +135,8 @@ class ArticulationView:
         exclude_links: list[str | int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
+        include_tendons: list[str | int] | None = None,
+        exclude_tendons: list[str | int] | None = None,
         verbose: bool | None = None,
     ):
         self.model = model
@@ -159,6 +161,7 @@ class ArticulationView:
         model_joint_q_start = model.joint_q_start.numpy()
         model_joint_qd_start = model.joint_qd_start.numpy()
         model_shape_body = model.shape_body.numpy()
+        model_tendon_count = model.tendon_actuator_count
 
         # FIXME:
         # - this assumes homogeneous envs with one selected articulation per env
@@ -176,6 +179,8 @@ class ArticulationView:
         arti_joint_types = []
         arti_link_ids = []
         arti_link_names = []
+        arti_tendon_indices = []
+        arti_tendon_names = []
 
         def get_name_from_key(key):
             return key.split("/")[-1]
@@ -188,6 +193,10 @@ class ArticulationView:
             link_id = model_joint_child[joint_id]
             arti_link_ids.append(int(link_id))
             arti_link_names.append(get_name_from_key(model.body_key[link_id]))
+
+        for idx in range(model_tendon_count):
+            arti_tendon_indices.append(int(idx))
+            arti_tendon_names.append(model.tendon_name[idx])
 
         # create joint inclusion set
         if include_joints is None and include_joint_types is None:
@@ -259,15 +268,46 @@ class ArticulationView:
                 else:
                     raise TypeError(f"Link ids must be strings or integers, got {id} of type {type(id)}")
 
+        if include_tendons is None:
+            tendon_include_indices = set(range(model_tendon_count))
+        else:
+            tendon_include_indices = set()
+            if include_tendons is not None:
+                for id in include_tendons:
+                    if isinstance(id, str):
+                        for idx, name in enumerate(arti_tendon_names):
+                            if fnmatch(name, id):
+                                tendon_include_indices.add(idx)
+                    elif isinstance(id, int):
+                        if id >= 0 and id < model_tendon_count:
+                            tendon_include_indices.add(id)
+                    else:
+                        raise TypeError(f"Tendon ids must be strings or integers, got {id} of type {type(id)}")
+
+        tendon_exclude_indices = set()
+        if exclude_tendons is not None:
+            for id in exclude_tendons:
+                if isinstance(id, str):
+                    for idx, name in enumerate(arti_tendon_names):
+                        if fnmatch(name, id):
+                            tendon_exclude_indices.add(idx)
+                elif isinstance(id, int):
+                    if id >= 0 and id < model_tendon_count:
+                        tendon_exclude_indices.add(id)
+                else:
+                    raise TypeError(f"Tendon ids must be strings or integers, got {id} of type {type(id)}")
+
         # compute selected indices
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
+        selected_tendon_indices = sorted(tendon_include_indices - tendon_exclude_indices)
 
         selected_joint_ids = []
         selected_joint_dof_ids = []
         selected_joint_coord_ids = []
         selected_link_ids = []
         selected_shape_ids = []
+        selected_tendon_ids = []
 
         self.joint_names = []
         self.joint_dof_names = []
@@ -277,6 +317,7 @@ class ArticulationView:
         self.body_names = []
         self.shape_names = []
         self.body_shapes = []
+        self.tendon_names = []
 
         # populate info for selected joints and dofs
         for idx in selected_joint_indices:
@@ -337,6 +378,9 @@ class ArticulationView:
                 self.shape_names.append(get_name_from_key(model.shape_key[shape_id]))
             self.body_shapes.append(shape_index_list)
 
+        for idx in selected_tendon_indices:
+            selected_tendon_ids.append(arti_tendon_indices[idx])
+
         # selected counts
         self.count = articulation_count
         self.joint_count = len(selected_joint_ids)
@@ -373,6 +417,7 @@ class ArticulationView:
         self.joint_coords_contiguous = is_contiguous_slice(selected_joint_coord_ids)
         self.links_contiguous = is_contiguous_slice(selected_link_ids)
         self.shapes_contiguous = is_contiguous_slice(selected_shape_ids)
+        self.tendons_contiguous = is_contiguous_slice(selected_tendon_ids)
 
         # contiguous slices or indices by attribute frequency
         #
@@ -408,6 +453,11 @@ class ArticulationView:
             )
         else:
             self._frequency_indices["shape"] = wp.array(selected_shape_ids, dtype=int, device=self.device)
+
+        if self.tendons_contiguous and len(selected_tendon_ids) > 0:
+            self._frequency_slices["tendon"] = slice(selected_tendon_ids[0], selected_tendon_ids[-1] + 1)
+        else:
+            self._frequency_indices["tendon"] = wp.array(selected_tendon_ids, dtype=int, device=self.device)
 
         self.articulation_indices = wp.array(articulation_ids, dtype=int, device=self.device)
 

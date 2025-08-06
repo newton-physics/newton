@@ -457,6 +457,17 @@ class Model:
         self.attribute_frequency["shape_scale"] = "shape"
         self.attribute_frequency["shape_filter"] = "shape"
 
+        # attributes per tendon
+        self.attribute_frequency["tendon_damping"] = "tendon"
+        self.attribute_frequency["tendon_stiffness"] = "tendon"
+        self.attribute_frequency["tendon_rest_length"] = "tendon"
+        self.attribute_frequency["tendon_type"] = "tendon"
+        self.attribute_frequency["tendon_target"] = "tendon"
+        self.attribute_frequency["tendon_f"] = "tendon"
+        self.attribute_frequency["tendon_actuator_kp"] = "tendon"
+        self.attribute_frequency["tendon_actuator_kv"] = "tendon"
+        self.attribute_frequency["tendon_actuator_force_range"] = "tendon"
+
     def state(self, requires_grad: bool | None = None) -> State:
         """Returns a state object for the model
 
