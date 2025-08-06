@@ -38,7 +38,7 @@ def parse_usd(
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
-    invert_rotations: bool = False,
+    invert_rotations: bool = True,
     verbose: bool = wp.config.verbose,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
@@ -314,6 +314,8 @@ def parse_usd(
             return
         scale = parse_scale(prim)
         path_name = str(prim.GetPath())
+        if any(re.match(path, path_name) for path in ignore_paths):
+            return
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":

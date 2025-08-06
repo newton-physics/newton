@@ -1277,7 +1277,7 @@ class MuJoCoSolver(SolverBase):
     def notify_model_changed(self, flags: int):
         if flags & newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
-        if flags & (newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES):
+        if flags & newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES:
             self.update_joint_properties()
         if flags & newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES:
             self.update_geom_properties()
@@ -2328,11 +2328,7 @@ class MuJoCoSolver(SolverBase):
 
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
-            flags = (
-                newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
-                | newton.sim.NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
-                | newton.sim.NOTIFY_FLAG_DOF_PROPERTIES
-            )
+            flags = newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES | newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES
 
             if model.shape_material_mu is not None:
                 flags |= newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES
