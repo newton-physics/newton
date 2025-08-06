@@ -926,7 +926,6 @@ def parse_mjcf(
         # Add the site to the builder (worldbody has index -1)
         builder.add_site(-1, site_xform, key=site_name)
 
-    end_shape_count = len(builder.shape_geo_type)
     # -----------------
     # add equality constraints
 
