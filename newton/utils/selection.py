@@ -380,6 +380,7 @@ class ArticulationView:
 
         for idx in selected_tendon_indices:
             selected_tendon_ids.append(arti_tendon_indices[idx])
+            self.tendon_names.append(arti_tendon_names[idx])
 
         # selected counts
         self.count = articulation_count
