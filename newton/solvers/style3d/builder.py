@@ -247,7 +247,7 @@ class PDMatrixBuilder:
         """
         diag = wp.array(self.diags, dtype=float, device=device)
         num_nz = wp.array(self.counts, dtype=int, device=device)
-        nz_ell = wp.array2d(shape=(32, self.num_verts), dtype=NonZeroEntry, device=device)
+        nz_ell = wp.array2d(shape=(self.max_neighbors, self.num_verts), dtype=NonZeroEntry, device=device)
 
         nz_values = wp.array2d(self.values, dtype=float, device=device)
         neighbors = wp.array2d(self.neighbors, dtype=int, device=device)
