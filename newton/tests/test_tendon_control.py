@@ -197,7 +197,6 @@ class TestTendonControl(unittest.TestCase):
 
             # Verify control has tendon arrays
             self.assertIsNotNone(control.tendon_target)
-            self.assertIsNotNone(control.tendon_f)
             self.assertEqual(len(control.tendon_target), 2)
 
             # Set tendon target via selection

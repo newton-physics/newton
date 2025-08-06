@@ -463,7 +463,6 @@ class Model:
         self.attribute_frequency["tendon_rest_length"] = "tendon"
         self.attribute_frequency["tendon_type"] = "tendon"
         self.attribute_frequency["tendon_target"] = "tendon"
-        self.attribute_frequency["tendon_f"] = "tendon"
         self.attribute_frequency["tendon_actuator_kp"] = "tendon"
         self.attribute_frequency["tendon_actuator_kv"] = "tendon"
         self.attribute_frequency["tendon_actuator_force_range"] = "tendon"
