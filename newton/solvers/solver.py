@@ -292,3 +292,11 @@ class SolverBase:
 
         """
         pass
+
+    def update_contacts(self, contacts: Contacts) -> None:
+        """Update a Contacts object with forces from the solver state. Where the solver state contains
+        other contact data, convert that data to the Contacts format.
+        Args:
+            contacts (Contacts): The object to update from the solver state.
+        """
+        raise NotImplementedError()
