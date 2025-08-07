@@ -563,6 +563,7 @@ def parse_usd(
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
                 joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
