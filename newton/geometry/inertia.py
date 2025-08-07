@@ -60,7 +60,7 @@ def compute_sphere_inertia(density: float, r: float) -> tuple[float, wp.vec3, wp
 
 
 def compute_capsule_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid capsule extending along the y-axis
+    """Helper to compute mass and inertia of a solid capsule extending along the z-axis
 
     Args:
         density: The capsule density
@@ -82,18 +82,19 @@ def compute_capsule_inertia(density: float, r: float, h: float) -> tuple[float, 
     Ia = mc * (0.25 * r * r + (1.0 / 12.0) * h * h) + ms * (0.4 * r * r + 0.375 * r * h + 0.25 * h * h)
     Ib = (mc * 0.5 + ms * 0.4) * r * r
 
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ib, 0.0], [0.0, 0.0, Ia]])
+    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
 
     return (m, wp.vec3(), I)
 
 
 def compute_cylinder_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid cylinder extending along the y-axis
+    """Helper to compute mass and inertia of a solid cylinder extending along the z-axis
 
     Args:
         density: The cylinder density
         r: The cylinder radius
-        h: The cylinder height (extent along the y-axis)
+        h: The cylinder height (extent along the z-axis)
 
     Returns:
 
@@ -105,18 +106,19 @@ def compute_cylinder_inertia(density: float, r: float, h: float) -> tuple[float,
     Ia = 1 / 12 * m * (3 * r * r + h * h)
     Ib = 1 / 2 * m * r * r
 
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ib, 0.0], [0.0, 0.0, Ia]])
+    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
 
     return (m, wp.vec3(), I)
 
 
 def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid cone extending along the y-axis
+    """Helper to compute mass and inertia of a solid cone extending along the z-axis
 
     Args:
         density: The cone density
         r: The cone radius
-        h: The cone height (extent along the y-axis)
+        h: The cone height (extent along the z-axis)
 
     Returns:
 
@@ -128,7 +130,8 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
     Ia = 1 / 20 * m * (3 * r * r + 2 * h * h)
     Ib = 3 / 10 * m * r * r
 
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ib, 0.0], [0.0, 0.0, Ia]])
+    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
 
     return (m, wp.vec3(), I)
 
