@@ -498,6 +498,51 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
+def convert_mjw_contact_to_warp_kernel(
+    # inputs
+    contact_geom_mapping: wp.array2d(dtype=wp.int32),
+    pyramidal_cone: bool,
+    mj_ncon: wp.array(dtype=wp.int32),
+    mj_contact_frame: wp.array(dtype=wp.mat33f),
+    mj_contact_dim: wp.array(dtype=int),
+    mj_contact_geom: wp.array(dtype=wp.vec2i),
+    mj_contact_efc_address: wp.array2d(dtype=int),
+    mj_contact_worldid: wp.array(dtype=wp.int32),
+    mj_efc_force: wp.array2d(dtype=float),
+    # outputs
+    contact_pair: wp.array(dtype=wp.vec2i),
+    contact_normal: wp.array(dtype=wp.vec3f),
+    contact_force: wp.array(dtype=float),
+):
+    n_contacts = mj_ncon[0]
+    contact_idx = wp.tid()
+
+    if contact_idx >= n_contacts:
+        return
+
+    worldid = mj_contact_worldid[contact_idx]
+    geoms_mjw = mj_contact_geom[contact_idx]
+
+    normalforce = wp.float(-1.0)
+
+    efc_address0 = mj_contact_efc_address[contact_idx, 0]
+    if efc_address0 >= 0:
+        normalforce = mj_efc_force[worldid, efc_address0]
+
+        if pyramidal_cone:
+            dim = mj_contact_dim[contact_idx]
+            for i in range(1, 2 * (dim - 1)):
+                normalforce += mj_efc_force[worldid, mj_contact_efc_address[contact_idx, i]]
+
+    pair = wp.vec2i()
+    for i in range(2):
+        pair[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
+    contact_pair[contact_idx] = pair
+    contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
+    contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
+
+
+@wp.kernel
 def apply_mjc_control_kernel(
     joint_target: wp.array(dtype=wp.float32),
     axis_mode: wp.array(dtype=wp.int32),
@@ -1148,6 +1193,7 @@ class MuJoCoSolver(SolverBase):
             )
         self.update_data_interval = update_data_interval
         self._step = 0
+        self.contact_geom_mapping = self.create_newton_contact_geom_mapping(model)
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
@@ -1358,7 +1404,12 @@ class MuJoCoSolver(SolverBase):
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
     @staticmethod
-    def update_newton_state(model: Model, state: State, mj_data: MjWarpData | MjData, eval_fk: bool = True):
+    def update_newton_state(
+        model: Model,
+        state: State,
+        mj_data: MjWarpData | MjData,
+        eval_fk: bool = True,
+    ):
         is_mjwarp = MuJoCoSolver._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have a MjWarp Data object
@@ -1393,6 +1444,7 @@ class MuJoCoSolver(SolverBase):
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
         )
+
         if eval_fk:
             # custom forward kinematics for handling multi-dof joints
             wp.launch(
@@ -1469,6 +1521,67 @@ class MuJoCoSolver(SolverBase):
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
         return shape_color
+
+    def create_newton_contact_geom_mapping(self, model: Model):
+        indices = [idx for w, idx in self.shape_map.values() if idx is not None]
+        if not indices:
+            return wp.array([], dtype=wp.int32, device=model.device)
+        max_mj_shape_id = max(indices)
+        geom_mapping = np.full((model.num_envs, max_mj_shape_id + 1), -1, dtype=np.int32)
+
+        for shape, (worldid, mj_geom) in self.shape_map.items():
+            if mj_geom is None:
+                continue
+            if worldid == -1:
+                worldid = slice(None)  # noqa
+            geom_mapping[worldid, mj_geom] = shape
+
+        return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
+
+    @override
+    def update_contacts(self, contacts: Contacts) -> None:
+        # TODO: ensure that class invariants are preserved
+        # TODO: fill actual contact arrays instead of creating new ones
+        mj_data = self.mjw_data
+        nconmax = mj_data.nconmax
+        mj_contact = mj_data.contact
+
+        contacts.rigid_contact_max = nconmax
+        contacts.rigid_contact_count = mj_data.ncon
+        contacts.position = mj_contact.pos
+        contacts.separation = mj_contact.dist
+
+        if not hasattr(contacts, "pair"):
+            contacts.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
+
+        if not hasattr(contacts, "normal"):
+            contacts.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
+
+        if not hasattr(contacts, "force"):
+            contacts.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
+
+        wp.launch(
+            convert_mjw_contact_to_warp_kernel,
+            dim=mj_data.nconmax,
+            inputs=[
+                self.contact_geom_mapping,
+                self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                mj_data.ncon,
+                mj_contact.frame,
+                mj_contact.dim,
+                mj_contact.geom,
+                mj_contact.efc_address,
+                mj_contact.worldid,
+                mj_data.efc.force,
+            ],
+            outputs=[
+                contacts.pair,
+                contacts.normal,
+                contacts.force,
+            ],
+            device=self.model.device,
+        )
+        contacts.n_contacts = mj_data.ncon
 
     def convert_to_mjc(
         self,
@@ -1699,6 +1812,7 @@ class MuJoCoSolver(SolverBase):
         }
 
         mj_bodies = [spec.worldbody]
+        mj_geoms = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
@@ -1853,7 +1967,7 @@ class MuJoCoSolver(SolverBase):
                             model.rigid_contact_rolling_friction * mu,
                         ]
 
-                body.add_geom(**geom_params)
+                mj_geoms.append((shape, body.add_geom(**geom_params)))
                 # store the geom name instead of assuming index
                 shape_mapping[shape] = name
 
@@ -2083,6 +2197,21 @@ class MuJoCoSolver(SolverBase):
                 eq.data[10] = eq_constraint_torquescale[i]
 
         self.mj_model = spec.compile()
+        mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
+
+        self.shape_map = {}  # Maps newton shape ids to mujoco shapes
+        for body, body_shapes in model.body_shapes.items():
+            if body < 0:
+                for body_shape in body_shapes:
+                    self.shape_map[body_shape] = (-1, mj_geoms.get(body_shape, None))
+                continue
+
+            bodies_per_env = self.model.body_count // self.model.num_envs
+            worldid = body // bodies_per_env
+            base_shapes = model.body_shapes[body % bodies_per_env]
+            assert len(base_shapes) == len(body_shapes)
+            for base_shape, body_shape in zip(base_shapes, body_shapes):
+                self.shape_map[body_shape] = (worldid, mj_geoms.get(base_shape, None))
 
         if target_filename:
             with open(target_filename, "w") as f:
