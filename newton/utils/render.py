@@ -409,7 +409,7 @@ def CreateSimRenderer(renderer):
                 if geo_hash in geo_shape:
                     shape = geo_shape[geo_hash]
                 else:
-                    if geo_type == newton.GEO_PLANE:
+                    if geo_type == newton.GeoType.PLANE:
                         # plane mesh
                         width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
                         length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
@@ -424,30 +424,30 @@ def CreateSimRenderer(renderer):
                                 name, p, q, width, length, color, parent_body=body, is_template=True
                             )
 
-                    elif geo_type == newton.GEO_SPHERE:
+                    elif geo_type == newton.GeoType.SPHERE:
                         shape = self.render_sphere(
                             name, p, q, geo_scale[0], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CAPSULE:
+                    elif geo_type == newton.GeoType.CAPSULE:
                         shape = self.render_capsule(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CYLINDER:
+                    elif geo_type == newton.GeoType.CYLINDER:
                         shape = self.render_cylinder(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CONE:
+                    elif geo_type == newton.GeoType.CONE:
                         shape = self.render_cone(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_BOX:
+                    elif geo_type == newton.GeoType.BOX:
                         shape = self.render_box(name, p, q, geo_scale, parent_body=body, is_template=True, color=color)
 
-                    elif geo_type == newton.GEO_MESH:
+                    elif geo_type == newton.GeoType.MESH:
                         if not geo_is_solid:
                             faces, vertices = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
                         else:
@@ -465,7 +465,7 @@ def CreateSimRenderer(renderer):
                             is_template=True,
                         )
 
-                    elif geo_type == newton.GEO_SDF:
+                    elif geo_type == newton.GeoType.SDF:
                         continue
 
                     geo_shape[geo_hash] = shape
@@ -473,9 +473,9 @@ def CreateSimRenderer(renderer):
                 if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                     # TODO support dynamic visibility
                     q_shape = X_bs.q
-                    if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
+                    if geo_type in (newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE):
                         q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
-                    if geo_type == newton.GEO_MESH:
+                    if geo_type == newton.GeoType.MESH:
                         # ensure we use the correct scale for the mesh instance
                         scale = np.asarray(geo_scale, dtype=np.float32)
                     self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)

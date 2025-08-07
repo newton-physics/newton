@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 from collections.abc import Sequence
 
 import numpy as np
@@ -20,16 +21,20 @@ import warp as wp
 
 from newton.core.types import Devicelike, Vec3, nparray, override
 
-# Shape geometry types
-GEO_SPHERE = wp.constant(0)
-GEO_BOX = wp.constant(1)
-GEO_CAPSULE = wp.constant(2)
-GEO_CYLINDER = wp.constant(3)
-GEO_CONE = wp.constant(4)
-GEO_MESH = wp.constant(5)
-GEO_SDF = wp.constant(6)
-GEO_PLANE = wp.constant(7)
-GEO_NONE = wp.constant(8)
+
+class GeoType(enum.IntEnum):
+    PLANE = 0
+    HFIELD = 1
+    SPHERE = 2
+    CAPSULE = 3
+    ELLIPSOID = 4
+    CYLINDER = 5
+    BOX = 6
+    MESH = 7
+    SDF = 8
+    CONE = 9
+    NONE = 10
+
 
 # Default maximum vertices for convex hull approximation
 MESH_MAXHULLVERT = 64

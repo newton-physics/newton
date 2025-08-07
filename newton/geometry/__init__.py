@@ -26,17 +26,9 @@ from .flags import (
 from .gjk import build_ccd_generic
 from .inertia import compute_shape_inertia, transform_inertia
 from .types import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     MESH_MAXHULLVERT,
     SDF,
+    GeoType,
     Mesh,
 )
 from .utils import compute_shape_radius
@@ -44,52 +36,43 @@ from .utils import compute_shape_radius
 
 @wp.func
 def create_sphere(radius: float):
-    return (GEO_SPHERE, wp.vec3(radius, 0.0, 0.0))
+    return (GeoType.SPHERE, wp.vec3(radius, 0.0, 0.0))
 
 
 @wp.func
 def create_box(width: float, height: float, depth: float):
-    return (GEO_BOX, wp.vec3(width, height, depth))
+    return (GeoType.BOX, wp.vec3(width, height, depth))
 
 
 @wp.func
 def create_capsule(radius: float, height: float):
-    return (GEO_CAPSULE, wp.vec3(radius, height, 0.0))
+    return (GeoType.CAPSULE, wp.vec3(radius, height, 0.0))
 
 
 @wp.func
 def create_cylinder(radius: float, height: float):
-    return (GEO_CYLINDER, wp.vec3(radius, height, 0.0))
+    return (GeoType.CYLINDER, wp.vec3(radius, height, 0.0))
 
 
 @wp.func
 def create_cone(radius: float, height: float):
-    return (GEO_CONE, wp.vec3(radius, height, 0.0))
+    return (GeoType.CONE, wp.vec3(radius, height, 0.0))
 
 
 @wp.func
 def create_plane(width: float = 0.0, height: float = 0.0):
     """Create a plane. If width and height are 0.0, creates an infinite
     plane."""
-    return (GEO_PLANE, wp.vec3(width, height, 0.0))
+    return (GeoType.PLANE, wp.vec3(width, height, 0.0))
 
 
 @wp.func
 def create_none():
     """Create an empty/null geometry."""
-    return (GEO_NONE, wp.vec3(0.0, 0.0, 0.0))
+    return (GeoType.NONE, wp.vec3(0.0, 0.0, 0.0))
 
 
 __all__ = [
-    "GEO_BOX",
-    "GEO_CAPSULE",
-    "GEO_CONE",
-    "GEO_CYLINDER",
-    "GEO_MESH",
-    "GEO_NONE",
-    "GEO_PLANE",
-    "GEO_SDF",
-    "GEO_SPHERE",
     "MESH_MAXHULLVERT",
     "PARTICLE_FLAG_ACTIVE",
     "SDF",
@@ -99,6 +82,7 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "GeoType",
     "Mesh",
     "build_ccd_generic",
     "compute_shape_inertia",
