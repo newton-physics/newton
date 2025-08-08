@@ -23,6 +23,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
+from newton.solvers.style3d import CollisionHandler
 
 
 class Example:
@@ -30,14 +31,18 @@ class Example:
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
-        self.num_substeps = 2
-        self.iterations = 20
+        self.num_substeps = 10
+        self.iterations = 4
         self.dt = self.frame_dt / self.num_substeps
         self.num_frames = num_frames
         self.sim_time = 0.0
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
         builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
+        # the BVH used by Style3DSolver will be rebuilt every self.bvh_rebuild_frames
+        # When the simulated object deforms significantly, simply refitting the BVH can lead to deterioration of the BVH's
+        # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
+        self.bvh_rebuild_frames = 10
 
         use_cloth_mesh = True
         if use_cloth_mesh:
@@ -120,13 +125,14 @@ class Example:
         # set up contact query and contact detection distances
         self.model.soft_contact_radius = 0.2e-2
         self.model.soft_contact_margin = 0.35e-2
-        self.model.soft_contact_ke = 1.0e1
+        self.model.soft_contact_ke = 1.0e2
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
 
         self.solver = newton.solvers.Style3DSolver(
-            self.model,
-            self.iterations,
+            model=self.model,
+            iterations=self.iterations,
+            collision_handler=CollisionHandler(self.model),
         )
         self.solver.precompute(
             builder,
@@ -172,8 +178,16 @@ class Example:
             self.step()
             self.render()
 
-            if self.renderer is None:
-                print(f"[{frame_idx:4d}/{self.num_frames}]")
+            if (
+                frame_idx != 0
+                and not frame_idx % self.bvh_rebuild_frames
+                and self.use_cuda_graph
+                and self.solver.collision is not None
+            ):
+                self.solver.rebuild_bvh(self.state0)
+                with wp.ScopedCapture() as capture:
+                    self.integrate_frame_substeps()
+                self.cuda_graph = capture.graph
 
     def render(self):
         if self.renderer is not None:
