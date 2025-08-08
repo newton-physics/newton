@@ -214,7 +214,6 @@ class ContactSensor:
         shape_contact_pairs: set[tuple[int, int]] | None,
     ):
         # MatchAny, then bodies, then shapes
-        # TODO: in addition to kind, return index
         def expand_bodies(bodies, shapes):
             has_matchany = MatchAny in bodies or MatchAny in shapes
             body_idx = [b for b in bodies if b is not MatchAny]
