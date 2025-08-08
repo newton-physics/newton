@@ -1795,20 +1795,20 @@ class MuJoCoSolver(SolverBase):
         }
 
         geom_type_mapping = {
-            newton.GEO_SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
-            newton.GEO_PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
-            newton.GEO_CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
-            newton.GEO_CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
-            newton.GEO_BOX: mujoco.mjtGeom.mjGEOM_BOX,
-            newton.GEO_MESH: mujoco.mjtGeom.mjGEOM_MESH,
+            newton.GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
+            newton.GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
+            newton.GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
+            newton.GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
+            newton.GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
+            newton.GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
         }
         geom_type_name = {
-            newton.GEO_SPHERE: "sphere",
-            newton.GEO_PLANE: "plane",
-            newton.GEO_CAPSULE: "capsule",
-            newton.GEO_CYLINDER: "cylinder",
-            newton.GEO_BOX: "box",
-            newton.GEO_MESH: "mesh",
+            newton.GeoType.SPHERE: "sphere",
+            newton.GeoType.PLANE: "plane",
+            newton.GeoType.CAPSULE: "capsule",
+            newton.GeoType.CYLINDER: "cylinder",
+            newton.GeoType.BOX: "box",
+            newton.GeoType.MESH: "mesh",
         }
 
         mj_bodies = [spec.worldbody]
@@ -1905,14 +1905,14 @@ class MuJoCoSolver(SolverBase):
                     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
-                if stype == newton.GEO_PLANE and warp_body_id != -1:
+                if stype == newton.GeoType.PLANE and warp_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
                 geom_params = {
                     "type": geom_type_mapping[stype],
                     "name": name,
                 }
                 tf = wp.transform(*shape_transform[shape])
-                if stype == newton.GEO_MESH:
+                if stype == newton.GeoType.MESH:
                     mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     mesh_maxhullvert = getattr(mesh_src, "maxhullvert", maxhullvert)
@@ -1938,7 +1938,7 @@ class MuJoCoSolver(SolverBase):
                     size[size == 0.0] = nonzero
                     geom_params["size"] = size
                 else:
-                    assert stype == newton.GEO_PLANE, "Only plane shapes are allowed to have a size of zero"
+                    assert stype == newton.GeoType.PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
 
