@@ -30,6 +30,7 @@ wp.config.enable_backward = False
 
 import newton
 import newton.utils
+import newton.viewer
 
 
 class Example:
@@ -89,17 +90,7 @@ class Example:
 
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.renderer = None
-
-        if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
-                path=stage_path,
-                model=self.model,
-                scaling=1.0,
-                screen_width=1280,
-                screen_height=720,
-                camera_pos=(0, 1, 4),
-            )
+        self.viewer = newton.viewer.ViewerGL(self.model)
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
@@ -121,13 +112,13 @@ class Example:
             self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            if self.renderer and hasattr(self.renderer, "apply_picking_force"):
-                self.renderer.apply_picking_force(self.state_0)
+            if self.viewer and hasattr(self.viewer, "apply_picking_force"):
+                self.viewer.apply_picking_force(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", active=True):
+        with wp.ScopedTimer("step", active=True, synchronize=True):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
@@ -135,13 +126,13 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
         with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_model(self.state_0)
+            self.viewer.end_frame()
 
 
 if __name__ == "__main__":
@@ -156,12 +147,12 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=10, help="Total number of simulated environments.")
     parser.add_argument(
         "--show-mujoco-viewer",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="Toggle MuJoCo viewer next to Newton renderer when MuJoCoSolver is active.",
+        help="Toggle MuJoCo viewer next to Newton viewer when MuJoCoSolver is active.",
     )
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
@@ -180,7 +171,7 @@ if __name__ == "__main__":
             m, d = example.solver.mjw_model, example.solver.mjw_data
             viewer = mujoco.viewer.launch_passive(mjm, mjd)
 
-        for _ in range(args.num_frames):
+        while example.viewer.is_running():
             example.step()
             example.render()
 
@@ -189,5 +180,4 @@ if __name__ == "__main__":
                     mujoco_warp.get_data_into(mjd, mjm, d)
                 viewer.sync()
 
-        if example.renderer:
-            example.renderer.save()
+        example.viewer.close()

@@ -348,7 +348,13 @@ def parse_mjcf(
                     for m_geom in m.geometry.values():
                         m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
+                        m_mesh = Mesh(
+                            m_vertices,
+                            m_faces,
+                            m.vertex_normals,
+                            color=np.array(m.visual.main_color) / 255.0,
+                            maxhullvert=maxhullvert,
+                        )
                         s = builder.add_shape_mesh(
                             xform=tf,
                             mesh=m_mesh,
@@ -359,7 +365,13 @@ def parse_mjcf(
                     # a single mesh
                     m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
+                    m_mesh = Mesh(
+                        m_vertices,
+                        m_faces,
+                        m.vertex_normals,
+                        color=np.array(m.visual.main_color) / 255.0,
+                        maxhullvert=maxhullvert,
+                    )
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
