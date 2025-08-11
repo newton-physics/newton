@@ -32,6 +32,1061 @@ class JacobianMode(_Enum):
 # Importing as ``_Enum`` keeps it private and skips the std-lib warning.
 
 
+class LBFGSSolver:
+    """
+    L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.
+
+    This solver uses L-BFGS with a parallel line search that seeks to satisfy the
+    strong Wolfe conditions for robust step selection. It supports the same three
+    Jacobian back-ends as the LM solver:
+
+    * **AUTODIFF**   — Warp's reverse-mode autodiff for every objective
+    * **ANALYTIC**   — objective-specific analytic Jacobians only
+    * **MIXED**      — analytic where available, autodiff fallback elsewhere
+
+    Parameters
+    ----------
+    model : newton.Model
+        Singleton articulation shared by _all_ problems.
+    joint_q : wp.array2d[float32] shape (n_problems, model.joint_coord_count)
+        Initial joint coordinates, one row per problem.
+        **Modified in place.**
+    objectives : Sequence[IKObjective]
+        Ordered list of objectives shared by _all_ problems.
+    jacobian_mode : JacobianMode, default JacobianMode.AUTODIFF
+        Backend used in `compute_jacobian`.
+    history_len : int, default 10
+        L-BFGS memory length (number of {s,y} pairs to remember).
+    h0_scale : float, default 1.0
+        Initial Hessian approximation scale factor.
+    line_search_alphas : list[float], default [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
+        Parallel step sizes to try in line search.
+    wolfe_c1 : float, default 1e-4
+        Wolfe condition parameter for sufficient decrease (Armijo condition).
+    wolfe_c2 : float, default 0.9
+        Wolfe condition parameter for curvature condition (strong Wolfe).
+
+    Batch structure
+    ---------------
+    Same as the LM solver - handles a batch of independent IK problems that all
+    reference the same articulation and objectives.
+    """
+
+    TILE_N_DOFS = None
+    TILE_N_RESIDUALS = None
+    TILE_HISTORY_LEN = None
+    TILE_N_LINE_STEPS = None
+    _cache: ClassVar[dict[tuple[int, int, int, int, str], type]] = {}
+
+    def __new__(cls, model, joint_q, objectives, *a, **kw):
+        n_dofs = model.joint_dof_count
+        n_residuals = sum(o.residual_dim() for o in objectives)
+        history_len = kw.get("history_len", 10)
+        n_line_search = len(kw.get("line_search_alphas", [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]))
+        arch = model.device.arch
+        key = (n_dofs, n_residuals, history_len, n_line_search, arch)
+
+        spec_cls = cls._cache.get(key)
+        if spec_cls is None:
+            spec_cls = cls._build_specialised(key)
+            cls._cache[key] = spec_cls
+
+        return super().__new__(spec_cls)
+
+    def __init__(
+        self,
+        model,
+        joint_q,
+        objectives,
+        jacobian_mode=JacobianMode.AUTODIFF,
+        history_len=10,
+        h0_scale=1.0,
+        line_search_alphas=None,
+        wolfe_c1=1e-4,
+        wolfe_c2=0.9,
+    ):
+        if line_search_alphas is None:
+            line_search_alphas = [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
+
+        self.model = model
+        self.device = model.device
+        self.n_problems, self.n_coords = joint_q.shape
+        self.n_dofs = model.joint_dof_count
+        self.n_residuals = sum(o.residual_dim() for o in objectives)
+        self.history_len = history_len
+        self.n_line_search = len(line_search_alphas)
+        self.h0_scale = h0_scale
+        self.wolfe_c1 = wolfe_c1
+        self.wolfe_c2 = wolfe_c2
+
+        assert self.n_coords == model.joint_coord_count
+
+        self.objectives = objectives
+        self.jacobian_mode = jacobian_mode
+
+        if self.TILE_N_DOFS is not None:
+            assert self.n_dofs == self.TILE_N_DOFS
+        if self.TILE_N_RESIDUALS is not None:
+            assert self.n_residuals == self.TILE_N_RESIDUALS
+        if self.TILE_HISTORY_LEN is not None:
+            assert self.history_len == self.TILE_HISTORY_LEN
+        if self.TILE_N_LINE_STEPS is not None:
+            assert self.n_line_search == self.TILE_N_LINE_STEPS
+
+        grad = jacobian_mode in (JacobianMode.AUTODIFF, JacobianMode.MIXED)
+
+        # Core arrays
+        self.joint_q = joint_q
+        self.qd_zero = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.body_q = wp.zeros(
+            (self.n_problems, model.body_count), dtype=wp.transform, requires_grad=grad, device=self.device
+        )
+        if grad:
+            self.body_qd = wp.zeros((self.n_problems, model.body_count), dtype=wp.spatial_vector, device=self.device)
+            self.joint_q_proposed = wp.zeros_like(self.joint_q, requires_grad=grad, device=self.device)
+
+        self.residuals = wp.zeros(
+            (self.n_problems, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=self.device
+        )
+        self.jacobian = wp.zeros((self.n_problems, self.n_residuals, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.dq_dof = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, requires_grad=grad, device=self.device)
+
+        self.gradient = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.gradient_prev = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
+        self.joint_q_prev = wp.zeros_like(self.joint_q, device=self.device)
+        self.search_direction = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.float32, device=self.device)
+
+        # History arrays
+        self.s_history = wp.zeros(
+            (self.n_problems, self.history_len, self.n_dofs), dtype=wp.float32, device=self.device
+        )
+        self.y_history = wp.zeros(
+            (self.n_problems, self.history_len, self.n_dofs), dtype=wp.float32, device=self.device
+        )
+        self.rho_history = wp.zeros((self.n_problems, self.history_len), dtype=wp.float32, device=self.device)
+        self.alpha_history = wp.zeros((self.n_problems, self.history_len), dtype=wp.float32, device=self.device)
+        self.history_count = wp.zeros(self.n_problems, dtype=wp.int32, device=self.device)
+        self.history_start = wp.zeros(self.n_problems, dtype=wp.int32, device=self.device)
+
+        # Line search arrays
+        self.line_search_alphas = wp.array(line_search_alphas, dtype=wp.float32, device=self.device)
+        self.candidate_q = wp.zeros(
+            (self.n_problems, self.n_line_search, self.n_coords), dtype=wp.float32, device=self.device
+        )
+        self.candidate_residuals = wp.zeros(
+            (self.n_problems, self.n_line_search, self.n_residuals), dtype=wp.float32, device=self.device
+        )
+        self.candidate_costs = wp.zeros((self.n_problems, self.n_line_search), dtype=wp.float32, device=self.device)
+        self.best_step_idx = wp.zeros(self.n_problems, dtype=wp.int32, device=self.device)
+
+        self.initial_slope = wp.zeros(self.n_problems, dtype=wp.float32, device=self.device)
+        self.candidate_gradients = wp.zeros(
+            (self.n_problems, self.n_line_search, self.n_dofs), dtype=wp.float32, device=self.device
+        )
+        self.candidate_slopes = wp.zeros((self.n_problems, self.n_line_search), dtype=wp.float32, device=self.device)
+        # We reuse self.jacobian as the workspace for candidate Jacobians
+
+        self.costs = wp.zeros(self.n_problems, dtype=wp.float32, device=self.device)
+
+        self.tape = wp.Tape() if grad else None
+
+        if jacobian_mode != JacobianMode.AUTODIFF and any(o.supports_analytic() for o in objectives):
+            self.joint_S_s = wp.zeros((self.n_problems, self.n_dofs), dtype=wp.spatial_vector, device=self.device)
+        self.X_local = wp.zeros((self.n_problems, model.joint_count), dtype=wp.transform, device=self.device)
+
+        off = 0
+        self.residual_offsets = []
+        for o in objectives:
+            self.residual_offsets.append(off)
+            off += o.residual_dim()
+
+        self._init_objectives()
+        self._init_cuda_streams()
+
+    def _init_objectives(self):
+        """Allocate any per-objective buffers that must live on `self.device`."""
+        for obj in self.objectives:
+            obj.bind_device(self.device)
+            if self.jacobian_mode == JacobianMode.MIXED:
+                mode = JacobianMode.ANALYTIC if obj.supports_analytic() else JacobianMode.AUTODIFF
+            else:
+                mode = self.jacobian_mode
+            obj.init_buffers(model=self.model, jacobian_mode=mode)
+
+    def _init_cuda_streams(self):
+        """Allocate per-objective Warp streams and sync events."""
+        self.objective_streams = []
+        self.sync_events = []
+
+        if self.device.is_cuda:
+            for _ in range(len(self.objectives)):
+                stream = wp.Stream(self.device)
+                event = wp.Event(self.device)
+                self.objective_streams.append(stream)
+                self.sync_events.append(event)
+        else:
+            self.objective_streams = [None] * len(self.objectives)
+            self.sync_events = [None] * len(self.objectives)
+
+    def _parallel_for_objectives(self, fn, *extra):
+        """Run <fn(obj, offset, *extra)> across objectives on parallel CUDA streams."""
+        if self.device.is_cuda:
+            main = wp.get_stream(self.device)
+            init_evt = main.record_event()
+            for obj, offset, obj_stream, sync_event in zip(
+                self.objectives, self.residual_offsets, self.objective_streams, self.sync_events
+            ):
+                obj_stream.wait_event(init_evt)
+                with wp.ScopedStream(obj_stream):
+                    fn(obj, offset, *extra)
+                obj_stream.record_event(sync_event)
+            for sync_event in self.sync_events:
+                main.wait_event(sync_event)
+        else:
+            for obj, offset in zip(self.objectives, self.residual_offsets):
+                fn(obj, offset, *extra)
+
+    def solve(self, iterations=50):
+        """
+        Run the L-BFGS loop.
+
+        Parameters
+        ----------
+        iterations : int, default 50
+            Maximum number of iterations.
+
+        Side-effects
+        ------------
+        Updates `self.joint_q` in-place with the converged coordinates.
+        """
+        for i in range(iterations):
+            self._step(iteration=i)
+
+    def compute_residuals(self, joint_q_in=None, residuals_out=None):
+        joint_q = joint_q_in or self.joint_q
+        residuals = residuals_out or self.residuals
+
+        if self.jacobian_mode in [JacobianMode.AUTODIFF, JacobianMode.MIXED]:
+            _eval_fk_batched(self.model, joint_q, self.qd_zero, self.body_q, self.body_qd)
+        else:
+            self._fk_two_pass(self.model, joint_q, self.body_q, self.X_local, self.n_problems)
+
+        residuals.zero_()
+
+        def _do(obj, offset, body_q, joint_q, model, output_residuals):
+            obj.compute_residuals(body_q, joint_q, model, output_residuals, offset)
+
+        self._parallel_for_objectives(_do, self.body_q, joint_q, self.model, residuals)
+
+        return residuals
+
+    def compute_jacobian(self, joint_q_in=None, jacobian_out=None):
+        joint_q = joint_q_in or self.joint_q
+        jacobian_out = jacobian_out or self.jacobian
+
+        if self.jacobian_mode in [JacobianMode.AUTODIFF, JacobianMode.MIXED]:
+            _eval_fk_batched(self.model, joint_q, self.qd_zero, self.body_q, self.body_qd)
+        else:
+            self._fk_two_pass(self.model, joint_q, self.body_q, self.X_local, self.n_problems)
+
+        jacobian_out.zero_()
+
+        if self.jacobian_mode == JacobianMode.AUTODIFF:
+            self.tape.reset()
+            self.dq_dof.zero_()
+            with self.tape:
+                self._integrate_dq(joint_q_in=joint_q)
+                residuals_2d = self.compute_residuals(self.joint_q_proposed)
+                residuals_flat = residuals_2d.flatten()
+
+            self.tape.outputs = [residuals_flat]
+            self.tape.backward(grads={residuals_flat: residuals_flat})
+
+            q_grad = self.tape.gradients[self.dq_dof]
+            self.gradient.assign(q_grad)
+
+        elif self.jacobian_mode == JacobianMode.ANALYTIC:
+            self._compute_motion_subspace(body_q=self.body_q)
+
+            def _do_analytic(obj, off, body_q, q, model, jac, joint_S_s):
+                if obj.supports_analytic():
+                    obj.compute_jacobian_analytic(body_q, q, model, jac, joint_S_s, off)
+                else:
+                    raise ValueError(f"Objective {type(obj).__name__} does not support analytic Jacobian")
+
+            self._parallel_for_objectives(_do_analytic, self.body_q, joint_q, self.model, jacobian_out, self.joint_S_s)
+
+        elif self.jacobian_mode == JacobianMode.MIXED:
+            self.tape.reset()
+            need_autodiff = any(not obj.supports_analytic() for obj in self.objectives)
+            need_analytic = any(obj.supports_analytic() for obj in self.objectives)
+
+            if need_autodiff:
+                self.dq_dof.zero_()
+                with self.tape:
+                    self._integrate_dq(joint_q_in=joint_q)
+                    residuals_2d = self.compute_residuals(self.joint_q_proposed)
+                    current_residuals_wp = residuals_2d.flatten()
+                self.tape.outputs = [current_residuals_wp]
+
+            if need_analytic:
+                self._compute_motion_subspace(body_q=self.body_q)
+
+            for obj, offset in zip(self.objectives, self.residual_offsets):
+                if obj.supports_analytic():
+                    obj.compute_jacobian_analytic(
+                        self.body_q, joint_q, self.model, jacobian_out, self.joint_S_s, offset
+                    )
+                else:
+                    obj.compute_jacobian_autodiff(self.tape, self.model, jacobian_out, offset, self.dq_dof)
+
+        return jacobian_out
+
+    def _compute_motion_subspace(self, body_q=None):
+        n_joints = self.model.joint_count
+        body_q = body_q if body_q is not None else self.body_q
+        wp.launch(
+            self._compute_motion_subspace_2d,
+            dim=[self.n_problems, n_joints],
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_qd_start,
+                self.qd_zero,
+                self.model.joint_axis,
+                self.model.joint_dof_dim,
+                body_q,
+                self.model.joint_X_p,
+            ],
+            outputs=[
+                self.joint_S_s,
+            ],
+            device=self.device,
+        )
+
+    def _integrate_dq(self, joint_q_in=None, step_size=1.0):
+        joint_q = joint_q_in or self.joint_q
+
+        wp.launch(
+            self._integrate_dq_dof,
+            dim=[self.n_problems, self.model.joint_count],
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_q_start,
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                joint_q,
+                self.dq_dof,
+                self.qd_zero,
+                step_size,
+            ],
+            outputs=[
+                self.joint_q_proposed,
+                self.qd_zero,
+            ],
+            device=self.device,
+        )
+        self.qd_zero.zero_()
+
+    def _step(self, iteration=0):
+        """Execute one L-BFGS iteration."""
+        self.compute_residuals()
+        wp.launch(
+            _compute_costs,
+            dim=self.n_problems,
+            inputs=[self.residuals, self.n_residuals],
+            outputs=[self.costs],
+            device=self.device,
+        )
+
+        if self.jacobian_mode == JacobianMode.AUTODIFF:
+            self._autodiff_grad_at(self.joint_q, self.gradient)
+        else:
+            self.compute_jacobian()
+            self._compute_gradient_jtr()
+
+        if iteration == 0:
+            wp.copy(self.gradient_prev, self.gradient)
+            wp.copy(self.joint_q_prev, self.joint_q)
+            wp.launch(
+                _apply_steepest_descent,
+                dim=[self.n_problems, self.n_coords],
+                inputs=[self.joint_q, self.gradient, 1e-2],
+                outputs=[self.joint_q],
+                device=self.device,
+            )
+            return
+
+        self._update_history()
+        self._compute_search_direction()
+        self._compute_initial_slope()
+
+        wp.copy(self.gradient_prev, self.gradient)
+        wp.copy(self.joint_q_prev, self.joint_q)
+
+        self._line_search()
+        self._line_search_select_best()
+
+    def _compute_gradient_jtr(self):
+        """Compute gradient: grad = J^T * residuals"""
+        wp.launch_tiled(
+            self._compute_gradient_jtr_tiled,
+            dim=[self.n_problems],
+            inputs=[self.jacobian, self.residuals],
+            outputs=[self.gradient],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+    def _compute_initial_slope(self):
+        """Compute and store dot(gradient, search_direction) for the current state."""
+        wp.launch_tiled(
+            self._compute_slope_tiled,
+            dim=[self.n_problems],
+            inputs=[self.gradient, self.search_direction],
+            outputs=[self.initial_slope],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+    def _compute_search_direction(self):
+        """Compute L-BFGS search direction using two-loop recursion."""
+        wp.launch_tiled(
+            self._compute_search_direction_tiled,
+            dim=[self.n_problems],
+            inputs=[
+                self.gradient,
+                self.s_history,
+                self.y_history,
+                self.rho_history,
+                self.alpha_history,
+                self.history_count,
+                self.history_start,
+                self.h0_scale,
+            ],
+            outputs=[
+                self.search_direction,
+            ],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+    def _update_history(self):
+        """Update L-BFGS history with new s_k and y_k pairs."""
+        wp.launch_tiled(
+            self._update_history_tiled,
+            dim=[self.n_problems],
+            inputs=[
+                self.joint_q,
+                self.joint_q_prev,
+                self.gradient,
+                self.gradient_prev,
+                self.history_len,
+            ],
+            outputs=[
+                self.s_history,
+                self.y_history,
+                self.rho_history,
+                self.history_count,
+                self.history_start,
+            ],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+    def _line_search(self):
+        """
+        Generate candidate configurations and compute their costs and gradients
+        to check the Wolfe conditions.
+        """
+        wp.launch_tiled(
+            self._generate_candidates_tiled,
+            dim=[self.n_problems, self.n_line_search],
+            inputs=[
+                self.joint_q,
+                self.search_direction,
+                self.line_search_alphas,
+            ],
+            outputs=[
+                self.candidate_q,
+            ],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+        for step_idx in range(self.n_line_search):
+            # Create slices for the current candidate step's data
+            candidate_q_slice = wp.array(
+                ptr=self.candidate_q.ptr + step_idx * self.candidate_q.strides[1],
+                shape=(self.n_problems, self.n_coords),
+                strides=(self.candidate_q.strides[0], self.candidate_q.strides[2]),
+                dtype=wp.float32,
+                device=self.device,
+            )
+            candidate_residuals_slice = wp.array(
+                ptr=self.candidate_residuals.ptr + step_idx * self.candidate_residuals.strides[1],
+                shape=(self.n_problems, self.n_residuals),
+                strides=(self.candidate_residuals.strides[0], self.candidate_residuals.strides[2]),
+                dtype=wp.float32,
+                device=self.device,
+            )
+            candidate_gradients_slice = wp.array(
+                ptr=self.candidate_gradients.ptr + step_idx * self.candidate_gradients.strides[1],
+                shape=(self.n_problems, self.n_dofs),
+                strides=(self.candidate_gradients.strides[0], self.candidate_gradients.strides[2]),
+                dtype=wp.float32,
+                device=self.device,
+            )
+            candidate_costs_slice = wp.array(
+                ptr=self.candidate_costs.ptr + step_idx * self.candidate_costs.strides[1],
+                shape=(self.n_problems,),
+                strides=(self.candidate_costs.strides[0],),
+                dtype=wp.float32,
+                device=self.device,
+            )
+            candidate_slopes_slice = wp.array(
+                ptr=self.candidate_slopes.ptr + step_idx * self.candidate_slopes.strides[1],
+                shape=(self.n_problems,),
+                strides=(self.candidate_slopes.strides[0],),
+                dtype=wp.float32,
+                device=self.device,
+            )
+
+            self.compute_residuals(candidate_q_slice, candidate_residuals_slice)
+            wp.launch(
+                _compute_costs,
+                dim=self.n_problems,
+                inputs=[candidate_residuals_slice, self.n_residuals],
+                outputs=[candidate_costs_slice],
+                device=self.device,
+            )
+
+            # Reuses self.jacobian as a temporary buffer for each candidate
+            if self.jacobian_mode == JacobianMode.AUTODIFF:
+                self._autodiff_grad_at(candidate_q_slice, candidate_gradients_slice)
+            else:
+                self.compute_jacobian(joint_q_in=candidate_q_slice, jacobian_out=self.jacobian)
+                wp.launch_tiled(
+                    self._compute_gradient_jtr_tiled,
+                    dim=self.n_problems,
+                    inputs=[self.jacobian, candidate_residuals_slice],
+                    outputs=[candidate_gradients_slice],
+                    block_dim=self.TILE_THREADS,
+                    device=self.device,
+                )
+
+            wp.launch_tiled(
+                self._compute_slope_tiled,
+                dim=[self.n_problems],
+                inputs=[candidate_gradients_slice, self.search_direction],
+                outputs=[candidate_slopes_slice],
+                block_dim=self.TILE_THREADS,
+                device=self.device,
+            )
+
+    def _autodiff_grad_at(self, joint_q, grad_out):
+        self.tape.reset()
+        self.dq_dof.zero_()
+        with self.tape:
+            self._integrate_dq(joint_q_in=joint_q)
+            r2 = self.compute_residuals(self.joint_q_proposed)
+            rflat = r2.flatten()
+        self.tape.outputs = [rflat]
+        self.tape.backward(grads={rflat: rflat})
+        wp.copy(grad_out, self.tape.gradients[self.dq_dof])
+
+    def _line_search_select_best(self):
+        """Select the best step size based on Wolfe conditions and update joint_q."""
+        wp.launch_tiled(
+            self._select_best_step_tiled,
+            dim=[self.n_problems],
+            inputs=[
+                self.candidate_costs,
+                self.candidate_q,
+                self.costs,
+                self.initial_slope,
+                self.candidate_slopes,
+                self.line_search_alphas,
+                self.wolfe_c1,
+                self.wolfe_c2,
+            ],
+            outputs=[
+                self.joint_q,
+                self.best_step_idx,
+            ],
+            block_dim=self.TILE_THREADS,
+            device=self.device,
+        )
+
+    @classmethod
+    def _build_specialised(cls, key):
+        """Build a specialized LBFGSSolver subclass with tiled kernels for given dimensions."""
+        C, R, M_HIST, N_LINE_SEARCH, _ = key
+
+        def _compute_slope_template(
+            # inputs
+            gradient: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            search_direction: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            # outputs
+            slope_out: wp.array1d(dtype=wp.float32),  # (n_problems,)
+        ):
+            problem_idx = wp.tid()
+            DOF = _Specialised.TILE_N_DOFS
+
+            g = wp.tile_load(gradient[problem_idx], shape=(DOF,))
+            p = wp.tile_load(search_direction[problem_idx], shape=(DOF,))
+
+            slope = wp.tile_sum(wp.tile_map(wp.mul, g, p))
+
+            slope_out[problem_idx] = slope[0]
+
+        def _compute_gradient_jtr_template(
+            # inputs
+            jacobian: wp.array3d(dtype=wp.float32),  # (n_problems, n_residuals, n_dofs)
+            residuals: wp.array2d(dtype=wp.float32),  # (n_problems, n_residuals)
+            # outputs
+            gradient: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+        ):
+            problem_idx = wp.tid()
+
+            RES = _Specialised.TILE_N_RESIDUALS
+            DOF = _Specialised.TILE_N_DOFS
+
+            J = wp.tile_load(jacobian[problem_idx], shape=(RES, DOF))
+            r = wp.tile_load(residuals[problem_idx], shape=(RES,))
+
+            Jt = wp.tile_transpose(J)
+            r_2d = wp.tile_reshape(r, shape=(RES, 1))
+            grad_2d = wp.tile_matmul(Jt, r_2d)
+            grad_1d = wp.tile_reshape(grad_2d, shape=(DOF,))
+
+            wp.tile_store(gradient[problem_idx], grad_1d)
+
+        def _compute_search_direction_template(
+            # inputs
+            gradient: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            s_history: wp.array3d(dtype=wp.float32),  # (n_problems, history_len, n_dofs)
+            y_history: wp.array3d(dtype=wp.float32),  # (n_problems, history_len, n_dofs)
+            rho_history: wp.array2d(dtype=wp.float32),  # (n_problems, history_len)
+            alpha_history: wp.array2d(dtype=wp.float32),  # (n_problems, history_len)
+            history_count: wp.array1d(dtype=wp.int32),  # (n_problems)
+            history_start: wp.array1d(dtype=wp.int32),  # (n_problems)
+            h0_scale: float,  # scalar
+            # outputs
+            search_direction: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+        ):
+            problem_idx = wp.tid()
+            DOF = _Specialised.TILE_N_DOFS
+            M_HIST = _Specialised.TILE_HISTORY_LEN
+
+            q = wp.tile_load(gradient[problem_idx], shape=(DOF,), storage="shared")
+            count = history_count[problem_idx]
+            start = history_start[problem_idx]
+
+            # First loop: backward through history
+            for i in range(count):
+                idx = (start + count - 1 - i) % M_HIST
+                s_i = wp.tile_load(s_history[problem_idx, idx], shape=(DOF,), storage="shared")
+                rho_i = rho_history[problem_idx, idx]
+
+                s_dot_q = wp.tile_sum(wp.tile_map(wp.mul, s_i, q))
+                alpha_i = rho_i * s_dot_q[0]
+                alpha_history[problem_idx, idx] = alpha_i
+
+                y_i = wp.tile_load(y_history[problem_idx, idx], shape=(DOF,), storage="shared")
+
+                for j in range(DOF):
+                    q[j] = q[j] - alpha_i * y_i[j]
+
+            # Apply initial Hessian approximation in-place
+            for j in range(DOF):
+                q[j] = h0_scale * q[j]
+
+            # Second loop: forward through history
+            for i in range(count):
+                idx = (start + i) % M_HIST
+                y_i = wp.tile_load(y_history[problem_idx, idx], shape=(DOF,), storage="shared")
+                s_i = wp.tile_load(s_history[problem_idx, idx], shape=(DOF,), storage="shared")
+                rho_i = rho_history[problem_idx, idx]
+                alpha_i = alpha_history[problem_idx, idx]
+
+                y_dot_q = wp.tile_sum(wp.tile_map(wp.mul, y_i, q))
+                beta = rho_i * y_dot_q[0]
+                diff = alpha_i - beta
+
+                for j in range(DOF):
+                    q[j] = q[j] + diff * s_i[j]
+
+            # Store negative gradient (descent direction)
+            for j in range(DOF):
+                q[j] = -q[j]
+
+            wp.tile_store(search_direction[problem_idx], q)
+
+        def _update_history_template(
+            # inputs
+            joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            joint_q_prev: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            gradient: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            gradient_prev: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            history_len: int,  # (= TILE_HISTORY_LEN)
+            # outputs
+            s_history: wp.array3d(dtype=wp.float32),  # (n_problems, history_len, n_dofs)
+            y_history: wp.array3d(dtype=wp.float32),  # (n_problems, history_len, n_dofs)
+            rho_history: wp.array2d(dtype=wp.float32),  # (n_problems, history_len)
+            history_count: wp.array1d(dtype=wp.int32),  # (n_problems)
+            history_start: wp.array1d(dtype=wp.int32),  # (n_problems)
+        ):
+            problem_idx = wp.tid()
+            DOF = _Specialised.TILE_N_DOFS
+
+            q_curr = wp.tile_load(joint_q[problem_idx], shape=(DOF,))
+            q_prev = wp.tile_load(joint_q_prev[problem_idx], shape=(DOF,))
+            s_k = wp.tile_map(wp.sub, q_curr, q_prev)
+
+            g_curr = wp.tile_load(gradient[problem_idx], shape=(DOF,))
+            g_prev = wp.tile_load(gradient_prev[problem_idx], shape=(DOF,))
+            y_k = wp.tile_map(wp.sub, g_curr, g_prev)
+
+            y_dot_s_tile = wp.tile_sum(wp.tile_map(wp.mul, y_k, s_k))
+            y_dot_s = y_dot_s_tile[0]
+
+            # Check curvature condition to ensure Hessian approximation is positive definite
+            if y_dot_s > 1e-8:
+                rho_k = 1.0 / y_dot_s
+
+                count = history_count[problem_idx]
+                start = history_start[problem_idx]
+
+                write_idx = (start + count) % history_len
+                if count < history_len:
+                    history_count[problem_idx] = count + 1
+                else:
+                    history_start[problem_idx] = (start + 1) % history_len
+
+                wp.tile_store(s_history[problem_idx, write_idx], s_k)
+                wp.tile_store(y_history[problem_idx, write_idx], y_k)
+                rho_history[problem_idx, write_idx] = rho_k
+
+        def _generate_candidates_template(
+            # inputs
+            joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            search_direction: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            line_search_alphas: wp.array1d(dtype=wp.float32),  # (n_line_steps)
+            # outputs
+            candidate_q: wp.array3d(dtype=wp.float32),  # (n_problems, n_line_steps, n_dofs)
+        ):
+            problem_idx, step_idx = wp.tid()
+            DOF = _Specialised.TILE_N_DOFS
+
+            q_curr = wp.tile_load(joint_q[problem_idx], shape=(DOF,))
+            p = wp.tile_load(search_direction[problem_idx], shape=(DOF,))
+            step_size = line_search_alphas[step_idx]
+
+            q_new = wp.tile_zeros(shape=(DOF,), dtype=wp.float32)
+            for j in range(DOF):
+                q_new[j] = q_curr[j] + step_size * p[j]
+
+            wp.tile_store(candidate_q[problem_idx, step_idx], q_new)
+
+        def _select_best_step_template(
+            # inputs
+            candidate_costs: wp.array2d(dtype=wp.float32),  # (n_problems, n_line_steps)
+            candidate_q: wp.array3d(dtype=wp.float32),  # (n_problems, n_line_steps, n_dofs)
+            cost_initial: wp.array1d(dtype=wp.float32),  # (n_problems)
+            slope_initial: wp.array1d(dtype=wp.float32),  # (n_problems)
+            candidate_slopes: wp.array2d(dtype=wp.float32),  # (n_problems, n_line_steps)
+            line_search_alphas: wp.array1d(dtype=wp.float32),  # (n_line_steps)
+            wolfe_c1: float,  # scalar
+            wolfe_c2: float,  # scalar
+            # outputs
+            joint_q_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+            best_step_idx_out: wp.array1d(dtype=wp.int32),  # (n_problems)
+        ):
+            problem_idx = wp.tid()
+            N_STEPS = _Specialised.TILE_N_LINE_STEPS
+            DOF = _Specialised.TILE_N_DOFS
+
+            cost_k = cost_initial[problem_idx]
+            slope_k = slope_initial[problem_idx]
+
+            best_idx = int(-1)
+
+            # Search backwards for the largest step size satisfying Wolfe conditions
+            for i in range(N_STEPS - 1, -1, -1):
+                cost_new = candidate_costs[problem_idx, i]
+                alpha = line_search_alphas[i]
+
+                # Armijo (Sufficient Decrease) Condition
+                armijo_ok = cost_new <= cost_k + wolfe_c1 * alpha * slope_k
+
+                # Strong Curvature Condition
+                slope_new = candidate_slopes[problem_idx, i]
+                curvature_ok = wp.abs(slope_new) <= wolfe_c2 * wp.abs(slope_k)
+
+                if armijo_ok and curvature_ok:
+                    best_idx = i
+                    break
+
+            # Fallback: If no step satisfies Wolfe, choose the one with the minimum cost.
+            if best_idx == -1:
+                costs = wp.tile_load(candidate_costs[problem_idx], shape=(N_STEPS,), storage="shared")
+                argmin_tile = wp.tile_argmin(costs)
+                best_idx = argmin_tile[0]
+
+            best_step_idx_out[problem_idx] = best_idx
+
+            best_q = wp.tile_load(candidate_q[problem_idx, best_idx], shape=(DOF,), storage="shared")
+            wp.tile_store(joint_q_out[problem_idx], best_q)
+
+        _compute_slope_tiled = wp.kernel(enable_backward=False, module="unique")(_compute_slope_template)
+        _compute_slope_tiled.__name__ = f"_compute_slope_tiled_{C}"
+        _compute_slope_tiled.__qualname__ = f"_compute_slope_tiled_{C}"
+
+        _compute_gradient_jtr_tiled = wp.kernel(enable_backward=False, module="unique")(_compute_gradient_jtr_template)
+        _compute_gradient_jtr_tiled.__name__ = f"_compute_gradient_jtr_tiled_{C}_{R}"
+        _compute_gradient_jtr_tiled.__qualname__ = f"_compute_gradient_jtr_tiled_{C}_{R}"
+
+        _compute_search_direction_template.__name__ = f"_compute_search_direction_tiled_{C}_{M_HIST}"
+        _compute_search_direction_template.__qualname__ = f"_compute_search_direction_tiled_{C}_{M_HIST}"
+        _compute_search_direction_tiled = wp.kernel(enable_backward=False, module="unique")(
+            _compute_search_direction_template
+        )
+
+        _update_history_tiled = wp.kernel(enable_backward=False, module="unique")(_update_history_template)
+        _update_history_tiled.__name__ = f"_update_history_tiled_{C}_{M_HIST}"
+        _update_history_tiled.__qualname__ = f"_update_history_tiled_{C}_{M_HIST}"
+
+        _generate_candidates_tiled = wp.kernel(enable_backward=False, module="unique")(_generate_candidates_template)
+        _generate_candidates_tiled.__name__ = f"_generate_candidates_tiled_{C}_{N_LINE_SEARCH}"
+        _generate_candidates_tiled.__qualname__ = f"_generate_candidates_tiled_{C}_{N_LINE_SEARCH}"
+
+        _select_best_step_tiled = wp.kernel(enable_backward=False, module="unique")(_select_best_step_template)
+        _select_best_step_tiled.__name__ = f"_select_best_step_tiled_{C}_{N_LINE_SEARCH}"
+        _select_best_step_tiled.__qualname__ = f"_select_best_step_tiled_{C}_{N_LINE_SEARCH}"
+
+        # late-import jcalc_motion, jcalc_transform to avoid circular import error
+        from newton.solvers.featherstone.kernels import (  # noqa: PLC0415
+            jcalc_integrate,
+            jcalc_motion,
+            jcalc_transform,
+        )
+
+        @wp.kernel
+        def _integrate_dq_dof(
+            # model-wide
+            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
+            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
+            # per-problem
+            joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)  (typically all-zero)
+            dq_dof: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)  ← LM update (q̇)
+            dt: float,  # LM step (usually 1.0)
+            # outputs
+            joint_q_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+        ):
+            """
+            Integrate the candidate update `dq_dof` (interpreted as a joint-space
+            velocity times `dt`) into a new configuration.
+
+            q_out  = integrate(q_curr, dq_dof)
+
+            One thread handles one joint of one problem.  All joint types supported by
+            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
+            box.
+            """
+            problem_idx, joint_idx = wp.tid()
+
+            # Static joint metadata
+            t = joint_type[joint_idx]
+            coord_start = joint_q_start[joint_idx]
+            dof_start = joint_qd_start[joint_idx]
+            lin_axes = joint_dof_dim[joint_idx, 0]
+            ang_axes = joint_dof_dim[joint_idx, 1]
+
+            # Views into the per-problem rows
+            q_row = joint_q_curr[problem_idx]
+            qd_row = joint_qd_curr[problem_idx]  # typically zero
+            delta_row = dq_dof[problem_idx]  # update vector
+
+            q_out_row = joint_q_out[problem_idx]
+            qd_out_row = joint_qd_out[problem_idx]
+
+            # Treat `delta_row` as acceleration with dt=1:
+            #   qd_new = 0 + delta           (qd ← delta)
+            #   q_new  = q + qd_new * dt     (q ← q + delta)
+            jcalc_integrate(
+                t,
+                q_row,
+                qd_row,
+                delta_row,  # passed as joint_qdd
+                coord_start,
+                dof_start,
+                lin_axes,
+                ang_axes,
+                dt,
+                q_out_row,
+                qd_out_row,
+            )
+
+        @wp.kernel(module="unique")
+        def _compute_motion_subspace_2d(
+            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
+            joint_parent: wp.array1d(dtype=wp.int32),  # (n_joints)
+            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_qd: wp.array2d(dtype=wp.float32),  # (n_problems, n_joint_dof_count)
+            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_joint_dof_count)
+            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)
+            body_q: wp.array2d(dtype=wp.transform),  # (n_problems, n_bodies)
+            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
+            # outputs
+            joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_problems, n_joint_dof_count)
+        ):
+            problem_idx, joint_idx = wp.tid()
+
+            type = joint_type[joint_idx]
+            parent = joint_parent[joint_idx]
+            qd_start = joint_qd_start[joint_idx]
+
+            X_pj = joint_X_p[joint_idx]
+            X_wpj = X_pj
+            if parent >= 0:
+                X_wpj = body_q[problem_idx, parent] * X_pj
+
+            lin_axis_count = joint_dof_dim[joint_idx, 0]
+            ang_axis_count = joint_dof_dim[joint_idx, 1]
+
+            joint_qd_1d = joint_qd[problem_idx]
+            S_s_out = joint_S_s[problem_idx]
+
+            jcalc_motion(
+                type,
+                joint_axis,
+                lin_axis_count,
+                ang_axis_count,
+                X_wpj,
+                joint_qd_1d,
+                qd_start,
+                S_s_out,
+            )
+
+        @wp.kernel(module="unique")
+        def _fk_local(
+            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
+            joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_coords)
+            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
+            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_axes)
+            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
+            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_X_c: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_count: int,
+            # outputs
+            X_local_out: wp.array2d(dtype=wp.transform),  # (n_problems, n_joints)
+        ):
+            problem_idx, local_joint_idx = wp.tid()
+
+            t = joint_type[local_joint_idx]
+            q_start = joint_q_start[local_joint_idx]
+            axis_start = joint_qd_start[local_joint_idx]
+            lin_axes = joint_dof_dim[local_joint_idx, 0]
+            ang_axes = joint_dof_dim[local_joint_idx, 1]
+
+            X_j = jcalc_transform(
+                t,
+                joint_axis,
+                axis_start,
+                lin_axes,
+                ang_axes,
+                joint_q[problem_idx],  # 1-D row slice
+                q_start,
+            )
+
+            X_rel = joint_X_p[local_joint_idx] * X_j * wp.transform_inverse(joint_X_c[local_joint_idx])
+            X_local_out[problem_idx, local_joint_idx] = X_rel
+
+        def _fk_two_pass(model, joint_q, body_q, X_local, n_problems):
+            """
+            Compute forward kinematics using two-pass algorithm.
+
+            Args:
+                model: newton.Model instance
+                joint_q: 2D array [n_problems, joint_coord_count]
+                body_q: 2D array [n_problems, body_count] (output)
+                X_local: 2D array [n_problems, joint_count] (workspace)
+                n_problems: Number of problem
+            """
+            wp.launch(
+                _fk_local,
+                dim=[n_problems, model.joint_count],
+                inputs=[
+                    model.joint_type,
+                    joint_q,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_count,
+                ],
+                outputs=[
+                    X_local,
+                ],
+                device=model.device,
+            )
+
+            wp.launch(
+                _fk_accum,
+                dim=[n_problems, model.joint_count],
+                inputs=[
+                    model.joint_parent,
+                    X_local,
+                    model.joint_count,
+                ],
+                outputs=[
+                    body_q,
+                ],
+                device=model.device,
+            )
+
+        class _Specialised(LBFGSSolver):
+            TILE_N_DOFS = wp.constant(C)
+            TILE_N_RESIDUALS = wp.constant(R)
+            TILE_HISTORY_LEN = wp.constant(M_HIST)
+            TILE_N_LINE_STEPS = wp.constant(N_LINE_SEARCH)
+            TILE_THREADS = wp.constant(32)
+
+        _Specialised.__name__ = f"LBFGS_Wolfe_{C}x{R}x{M_HIST}x{N_LINE_SEARCH}"
+        _Specialised._compute_gradient_jtr_tiled = staticmethod(_compute_gradient_jtr_tiled)
+        _Specialised._compute_slope_tiled = staticmethod(_compute_slope_tiled)
+        _Specialised._compute_search_direction_tiled = staticmethod(_compute_search_direction_tiled)
+        _Specialised._update_history_tiled = staticmethod(_update_history_tiled)
+        _Specialised._generate_candidates_tiled = staticmethod(_generate_candidates_tiled)
+        _Specialised._select_best_step_tiled = staticmethod(_select_best_step_tiled)
+        _Specialised._integrate_dq_dof = staticmethod(_integrate_dq_dof)
+        _Specialised._compute_motion_subspace_2d = staticmethod(_compute_motion_subspace_2d)
+        _Specialised._fk_two_pass = staticmethod(_fk_two_pass)
+
+        return _Specialised
+
+
+@wp.kernel
+def _apply_steepest_descent(
+    # inputs
+    joint_q: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+    gradient: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+    step_size: float,  # scalar
+    # outputs
+    joint_q_out: wp.array2d(dtype=wp.float32),  # (n_problems, n_dofs)
+):
+    problem_idx, coord_idx = wp.tid()
+    joint_q_out[problem_idx, coord_idx] = joint_q[problem_idx, coord_idx] - step_size * gradient[problem_idx, coord_idx]
+
+
 class IKSolver:
     """
     Modular inverse-kinematics solver.
