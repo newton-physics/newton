@@ -408,7 +408,6 @@ if __name__ == "__main__":
         )
 
         # Print simulation configuration summary
-        # Print simulation configuration summary
         LABEL_WIDTH = 25
         TOTAL_WIDTH = 45
         title = " Simulation Configuration "
