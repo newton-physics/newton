@@ -275,11 +275,11 @@ def CreateSimRenderer(renderer):
                     self.body_names,
                     self.geo_shape,
                     model.shape_body.numpy(),
-                    model.shape_geo_src,
-                    model.shape_geo.type.numpy(),
-                    model.shape_geo.scale.numpy(),
-                    model.shape_geo.thickness.numpy(),
-                    model.shape_geo.is_solid.numpy(),
+                    model.shape_source,
+                    model.shape_type.numpy(),
+                    model.shape_scale.numpy(),
+                    model.shape_thickness.numpy(),
+                    model.shape_is_solid.numpy(),
                     model.shape_transform.numpy(),
                     model.shape_flags.numpy(),
                     self.model.shape_key,
@@ -340,11 +340,11 @@ def CreateSimRenderer(renderer):
             body_names: list,
             geo_shape: dict,
             shape_body: np.ndarray,
-            shape_geo_src: list,
-            shape_geo_type: np.ndarray,
-            shape_geo_scale: np.ndarray,
-            shape_geo_thickness: np.ndarray,
-            shape_geo_is_solid: np.ndarray,
+            shape_source: list,
+            shape_type: np.ndarray,
+            shape_scale: np.ndarray,
+            shape_thickness: np.ndarray,
+            shape_is_solid: np.ndarray,
             shape_transform: np.ndarray,
             shape_flags: np.ndarray,
             shape_key: list,
@@ -357,11 +357,11 @@ def CreateSimRenderer(renderer):
                 body_names (list): List of body names.
                 geo_shape (dict): A dictionary to cache geometry shapes.
                 shape_body (numpy.ndarray): Maps shape index to body index.
-                shape_geo_src (list): Source geometry for each shape.
-                shape_geo_type (numpy.ndarray): Type of each shape's geometry.
-                shape_geo_scale (numpy.ndarray): Scale of each shape's geometry.
-                shape_geo_thickness (numpy.ndarray): Thickness of each shape's geometry.
-                shape_geo_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
+                shape_source (list): Source geometry for each shape.
+                shape_type (numpy.ndarray): Type of each shape's geometry.
+                shape_scale (numpy.ndarray): Scale of each shape's geometry.
+                shape_thickness (numpy.ndarray): Thickness of each shape's geometry.
+                shape_is_solid (numpy.ndarray): Solid flag for each shape's geometry.
                 shape_transform (numpy.ndarray): Local transform of each shape.
                 shape_flags (numpy.ndarray): Visibility and other flags for each shape.
                 shape_key (list): List of shape names.
@@ -377,11 +377,11 @@ def CreateSimRenderer(renderer):
             # loop over shapes
             for s in range(shape_count):
                 scale = np.ones(3, dtype=np.float32)
-                geo_type = shape_geo_type[s]
-                geo_scale = [float(v) for v in shape_geo_scale[s]]
-                geo_thickness = float(shape_geo_thickness[s])
-                geo_is_solid = bool(shape_geo_is_solid[s])
-                geo_src = shape_geo_src[s]
+                geo_type = shape_type[s]
+                geo_scale = [float(v) for v in shape_scale[s]]
+                geo_thickness = float(shape_thickness[s])
+                geo_is_solid = bool(shape_is_solid[s])
+                geo_src = shape_source[s]
                 name = shape_key[s]
                 count = self._instance_key_count.get(name, 0)
                 if count > 0:
@@ -409,7 +409,7 @@ def CreateSimRenderer(renderer):
                 if geo_hash in geo_shape:
                     shape = geo_shape[geo_hash]
                 else:
-                    if geo_type == newton.GEO_PLANE:
+                    if geo_type == newton.GeoType.PLANE:
                         # plane mesh
                         width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
                         length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
@@ -424,30 +424,30 @@ def CreateSimRenderer(renderer):
                                 name, p, q, width, length, color, parent_body=body, is_template=True
                             )
 
-                    elif geo_type == newton.GEO_SPHERE:
+                    elif geo_type == newton.GeoType.SPHERE:
                         shape = self.render_sphere(
                             name, p, q, geo_scale[0], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CAPSULE:
+                    elif geo_type == newton.GeoType.CAPSULE:
                         shape = self.render_capsule(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CYLINDER:
+                    elif geo_type == newton.GeoType.CYLINDER:
                         shape = self.render_cylinder(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_CONE:
+                    elif geo_type == newton.GeoType.CONE:
                         shape = self.render_cone(
                             name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                         )
 
-                    elif geo_type == newton.GEO_BOX:
+                    elif geo_type == newton.GeoType.BOX:
                         shape = self.render_box(name, p, q, geo_scale, parent_body=body, is_template=True, color=color)
 
-                    elif geo_type == newton.GEO_MESH:
+                    elif geo_type == newton.GeoType.MESH:
                         if not geo_is_solid:
                             faces, vertices = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
                         else:
@@ -465,7 +465,7 @@ def CreateSimRenderer(renderer):
                             is_template=True,
                         )
 
-                    elif geo_type == newton.GEO_SDF:
+                    elif geo_type == newton.GeoType.SDF:
                         continue
 
                     geo_shape[geo_hash] = shape
@@ -473,9 +473,9 @@ def CreateSimRenderer(renderer):
                 if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
                     # TODO support dynamic visibility
                     q_shape = X_bs.q
-                    if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
+                    if geo_type in (newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE):
                         q_shape = X_bs.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
-                    if geo_type == newton.GEO_MESH:
+                    if geo_type == newton.GeoType.MESH:
                         # ensure we use the correct scale for the mesh instance
                         scale = np.asarray(geo_scale, dtype=np.float32)
                     self.add_shape_instance(name, shape, body, X_bs.p, q_shape, scale, custom_index=s, visible=True)
@@ -786,8 +786,8 @@ def CreateSimRenderer(renderer):
                         self.state.body_q,
                         self.model.shape_body,
                         self.model.shape_transform,
-                        self.model.shape_geo.type,
-                        self.model.shape_geo.scale,
+                        self.model.shape_type,
+                        self.model.shape_scale,
                         p,
                         d,
                         self.lock,

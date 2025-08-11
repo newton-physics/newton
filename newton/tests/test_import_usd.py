@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.examples
 from newton.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
@@ -197,6 +198,33 @@ class TestImportUsd(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_cube_cylinder_joint_count(self):
+        builder = newton.ModelBuilder()
+        import_results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            invert_rotations=True,
+        )
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.joint_count, 1)
+
+        usd_path_to_shape = import_results["path_shape_map"]
+        expected = {
+            "/World/Cylinder_dynamic/cylinder_reverse/mesh_0": {"mu": 0.2, "restitution": 0.3},
+            "/World/Cube_static/cube2/mesh_0": {"mu": 0.75, "restitution": 0.3},
+        }
+        # Reverse mapping: shape index -> USD path
+        shape_idx_to_usd_path = {v: k for k, v in usd_path_to_shape.items()}
+        for shape_idx in range(builder.shape_count):
+            usd_path = shape_idx_to_usd_path[shape_idx]
+            if usd_path in expected:
+                self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
+                self.assertAlmostEqual(
+                    builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
+                )
+
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
@@ -249,28 +277,57 @@ class TestImportUsd(unittest.TestCase):
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
-        self.assertEqual(builder.shape_geo_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+        self.assertEqual(
+            builder.shape_type, [newton.GeoType.MESH, newton.GeoType.MESH, newton.GeoType.SPHERE, newton.GeoType.BOX]
+        )
 
         # original mesh
-        mesh_original = builder.shape_geo_src[0]
+        mesh_original = builder.shape_source[0]
         self.assertEqual(mesh_original.vertices.shape, (8, 3))
         assert_np_equal(mesh_original.vertices, vertices)
         assert_np_equal(mesh_original.indices, indices)
 
         # convex hull
-        mesh_convex_hull = builder.shape_geo_src[1]
+        mesh_convex_hull = builder.shape_source[1]
         self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
 
         # bounding sphere
-        self.assertIsNone(builder.shape_geo_src[2])
-        self.assertEqual(builder.shape_geo_type[2], newton.geometry.GEO_SPHERE)
-        self.assertAlmostEqual(builder.shape_geo_scale[2][0], wp.length(scale))
+        self.assertIsNone(builder.shape_source[2])
+        self.assertEqual(builder.shape_type[2], newton.geometry.GeoType.SPHERE)
+        self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
         # bounding box
-        assert_np_equal(npsorted(builder.shape_geo_scale[3]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_match_collision_shapes(self):
+        builder = newton.ModelBuilder()
+        parse_usd(
+            newton.examples.get_asset("humanoid.usda"),
+            builder,
+        )
+        self.assertEqual(builder.shape_count, 38)
+        self.assertEqual(builder.body_count, 16)
+        visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
+        collision_shape_keys = [k for k in builder.shape_key if "collisions" in k]
+        self.assertEqual(len(visual_shape_keys), 19)
+        self.assertEqual(len(collision_shape_keys), 19)
+        visual_shapes = [i for i, k in enumerate(builder.shape_key) if "visuals" in k]
+        # corresponding collision shapes
+        collision_shapes = [builder.shape_key.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
+        # ensure that the visual and collision shapes match
+        for i in range(len(visual_shapes)):
+            vi = visual_shapes[i]
+            ci = collision_shapes[i]
+            self.assertEqual(builder.shape_type[vi], builder.shape_type[ci])
+            self.assertEqual(builder.shape_source[vi], builder.shape_source[ci])
+            assert_np_equal(np.array(builder.shape_transform[vi]), np.array(builder.shape_transform[ci]), tol=1e-5)
+            assert_np_equal(np.array(builder.shape_scale[vi]), np.array(builder.shape_scale[ci]), tol=1e-5)
+            self.assertFalse(builder.shape_flags[vi] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            self.assertTrue(builder.shape_flags[ci] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
 
 
 if __name__ == "__main__":

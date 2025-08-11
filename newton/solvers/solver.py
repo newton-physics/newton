@@ -280,8 +280,7 @@ class SolverBase:
         Constant                                    Description
         ==========================================  =============================================================
         ``NOTIFY_FLAG_JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
-        ``NOTIFY_FLAG_JOINT_AXIS_PROPERTIES``       Joint axis limits, targets, or modes have changed.
-        ``NOTIFY_FLAG_DOF_PROPERTIES``              Joint DOF state or force buffers have changed.
+        ``NOTIFY_FLAG_JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
         ``NOTIFY_FLAG_BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
         ``NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
         ``NOTIFY_FLAG_SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
@@ -293,3 +292,11 @@ class SolverBase:
 
         """
         pass
+
+    def update_contacts(self, contacts: Contacts) -> None:
+        """Update a Contacts object with forces from the solver state. Where the solver state contains
+        other contact data, convert that data to the Contacts format.
+        Args:
+            contacts (Contacts): The object to update from the solver state.
+        """
+        raise NotImplementedError()

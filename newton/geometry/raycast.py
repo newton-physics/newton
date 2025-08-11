@@ -17,10 +17,7 @@
 import warp as wp
 
 from newton.geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CYLINDER,
-    GEO_SPHERE,
+    GeoType,
 )
 
 # A small constant to avoid division by zero and other numerical issues
@@ -312,19 +309,19 @@ def ray_intersect_geom(
     """
     t_hit = -1.0
 
-    if geomtype == GEO_SPHERE:
+    if geomtype == GeoType.SPHERE:
         r = size[0]
         t_hit = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, r)
 
-    elif geomtype == GEO_BOX:
+    elif geomtype == GeoType.BOX:
         t_hit = ray_intersect_box(geom_to_world, ray_origin, ray_direction, size)
 
-    elif geomtype == GEO_CAPSULE:
+    elif geomtype == GeoType.CAPSULE:
         r = size[0]
         h = size[1]
         t_hit = ray_intersect_capsule(geom_to_world, ray_origin, ray_direction, r, h)
 
-    elif geomtype == GEO_CYLINDER:
+    elif geomtype == GeoType.CYLINDER:
         r = size[0]
         h = size[1]
         t_hit = ray_intersect_cylinder(geom_to_world, ray_origin, ray_direction, r, h)

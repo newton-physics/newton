@@ -28,7 +28,6 @@ from newton.sim import (
     Contacts,
     Control,
     Model,
-    ShapeMaterials,
     State,
 )
 
@@ -685,7 +684,11 @@ def eval_particle_contacts(
     particle_flags: wp.array(dtype=wp.uint32),
     body_com: wp.array(dtype=wp.vec3),
     shape_body: wp.array(dtype=int),
-    shape_materials: ShapeMaterials,
+    shape_material_ke: wp.array(dtype=float),
+    shape_material_kd: wp.array(dtype=float),
+    shape_material_kf: wp.array(dtype=float),
+    shape_material_mu: wp.array(dtype=float),
+    shape_material_ka: wp.array(dtype=float),
     particle_ke: float,
     particle_kd: float,
     particle_kf: float,
@@ -738,10 +741,10 @@ def eval_particle_contacts(
         return
 
     # take average material properties of shape and particle parameters
-    ke = 0.5 * (particle_ke + shape_materials.ke[shape_index])
-    kd = 0.5 * (particle_kd + shape_materials.kd[shape_index])
-    kf = 0.5 * (particle_kf + shape_materials.kf[shape_index])
-    mu = 0.5 * (particle_mu + shape_materials.mu[shape_index])
+    ke = 0.5 * (particle_ke + shape_material_ke[shape_index])
+    kd = 0.5 * (particle_kd + shape_material_kd[shape_index])
+    kf = 0.5 * (particle_kf + shape_material_kf[shape_index])
+    mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
 
     body_w = wp.spatial_top(body_v_s)
     body_v = wp.spatial_bottom(body_v_s)
@@ -797,7 +800,11 @@ def eval_rigid_contacts(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    shape_materials: ShapeMaterials,
+    shape_material_ke: wp.array(dtype=float),
+    shape_material_kd: wp.array(dtype=float),
+    shape_material_kf: wp.array(dtype=float),
+    shape_material_ka: wp.array(dtype=float),
+    shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
@@ -835,19 +842,19 @@ def eval_rigid_contacts(
     body_b = -1
     if shape_a >= 0:
         mat_nonzero += 1
-        ke += shape_materials.ke[shape_a]
-        kd += shape_materials.kd[shape_a]
-        kf += shape_materials.kf[shape_a]
-        ka += shape_materials.ka[shape_a]
-        mu += shape_materials.mu[shape_a]
+        ke += shape_material_ke[shape_a]
+        kd += shape_material_kd[shape_a]
+        kf += shape_material_kf[shape_a]
+        ka += shape_material_ka[shape_a]
+        mu += shape_material_mu[shape_a]
         body_a = shape_body[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
-        ke += shape_materials.ke[shape_b]
-        kd += shape_materials.kd[shape_b]
-        kf += shape_materials.kf[shape_b]
-        ka += shape_materials.ka[shape_b]
-        mu += shape_materials.mu[shape_b]
+        ke += shape_material_ke[shape_b]
+        kd += shape_material_kd[shape_b]
+        kf += shape_material_kf[shape_b]
+        ka += shape_material_ka[shape_b]
+        mu += shape_material_mu[shape_b]
         body_b = shape_body[shape_b]
     if mat_nonzero > 0:
         ke /= float(mat_nonzero)
@@ -1613,7 +1620,11 @@ def eval_body_contact_forces(
                 state.body_q,
                 state.body_qd,
                 model.body_com,
-                model.shape_materials,
+                model.shape_material_ke,
+                model.shape_material_kd,
+                model.shape_material_kf,
+                model.shape_material_ka,
+                model.shape_material_mu,
                 model.shape_body,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
@@ -1689,7 +1700,11 @@ def eval_particle_body_contact_forces(
                 model.particle_flags,
                 model.body_com,
                 model.shape_body,
-                model.shape_materials,
+                model.shape_material_ke,
+                model.shape_material_kd,
+                model.shape_material_kf,
+                model.shape_material_mu,
+                model.shape_material_ka,
                 model.soft_contact_ke,
                 model.soft_contact_kd,
                 model.soft_contact_kf,

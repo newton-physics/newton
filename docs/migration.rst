@@ -55,6 +55,27 @@ The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJ
 
 :attr:`newton.ShapeGeometry.is_solid` now is of dtype ``bool`` instead of ``wp.uint8``.
 
+The ``Model.ground`` attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via :meth:`newton.ModelBuilder.add_ground_plane`.
+
+The attributes related to joint axes now have the same dimension as the joint dofs, which is :attr:`newton.Model.joint_dof_count`.
+The ``Model.joint_axis`` attribute has been removed since it now equals :attr:`newton.Model.joint_qd_start`.
+
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| **warp.sim**                                                     | **Newton**                                                                                                            |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_geo_src``                                          | :attr:`Model.shape_source`                                                                                            |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_geo``                                              | Removed ``ShapeGeometry`` struct                                                                                      |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_geo.type``, ``Model.shape_geo.scale``, etc.        | :attr:`Model.shape_type`, :attr:`Model.shape_scale`, etc.                                                             |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_geo.source``                                       | :attr:`Model.shape_source_ptr`                                                                                        |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_materials``                                        | Removed ``ShapeMaterial`` struct                                                                                      |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+| ``Model.shape_materials.ke``, ``Model.shape_materials.kd``, etc. | :attr:`Model.shape_material_ke`, :attr:`Model.shape_material_kd`, etc.                                                |
++------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
+
 Forward and Inverse Kinematics
 ------------------------------
 
@@ -67,11 +88,6 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 +--------------------------------------------------------+------------------------------------------------------------------------+
 | ``eval_ik(model, state, joint_q, joint_qd)``           | ``eval_ik(model, state, joint_q, joint_qd, mask=None)``                |
 +--------------------------------------------------------+------------------------------------------------------------------------+
-
-The ``Model.ground`` attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via :meth:`newton.ModelBuilder.add_ground_plane`.
-
-The attributes related to joint axes now have the same dimension as the joint dofs, which is :attr:`newton.Model.joint_dof_count`.
-The ``Model.joint_axis`` attribute has been removed since it now equals :attr:`newton.Model.joint_qd_start`.
 
 ``Control``
 -----------

@@ -178,6 +178,7 @@ class Example:
                     max_problems,
                     n_residuals,
                     len(self.cfg.ee_links) * 3 + ee * 3,
+                    canonicalize_quat_err=False,
                 )
             )
 

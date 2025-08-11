@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from enum import Enum
 
 import numpy as np
 import warp as wp
-import warp.utils
 
 
 class ColoringAlgorithm(Enum):
@@ -247,10 +247,11 @@ def color_graph(
         )
 
         if max_min_ratio > target_max_min_color_ratio:
-            wp.utils.warn(
+            warnings.warn(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "
-                "The graph may not be further optimizable."
+                "The graph may not be further optimizable.",
+                stacklevel=2,
             )
 
     color_groups = convert_to_color_groups(num_colors, particle_colors, return_wp_array=False)

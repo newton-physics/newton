@@ -22,13 +22,15 @@ from .control import Control
 from .flags import (
     NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES,
     NOTIFY_FLAG_BODY_PROPERTIES,
-    NOTIFY_FLAG_DOF_PROPERTIES,
-    NOTIFY_FLAG_JOINT_AXIS_PROPERTIES,
+    NOTIFY_FLAG_JOINT_DOF_PROPERTIES,
     NOTIFY_FLAG_JOINT_PROPERTIES,
     NOTIFY_FLAG_SHAPE_PROPERTIES,
 )
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -44,9 +46,11 @@ from .joints import (
 from .model import Model
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
-from .types import ShapeGeometry, ShapeMaterials
 
 __all__ = [
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",
@@ -59,8 +63,7 @@ __all__ = [
     "JOINT_REVOLUTE",
     "NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES",
     "NOTIFY_FLAG_BODY_PROPERTIES",
-    "NOTIFY_FLAG_DOF_PROPERTIES",
-    "NOTIFY_FLAG_JOINT_AXIS_PROPERTIES",
+    "NOTIFY_FLAG_JOINT_DOF_PROPERTIES",
     "NOTIFY_FLAG_JOINT_PROPERTIES",
     "NOTIFY_FLAG_SHAPE_PROPERTIES",
     "CollisionPipeline",
@@ -68,8 +71,6 @@ __all__ = [
     "Control",
     "Model",
     "ModelBuilder",
-    "ShapeGeometry",
-    "ShapeMaterials",
     "State",
     "Style3DModel",
     "Style3DModelBuilder",

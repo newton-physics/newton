@@ -22,8 +22,6 @@ newton.sim
    Control
    Model
    ModelBuilder
-   ShapeGeometry
-   ShapeMaterials
    State
    Style3DModel
    Style3DModelBuilder
@@ -69,14 +67,12 @@ newton.sim
    * - JOINT_REVOLUTE
      - 1
    * - NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES
-     - 16
-   * - NOTIFY_FLAG_BODY_PROPERTIES
      - 8
-   * - NOTIFY_FLAG_DOF_PROPERTIES
+   * - NOTIFY_FLAG_BODY_PROPERTIES
      - 4
-   * - NOTIFY_FLAG_JOINT_AXIS_PROPERTIES
+   * - NOTIFY_FLAG_JOINT_DOF_PROPERTIES
      - 2
    * - NOTIFY_FLAG_JOINT_PROPERTIES
      - 1
    * - NOTIFY_FLAG_SHAPE_PROPERTIES
-     - 32
+     - 16

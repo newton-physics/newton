@@ -44,20 +44,12 @@ from newton.core.types import (
     nparray,
 )
 from newton.geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     PARTICLE_FLAG_ACTIVE,
     SDF,
     SHAPE_FLAG_COLLIDE_PARTICLES,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
+    GeoType,
     Mesh,
     compute_shape_inertia,
     compute_shape_radius,
@@ -68,6 +60,9 @@ from newton.geometry.inertia import validate_and_correct_inertia_kernel, verify_
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -323,11 +318,11 @@ class ModelBuilder:
         # maps from shape index to body index
         self.shape_body = []
         self.shape_flags = []
-        self.shape_geo_type = []
-        self.shape_geo_scale = []
-        self.shape_geo_src = []
-        self.shape_geo_is_solid = []
-        self.shape_geo_thickness = []
+        self.shape_type = []
+        self.shape_scale = []
+        self.shape_source = []
+        self.shape_is_solid = []
+        self.shape_thickness = []
         self.shape_material_ke = []
         self.shape_material_kd = []
         self.shape_material_kf = []
@@ -444,6 +439,19 @@ class ModelBuilder:
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
         self.num_rigid_contacts_per_env = None
 
+        # equality constraints
+        self.equality_constraint_type = []
+        self.equality_constraint_body1 = []
+        self.equality_constraint_body2 = []
+        self.equality_constraint_anchor = []
+        self.equality_constraint_relpose = []
+        self.equality_constraint_torquescale = []
+        self.equality_constraint_joint1 = []
+        self.equality_constraint_joint2 = []
+        self.equality_constraint_polycoef = []
+        self.equality_constraint_key = []
+        self.equality_constraint_enabled = []
+
     @property
     def up_vector(self) -> Vec3:
         """Computes the 3D up vector from :attr:`up_axis`."""
@@ -458,7 +466,7 @@ class ModelBuilder:
     # region counts
     @property
     def shape_count(self):
-        return len(self.shape_geo_type)
+        return len(self.shape_type)
 
     @property
     def body_count(self):
@@ -668,11 +676,11 @@ class ModelBuilder:
             "joint_friction",
             "shape_key",
             "shape_flags",
-            "shape_geo_type",
-            "shape_geo_scale",
-            "shape_geo_src",
-            "shape_geo_is_solid",
-            "shape_geo_thickness",
+            "shape_type",
+            "shape_scale",
+            "shape_source",
+            "shape_is_solid",
+            "shape_thickness",
             "shape_material_ke",
             "shape_material_kd",
             "shape_material_kf",
@@ -698,6 +706,17 @@ class ModelBuilder:
             "tet_poses",
             "tet_activations",
             "tet_materials",
+            "equality_constraint_type",
+            "equality_constraint_body1",
+            "equality_constraint_body2",
+            "equality_constraint_anchor",
+            "equality_constraint_torquescale",
+            "equality_constraint_relpose",
+            "equality_constraint_joint1",
+            "equality_constraint_joint2",
+            "equality_constraint_polycoef",
+            "equality_constraint_key",
+            "equality_constraint_enabled",
         ]
 
         for attr in more_builder_attrs:
@@ -1286,6 +1305,152 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    def add_equality_constraint(
+        self,
+        constraint_type: Any,
+        body1: int = -1,
+        body2: int = -1,
+        anchor: Vec3 | None = None,
+        torquescale: float | None = None,
+        relpose: Transform | None = None,
+        joint1: int = -1,
+        joint2: int = -1,
+        polycoef: list[float] | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Generic method to add any type of equality constraint to this ModelBuilder.
+
+        Args:
+            constraint_type (constant): Type of constraint ('connect', 'weld', 'joint')
+            body1 (int): Index of the first body participating in the constraint (-1 for world)
+            body2 (int): Index of the second body participating in the constraint (-1 for world)
+            anchor (Vec3): Anchor point on body1
+            torquescale (float): Scales the angular residual for weld
+            relpose (Transform): Relative pose of body2 for weld. If None, the identity transform is used.
+            joint1 (int): Index of the first joint for joint coupling
+            joint2 (int): Index of the second joint for joint coupling
+            polycoef (list[float]): Polynomial coefficients for joint coupling
+            key (str): Optional constraint name
+            enabled (bool): Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        self.equality_constraint_type.append(constraint_type)
+        self.equality_constraint_body1.append(body1)
+        self.equality_constraint_body2.append(body2)
+        self.equality_constraint_anchor.append(anchor or wp.vec3())
+        self.equality_constraint_torquescale.append(torquescale)
+        self.equality_constraint_relpose.append(relpose or wp.transform_identity())
+        self.equality_constraint_joint1.append(joint1)
+        self.equality_constraint_joint2.append(joint2)
+        self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
+        self.equality_constraint_key.append(key)
+        self.equality_constraint_enabled.append(enabled)
+
+        return len(self.equality_constraint_type) - 1
+
+    def add_equality_constraint_connect(
+        self,
+        body1: int = -1,
+        body2: int = -1,
+        anchor: Vec3 | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a connect equality constraint to the model.
+        This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
+
+        Args:
+            body1: Index of the first body participating in the constraint (-1 for world)
+            body2: Index of the second body participating in the constraint (-1 for world)
+            anchor: Anchor point on body1
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        return self.add_equality_constraint(
+            constraint_type=EQ_CONNECT,
+            body1=body1,
+            body2=body2,
+            anchor=anchor,
+            key=key,
+            enabled=enabled,
+        )
+
+    def add_equality_constraint_joint(
+        self,
+        joint1: int = -1,
+        joint2: int = -1,
+        polycoef: list[float] | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a joint equality constraint to the model.
+        Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (slide and hinge) can be used.
+
+        Args:
+            joint1: Index of the first joint
+            joint2: Index of the second joint
+            polycoef: Polynomial coefficients for joint coupling
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        return self.add_equality_constraint(
+            constraint_type=EQ_JOINT,
+            joint1=joint1,
+            joint2=joint2,
+            polycoef=polycoef,
+            key=key,
+            enabled=enabled,
+        )
+
+    def add_equality_constraint_weld(
+        self,
+        body1: int = -1,
+        body2: int = -1,
+        anchor: Vec3 | None = None,
+        torquescale: float | None = None,
+        relpose: Transform | None = None,
+        key: str | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a weld equality constraint to the model.
+        Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
+
+        Args:
+            body1: Index of the first body participating in the constraint (-1 for world)
+            body2: Index of the second body participating in the constraint (-1 for world)
+            anchor: Coordinates of the weld point relative to body2
+            torquescale: Scales the angular residual for weld
+            relpose (Transform): Relative pose of body2 relative to body1. If None, the identity transform is used
+            key: Optional constraint name
+            enabled: Whether constraint is active
+
+        Returns:
+            Constraint index
+        """
+
+        return self.add_equality_constraint(
+            constraint_type=EQ_WELD,
+            body1=body1,
+            body2=body2,
+            anchor=anchor,
+            torquescale=torquescale,
+            relpose=relpose,
+            key=key,
+            enabled=enabled,
+        )
+
     # endregion
 
     def plot_articulation(
@@ -1331,23 +1496,23 @@ class ModelBuilder:
             return "unknown"
 
         def shape_type_str(type):
-            if type == GEO_SPHERE:
+            if type == GeoType.SPHERE:
                 return "sphere"
-            if type == GEO_BOX:
+            if type == GeoType.BOX:
                 return "box"
-            if type == GEO_CAPSULE:
+            if type == GeoType.CAPSULE:
                 return "capsule"
-            if type == GEO_CYLINDER:
+            if type == GeoType.CYLINDER:
                 return "cylinder"
-            if type == GEO_CONE:
+            if type == GeoType.CONE:
                 return "cone"
-            if type == GEO_MESH:
+            if type == GeoType.MESH:
                 return "mesh"
-            if type == GEO_SDF:
+            if type == GeoType.SDF:
                 return "sdf"
-            if type == GEO_PLANE:
+            if type == GeoType.PLANE:
                 return "plane"
-            if type == GEO_NONE:
+            if type == GeoType.NONE:
                 return "none"
             return "unknown"
 
@@ -1359,7 +1524,7 @@ class ModelBuilder:
             for i in range(self.shape_count):
                 shape_label = f"shape_{i}"
                 if show_shape_types:
-                    shape_label += f"\n({shape_type_str(self.shape_geo_type[i])})"
+                    shape_label += f"\n({shape_type_str(self.shape_type[i])})"
                 vertices.append(shape_label)
         edges = []
         edge_labels = []
@@ -1742,11 +1907,11 @@ class ModelBuilder:
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body (e.g., static environment geometry).
-            type (int): The geometry type of the shape (e.g., `GEO_BOX`, `GEO_SPHERE`).
+            type (int): The geometry type of the shape (e.g., `GeoType.BOX`, `GeoType.SPHERE`).
             xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
-            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GEO_MESH` or an :class:`SDF` object for `GEO_SDF`. Defaults to `None`.
+            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
 
@@ -1773,11 +1938,11 @@ class ModelBuilder:
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
         self.shape_flags.append(cfg.flags)
-        self.shape_geo_type.append(type)
-        self.shape_geo_scale.append((scale[0], scale[1], scale[2]))
-        self.shape_geo_src.append(src)
-        self.shape_geo_thickness.append(cfg.thickness)
-        self.shape_geo_is_solid.append(cfg.is_solid)
+        self.shape_type.append(type)
+        self.shape_scale.append((scale[0], scale[1], scale[2]))
+        self.shape_source.append(src)
+        self.shape_thickness.append(cfg.thickness)
+        self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
         self.shape_material_kd.append(cfg.kd)
         self.shape_material_kf.append(cfg.kf)
@@ -1847,7 +2012,7 @@ class ModelBuilder:
         scale = wp.vec3(width, length, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_PLANE,
+            type=GeoType.PLANE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -1903,7 +2068,7 @@ class ModelBuilder:
         scale: Any = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_SPHERE,
+            type=GeoType.SPHERE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -1942,7 +2107,7 @@ class ModelBuilder:
         scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
             body=body,
-            type=GEO_BOX,
+            type=GeoType.BOX,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -1989,7 +2154,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CAPSULE,
+            type=GeoType.CAPSULE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2036,7 +2201,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CYLINDER,
+            type=GeoType.CYLINDER,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2083,7 +2248,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CONE,
+            type=GeoType.CONE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2117,7 +2282,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
-            type=GEO_MESH,
+            type=GeoType.MESH,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2149,7 +2314,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
-            type=GEO_SDF,
+            type=GeoType.SDF,
             xform=xform,
             cfg=cfg,
             src=sdf,
@@ -2212,8 +2377,8 @@ class ModelBuilder:
         if shape_indices is None:
             shape_indices = [
                 i
-                for i, stype in enumerate(self.shape_geo_type)
-                if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
+                for i, stype in enumerate(self.shape_type)
+                if stype == GeoType.MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
         # keep track of remeshed shapes to handle fallbacks
@@ -2231,8 +2396,8 @@ class ModelBuilder:
                 decompositions = {}
 
                 for shape in shape_indices:
-                    mesh: Mesh = self.shape_geo_src[shape]
-                    scale = self.shape_geo_scale[shape]
+                    mesh: Mesh = self.shape_source[shape]
+                    scale = self.shape_scale[shape]
                     hash_m = hash(mesh)
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
@@ -2261,7 +2426,7 @@ class ModelBuilder:
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
+                    self.shape_source[shape] = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
                     if len(decomposition) > 1:
@@ -2275,8 +2440,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
-                            thickness=self.shape_geo_thickness[shape],
-                            is_solid=self.shape_geo_is_solid[shape],
+                            thickness=self.shape_thickness[shape],
+                            is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
                             collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
                         )
@@ -2295,7 +2460,9 @@ class ModelBuilder:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
                 else:
-                    wp.warn(f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.")
+                    warnings.warn(
+                        f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
+                    )
                     method = "convex_hull"
 
         if method in RemeshingMethod.__args__:
@@ -2305,7 +2472,7 @@ class ModelBuilder:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
+                mesh: Mesh = self.shape_source[shape]
                 hash_m = hash(mesh)
                 rmesh = remeshed.get(hash_m, None)
                 if rmesh is None:
@@ -2316,27 +2483,26 @@ class ModelBuilder:
                         if raise_on_failure:
                             raise RuntimeError(f"Remeshing with method '{method}' failed for shape {shape}.") from e
                         else:
-                            wp.warn(
-                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box."
+                            warnings.warn(
+                                f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
+                                stacklevel=2,
                             )
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
-                self.shape_geo_src[shape] = self.shape_geo_src[shape].copy(
-                    vertices=rmesh.vertices, indices=rmesh.indices
-                )
+                self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
-                scale = self.shape_geo_scale[shape]
+                mesh: Mesh = self.shape_source[shape]
+                scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 tf, scale = compute_obb(vertices)
-                self.shape_geo_type[shape] = GEO_BOX
-                self.shape_geo_src[shape] = None
-                self.shape_geo_scale[shape] = scale
+                self.shape_type[shape] = GeoType.BOX
+                self.shape_source[shape] = None
+                self.shape_scale[shape] = scale
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
                 remeshed_shapes.add(shape)
@@ -2344,14 +2510,14 @@ class ModelBuilder:
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     continue
-                mesh: Mesh = self.shape_geo_src[shape]
-                scale = self.shape_geo_scale[shape]
+                mesh: Mesh = self.shape_source[shape]
+                scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 center = np.mean(vertices, axis=0)
                 radius = np.max(np.linalg.norm(vertices - center, axis=1))
-                self.shape_geo_type[shape] = GEO_SPHERE
-                self.shape_geo_src[shape] = None
-                self.shape_geo_scale[shape] = wp.vec3(radius, 0.0, 0.0)
+                self.shape_type[shape] = GeoType.SPHERE
+                self.shape_source[shape] = None
+                self.shape_scale[shape] = wp.vec3(radius, 0.0, 0.0)
                 tf = wp.transform(center, wp.quat_identity())
                 shape_tf = wp.transform(*self.shape_transform[shape])
                 self.shape_transform[shape] = shape_tf * tf
@@ -3323,6 +3489,17 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
+    def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
+        """
+        Adds a free joint to every body that is not a child in any joint and has mass > 0.
+        Should be called after all other joints have been added.
+        """
+        # set(self.joint_child) is connected_bodies
+        floating_bodies = set(new_bodies) - set(self.joint_child)
+        for body_id in floating_bodies:
+            if self.body_mass[body_id] > 0:
+                self.add_joint_free(child=body_id)
+
     def set_coloring(self, particle_color_groups):
         """
         Sets coloring information with user-provided coloring.
@@ -3447,7 +3624,7 @@ class ModelBuilder:
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
             finalized_meshes = {}  # do not duplicate meshes
-            for geo in self.shape_geo_src:
+            for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
                     if geo_hash not in finalized_meshes:
@@ -3457,23 +3634,23 @@ class ModelBuilder:
                     # add null pointer
                     geo_sources.append(0)
 
-            m.shape_geo.type = wp.array(self.shape_geo_type, dtype=wp.int32)
-            m.shape_geo.source = wp.array(geo_sources, dtype=wp.uint64)
-            m.shape_geo.scale = wp.array(self.shape_geo_scale, dtype=wp.vec3, requires_grad=requires_grad)
-            m.shape_geo.is_solid = wp.array(self.shape_geo_is_solid, dtype=wp.bool)
-            m.shape_geo.thickness = wp.array(self.shape_geo_thickness, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
+            m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
+            m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_geo_src = self.shape_geo_src  # used for rendering
+            m.shape_source = self.shape_source  # used for rendering
 
-            m.shape_materials.ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_materials.restitution = wp.array(
+            m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_kf = wp.array(self.shape_material_kf, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_ka = wp.array(self.shape_material_ka, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_mu = wp.array(self.shape_material_mu, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
 
@@ -3670,19 +3847,35 @@ class ModelBuilder:
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
 
+            # equality constraints
+            m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
+            m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
+            m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
+            m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
+            m.equality_constraint_torquescale = wp.array(self.equality_constraint_torquescale, dtype=wp.float32)
+            m.equality_constraint_relpose = wp.array(
+                self.equality_constraint_relpose, dtype=wp.transform, requires_grad=requires_grad
+            )
+            m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
+            m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
+            m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
+            m.equality_constraint_key = self.equality_constraint_key
+            m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
+
             # counts
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
             m.particle_count = len(self.particle_q)
             m.body_count = len(self.body_q)
-            m.shape_count = len(self.shape_geo_type)
+            m.shape_count = len(self.shape_type)
             m.tri_count = len(self.tri_poses)
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
+            m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = count_rigid_contact_points(m)

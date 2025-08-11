@@ -24,16 +24,8 @@ from .core import (
 
 # Geometry functionality
 from .geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     SDF,
+    GeoType,
     Mesh,
     create_box,
     create_capsule,
@@ -46,6 +38,9 @@ from .geometry import (
 
 # Simulation functionality
 from .sim import (
+    EQ_CONNECT,
+    EQ_JOINT,
+    EQ_WELD,
     JOINT_BALL,
     JOINT_D6,
     JOINT_DISTANCE,
@@ -66,15 +61,9 @@ from .sim import (
 )
 
 __all__ = [
-    "GEO_BOX",
-    "GEO_CAPSULE",
-    "GEO_CONE",
-    "GEO_CYLINDER",
-    "GEO_MESH",
-    "GEO_NONE",
-    "GEO_PLANE",
-    "GEO_SDF",
-    "GEO_SPHERE",
+    "EQ_CONNECT",
+    "EQ_JOINT",
+    "EQ_WELD",
     "JOINT_BALL",
     "JOINT_D6",
     "JOINT_DISTANCE",
@@ -90,10 +79,10 @@ __all__ = [
     "AxisType",
     "Contacts",
     "Control",
+    "GeoType",
     "Mesh",
     "Model",
     "ModelBuilder",
-    "ShapeMaterials",
     "State",
     "__version__",
     "create_box",
