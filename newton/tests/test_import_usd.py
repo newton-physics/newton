@@ -128,14 +128,23 @@ class TestImportUsd(unittest.TestCase):
         # 3. Fixed joint with only body0 specified (CenterPivot to world)
         self.assertEqual(builder.joint_count, 3)
 
+        # Find joints by their keys to make test robust to ordering changes
+        fixed_joint_idx = builder.joint_key.index("/Articulation/CenterPivot/FixedJoint")
+        revolute_joint_idx = builder.joint_key.index("/Articulation/Arm/RevoluteJoint")
+        # The free joint typically has a generic key like "joint_1"
+        free_joint_idx = next(
+            i
+            for i, key in enumerate(builder.joint_key)
+            if key not in ["/Articulation/CenterPivot/FixedJoint", "/Articulation/Arm/RevoluteJoint"]
+        )
+
         # Verify joint types
-        self.assertEqual(builder.joint_type[0], newton.JOINT_FREE)
-        self.assertEqual(builder.joint_type[1], newton.JOINT_REVOLUTE)
-        self.assertEqual(builder.joint_type[2], newton.JOINT_FIXED)
+        self.assertEqual(builder.joint_type[free_joint_idx], newton.JOINT_FREE)
+        self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JOINT_REVOLUTE)
+        self.assertEqual(builder.joint_type[fixed_joint_idx], newton.JOINT_FIXED)
 
         # The key test: verify the FixedJoint connects CenterPivot to world
         # because body1 was missing in the USD file
-        fixed_joint_idx = 2
         self.assertEqual(builder.joint_parent[fixed_joint_idx], -1)  # Parent is world (-1)
         # Child should be CenterPivot (which was body0 in the USD)
         center_pivot_idx = builder.body_key.index("/Articulation/CenterPivot")
