@@ -517,14 +517,16 @@ def parse_usd(
         child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
         # If child_id is -1, swap parent and child
         if child_id == -1:
+            if parent_id == -1:
+                if verbose:
+                    print(f"Skipping joint {joint_path}: both bodies unresolved")
+                return
             parent_id, child_id = child_id, parent_id
             parent_tf, child_tf = child_tf, parent_tf
             if verbose:
                 print(f"Joint {joint_path} connects {parent_path} to world")
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
-        # if parent_id == -1:
-        #     print("joint connected to world")
 
         joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
         joint_params = {
