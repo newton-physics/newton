@@ -515,6 +515,11 @@ def parse_usd(
         # if parent_id == -1:
         #     print("joint connected to world")
         child_id = path_body_map.get(child_path, -1)
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            parent_id, child_id = child_id, parent_id
+            if verbose:
+                print(f"Joint {joint_path} connects {parent_path} to world")
         parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)

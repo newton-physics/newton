@@ -99,6 +99,53 @@ class TestImportUsd(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_revolute_articulation(self):
+        """Test importing USD with a joint that has missing body1.
+
+        This tests the behavior where:
+        - Normally: body0 is parent, body1 is child
+        - When body1 is missing: body0 becomes child, world (-1) becomes parent
+
+        The test USD file contains a FixedJoint inside CenterPivot that only
+        specifies body0 (itself) but no body1, which should result in the joint
+        connecting CenterPivot to the world.
+        """
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "revolute_articulation.usda"),
+            builder,
+            collapse_fixed_joints=False,  # Don't collapse to see all joints
+        )
+
+        # The articulation has 2 bodies
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(set(builder.body_key), {"/Articulation/Arm", "/Articulation/CenterPivot"})
+
+        # Should have 3 joints:
+        # 1. Free joint for articulation root (automatically added)
+        # 2. Revolute joint between CenterPivot and Arm (normal joint with both bodies)
+        # 3. Fixed joint with only body0 specified (CenterPivot to world)
+        self.assertEqual(builder.joint_count, 3)
+
+        # Verify joint types
+        self.assertEqual(builder.joint_type[0], newton.JOINT_FREE)
+        self.assertEqual(builder.joint_type[1], newton.JOINT_REVOLUTE)
+        self.assertEqual(builder.joint_type[2], newton.JOINT_FIXED)
+
+        # The key test: verify the FixedJoint connects CenterPivot to world
+        # because body1 was missing in the USD file
+        fixed_joint_idx = 2
+        self.assertEqual(builder.joint_parent[fixed_joint_idx], -1)  # Parent is world (-1)
+        # Child should be CenterPivot (which was body0 in the USD)
+        center_pivot_idx = builder.body_key.index("/Articulation/CenterPivot")
+        self.assertEqual(builder.joint_child[fixed_joint_idx], center_pivot_idx)
+
+        # Verify the import results mapping
+        self.assertEqual(len(results["path_body_map"]), 2)
+        self.assertEqual(len(results["path_shape_map"]), 1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         parse_usd(
