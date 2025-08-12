@@ -172,7 +172,6 @@ class Example:
                 scaling=self.renderer_scale_factor,
                 enable_backface_culling=False,
             )
-            self.renderer.paused = True
         else:
             self.renderer = None
 
