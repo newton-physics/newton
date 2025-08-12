@@ -96,6 +96,8 @@ uniform sampler2D shadow_map;
 uniform vec3 fogColor;
 uniform int up_axis;
 
+uniform mat4 light_space_matrix;
+
 const float PI = 3.14159265359;
 
 float rand(vec2 co){
@@ -143,15 +145,24 @@ vec2 poissonDisk[16] = vec2[](
    vec2( 0.14383161, -0.14100790 )
 );
 
-float ShadowCalculation() {
-    vec3 projCoords = FragPosLightSpace.xyz / FragPosLightSpace.w;
+float ShadowCalculation()
+{
+    vec3 normal = normalize(Normal);
+    vec3 lightDir = normalize(sun_direction);
+
+    // bias in normal dir
+    float worldTexel = 20.0 / float(4096); // world extent / shadow map resolution
+    float normalBias = 2.0 * worldTexel;   // tune ~1-3
+    vec4 light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+    vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
+
+    // map to [0,1]
     projCoords = projCoords * 0.5 + 0.5;
     if (projCoords.z > 1.0)
         return 0.0;
-    float currentDepth = projCoords.z;
-    vec3 normal = normalize(Normal);
-    vec3 lightDir = normalize(sun_direction);
-    float bias = max(0.001 * (1.0 - dot(normal, lightDir)), 0.0001);
+    float frag_depth = projCoords.z;
+
+
     float shadow = 0.0;
     float radius = 1.25;
     vec2 texelSize = 1.0 / textureSize(shadow_map, 0);
@@ -162,8 +173,8 @@ float ShadowCalculation() {
     for(int i = 0; i < 16; i++)
     {
         vec2 offset = rotationMatrix * poissonDisk[i];
-        float pcfDepth = texture(shadow_map, projCoords.xy + offset * radius * texelSize).r;
-        if(pcfDepth < currentDepth - bias)
+        float pcf_depth = texture(shadow_map, projCoords.xy + offset * radius * texelSize).r;
+        if(pcf_depth < frag_depth)
             shadow += 1.0;
     }
     shadow /= 16.0;
