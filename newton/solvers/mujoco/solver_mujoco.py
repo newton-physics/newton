@@ -2227,16 +2227,8 @@ class MuJoCoSolver(SolverBase):
             if geom_idx >= 0:
                 shape_to_geom_idx[shape] = geom_idx
                 geom_to_shape_idx[geom_idx] = shape
-                # compute the difference between the original shape transform
-                # and the transform after applying the joint child transform
-                # and the transform MuJoCo does on mesh geoms
-                original_tf = wp.transform(*shape_transform[shape])
-                mjc_p = self.mj_model.geom_pos[geom_idx]
-                mjc_q = self.mj_model.geom_quat[geom_idx]
-                mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
-                shape_incoming_xform[shape] = mjc_tf * wp.transform_inverse(original_tf)
         shape_mapping = shape_to_geom_idx  # Replace with actual indices
-
+        # shape_mapping is a mapping from Newton shape index to MuJoCo template geom index
         # The current `shape_mapping` only contains the template shapes.
         # We expand it to cover all shapes in all environments.
         if separate_envs_to_worlds and model.num_envs > 1:
@@ -2249,6 +2241,7 @@ class MuJoCoSolver(SolverBase):
                 )
 
             full_shape_mapping = {}
+            # geom_to_shape_idx is a mapping from MuJoCo template geom index to Newton shape indices of the last environemnt
             # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
             for geom_idx, template_shape_idx in geom_to_shape_idx.items():
                 # The local index is consistent for a given part of the model across all environments.
@@ -2258,6 +2251,15 @@ class MuJoCoSolver(SolverBase):
                     global_shape_idx = env_idx * shapes_per_env + local_shape_idx
                     # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
+                    if geom_idx >= 0:
+                        # compute the difference between the original shape transform
+                        # and the transform after applying the joint child transform
+                        # and the transform MuJoCo does on mesh geoms
+                        original_tf = wp.transform(*shape_transform[global_shape_idx])
+                        mjc_p = self.mj_model.geom_pos[geom_idx]
+                        mjc_q = self.mj_model.geom_quat[geom_idx]
+                        mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                        shape_incoming_xform[global_shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
 
