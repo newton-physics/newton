@@ -62,7 +62,7 @@ def compute_capsule_inertia(density: float, r: float, h: float) -> tuple[float, 
 
     Returns:
 
-        A tuple of (mass, inertia) with inertia specified about the center of mass (which is at the origin)
+        A tuple of (mass, inertia) with inertia specified around the origin
     """
 
     ms = density * (4.0 / 3.0) * wp.pi * r * r * r
@@ -115,7 +115,7 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
 
     Returns:
 
-        A tuple of (mass, center of mass, inertia) with inertia specified about the center of mass
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     m = density * wp.pi * r * r * h / 3.0
