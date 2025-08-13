@@ -161,7 +161,7 @@ class TestImportUrdf(unittest.TestCase):
         self.parse_urdf(SPHERE_URDF, builder)
 
         assert builder.shape_count == 1
-        assert builder.shape_type[0] == newton.GEO_SPHERE
+        assert builder.shape_type[0] == newton.GeoType.SPHERE
         assert builder.shape_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
@@ -181,7 +181,7 @@ class TestImportUrdf(unittest.TestCase):
                         self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
-                assert builder.shape_type[0] == newton.GEO_MESH
+                assert builder.shape_type[0] == newton.GeoType.MESH
                 assert_np_equal(builder.shape_scale[0], np.array([1.0, 1.0, 1.0]))
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_source[0].vertices.shape[0] == 8
@@ -191,7 +191,7 @@ class TestImportUrdf(unittest.TestCase):
         builder = newton.ModelBuilder()
         self.parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
 
-        assert builder.shape_type[0] == newton.GEO_CAPSULE
+        assert builder.shape_type[0] == newton.GeoType.CAPSULE
         assert builder.shape_scale[0][0] == 0.5
         assert builder.shape_scale[0][1] == 0.5  # half height
         assert_np_equal(

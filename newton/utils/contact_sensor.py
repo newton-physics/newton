@@ -178,7 +178,7 @@ class ContactSensor:
             counterpart_shapes = [MatchAny]
             counterpart_bodies = []
 
-        sp_sorted, sp_reading, self.shape, self.reading_indices, self.sensing_obj_kinds, self.counterpart_kinds = (
+        sp_sorted, sp_reading, self.shape, self.reading_indices, self.sensing_objs, self.counterparts = (
             self._assemble_sensor_mappings(
                 sensing_obj_bodies,
                 sensing_obj_shapes,
@@ -214,16 +214,18 @@ class ContactSensor:
         shape_contact_pairs: set[tuple[int, int]] | None,
     ):
         # MatchAny, then bodies, then shapes
-        # TODO: in addition to kind, return index
         def expand_bodies(bodies, shapes):
             has_matchany = MatchAny in bodies or MatchAny in shapes
-            body = [tuple(body_shapes[b]) for b in bodies if b is not MatchAny]
-            shape = [(s,) for s in shapes if s is not MatchAny]
+            body_idx = [b for b in bodies if b is not MatchAny]
+            shape_idx = [s for s in shapes if s is not MatchAny]
+            body = [tuple(body_shapes[b]) for b in body_idx]
+            shape = [(s,) for s in shape_idx]
             match_kind = (
                 [MatchKind.MATCH_ANY] * has_matchany + [MatchKind.BODY] * len(body) + [MatchKind.SHAPE] * len(shape)
             )
             entities = [MatchAny] * has_matchany + body + shape
-            return match_kind, entities
+            indices = [MatchAny] * has_matchany + body_idx + shape_idx
+            return list(zip(indices, match_kind)), entities
 
         def get_colliding_sps(a, b) -> dict[tuple[int, int], bool]:
             all_pairs_flip = {

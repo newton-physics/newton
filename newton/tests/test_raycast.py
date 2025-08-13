@@ -17,7 +17,7 @@ import unittest
 
 import warp as wp
 
-from newton.geometry import GEO_BOX, GEO_CAPSULE, GEO_CYLINDER, GEO_SPHERE
+from newton.geometry import GeoType
 from newton.geometry.raycast import (
     ray_intersect_box,
     ray_intersect_capsule,
@@ -219,7 +219,7 @@ def test_geom_ray_intersect(test: TestRaycast, device: str):
     wp.launch(
         kernel_test_geom,
         dim=1,
-        inputs=[out_t, geom_to_world, size, GEO_SPHERE, ray_origin, ray_direction],
+        inputs=[out_t, geom_to_world, size, GeoType.SPHERE, ray_origin, ray_direction],
         device=device,
     )
     test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
@@ -227,7 +227,10 @@ def test_geom_ray_intersect(test: TestRaycast, device: str):
     # Box
     size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
     wp.launch(
-        kernel_test_geom, dim=1, inputs=[out_t, geom_to_world, size, GEO_BOX, ray_origin, ray_direction], device=device
+        kernel_test_geom,
+        dim=1,
+        inputs=[out_t, geom_to_world, size, GeoType.BOX, ray_origin, ray_direction],
+        device=device,
     )
     test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
@@ -236,7 +239,7 @@ def test_geom_ray_intersect(test: TestRaycast, device: str):
     wp.launch(
         kernel_test_geom,
         dim=1,
-        inputs=[out_t, geom_to_world, size, GEO_CAPSULE, ray_origin, ray_direction],
+        inputs=[out_t, geom_to_world, size, GeoType.CAPSULE, ray_origin, ray_direction],
         device=device,
     )
     test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)
@@ -246,7 +249,7 @@ def test_geom_ray_intersect(test: TestRaycast, device: str):
     wp.launch(
         kernel_test_geom,
         dim=1,
-        inputs=[out_t, geom_to_world, size, GEO_CYLINDER, ray_origin, ray_direction],
+        inputs=[out_t, geom_to_world, size, GeoType.CYLINDER, ray_origin, ray_direction],
         device=device,
     )
     test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)

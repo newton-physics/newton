@@ -687,7 +687,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         tested_count = 0
         for world_idx in range(self.model.num_envs):
             for geom_idx in range(num_geoms):
-                shape_idx = to_newton_shape_index[geom_idx]
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:  # No mapping for this geom
                     continue
 
@@ -892,7 +892,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         tested_count = 0
         for world_idx in range(self.model.num_envs):
             for geom_idx in range(num_geoms):
-                shape_idx = to_newton_shape_index[geom_idx]
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:  # No mapping
                     continue
 

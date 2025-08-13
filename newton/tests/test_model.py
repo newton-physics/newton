@@ -254,13 +254,13 @@ class TestModel(unittest.TestCase):
         assert_np_equal(np.array(builder.shape_transform[s0]), np.array(wp.transform_identity()), tol=1.0e-4)
         # bounding box
         self.assertIsNone(builder.shape_source[s1])
-        self.assertEqual(builder.shape_type[s1], newton.geometry.GEO_BOX)
+        self.assertEqual(builder.shape_type[s1], newton.geometry.GeoType.BOX)
         assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[s1].p), np.array(tf.p), tol=1.0e-4)
         # bounding sphere
         self.assertIsNone(builder.shape_source[s2])
-        self.assertEqual(builder.shape_type[s2], newton.geometry.GEO_SPHERE)
+        self.assertEqual(builder.shape_type[s2], newton.geometry.GeoType.SPHERE)
         self.assertAlmostEqual(builder.shape_scale[s2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[s2]), np.array(tf), tol=1.0e-4)
         # make sure the original mesh is not modified

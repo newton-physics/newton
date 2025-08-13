@@ -23,15 +23,8 @@ import numpy as np
 import warp as wp
 
 from .types import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     SDF,
+    GeoType,
     Mesh,
     Vec3,
 )
@@ -404,7 +397,7 @@ def compute_shape_inertia(
     """Computes the mass, center of mass and 3x3 inertia tensor of a shape
 
     Args:
-        type: The type of shape (GEO_SPHERE, GEO_BOX, etc.)
+        type: The type of shape (GeoType.SPHERE, GeoType.BOX, etc.)
         scale: The scale of the shape
         src: The source shape (Mesh or SDF)
         density: The density of the shape
@@ -414,10 +407,10 @@ def compute_shape_inertia(
     Returns:
         The mass, center of mass and 3x3 inertia tensor of the shape
     """
-    if density == 0.0 or type == GEO_PLANE:  # zero density means fixed
+    if density == 0.0 or type == GeoType.PLANE:  # zero density means fixed
         return 0.0, wp.vec3(), wp.mat33()
 
-    if type == GEO_SPHERE:
+    if type == GeoType.SPHERE:
         solid = compute_sphere_inertia(density, scale[0])
         if is_solid:
             return solid
@@ -425,7 +418,7 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
             hollow = compute_sphere_inertia(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GEO_BOX:
+    elif type == GeoType.BOX:
         w, h, d = scale[0] * 2.0, scale[1] * 2.0, scale[2] * 2.0
         solid = compute_box_inertia(density, w, h, d)
         if is_solid:
@@ -434,7 +427,7 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
             hollow = compute_box_inertia(density, w - thickness, h - thickness, d - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GEO_CAPSULE:
+    elif type == GeoType.CAPSULE:
         r, h = scale[0], scale[1] * 2.0
         solid = compute_capsule_inertia(density, r, h)
         if is_solid:
@@ -443,7 +436,7 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
             hollow = compute_capsule_inertia(density, r - thickness, h - 2.0 * thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GEO_CYLINDER:
+    elif type == GeoType.CYLINDER:
         r, h = scale[0], scale[1] * 2.0
         solid = compute_cylinder_inertia(density, r, h)
         if is_solid:
@@ -452,7 +445,7 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
             hollow = compute_cylinder_inertia(density, r - thickness, h - 2.0 * thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GEO_CONE:
+    elif type == GeoType.CONE:
         r, h = scale[0], scale[1] * 2.0
         solid = compute_cone_inertia(density, r, h)
         if is_solid:
@@ -461,7 +454,7 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
             hollow = compute_cone_inertia(density, r - thickness, h - 2.0 * thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GEO_MESH or type == GEO_SDF:
+    elif type == GeoType.MESH or type == GeoType.SDF:
         assert src is not None, "src must be provided for mesh or SDF shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
             m, c, I = src.mass, src.com, src.I
@@ -483,7 +476,7 @@ def compute_shape_inertia(
             I_new = wp.mat33([[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]])
 
             return m_new, c_new, I_new
-        elif type == GEO_MESH:
+        elif type == GeoType.MESH:
             assert isinstance(src, Mesh), "src must be a Mesh for mesh shapes"
             # fall back to computing inertia from mesh geometry
             vertices = np.array(src.vertices) * np.array(scale)

@@ -277,7 +277,9 @@ class TestImportUsd(unittest.TestCase):
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
-        self.assertEqual(builder.shape_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+        self.assertEqual(
+            builder.shape_type, [newton.GeoType.MESH, newton.GeoType.MESH, newton.GeoType.SPHERE, newton.GeoType.BOX]
+        )
 
         # original mesh
         mesh_original = builder.shape_source[0]
@@ -291,7 +293,7 @@ class TestImportUsd(unittest.TestCase):
 
         # bounding sphere
         self.assertIsNone(builder.shape_source[2])
-        self.assertEqual(builder.shape_type[2], newton.geometry.GEO_SPHERE)
+        self.assertEqual(builder.shape_type[2], newton.geometry.GeoType.SPHERE)
         self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
