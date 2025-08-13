@@ -300,7 +300,7 @@ class RobotKeyboardController:
 
 
 class Example:
-    def __init__(self, config):
+    def __init__(self, config, asset_directory: str, mjc_to_physx: list[int], physx_to_mjc: list[int]):
         self.device = wp.get_device()
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
         self.use_mujoco = False
@@ -317,7 +317,7 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         newton.utils.parse_usd(
-            newton.examples.get_asset(config.asset_path),
+            newton.examples.get_asset(asset_directory + config.asset_path),
             builder,
             joint_drive_gains_scaling=1.0,
             collapse_fixed_joints=False,
@@ -370,12 +370,8 @@ class Example:
         self._initial_joint_q = wp.clone(self.state_0.joint_q)
         self._initial_joint_qd = wp.clone(self.state_0.joint_qd)
         # Pre-compute tensors that don't change during simulation
-        self.physx_to_mjc_indices = torch.tensor(
-            [physx_to_mjc[i] for i in range(len(physx_to_mjc))], device=self.torch_device
-        )
-        self.mjc_to_physx_indices = torch.tensor(
-            [mjc_to_physx[i] for i in range(len(mjc_to_physx))], device=self.torch_device
-        )
+        self.physx_to_mjc_indices = torch.tensor(physx_to_mjc, device=self.torch_device, dtype=torch.long)
+        self.mjc_to_physx_indices = torch.tensor(mjc_to_physx, device=self.torch_device, dtype=torch.long)
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
 
@@ -440,7 +436,7 @@ class Example:
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(self.control.joint_target, a_wp)
 
-            for _ in range(example.decimation):
+            for _ in range(self.decimation):
                 if self.use_cuda_graph:
                     wp.capture_launch(self.graph)
                 else:
@@ -470,22 +466,24 @@ if __name__ == "__main__":
 
     args = parser.parse_known_args()[0]
     robots = {"g1_29dof": G1_29DOF, "g1_23dof": G1_23DOF, "go2": Go2, "anymal": Anymal}
-
     config = robots[args.robot]()
+    policy_directory = newton.utils.download_asset("rl_policies")
+    asset_directory = newton.utils.download_asset(config["asset_path"])
+
     print("[INFO] Selected robot:", args.robot)
     mjc_to_physx = list(range(config.num_dofs))
     physx_to_mjc = list(range(config.num_dofs))
 
     with wp.ScopedDevice(args.device):
         if args.physx:
-            policy_path = config.policy_path["physx"]
+            if "physx" not in config.policy_path or not hasattr(config, "physx_joint_names"):
+                raise ValueError(f"PhysX policy/joint mapping not available for robot '{args.robot}'.")
+            policy_path = policy_directory + config.policy_path["physx"]
             mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config.mjw_joint_names, config.physx_joint_names)
-            if config.policy_path.get("physx") is None:
-                raise ValueError("PhysX policy path not found in robot configuration.")
         else:
-            policy_path = config.policy_path["mjw"]
+            policy_path = policy_directory + config.policy_path["mjw"]
 
-        example = Example(config)
+        example = Example(config, asset_directory, mjc_to_physx, physx_to_mjc)
 
         # Use utility function to load policy and setup tensors
         load_policy_and_setup_tensors(example, policy_path, config.num_dofs, slice(7, None))

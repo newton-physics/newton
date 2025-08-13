@@ -5,7 +5,8 @@ from typing import ClassVar
 @dataclass
 class Go2:
     num_dofs: ClassVar[int] = 12
-    policy_path: ClassVar[dict[str, str]] = {"mjw": "./assets/mjw_go2.pt", "physx": "./assets/physx_go2.pt"}
+    asset_dir: ClassVar[str] = "go2_usd"
+    policy_path: ClassVar[dict[str, str]] = {"mjw": "mjw_go2.pt", "physx": "physx_go2.pt"}
     asset_path: ClassVar[str] = "go2.usd"
     action_scale: ClassVar[float] = 0.25
     mjw_joint_names: ClassVar[list[str]] = [
@@ -59,7 +60,8 @@ class Go2:
 @dataclass
 class Anymal:
     num_dofs: ClassVar[int] = 12
-    policy_path: ClassVar[dict[str, str]] = {"mjw": "./assets/mjw_anymal.pt", "physx": "./assets/physx_anymal.pt"}
+    asset_dir: ClassVar[str] = "anymal_usd"
+    policy_path: ClassVar[dict[str, str]] = {"mjw": "mjw_anymal.pt", "physx": "physx_anymal.pt"}
     asset_path: ClassVar[str] = "anymal_c.usd"
     action_scale: ClassVar[float] = 0.5
     mjw_joint_names: ClassVar[list[str]] = [
@@ -113,7 +115,8 @@ class Anymal:
 @dataclass
 class G1_23DOF:
     num_dofs: ClassVar[int] = 37
-    policy_path: ClassVar[dict[str, str]] = {"mjw": "./assets/mjw_g1_23DOF.pt", "physx": "./assets/physx_g1.pt"}
+    asset_dir: ClassVar[str] = "g1_usd"
+    policy_path: ClassVar[dict[str, str]] = {"mjw": "mjw_g1_23DOF.pt", "physx": "physx_g1_23DOF.pt"}
     asset_path: ClassVar[str] = "g1_minimal.usd"
     action_scale: ClassVar[float] = 0.5
     mjw_joint_names: ClassVar[list[str]] = [
@@ -318,7 +321,7 @@ class G1_23DOF:
 class G1_29DOF:
     num_dofs: ClassVar[int] = 43
     policy_path: ClassVar[dict[str, str]] = {
-        "mjw": "./assets/mjw_g1_29DOF.pt",
+        "mjw": "mjw_g1_29DOF.pt",
     }
     asset_path: ClassVar[str] = "g1_isaac.usd"
     action_scale: ClassVar[float] = 0.5
