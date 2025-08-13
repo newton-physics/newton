@@ -405,18 +405,12 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Cone extents are not supported."
-                # USD cones have origin at base center, but Newton expects origin at geometric center
-                # So we need to translate the cone up by half_height along its axis
-                axis_idx = "XYZ".index(axis_str)
-                axis_vec = [0.0, 0.0, 0.0]
-                axis_vec[axis_idx] = half_height
-                xform = wp.transform_multiply(xform, wp.transform(wp.vec3(*axis_vec), wp.quat_identity()))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis=axis_idx,
+                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -1042,23 +1036,11 @@ def parse_usd(
                         axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
-                    # USD cones have origin at base center, but Newton expects origin at geometric center
-                    # So we need to translate the cone up by half_height along its axis
-                    axis_idx = int(shape_spec.axis)
-                    # Get cone halfHeight from physics shape
-                    cone_half_height = shape_spec.halfHeight * scale[axis_idx]
-                    # Update the transform to translate by half_height along axis
-                    axis_vec = [0.0, 0.0, 0.0]
-                    axis_vec[axis_idx] = cone_half_height
-                    xform = shape_params["xform"]
-                    shape_params["xform"] = wp.transform_multiply(
-                        xform, wp.transform(wp.vec3(*axis_vec), wp.quat_identity())
-                    )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(axis_idx + 1) % 3],
-                        half_height=cone_half_height,
-                        axis=axis_idx,
+                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
+                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
