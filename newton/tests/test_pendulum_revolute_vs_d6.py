@@ -40,10 +40,10 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         # Find the revolute and D6 joints by their types
         rev_indices = np.where(jt == newton.JOINT_REVOLUTE)[0]
         d6_indices = np.where(jt == newton.JOINT_D6)[0]
-        
+
         if len(rev_indices) == 0 or len(d6_indices) == 0:
             self.fail(f"Expected REVOLUTE and D6 joints not found. types={jt}")
-            
+
         idx_rev = int(rev_indices[0])
         idx_d6 = int(d6_indices[0])
 
@@ -54,19 +54,19 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         # Set initial joint positions
         q0_model = model.joint_q.numpy()
         qd0_model = model.joint_qd.numpy()
-        
+
         # Initialize all DOFs to zero first
         q0_model[:] = 0.0
         qd0_model[:] = 0.0
-        
+
         # Set initial angle - both pendulums start at same angle
         initial_angle = 0.2  # rad
-        
+
         # Find the q indices for revolute and D6 joints
         q_start_np = model.joint_q_start.numpy()
         rev_qi = q_start_np[idx_rev]
         d6_qi = q_start_np[idx_d6]
-        
+
         # Set initial positions
         q0_model[rev_qi] = initial_angle
         q0_model[d6_qi] = initial_angle
@@ -75,7 +75,7 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         # Copy the joint positions to state before FK
         state_0.joint_q.assign(model.joint_q)
         state_0.joint_qd.assign(model.joint_qd)
-        
+
         # Evaluate FK for initial state
         newton.sim.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
@@ -94,28 +94,28 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
             contacts = None
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
-            
+
             # Get joint angles directly
             q_cur = state_0.joint_q.numpy()
             traj[i, 0] = q_cur[rev_qi]
             traj[i, 1] = q_cur[d6_qi]
-        
+
         # Also print a small preview
         for i in range(min(10, steps)):
             t = i * sim_dt
             qrev = traj[i, 0]
             qd6 = traj[i, 1]
-            print(f"t:{t:.6f} qrev:{qrev:.6f} qd6:{qd6:.6f} diff:{abs(qrev-qd6):.6f}")
+            print(f"t:{t:.6f} qrev:{qrev:.6f} qd6:{qd6:.6f} diff:{abs(qrev - qd6):.6f}")
 
         # Basic checks: they should have moved and oscillated
         # Check that min and max are different (pendulum is moving)
         rev_min, rev_max = np.min(traj[:, 0]), np.max(traj[:, 0])
         d6_min, d6_max = np.min(traj[:, 1]), np.max(traj[:, 1])
-        
-        self.assertNotAlmostEqual(rev_min, rev_max, places=3, 
-                                  msg=f"Revolute pendulum did not move: min={rev_min}, max={rev_max}")
-        self.assertNotAlmostEqual(d6_min, d6_max, places=3,
-                                  msg=f"D6 pendulum did not move: min={d6_min}, max={d6_max}")
+
+        self.assertNotAlmostEqual(
+            rev_min, rev_max, places=3, msg=f"Revolute pendulum did not move: min={rev_min}, max={rev_max}"
+        )
+        self.assertNotAlmostEqual(d6_min, d6_max, places=3, msg=f"D6 pendulum did not move: min={d6_min}, max={d6_max}")
 
         # Their trajectories should be close (same physics)
         diff = np.mean(np.abs(traj[:, 0] - traj[:, 1]))
