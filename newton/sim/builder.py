@@ -2220,14 +2220,15 @@ class ModelBuilder:
     ) -> int:
         """Adds a cone collision shape to a body.
 
-        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `axis` towards its apex.
+        The cone's origin is at its geometric center, with the base at -half_height and apex at +half_height along the specified `axis`.
+        The center of mass is located at -half_height/2 from the origin (1/4 of the total height from the base toward the apex).
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the cone in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cone's base. Defaults to `1.0`.
-            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `axis`). Defaults to `0.5`.
-            axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Z`.
+            half_height (float): The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
+            axis (AxisType): The local axis of the cone along which its height is aligned. The apex points toward the positive direction of this axis. Defaults to `Axis.Z`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
