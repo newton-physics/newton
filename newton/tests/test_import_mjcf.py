@@ -212,6 +212,171 @@ class TestImportMjcf(unittest.TestCase):
         # Verify that the rotation was actually applied (not just identity)
         assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
 
+    def test_site_parsing(self):
+        """Test that sites are parsed from MJCF files"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <site name="world_site" pos="0 0 1"/>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+            <joint type="hinge" axis="0 1 0"/>
+            <site name="body_site1" pos="0.1 0 0"/>
+            <site name="body_site2" pos="0 0.1 0" quat="0.707 0 0.707 0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test_sites.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            # Parse MJCF
+            builder = newton.ModelBuilder()
+            newton.utils.parse_mjcf(mjcf_path, builder)
+            model = builder.finalize()
+
+            # Check sites were parsed
+            self.assertEqual(model.site_count, 3)
+            self.assertEqual(len(model.site_key), 3)
+
+            # Check site keys
+            self.assertIn("world_site", model.site_key)
+            self.assertIn("body_site1", model.site_key)
+            self.assertIn("body_site2", model.site_key)
+
+            # Check site bodies (world is -1, body1 is 0)
+            site_bodies = model.site_body.numpy() if model.site_body is not None else []
+            world_site_idx = model.site_key.index("world_site")
+            body_site1_idx = model.site_key.index("body_site1")
+
+            self.assertEqual(site_bodies[world_site_idx], -1)  # worldbody
+            self.assertEqual(site_bodies[body_site1_idx], 0)  # first body
+
+    def test_tendon_parsing(self):
+        """Test that spatial tendons are parsed from MJCF files"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <site name="site0" pos="0 0 0"/>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+            <joint type="hinge" axis="0 1 0"/>
+            <site name="site1" pos="0.1 0 0"/>
+            <site name="site2" pos="0.2 0 0"/>
+        </body>
+    </worldbody>
+
+    <tendon>
+        <spatial name="tendon1" damping="0.5" stiffness="100">
+            <site site="site0"/>
+            <site site="site1"/>
+        </spatial>
+        <spatial name="tendon2">
+            <site site="site0"/>
+            <site site="site1"/>
+            <site site="site2"/>
+        </spatial>
+    </tendon>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test_tendons.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            # Parse MJCF
+            builder = newton.ModelBuilder()
+            newton.utils.parse_mjcf(mjcf_path, builder)
+            model = builder.finalize()
+
+            # Check tendons were parsed
+            self.assertEqual(model.tendon_count, 2)
+            self.assertEqual(len(model.tendon_key), 2)
+
+            # Check tendon keys
+            self.assertIn("tendon1", model.tendon_key)
+            self.assertIn("tendon2", model.tendon_key)
+
+            # Check tendon properties
+            tendon1_idx = model.tendon_key.index("tendon1")
+            self.assertEqual(model.tendon_type[tendon1_idx], "spatial")
+
+            if model.tendon_damping is not None:
+                damping_values = model.tendon_damping.numpy()
+                self.assertAlmostEqual(damping_values[tendon1_idx], 0.5)
+            if model.tendon_stiffness is not None:
+                stiffness_values = model.tendon_stiffness.numpy()
+                self.assertAlmostEqual(stiffness_values[tendon1_idx], 100.0)
+
+            # Check tendon site connections
+            self.assertEqual(len(model.tendon_site_ids[tendon1_idx]), 2)  # 2 sites
+            self.assertEqual(len(model.tendon_site_ids[1]), 3)  # 3 sites for tendon2
+
+    def test_tendon_actuator_parsing(self):
+        """Test that tendon actuators are parsed from MJCF files"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <site name="site0" pos="0 0 0"/>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+            <joint type="hinge" axis="0 1 0" name="joint1"/>
+            <site name="site1" pos="0.1 0 0"/>
+        </body>
+    </worldbody>
+
+    <tendon>
+        <spatial name="tendon1">
+            <site site="site0"/>
+            <site site="site1"/>
+        </spatial>
+    </tendon>
+
+    <actuator>
+        <position name="tendon_act1" tendon="tendon1" kp="300" kv="10" forcerange="-50 50"/>
+        <motor name="joint_act1" joint="joint1" gear="10"/>
+    </actuator>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "test_actuators.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            # Parse MJCF
+            builder = newton.ModelBuilder()
+            newton.utils.parse_mjcf(mjcf_path, builder)
+            model = builder.finalize()
+
+            # Check tendon actuator was parsed
+            self.assertEqual(model.tendon_actuator_count, 1)
+            self.assertEqual(len(model.tendon_actuator_key), 1)
+
+            # Check actuator key
+            self.assertEqual(model.tendon_actuator_key[0], "tendon_act1")
+
+            # Check actuator properties
+            if model.tendon_actuator_ke is not None:
+                ke_values = model.tendon_actuator_ke.numpy()
+                self.assertAlmostEqual(ke_values[0], 300.0)
+            if model.tendon_actuator_kd is not None:
+                kd_values = model.tendon_actuator_kd.numpy()
+                self.assertAlmostEqual(kd_values[0], 10.0)
+            if model.tendon_actuator_force_range is not None:
+                force_range = model.tendon_actuator_force_range.numpy()
+                self.assertAlmostEqual(force_range[0][0], -50.0)
+                self.assertAlmostEqual(force_range[0][1], 50.0)
+
+            # Check actuator references correct tendon
+            tendon_ids = model.tendon_actuator_tendon_id.numpy()
+            tendon_id = tendon_ids[0]
+            self.assertEqual(model.tendon_key[tendon_id], "tendon1")
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

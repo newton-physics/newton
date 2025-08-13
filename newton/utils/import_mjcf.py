@@ -752,6 +752,19 @@ def parse_mjcf(
             builder.body_inv_inertia[link] = wp.inverse(I_m)
 
         # -----------------
+        # parse sites
+
+        for site in body.findall("site"):
+            site_attrib = site.attrib
+            site_name = site_attrib.get("name", f"{body_name}_site_{len(builder.site_key)}")
+            site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            site_quat = parse_orientation(site_attrib)
+            site_xform = wp.transform(site_pos, site_quat)
+
+            # Add the site to the builder
+            builder.add_site(link, site_xform, key=site_name)
+
+        # -----------------
         # recurse
 
         for child in body.findall("body"):
@@ -897,6 +910,23 @@ def parse_mjcf(
     )
 
     # -----------------
+    # add worldbody sites
+
+    for site in world.findall("site"):
+        site_attrib = site.attrib
+        site_name = site_attrib.get("name", f"world_site_{len(builder.site_key)}")
+        site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+        site_quat = parse_orientation(site_attrib)
+        site_xform = wp.transform(site_pos, site_quat)
+
+        # Apply world transform if provided
+        if xform is not None:
+            site_xform = xform * site_xform
+
+        # Add the site to the builder (worldbody has index -1)
+        builder.add_site(-1, site_xform, key=site_name)
+
+    # -----------------
     # add equality constraints
 
     equality = root.find("equality")
@@ -915,6 +945,77 @@ def parse_mjcf(
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
                 builder.shape_collision_filter_pairs.add((i, j))
+
+    # -----------------
+    # parse tendons
+
+    # Create a mapping from site names to site indices
+    site_name_to_index = {name: i for i, name in enumerate(builder.site_key)}
+
+    tendon_root = root.find("tendon")
+    if tendon_root is not None:
+        for spatial_tendon in tendon_root.findall("spatial"):
+            tendon_name = spatial_tendon.attrib.get("name", f"spatial_tendon_{len(builder.tendon_key)}")
+
+            # Parse tendon properties
+            damping = parse_float(spatial_tendon.attrib, "damping", 0.0)
+            stiffness = parse_float(spatial_tendon.attrib, "stiffness", 0.0)
+
+            # Collect site indices for this tendon
+            site_ids = []
+            for site_element in spatial_tendon.findall("site"):
+                site_attr = site_element.attrib.get("site")
+                if site_attr and site_attr in site_name_to_index:
+                    site_ids.append(site_name_to_index[site_attr])
+                else:
+                    print(f"Warning: Site '{site_attr}' referenced in tendon '{tendon_name}' not found")
+
+            if len(site_ids) >= 2:  # A tendon needs at least 2 sites
+                builder.add_tendon(
+                    tendon_type="spatial",
+                    site_ids=site_ids,
+                    damping=damping,
+                    stiffness=stiffness,
+                    key=tendon_name,
+                )
+            else:
+                print(f"Warning: Tendon '{tendon_name}' has fewer than 2 sites, skipping")
+
+    # -----------------
+    # parse actuators
+
+    # Create a mapping from tendon names to tendon indices
+    tendon_name_to_index = {name: i for i, name in enumerate(builder.tendon_key)}
+
+    actuator_root = root.find("actuator")
+    if actuator_root is not None:
+        for actuator in actuator_root:
+            # Check if this actuator references a tendon
+            tendon_ref = actuator.attrib.get("tendon")
+            if tendon_ref and tendon_ref in tendon_name_to_index:
+                actuator_name = actuator.attrib.get("name", f"tendon_actuator_{len(builder.tendon_actuator_key)}")
+                tendon_id = tendon_name_to_index[tendon_ref]
+
+                # Parse actuator properties
+                # For position actuators, kp maps to ke (elastic gain)
+                ke = parse_float(actuator.attrib, "kp", 0.0)
+                kd = parse_float(actuator.attrib, "kv", 0.0)
+
+                # Parse force range if specified
+                forcerange = actuator.attrib.get("forcerange")
+                if forcerange:
+                    force_vals = np.fromstring(forcerange, sep=" ", dtype=np.float32)
+                    force_range = (force_vals[0], force_vals[1])
+                else:
+                    force_range = None
+
+                builder.add_tendon_actuator(
+                    tendon_id=tendon_id,
+                    ke=ke,
+                    kd=kd,
+                    force_range=force_range,
+                    key=actuator_name,
+                )
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
