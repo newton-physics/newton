@@ -25,14 +25,8 @@ import warp as wp
 from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_PLANE,
-    GEO_SPHERE,
     SDF,
+    GeoType,
     Mesh,
 )
 
@@ -41,16 +35,16 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
     """
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
     """
-    if geo_type == GEO_SPHERE:
+    if geo_type == GeoType.SPHERE:
         return scale[0]
-    elif geo_type == GEO_BOX:
+    elif geo_type == GeoType.BOX:
         return np.linalg.norm(scale)
-    elif geo_type == GEO_CAPSULE or geo_type == GEO_CYLINDER or geo_type == GEO_CONE:
+    elif geo_type == GeoType.CAPSULE or geo_type == GeoType.CYLINDER or geo_type == GeoType.CONE:
         return scale[0] + scale[1]
-    elif geo_type == GEO_MESH:
+    elif geo_type == GeoType.MESH:
         vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
         return np.linalg.norm(vmax)
-    elif geo_type == GEO_PLANE:
+    elif geo_type == GeoType.PLANE:
         if scale[0] > 0.0 and scale[1] > 0.0:
             # finite plane
             return np.linalg.norm(scale)

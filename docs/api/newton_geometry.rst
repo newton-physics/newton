@@ -40,23 +40,23 @@ newton.geometry
 
    * - Name
      - Value
-   * - GEO_BOX
+   * - GeoType.BOX
      - 1
-   * - GEO_CAPSULE
+   * - GeoType.CAPSULE
      - 2
-   * - GEO_CONE
+   * - GeoType.CONE
      - 4
-   * - GEO_CYLINDER
+   * - GeoType.CYLINDER
      - 3
-   * - GEO_MESH
+   * - GeoType.MESH
      - 5
-   * - GEO_NONE
+   * - GeoType.NONE
      - 8
-   * - GEO_PLANE
+   * - GeoType.PLANE
      - 7
-   * - GEO_SDF
+   * - GeoType.SDF
      - 6
-   * - GEO_SPHERE
+   * - GeoType.SPHERE
      - 0
    * - MESH_MAXHULLVERT
      - 64

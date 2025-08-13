@@ -18,10 +18,7 @@ import unittest
 import warp as wp
 
 from newton.geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CYLINDER,
-    GEO_SPHERE,
+    GeoType,
 )
 from newton.geometry.gjk import build_ccd_generic
 
@@ -61,23 +58,23 @@ class Geom:
 def _support(geom: Geom, geomtype: int, dir: wp.vec3):
     index = -1
     local_dir = wp.transpose(geom.rot) @ dir
-    if geomtype == GEO_SPHERE:
+    if geomtype == GeoType.SPHERE:
         support_pt = geom.pos + geom.size[0] * dir
-    elif geomtype == GEO_BOX:
+    elif geomtype == GeoType.BOX:
         res = wp.cw_mul(wp.sign(local_dir), geom.size)
         support_pt = geom.rot @ res + geom.pos
-    elif geomtype == GEO_CAPSULE:
+    elif geomtype == GeoType.CAPSULE:
         res = local_dir * geom.size[0]
         # add cylinder contribution
         res[2] += wp.sign(local_dir[2]) * geom.size[1]
         support_pt = geom.rot @ res + geom.pos
-    #   elif geomtype == GEO_ELLIPSOID:
+    #   elif geomtype == GeoType.ELLIPSOID:
     #     res = wp.cw_mul(local_dir, geom.size)
     #     res = wp.normalize(res)
     #     # transform to ellipsoid
     #     res = wp.cw_mul(res, geom.size)
     #     support_pt = geom.rot @ res + geom.pos
-    elif geomtype == GEO_CYLINDER:
+    elif geomtype == GeoType.CYLINDER:
         res = wp.vec3(0.0, 0.0, 0.0)
         # set result in XY plane: support on circle
         d = wp.sqrt(wp.dot(local_dir, local_dir))
@@ -215,7 +212,7 @@ class TestGJK(unittest.TestCase):
         d = Data(2)
 
         # Add two spheres
-        m.geom_type = wp.array([GEO_SPHERE, GEO_SPHERE], dtype=int)
+        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
         m.geom_size = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
         m.geom_dataid = wp.array([0, 0], dtype=int)
 
@@ -234,7 +231,7 @@ class TestGJK(unittest.TestCase):
         d = Data(2)
 
         # Add two spheres
-        m.geom_type = wp.array([GEO_SPHERE, GEO_SPHERE], dtype=int)
+        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
         m.geom_size = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
         m.geom_dataid = wp.array([0, 0], dtype=int)
 
@@ -253,7 +250,7 @@ class TestGJK(unittest.TestCase):
         d = Data(2)
 
         # Add two spheres
-        m.geom_type = wp.array([GEO_SPHERE, GEO_SPHERE], dtype=int)
+        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
         m.geom_size = wp.array([wp.vec3(3.0, 0.0, 0.0), wp.vec3(3.0, 0.0, 0.0)], dtype=wp.vec3)
         m.geom_dataid = wp.array([0, 0], dtype=int)
 
@@ -273,7 +270,7 @@ class TestGJK(unittest.TestCase):
         d = Data(2)
 
         # Add two boxes
-        m.geom_type = wp.array([GEO_BOX, GEO_BOX], dtype=int)
+        m.geom_type = wp.array([GeoType.BOX, GeoType.BOX], dtype=int)
         m.geom_size = wp.array([wp.vec3(2.5, 2.5, 2.5), wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3)
         m.geom_dataid = wp.array([0, 0], dtype=int)
 
