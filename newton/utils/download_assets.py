@@ -20,7 +20,10 @@ import os
 import shutil
 import stat
 import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _handle_remove_readonly(func, path, exc):
@@ -37,16 +40,60 @@ def _safe_rmtree(path):
         shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
+def _git_url_to_archive_url(git_url: str, branch: str = "main") -> str:
+    """
+    Convert a git URL to an archive download URL.
+
+    Args:
+        git_url: Git repository URL (HTTPS or SSH)
+        branch: Branch/tag/commit to download
+
+    Returns:
+        Archive download URL
+
+    Raises:
+        ValueError: If URL format is not supported
+    """
+    # Remove .git suffix if present
+    if git_url.endswith(".git"):
+        git_url = git_url[:-4]
+
+    # Handle SSH URLs (git@github.com:user/repo)
+    if git_url.startswith("git@"):
+        # Convert SSH to HTTPS
+        parts = git_url.replace("git@", "").replace(":", "/")
+        git_url = f"https://{parts}"
+
+    # Parse URL to identify hosting service
+    parsed = urlparse(git_url)
+
+    if "github.com" in parsed.netloc:
+        return f"{git_url}/archive/refs/heads/{branch}.zip"
+    elif "gitlab.com" in parsed.netloc:
+        return f"{git_url}/-/archive/{branch}/{branch}.zip"
+    elif "bitbucket.org" in parsed.netloc:
+        return f"{git_url}/get/{branch}.zip"
+    else:
+        # Try GitHub format as fallback
+        return f"{git_url}/archive/refs/heads/{branch}.zip"
+
+
 def download_git_folder(
-    git_url: str, folder_path: str, cache_dir: str | None = None, branch: str = "main", force_refresh: bool = False
+    git_url: str,
+    folder_path: str,
+    cache_dir: str | None = None,
+    branch: str = "main",
+    force_refresh: bool = False,
 ) -> Path:
     """
     Downloads a specific folder from a git repository into a local cache.
 
     Args:
         git_url: The git repository URL (HTTPS or SSH)
-        folder_path: The path to the folder within the repository (e.g., "assets/models")
-        cache_dir: Directory to cache downloads. If None, uses system temp directory
+        folder_path: The path to the folder within the repository
+                    (e.g., "assets/models")
+        cache_dir: Directory to cache downloads. If None, uses system temp
+                  directory
         branch: Git branch/tag/commit to checkout (default: "main")
         force_refresh: If True, re-downloads even if cached version exists
 
@@ -54,21 +101,12 @@ def download_git_folder(
         Path to the downloaded folder in the local cache
 
     Raises:
-        ImportError: If git package is not available
-        RuntimeError: If git operations fail
+        RuntimeError: If download or extraction fails
 
     Example:
         >>> folder_path = download_git_folder("https://github.com/user/repo.git", "assets/models", cache_dir="./cache")
         >>> print(f"Downloaded to: {folder_path}")
     """
-    try:
-        import git  # noqa: PLC0415
-        from git.exc import GitCommandError  # noqa: PLC0415
-    except ImportError as e:
-        raise ImportError(
-            "GitPython package is required for downloading git folders. Install it with: pip install GitPython"
-        ) from e
-
     # Set up cache directory
     if cache_dir is None:
         cache_dir = os.path.join(tempfile.gettempdir(), "newton_git_cache")
@@ -93,28 +131,51 @@ def download_git_folder(
         _safe_rmtree(cache_folder)
 
     try:
-        # Clone the repository with sparse checkout
-        print(f"Cloning {git_url} (branch: {branch})...")
-        repo = git.Repo.clone_from(
-            git_url,
-            cache_folder,
-            branch=branch,
-            depth=1,  # Shallow clone for efficiency
-        )
+        # Convert git URL to archive download URL
+        archive_url = _git_url_to_archive_url(git_url, branch)
 
-        # Configure sparse checkout to only include the target folder
-        sparse_checkout_file = cache_folder / ".git" / "info" / "sparse-checkout"
-        sparse_checkout_file.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading {git_url} (branch: {branch})...")
 
-        with open(sparse_checkout_file, "w") as f:
-            f.write(f"{folder_path}\n")
+        # Download the archive
+        temp_dir = cache_folder / "temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = temp_dir / "archive.zip"
 
-        # Apply sparse checkout configuration
-        with repo.config_writer() as config:
-            config.set_value("core", "sparseCheckout", "true")
+        with urllib.request.urlopen(archive_url) as response:
+            with open(archive_path, "wb") as f:
+                shutil.copyfileobj(response, f)
 
-        # Re-read the index to apply sparse checkout
-        repo.git.read_tree("-m", "-u", "HEAD")
+        # Extract the archive
+        with zipfile.ZipFile(archive_path, "r") as zip_ref:
+            # Get the root folder name from the archive
+            names = zip_ref.namelist()
+            if not names:
+                raise RuntimeError("Downloaded archive is empty")
+
+            root_folder = names[0].split("/")[0]
+
+            # Extract only files from the target folder
+            target_prefix = f"{root_folder}/{folder_path}/"
+            extracted_files = []
+
+            for name in names:
+                if name.startswith(target_prefix) and not name.endswith("/"):
+                    # Extract to cache folder, removing the root folder prefix
+                    relative_path = name[len(root_folder) + 1 :]
+                    extract_path = cache_folder / relative_path
+                    extract_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with zip_ref.open(name) as source:
+                        with open(extract_path, "wb") as target:
+                            shutil.copyfileobj(source, target)
+
+                    extracted_files.append(extract_path)
+
+            if not extracted_files:
+                raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
+
+        # Clean up temporary files
+        _safe_rmtree(temp_dir)
 
         # Verify the folder exists
         target_folder = cache_folder / folder_path
@@ -124,11 +185,6 @@ def download_git_folder(
         print(f"Successfully downloaded folder to: {target_folder}")
         return target_folder
 
-    except GitCommandError as e:
-        # Clean up on failure
-        if cache_folder.exists():
-            _safe_rmtree(cache_folder)
-        raise RuntimeError(f"Git operation failed: {e}") from e
     except Exception as e:
         # Clean up on failure
         if cache_folder.exists():
@@ -141,7 +197,8 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
     Clears the git download cache directory.
 
     Args:
-        cache_dir: Cache directory to clear. If None, uses default temp directory
+        cache_dir: Cache directory to clear. If None, uses default temp
+                  directory
     """
     if cache_dir is None:
         cache_dir = os.path.join(tempfile.gettempdir(), "newton_git_cache")
@@ -154,13 +211,20 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
         print("Git cache directory does not exist")
 
 
-def download_asset(asset_folder: str, cache_dir: str | None = None, force_refresh: bool = False) -> Path:
+def download_asset(
+    asset_folder: str,
+    cache_dir: str | None = None,
+    force_refresh: bool = False,
+) -> Path:
     """
-    Downloads a specific folder from the newton-assets GitHub repository into a local cache.
+    Downloads a specific folder from the newton-assets GitHub repository into
+    a local cache.
 
     Args:
-        asset_folder: The folder within the repository to download (e.g., "assets/models")
-        cache_dir: Directory to cache downloads. If None, uses system temp directory
+        asset_folder: The folder within the repository to download
+                     (e.g., "assets/models")
+        cache_dir: Directory to cache downloads. If None, uses system temp
+                  directory
         force_refresh: If True, re-downloads even if cached version exists
 
     Returns:
