@@ -44,20 +44,12 @@ from newton.core.types import (
     nparray,
 )
 from newton.geometry import (
-    GEO_BOX,
-    GEO_CAPSULE,
-    GEO_CONE,
-    GEO_CYLINDER,
-    GEO_MESH,
-    GEO_NONE,
-    GEO_PLANE,
-    GEO_SDF,
-    GEO_SPHERE,
     PARTICLE_FLAG_ACTIVE,
     SDF,
     SHAPE_FLAG_COLLIDE_PARTICLES,
     SHAPE_FLAG_COLLIDE_SHAPES,
     SHAPE_FLAG_VISIBLE,
+    GeoType,
     Mesh,
     compute_shape_inertia,
     compute_shape_radius,
@@ -1528,23 +1520,23 @@ class ModelBuilder:
             return "unknown"
 
         def shape_type_str(type):
-            if type == GEO_SPHERE:
+            if type == GeoType.SPHERE:
                 return "sphere"
-            if type == GEO_BOX:
+            if type == GeoType.BOX:
                 return "box"
-            if type == GEO_CAPSULE:
+            if type == GeoType.CAPSULE:
                 return "capsule"
-            if type == GEO_CYLINDER:
+            if type == GeoType.CYLINDER:
                 return "cylinder"
-            if type == GEO_CONE:
+            if type == GeoType.CONE:
                 return "cone"
-            if type == GEO_MESH:
+            if type == GeoType.MESH:
                 return "mesh"
-            if type == GEO_SDF:
+            if type == GeoType.SDF:
                 return "sdf"
-            if type == GEO_PLANE:
+            if type == GeoType.PLANE:
                 return "plane"
-            if type == GEO_NONE:
+            if type == GeoType.NONE:
                 return "none"
             return "unknown"
 
@@ -2032,11 +2024,11 @@ class ModelBuilder:
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body (e.g., static environment geometry).
-            type (int): The geometry type of the shape (e.g., `GEO_BOX`, `GEO_SPHERE`).
+            type (int): The geometry type of the shape (e.g., `GeoType.BOX`, `GeoType.SPHERE`).
             xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
-            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GEO_MESH` or an :class:`SDF` object for `GEO_SDF`. Defaults to `None`.
+            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
 
@@ -2137,7 +2129,7 @@ class ModelBuilder:
         scale = wp.vec3(width, length, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_PLANE,
+            type=GeoType.PLANE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2193,7 +2185,7 @@ class ModelBuilder:
         scale: Any = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_SPHERE,
+            type=GeoType.SPHERE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2232,7 +2224,7 @@ class ModelBuilder:
         scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
             body=body,
-            type=GEO_BOX,
+            type=GeoType.BOX,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2279,7 +2271,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CAPSULE,
+            type=GeoType.CAPSULE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2326,7 +2318,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CYLINDER,
+            type=GeoType.CYLINDER,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2373,7 +2365,7 @@ class ModelBuilder:
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
-            type=GEO_CONE,
+            type=GeoType.CONE,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2407,7 +2399,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
-            type=GEO_MESH,
+            type=GeoType.MESH,
             xform=xform,
             cfg=cfg,
             scale=scale,
@@ -2439,7 +2431,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         return self.add_shape(
             body=body,
-            type=GEO_SDF,
+            type=GeoType.SDF,
             xform=xform,
             cfg=cfg,
             src=sdf,
@@ -2503,7 +2495,7 @@ class ModelBuilder:
             shape_indices = [
                 i
                 for i, stype in enumerate(self.shape_type)
-                if stype == GEO_MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
+                if stype == GeoType.MESH and self.shape_flags[i] & int(SHAPE_FLAG_COLLIDE_SHAPES)
             ]
 
         # keep track of remeshed shapes to handle fallbacks
@@ -2625,7 +2617,7 @@ class ModelBuilder:
                 scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
                 tf, scale = compute_obb(vertices)
-                self.shape_type[shape] = GEO_BOX
+                self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
                 self.shape_scale[shape] = scale
                 shape_tf = wp.transform(*self.shape_transform[shape])
@@ -2640,7 +2632,7 @@ class ModelBuilder:
                 vertices = mesh.vertices * np.array([*scale])
                 center = np.mean(vertices, axis=0)
                 radius = np.max(np.linalg.norm(vertices - center, axis=1))
-                self.shape_type[shape] = GEO_SPHERE
+                self.shape_type[shape] = GeoType.SPHERE
                 self.shape_source[shape] = None
                 self.shape_scale[shape] = wp.vec3(radius, 0.0, 0.0)
                 tf = wp.transform(center, wp.quat_identity())
