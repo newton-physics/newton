@@ -554,8 +554,8 @@ def parse_usd(
                     joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = newton.JOINT_MODE_TARGET_POSITION
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
-                joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["target_ke"] = joint_desc.drive.stiffness
+                joint_params["target_kd"] = joint_desc.drive.damping
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
