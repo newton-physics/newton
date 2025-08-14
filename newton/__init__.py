@@ -13,86 +13,97 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import solvers
-from ._version import __version__
-
-# Core functionality
-from .core import (
+# ==================================================================================
+# core
+# ==================================================================================
+from ._src.core import (
     Axis,
     AxisType,
 )
+from ._version import __version__
 
-# Geometry functionality
-from .geometry import (
+__all__ = [
+    "Axis",
+    "AxisType",
+    "__version__",
+]
+
+# ==================================================================================
+# geometry
+# ==================================================================================
+from ._src.geometry import (
     SDF,
     GeoType,
     Mesh,
-    create_box,
-    create_capsule,
-    create_cone,
-    create_cylinder,
-    create_none,
-    create_plane,
-    create_sphere,
+    ParticleFlags,
+    ShapeFlags,
 )
 
-# Simulation functionality
-from .sim import (
-    EQ_CONNECT,
-    EQ_JOINT,
-    EQ_WELD,
-    JOINT_BALL,
-    JOINT_D6,
-    JOINT_DISTANCE,
-    JOINT_FIXED,
-    JOINT_FREE,
-    JOINT_MODE_NONE,
-    JOINT_MODE_TARGET_POSITION,
-    JOINT_MODE_TARGET_VELOCITY,
-    JOINT_PRISMATIC,
-    JOINT_REVOLUTE,
+__all__ += [
+    "SDF",
+    "GeoType",
+    "Mesh",
+    "ParticleFlags",
+    "ShapeFlags",
+]
+
+# ==================================================================================
+# sim
+# ==================================================================================
+from ._src.sim import (  # noqa: E402
+    CollisionPipeline,
     Contacts,
     Control,
+    EqType,
+    JointMode,
+    JointType,
     Model,
     ModelBuilder,
     State,
+    count_rigid_contact_points,
     eval_fk,
     eval_ik,
+    get_joint_dof_count,
 )
 
-__all__ = [
-    "EQ_CONNECT",
-    "EQ_JOINT",
-    "EQ_WELD",
-    "JOINT_BALL",
-    "JOINT_D6",
-    "JOINT_DISTANCE",
-    "JOINT_FIXED",
-    "JOINT_FREE",
-    "JOINT_MODE_NONE",
-    "JOINT_MODE_TARGET_POSITION",
-    "JOINT_MODE_TARGET_VELOCITY",
-    "JOINT_PRISMATIC",
-    "JOINT_REVOLUTE",
-    "SDF",
-    "Axis",
-    "AxisType",
+__all__ += [
+    "CollisionPipeline",
     "Contacts",
     "Control",
-    "GeoType",
-    "Mesh",
+    "EqType",
+    "JointMode",
+    "JointType",
     "Model",
     "ModelBuilder",
     "State",
-    "__version__",
-    "create_box",
-    "create_capsule",
-    "create_cone",
-    "create_cylinder",
-    "create_none",
-    "create_plane",
-    "create_sphere",
+    "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
+    "get_joint_dof_count",
+]
+
+# ==================================================================================
+# Style3D helpers
+# TODO: eliminate these and roll the functionality into Model and ModelBuilder?
+# ==================================================================================
+from ._src.sim.style3d import Style3DModel, Style3DModelBuilder  # noqa: E402
+
+__all__ += [
+    "Style3DModel",
+    "Style3DModelBuilder",
+]
+
+# ==================================================================================
+# submodule APIs
+# ==================================================================================
+from . import geometry, ik, selection, sensors, solvers, utils, viewer  # noqa: E402
+
+__all__ += [
+    "geometry",
+    "ik",
+    "selection",
+    "sensors",
     "solvers",
+    "utils",
+    "viewer",
 ]

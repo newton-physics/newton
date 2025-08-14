@@ -19,8 +19,8 @@ from math import sqrt
 import numpy as np
 import warp as wp
 
+from newton._src.geometry.broad_phase_common import test_group_pair
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
-from newton.geometry.broad_phase_common import test_group_pair
 
 
 def check_aabb_overlap_host(

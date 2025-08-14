@@ -21,7 +21,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.geometry.utils import create_box_mesh, transform_points
+from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
 
@@ -47,14 +47,12 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
         self.assertEqual(builder.joint_coord_count, 15)
-        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 26)
 
         collision_shapes = [
-            i
-            for i in range(builder.shape_count)
-            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
 
@@ -77,14 +75,12 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
         self.assertEqual(builder.joint_coord_count, 15)
-        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
 
         collision_shapes = [
-            i
-            for i in range(builder.shape_count)
-            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES
         ]
         self.assertEqual(len(collision_shapes), 13)
 
@@ -269,11 +265,7 @@ class TestImportUsd(unittest.TestCase):
         create_collision_mesh("/meshBoundingCube", vertices, indices, UsdPhysics.Tokens.boundingCube)
 
         builder = newton.ModelBuilder()
-        newton.geometry.MESH_MAXHULLVERT = 4
-        parse_usd(
-            stage,
-            builder,
-        )
+        parse_usd(stage, builder, mesh_maxhullvert=4)
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
@@ -293,7 +285,7 @@ class TestImportUsd(unittest.TestCase):
 
         # bounding sphere
         self.assertIsNone(builder.shape_source[2])
-        self.assertEqual(builder.shape_type[2], newton.geometry.GeoType.SPHERE)
+        self.assertEqual(builder.shape_type[2], newton.GeoType.SPHERE)
         self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
@@ -326,8 +318,8 @@ class TestImportUsd(unittest.TestCase):
             self.assertEqual(builder.shape_source[vi], builder.shape_source[ci])
             assert_np_equal(np.array(builder.shape_transform[vi]), np.array(builder.shape_transform[ci]), tol=1e-5)
             assert_np_equal(np.array(builder.shape_scale[vi]), np.array(builder.shape_scale[ci]), tol=1e-5)
-            self.assertFalse(builder.shape_flags[vi] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
-            self.assertTrue(builder.shape_flags[ci] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            self.assertFalse(builder.shape_flags[vi] & newton.ShapeFlags.COLLIDE_SHAPES)
+            self.assertTrue(builder.shape_flags[ci] & newton.ShapeFlags.COLLIDE_SHAPES)
 
 
 if __name__ == "__main__":

@@ -67,19 +67,19 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
-        # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
-        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
+        # self.solver = newton.solvers.SolverFeatherstone(self.model)
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
+            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
         if self.use_cuda_graph:

@@ -78,7 +78,7 @@ class Example:
 
         self.control = self.model.control()
 
-        self.solver = newton.solvers.MuJoCoSolver(
+        self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco=use_mujoco,
             solver="newton",
@@ -89,7 +89,7 @@ class Example:
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path, model=self.model, scaling=1.0, show_joints=True
             )
 

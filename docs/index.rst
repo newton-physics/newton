@@ -29,12 +29,14 @@ Newton Physics
    :hidden:
    :caption: API Reference
    
-   api/newton_core
+   api/newton
    api/newton_geometry
-   api/newton_sim
+   api/newton_ik
+   api/newton_selection
+   api/newton_sensors
    api/newton_solvers
    api/newton_utils
-
+   api/newton_viewer
 
 
 .. toctree::
