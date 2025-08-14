@@ -19,7 +19,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from newton.core.types import Devicelike, Vec3, nparray, override
+from newton.core.types import Devicelike, Vec2, Vec3, nparray, override
 
 
 class GeoType(enum.IntEnum):
@@ -105,9 +105,12 @@ class Mesh:
         self,
         vertices: Sequence[Vec3] | nparray,
         indices: Sequence[int] | nparray,
+        normals: Sequence[Vec3] | nparray | None = None,
+        uvs: Sequence[Vec2] | nparray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
+        color: Vec3 | None = None,
     ):
         """Construct a Mesh object from a triangle mesh
 
@@ -126,6 +129,9 @@ class Mesh:
 
         self._vertices = np.array(vertices).reshape(-1, 3)
         self._indices = np.array(indices, dtype=np.int32).flatten()
+        self._normals = np.array(normals).reshape(-1, 3) if normals is not None else None
+        self._uvs = np.array(uvs).reshape(-1, 2) if uvs is not None else None
+        self._color = color
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
