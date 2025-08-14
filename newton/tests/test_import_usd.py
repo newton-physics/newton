@@ -24,6 +24,7 @@ import newton.examples
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
+from newton.sim import joints
 
 devices = get_test_devices()
 
@@ -524,6 +525,104 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
+
+
+class TestImportSampleAssets(unittest.TestCase):
+    def verify_usdphysics_parser(self, file, model):
+        """Verify model based on the UsdPhysics Parsing Utils"""
+        # [1] https://openusd.org/release/api/usd_physics_page_front.html
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.Open(file)
+        parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+        body_key_to_idx = dict(zip(model.body_key, range(model.body_count)))
+        shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count)))
+
+        parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody]))
+
+        # body presence
+        for body_path, _ in parsed_bodies:
+            assert body_key_to_idx.get(str(body_path), None) is not None
+        self.assertEqual(len(parsed_bodies), model.body_count)
+
+        # body colliders
+        # TODO: exclude or handle bodies that have child shapes
+        for body_path, body_desc in parsed_bodies:
+            body_idx = body_key_to_idx.get(str(body_path), None)
+
+            model_collisions = {model.shape_key[sk] for sk in model.body_shapes[body_idx]}
+            parsed_collisions = {str(collider) for collider in body_desc.collisions}
+            self.assertEqual(parsed_collisions, model_collisions)
+
+        # body mass
+        mass_verified = set()
+        inertia_verified = set()
+
+        body_mass = model.body_mass.numpy()
+        body_inertia = model.body_inertia.numpy()
+        # in newton, only rigid bodies have mass
+        for body_path, body_desc in parsed_bodies:
+            body_idx = body_key_to_idx.get(str(body_path), None)
+            prim = stage.GetPrimAtPath(body_path)
+            if prim.HasAPI(UsdPhysics.MassAPI):
+                mass_api = UsdPhysics.MassAPI(prim)
+                # Parents' explicit total masses override any mass properties specified further down in the subtree. [1]
+                if mass_api.GetMassAttr().HasAuthoredValue():
+                    mass = mass_api.GetMassAttr().Get()
+                    self.assertAlmostEqual(body_mass[body_idx], mass, places=5)
+                    mass_verified.add(body_idx)
+                if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
+                    diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
+                    principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
+                    p = np.array(
+                        wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))
+                    ).reshape((3, 3))
+                    inertia = p.T @ np.diag(diag_inertia) @ p
+                    assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
+                    inertia_verified.add(body_idx)
+
+        # TODO: exclude or handle bodies that don't have explicit mass/inertia set
+        self.assertEqual(len(mass_verified), model.body_count)
+        self.assertEqual(len(inertia_verified), model.body_count)
+
+        joint_mapping = {
+            joints.JOINT_PRISMATIC: UsdPhysics.ObjectType.PrismaticJoint,
+            joints.JOINT_REVOLUTE: UsdPhysics.ObjectType.RevoluteJoint,
+            joints.JOINT_BALL: UsdPhysics.ObjectType.SphericalJoint,
+            joints.JOINT_FIXED: UsdPhysics.ObjectType.FixedJoint,
+            # joints.JOINT_FREE: None,
+            joints.JOINT_DISTANCE: UsdPhysics.ObjectType.DistanceJoint,
+            joints.JOINT_D6: UsdPhysics.ObjectType.D6Joint,
+        }
+
+        joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count)))
+        model_joint_type = model.joint_type.numpy()
+        joints_found = []
+
+        for joint_type, joint_objtype in joint_mapping.items():
+            for joint_path, joint_desc in list(zip(*parsed.get(joint_objtype, ()))):
+                joint_idx = joint_key_to_idx.get(str(joint_path), None)
+                joints_found.append(joint_idx)
+                assert joint_key_to_idx.get(str(joint_path), None) is not None
+                assert model_joint_type[joint_idx] == joint_type
+
+        print(model.joint_key)
+        self.assertEqual(len(joints_found) + 1, model.joint_count)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_g1(self):
+        builder = newton.ModelBuilder()
+        asset_path = "/home/chris/Documents/usd-test-assets/isaaclab/g1.usd"
+
+        newton.utils.parse_usd(
+            asset_path,
+            builder,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model)
 
 
 if __name__ == "__main__":
