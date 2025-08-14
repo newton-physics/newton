@@ -1035,8 +1035,9 @@ def update_geom_properties_kernel(
         time_const_damp = 1.0
     geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
-    # update condim
-    geom_condim[geom_idx] = shape_condim[shape_idx]
+    # update condim (only from world 0 to avoid data race)
+    if worldid == 0:
+        geom_condim[geom_idx] = shape_condim[shape_idx]
 
     # update size
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
