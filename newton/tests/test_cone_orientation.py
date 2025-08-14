@@ -15,7 +15,7 @@ class TestConeOrientation(unittest.TestCase):
     def setUp(self):
         """Set up test parameters."""
         self.radius = 1.0
-        self.half_height = 1.0
+        self.half_height = 2.0  # Use different height to avoid special case where Ia = Ib
         self.density = 1000.0
 
     def test_cone_com_position(self):
@@ -79,10 +79,11 @@ class TestConeOrientation(unittest.TestCase):
 
     def test_cone_orientation_consistency(self):
         """Test cone orientation is consistent for different axes."""
+        com_offset = -self.half_height / 2.0
         for axis_name, axis_enum, expected_com in [
-            ("X", newton.Axis.X, (-0.5, 0, 0)),
-            ("Y", newton.Axis.Y, (0, -0.5, 0)),
-            ("Z", newton.Axis.Z, (0, 0, -0.5)),
+            ("X", newton.Axis.X, (com_offset, 0, 0)),
+            ("Y", newton.Axis.Y, (0, com_offset, 0)),
+            ("Z", newton.Axis.Z, (0, 0, com_offset)),
         ]:
             with self.subTest(axis=axis_name):
                 builder = newton.ModelBuilder()

@@ -125,7 +125,7 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
     com = wp.vec3(0.0, 0.0, -h / 4.0)
 
     # Inertia about the center of mass
-    Ia = 1 / 20 * m * (3 * r * r + 2 * h * h)
+    Ia = 3 / 20 * m * r * r + 3 / 80 * m * h * h
     Ib = 3 / 10 * m * r * r
 
     # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib

@@ -275,11 +275,10 @@ def cone_sdf(radius: float, half_height: float, p: wp.vec3):
 @wp.func
 def cone_sdf_grad(radius: float, half_height: float, p: wp.vec3):
     # Gradient for cone with apex at +half_height and base at -half_height
-    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius * (half_height - p[2]) / (2.0 * half_height)
-    dy = wp.abs(p[2]) - half_height
-    if dy < 0.0 or dx == 0.0:
+    r = wp.length(wp.vec3(p[0], p[1], 0.0))
+    if wp.abs(p[2]) > half_height or r == 0.0:
         return wp.vec3(0.0, 0.0, wp.sign(p[2]))
-    return wp.normalize(wp.vec3(p[0], p[1], 0.0)) - wp.vec3(0.0, 0.0, radius / (2.0 * half_height))
+    return wp.normalize(wp.vec3(p[0], p[1], 0.0) / r + wp.vec3(0.0, 0.0, radius / (2.0 * half_height)))
 
 
 @wp.func
