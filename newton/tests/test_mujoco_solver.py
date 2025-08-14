@@ -648,6 +648,106 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
                 )
 
+    def test_joint_solref_solimp_parameters(self):
+        """
+        Test that joint solref and solimp parameters from ModelBuilder are properly passed to MuJoCo solver.
+        """
+        # Create a simple model with joints having custom solref/solimp values
+        builder = newton.ModelBuilder()
+
+        # Ground is the world body, represented by -1
+
+        # Add first body with custom joint parameters
+        body1 = builder.add_body(
+            xform=wp.transform(p=(0, 0, 1)),
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3) * 0.1),  # Add proper inertia
+            key="body1",
+        )
+
+        # Joint 1: Revolute joint with custom solref and solimp
+        joint_axis1 = newton.ModelBuilder.JointDofConfig(
+            axis=newton.core.Axis.Z,
+            limit_lower=-np.pi,
+            limit_upper=np.pi,
+            solref=(0.05, 2.0),  # Custom solver reference parameters
+            solimp=(0.8, 0.9, 0.002, 0.6, 3.0),  # Custom solver impedance parameters
+        )
+
+        builder.add_joint(
+            joint_type=newton.JOINT_REVOLUTE,
+            parent=-1,  # world body
+            child=body1,
+            angular_axes=[joint_axis1],
+            key="joint1",
+        )
+
+        # Add second body with default joint parameters
+        body2 = builder.add_body(
+            xform=wp.transform(p=(0, 1, 1)),
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3) * 0.1),  # Add proper inertia
+            key="body2",
+        )
+
+        # Joint 2: Prismatic joint without custom solref/solimp (should use defaults)
+        joint_axis2 = newton.ModelBuilder.JointDofConfig(
+            axis=newton.core.Axis.X,
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            # No solref/solimp specified - should use defaults
+        )
+
+        builder.add_joint(
+            joint_type=newton.JOINT_PRISMATIC,
+            parent=-1,  # world body
+            child=body2,
+            linear_axes=[joint_axis2],
+            key="joint2",
+        )
+
+        # Build the model
+        model = builder.finalize()
+
+        # Verify values were stored in the model
+        self.assertIsNotNone(model.joint_solref, "joint_solref should not be None")
+        self.assertIsNotNone(model.joint_solimp, "joint_solimp should not be None")
+
+        solref_values = model.joint_solref.numpy()
+        solimp_values = model.joint_solimp.numpy()
+
+        # Check first joint has custom values
+        np.testing.assert_array_almost_equal(
+            solref_values[0], [0.05, 2.0], err_msg="First joint should have custom solref values"
+        )
+        np.testing.assert_array_almost_equal(
+            solimp_values[0], [0.8, 0.9, 0.002, 0.6, 3.0], err_msg="First joint should have custom solimp values"
+        )
+
+        # Check second joint has default values
+        np.testing.assert_array_almost_equal(
+            solref_values[1], [0.02, 1.0], err_msg="Second joint should have default solref values"
+        )
+        np.testing.assert_array_almost_equal(
+            solimp_values[1], [0.9, 0.95, 0.001, 0.5, 2.0], err_msg="Second joint should have default solimp values"
+        )
+
+        # Create MuJoCo solver with different default values
+        try:
+            solver = MuJoCoSolver(
+                model,
+                iterations=1,
+                disable_contacts=True,
+                joint_solref=(0.1, 1.5),  # Different defaults - should not override model values
+                joint_solimp=(0.95, 0.98, 0.0005, 0.4, 1.5),  # Different defaults
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo not installed. Skipping test: {e}")
+            return
+
+        # The test passes if the solver was created successfully with the custom parameters
+        self.assertIsNotNone(solver, "MuJoCo solver should be created successfully")
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):

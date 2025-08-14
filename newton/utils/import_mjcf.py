@@ -487,6 +487,18 @@ def parse_mjcf(
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
                 joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
 
+                # Parse solref and solimp if present
+                joint_solref = None
+                joint_solimp = None
+                if "solref" in joint_attrib:
+                    solref_vals = parse_vec(joint_attrib, "solref", None)
+                    if solref_vals is not None and len(solref_vals) >= 2:
+                        joint_solref = (float(solref_vals[0]), float(solref_vals[1]))
+                if "solimp" in joint_attrib:
+                    solimp_vals = parse_vec(joint_attrib, "solimp", None)
+                    if solimp_vals is not None and len(solimp_vals) >= 5:
+                        joint_solimp = tuple(float(v) for v in solimp_vals[:5])
+
                 if joint_type_str == "free":
                     joint_type = newton.JOINT_FREE
                     break
@@ -504,6 +516,8 @@ def parse_mjcf(
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                     armature=joint_armature[-1],
+                    solref=joint_solref,
+                    solimp=joint_solimp,
                 )
                 if is_angular:
                     angular_axes.append(ax)

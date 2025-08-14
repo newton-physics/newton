@@ -241,6 +241,10 @@ class Model:
         """Joint velocity limits, shape [joint_dof_count], float."""
         self.joint_friction = None
         """Joint friction coefficient, shape [joint_dof_count], float."""
+        self.joint_solref = None
+        """MuJoCo solver reference parameters for joint constraints, shape [joint_dof_count, 2], float. Each row contains (stiffness_time_const, damping_time_const)."""
+        self.joint_solimp = None
+        """MuJoCo solver impedance parameters for joint constraints, shape [joint_dof_count, 5], float. Each row contains (dmin, dmax, width, midpoint, power)."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_dof_mode = None

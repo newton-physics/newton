@@ -198,6 +198,8 @@ class ModelBuilder:
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
+            solref: tuple[float, float] | None = None,
+            solimp: tuple[float, float, float, float, float] | None = None,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
@@ -227,6 +229,10 @@ class ModelBuilder:
             """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
             self.friction = friction
             """Friction coefficient for the joint axis. Defaults to 0.0."""
+            self.solref = solref
+            """MuJoCo solver reference parameters (time constants) for joint constraints: (stiffness_time_const, damping_time_const). Defaults to None."""
+            self.solimp = solimp
+            """MuJoCo solver impedance parameters for joint constraints: (dmin, dmax, width, midpoint, power). Defaults to None."""
 
             if self.mode == JOINT_MODE_TARGET_POSITION and (
                 self.target > self.limit_upper or self.target < self.limit_lower
@@ -408,6 +414,8 @@ class ModelBuilder:
         self.joint_effort_limit = []
         self.joint_velocity_limit = []
         self.joint_friction = []
+        self.joint_solref = []
+        self.joint_solimp = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -866,6 +874,8 @@ class ModelBuilder:
             self.joint_effort_limit.append(dim.effort_limit)
             self.joint_velocity_limit.append(dim.velocity_limit)
             self.joint_friction.append(dim.friction)
+            self.joint_solref.append(dim.solref if dim.solref is not None else (0.02, 1.0))
+            self.joint_solimp.append(dim.solimp if dim.solimp is not None else (0.9, 0.95, 0.001, 0.5, 2.0))
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -924,6 +934,8 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        solref: tuple[float, float] | None = None,
+        solimp: tuple[float, float, float, float, float] | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -948,6 +960,8 @@ class ModelBuilder:
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            solref: The MuJoCo solver reference parameters (time constants). If None, the default value is used.
+            solimp: The MuJoCo solver impedance parameters. If None, the default value is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -976,6 +990,8 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                solref=solref,
+                solimp=solimp,
             )
         return self.add_joint(
             JOINT_REVOLUTE,
@@ -1008,6 +1024,8 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        solref: tuple[float, float] | None = None,
+        solimp: tuple[float, float, float, float, float] | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1032,6 +1050,8 @@ class ModelBuilder:
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            solref: The MuJoCo solver reference parameters (time constants). If None, the default value is used.
+            solimp: The MuJoCo solver impedance parameters. If None, the default value is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -1060,6 +1080,8 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                solref=solref,
+                solimp=solimp,
             )
         return self.add_joint(
             JOINT_PRISMATIC,
@@ -3827,6 +3849,10 @@ class ModelBuilder:
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_solref = wp.array(self.joint_solref, dtype=wp.vec2f, requires_grad=requires_grad)
+            m.joint_solimp = wp.array(
+                self.joint_solimp, dtype=wp.vec(length=5, dtype=wp.float32), requires_grad=requires_grad
+            )
 
             m.joint_limit_lower = wp.array(self.joint_limit_lower, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)

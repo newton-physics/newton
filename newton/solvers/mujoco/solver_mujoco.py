@@ -1129,6 +1129,8 @@ class MuJoCoSolver(SolverBase):
         contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
+        joint_solref: tuple[float, float] | None = None,
+        joint_solimp: tuple[float, float, float, float, float] | None = None,
     ):
         """
         Args:
@@ -1154,6 +1156,8 @@ class MuJoCoSolver(SolverBase):
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            joint_solref (tuple[float, float] | None): Default solver reference parameters for joint constraints (stiffness_time_const, damping_time_const). If None, uses values from the model's joint_solref array if available.
+            joint_solimp (tuple[float, float, float, float, float] | None): Default solver impedance parameters for joint constraints (dmin, dmax, width, midpoint, power). If None, uses values from the model's joint_solimp array if available.
         """
         super().__init__(model)
         self.mujoco, self.mujoco_warp = import_mujoco()
@@ -1190,6 +1194,8 @@ class MuJoCoSolver(SolverBase):
                 actuator_gears=actuator_gears,
                 target_filename=save_to_mjcf,
                 ls_parallel=ls_parallel,
+                joint_solref=joint_solref,
+                joint_solimp=joint_solimp,
             )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1605,8 +1611,8 @@ class MuJoCoSolver(SolverBase):
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
         # these numbers come from the cartpole.xml model
-        # joint_solref=(0.08, 1.0),
-        # joint_solimp=(0.9, 0.95, 0.001, 0.5, 2.0),
+        joint_solref: tuple[float, float] | None = None,
+        joint_solimp: tuple[float, float, float, float, float] | None = None,
         geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
@@ -1758,6 +1764,13 @@ class MuJoCoSolver(SolverBase):
         # MoJoCo doesn't have velocity limit
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
+        # Get joint solref and solimp from model if available
+        model_joint_solref = None
+        model_joint_solimp = None
+        if model.joint_solref is not None:
+            model_joint_solref = model.joint_solref.numpy()
+        if model.joint_solimp is not None:
+            model_joint_solimp = model.joint_solimp.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -2047,6 +2060,15 @@ class MuJoCoSolver(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set solref and solimp if available (using solref_limit and solimp_limit for joint limits)
+                    if model_joint_solref is not None:
+                        joint_params["solref_limit"] = model_joint_solref[ai]
+                    elif joint_solref is not None:
+                        joint_params["solref_limit"] = joint_solref
+                    if model_joint_solimp is not None:
+                        joint_params["solimp_limit"] = model_joint_solimp[ai]
+                    elif joint_solimp is not None:
+                        joint_params["solimp_limit"] = joint_solimp
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
                         joint_params["limited"] = False
@@ -2110,6 +2132,15 @@ class MuJoCoSolver(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set solref and solimp if available (using solref_limit and solimp_limit for joint limits)
+                    if model_joint_solref is not None:
+                        joint_params["solref_limit"] = model_joint_solref[ai]
+                    elif joint_solref is not None:
+                        joint_params["solref_limit"] = joint_solref
+                    if model_joint_solimp is not None:
+                        joint_params["solimp_limit"] = model_joint_solimp[ai]
+                    elif joint_solimp is not None:
+                        joint_params["solimp_limit"] = joint_solimp
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
                         joint_params["limited"] = False

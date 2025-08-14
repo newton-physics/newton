@@ -521,6 +521,18 @@ def parse_usd(
         child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
 
         joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
+
+        # Parse custom solref and solimp attributes
+        joint_solref, joint_solimp = None, None
+        if joint_prim.HasAttribute("warp:joint_solref"):
+            solref_attr = joint_prim.GetAttribute("warp:joint_solref").Get()
+            if solref_attr and len(solref_attr) >= 2:
+                joint_solref = (float(solref_attr[0]), float(solref_attr[1]))
+        if joint_prim.HasAttribute("warp:joint_solimp"):
+            solimp_attr = joint_prim.GetAttribute("warp:joint_solimp").Get()
+            if solimp_attr and len(solimp_attr) >= 5:
+                joint_solimp = tuple(float(v) for v in solimp_attr[:5])
+
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -545,6 +557,13 @@ def parse_usd(
             joint_params["limit_ke"] = current_joint_limit_ke
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
+
+            # Add solref and solimp if they were parsed
+            if joint_solref is not None:
+                joint_params["solref"] = joint_solref
+            if joint_solimp is not None:
+                joint_params["solimp"] = joint_solimp
+
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
@@ -653,6 +672,8 @@ def parse_usd(
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
+                            solref=joint_solref,
+                            solimp=joint_solimp,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -668,6 +689,8 @@ def parse_usd(
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
+                            solref=joint_solref,
+                            solimp=joint_solimp,
                         )
                     )
                     joint_prim.CreateAttribute(
