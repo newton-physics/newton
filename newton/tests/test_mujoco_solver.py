@@ -1086,6 +1086,66 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(model.shape_source[0].maxhullvert, 32)
         self.assertEqual(model.shape_source[1].maxhullvert, 128)
 
+    def test_condim_property(self):
+        """Test that condim property is correctly set and propagated to MuJoCo solver."""
+        builder = newton.ModelBuilder()
+
+        # Create shapes with different condim values
+        shape_cfg1 = newton.ModelBuilder.ShapeConfig(condim=1)  # Frictionless contact
+        shape_cfg3 = newton.ModelBuilder.ShapeConfig(condim=3)  # Normal + 2D friction (default)
+        shape_cfg4 = newton.ModelBuilder.ShapeConfig(condim=4)  # Normal + 2D + torsional friction
+        shape_cfg6 = newton.ModelBuilder.ShapeConfig(condim=6)  # Full 6D contact
+
+        # Add bodies and shapes with different condim values
+        body1 = builder.add_body(mass=1.0)
+        builder.add_joint_free(body1)
+        shape1 = builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg1)
+
+        body2 = builder.add_body(mass=1.0)
+        builder.add_joint_free(body2)
+        shape2 = builder.add_shape_box(body=body2, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg3)
+
+        body3 = builder.add_body(mass=1.0)
+        builder.add_joint_free(body3)
+        shape3 = builder.add_shape_sphere(body=body3, radius=0.1, cfg=shape_cfg4)
+
+        body4 = builder.add_body(mass=1.0)
+        builder.add_joint_free(body4)
+        shape4 = builder.add_shape_capsule(body=body4, radius=0.05, half_height=0.1, cfg=shape_cfg6)
+
+        # Finalize model
+        model = builder.finalize()
+
+        # Verify condim values are stored in the model
+        condim_values = model.shape_material_condim.numpy()
+        self.assertEqual(condim_values[shape1], 1, "Shape 1 should have condim=1")
+        self.assertEqual(condim_values[shape2], 3, "Shape 2 should have condim=3")
+        self.assertEqual(condim_values[shape3], 4, "Shape 3 should have condim=4")
+        self.assertEqual(condim_values[shape4], 6, "Shape 4 should have condim=6")
+
+        # Create MuJoCo solver
+        solver = MuJoCoSolver(model)
+
+        # Verify that condim values are propagated to MuJoCo geom properties
+        geom_condim = solver.mjw_model.geom_condim.numpy()
+
+        # Find the geom indices corresponding to our shapes
+        to_newton_shape_index = model.to_newton_shape_index.numpy()
+        num_worlds = model.num_envs
+        num_geoms = solver.mj_model.ngeom
+
+        for world_idx in range(num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx >= 0:  # Valid shape mapping
+                    expected_condim = condim_values[shape_idx]
+                    actual_condim = geom_condim[geom_idx]
+                    self.assertEqual(
+                        actual_condim,
+                        expected_condim,
+                        f"Geom {geom_idx} in world {world_idx} should have condim={expected_condim}",
+                    )
+
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):

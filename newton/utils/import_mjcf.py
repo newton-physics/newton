@@ -206,6 +206,12 @@ def parse_mjcf(
         else:
             return default
 
+    def parse_int(attrib, key, default) -> int:
+        if key in attrib:
+            return int(attrib[key])
+        else:
+            return default
+
     def parse_vec(attrib, key, default):
         if key in attrib:
             out = np.fromstring(attrib[key], sep=" ", dtype=np.float32)
@@ -293,12 +299,14 @@ def parse_mjcf(
                 geom_rot = tf.q
 
             geom_density = parse_float(geom_attrib, "density", density)
+            geom_condim = parse_int(geom_attrib, "condim", builder.default_shape_cfg.condim)
 
             shape_cfg = builder.default_shape_cfg.copy()
             shape_cfg.is_visible = visible
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
+            shape_cfg.condim = geom_condim
 
             shape_kwargs = {
                 "key": geom_name,

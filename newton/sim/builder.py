@@ -143,6 +143,8 @@ class ModelBuilder:
         """The coefficient of friction."""
         restitution: float = 0.0
         """The coefficient of restitution."""
+        condim: int = 3
+        """The contact dimensionality for MuJoCo solver (1=frictionless, 3=normal+2D friction, 4=normal+2D+torsional, 6=full 6D). Defaults to 3."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         is_solid: bool = True
@@ -329,6 +331,7 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_material_condim = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
         self.shape_collision_group_map = {}
@@ -1949,6 +1952,7 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_material_condim.append(cfg.condim)
         self.shape_collision_group.append(cfg.collision_group)
         if cfg.collision_group not in self.shape_collision_group_map:
             self.shape_collision_group_map[cfg.collision_group] = []
@@ -3653,6 +3657,7 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_condim = wp.array(self.shape_material_condim, dtype=wp.int32)
 
             m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
             m.shape_collision_group = self.shape_collision_group

@@ -117,6 +117,30 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertEqual(meshes[1].maxhullvert, 128)
                 self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
 
+    def test_condim_parsing(self):
+        """Test that condim is correctly parsed from MJCF files."""
+        builder = newton.ModelBuilder()
+
+        # Parse the constraints.xml file which contains geoms with different condim values
+        newton.utils.parse_mjcf(
+            os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
+            builder,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
+        )
+
+        model = builder.finalize()
+
+        # Get condim values from the model
+        condim_values = model.shape_material_condim.numpy()
+
+        # Verify that we have shapes with different condim values
+        unique_condims = np.unique(condim_values)
+        self.assertIn(1, unique_condims, "Should have shapes with condim=1")
+        self.assertIn(3, unique_condims, "Should have shapes with condim=3")
+        self.assertIn(4, unique_condims, "Should have shapes with condim=4")
+        self.assertIn(6, unique_condims, "Should have shapes with condim=6")
+
     def test_inertia_rotation(self):
         """Test that inertia tensors are properly rotated using sandwich product R @ I @ R.T"""
 

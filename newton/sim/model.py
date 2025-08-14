@@ -105,6 +105,8 @@ class Model:
         """Shape coefficient of friction, shape [shape_count], float."""
         self.shape_material_restitution = None
         """Shape coefficient of restitution, shape [shape_count], float."""
+        self.shape_material_condim = None
+        """Shape contact dimensionality for MuJoCo solver, shape [shape_count], int."""
 
         # Shape geometry properties
         self.shape_type = None

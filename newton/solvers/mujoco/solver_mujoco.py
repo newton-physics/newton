@@ -986,6 +986,7 @@ def update_geom_properties_kernel(
     shape_mu: wp.array(dtype=float),
     shape_ke: wp.array(dtype=float),
     shape_kd: wp.array(dtype=float),
+    shape_condim: wp.array(dtype=wp.int32),
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
     shape_type: wp.array(dtype=wp.int32),
@@ -998,6 +999,7 @@ def update_geom_properties_kernel(
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
     geom_solref: wp.array2d(dtype=wp.vec2f),
+    geom_condim: wp.array(dtype=wp.int32),
     geom_size: wp.array2d(dtype=wp.vec3f),
     geom_pos: wp.array2d(dtype=wp.vec3f),
     geom_quat: wp.array2d(dtype=wp.quatf),
@@ -1032,6 +1034,9 @@ def update_geom_properties_kernel(
         time_const_stiff = contact_stiffness_time_const
         time_const_damp = 1.0
     geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+
+    # update condim
+    geom_condim[geom_idx] = shape_condim[shape_idx]
 
     # update size
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
@@ -1967,6 +1972,12 @@ class MuJoCoSolver(SolverBase):
                             model.rigid_contact_rolling_friction * mu,
                         ]
 
+                # use per-shape condim if available
+                if model.shape_material_condim is not None:
+                    shape_condim = model.shape_material_condim.numpy()
+                    if shape < len(shape_condim):
+                        geom_params["condim"] = int(shape_condim[shape])
+
                 mj_geoms.append((shape, body.add_geom(**geom_params)))
                 # store the geom name instead of assuming index
                 shape_mapping[shape] = name
@@ -2538,6 +2549,7 @@ class MuJoCoSolver(SolverBase):
                 self.model.shape_material_mu,
                 self.model.shape_material_ke,
                 self.model.shape_material_kd,
+                self.model.shape_material_condim,
                 self.model.shape_scale,
                 self.model.shape_transform,
                 self.model.shape_type,
@@ -2551,6 +2563,7 @@ class MuJoCoSolver(SolverBase):
                 self.mjw_model.geom_rbound,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_solref,
+                self.mjw_model.geom_condim,
                 self.mjw_model.geom_size,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,

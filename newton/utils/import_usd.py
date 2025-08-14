@@ -1004,6 +1004,11 @@ def parse_usd(
                         restitution=material.restitution,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
+                        condim=int(
+                            parse_float_with_fallback(
+                                prim_and_scene, "warp:contact_condim", builder.default_shape_cfg.condim
+                            )
+                        ),
                     ),
                     "key": path,
                 }

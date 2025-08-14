@@ -329,6 +329,75 @@ class TestImportUsd(unittest.TestCase):
             self.assertFalse(builder.shape_flags[vi] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
             self.assertTrue(builder.shape_flags[ci] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_condim_parsing(self):
+        """Test that condim is correctly parsed from USD files."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        # Create a temporary stage with shapes having different condim values
+        stage = Usd.Stage.CreateInMemory()
+
+        # Set up stage properties
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        # Create physics scene
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityMagnitudeAttr(9.81)
+        scene.CreateGravityDirectionAttr((0, 0, -1))
+
+        # Create bodies with different condim values
+        xform1 = UsdGeom.Xform.Define(stage, "/xform1")
+        UsdPhysics.RigidBodyAPI.Apply(xform1.GetPrim())
+        UsdPhysics.MassAPI.Apply(xform1.GetPrim()).CreateMassAttr(1.0)
+
+        # Shape with condim=1 (frictionless)
+        box1 = UsdGeom.Cube.Define(stage, "/xform1/box1")
+        UsdPhysics.CollisionAPI.Apply(box1.GetPrim())
+        box1.GetPrim().CreateAttribute("warp:contact_condim", Sdf.ValueTypeNames.Int).Set(1)
+
+        # Shape with condim=3 (default)
+        xform2 = UsdGeom.Xform.Define(stage, "/xform2")
+        UsdPhysics.RigidBodyAPI.Apply(xform2.GetPrim())
+        UsdPhysics.MassAPI.Apply(xform2.GetPrim()).CreateMassAttr(1.0)
+
+        box2 = UsdGeom.Cube.Define(stage, "/xform2/box2")
+        UsdPhysics.CollisionAPI.Apply(box2.GetPrim())
+        box2.GetPrim().CreateAttribute("warp:contact_condim", Sdf.ValueTypeNames.Int).Set(3)
+
+        # Shape with condim=4 (with torsional friction)
+        xform3 = UsdGeom.Xform.Define(stage, "/xform3")
+        UsdPhysics.RigidBodyAPI.Apply(xform3.GetPrim())
+        UsdPhysics.MassAPI.Apply(xform3.GetPrim()).CreateMassAttr(1.0)
+
+        sphere1 = UsdGeom.Sphere.Define(stage, "/xform3/sphere1")
+        UsdPhysics.CollisionAPI.Apply(sphere1.GetPrim())
+        sphere1.GetPrim().CreateAttribute("warp:contact_condim", Sdf.ValueTypeNames.Int).Set(4)
+
+        # Shape with condim=6 (full 6D)
+        xform4 = UsdGeom.Xform.Define(stage, "/xform4")
+        UsdPhysics.RigidBodyAPI.Apply(xform4.GetPrim())
+        UsdPhysics.MassAPI.Apply(xform4.GetPrim()).CreateMassAttr(1.0)
+
+        capsule1 = UsdGeom.Capsule.Define(stage, "/xform4/capsule1")
+        UsdPhysics.CollisionAPI.Apply(capsule1.GetPrim())
+        capsule1.GetPrim().CreateAttribute("warp:contact_condim", Sdf.ValueTypeNames.Int).Set(6)
+
+        # Parse the stage
+        builder = newton.ModelBuilder()
+        parse_usd(stage, builder)
+        model = builder.finalize()
+
+        # Get condim values from the model
+        condim_values = model.shape_material_condim.numpy()
+
+        # Verify that we have shapes with different condim values
+        unique_condims = np.unique(condim_values)
+        self.assertIn(1, unique_condims, "Should have shapes with condim=1")
+        self.assertIn(3, unique_condims, "Should have shapes with condim=3")
+        self.assertIn(4, unique_condims, "Should have shapes with condim=4")
+        self.assertIn(6, unique_condims, "Should have shapes with condim=6")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
