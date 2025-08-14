@@ -2090,7 +2090,7 @@ class MuJoCoSolver(SolverBase):
 
                     # reverse rotation of body to joint axis
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
-                    
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
