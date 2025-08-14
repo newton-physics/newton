@@ -1648,6 +1648,7 @@ class ModelBuilder:
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
                         "act": self.joint_target[j],
+                        "effort_limit": self.joint_effort_limit[j],
                     }
                 )
 
@@ -1817,6 +1818,7 @@ class ModelBuilder:
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
+        self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
@@ -1844,6 +1846,7 @@ class ModelBuilder:
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_target.append(axis["act"])
+                self.joint_effort_limit.append(axis["effort_limit"])
 
         return {
             "body_remap": body_remap,

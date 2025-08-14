@@ -556,6 +556,7 @@ def parse_usd(
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
                 joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
@@ -609,6 +610,7 @@ def parse_usd(
                     mode = newton.JOINT_MODE_NONE
                     target_ke = 0.0
                     target_kd = 0.0
+                    effort_limit = np.inf
                     for drive in joint_desc.jointDrives:
                         if drive.first != dof:
                             continue
@@ -621,9 +623,10 @@ def parse_usd(
                                 mode = newton.JOINT_MODE_TARGET_POSITION
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
-                    return target, mode, target_ke, target_kd
+                            effort_limit = drive.second.forceLimit
+                    return target, mode, target_ke, target_kd, effort_limit
 
-                target, mode, target_ke, target_kd = define_joint_mode(dof, joint_desc)
+                target, mode, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -653,6 +656,7 @@ def parse_usd(
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -668,6 +672,7 @@ def parse_usd(
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                     joint_prim.CreateAttribute(
