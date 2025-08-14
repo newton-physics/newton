@@ -117,6 +117,33 @@ class ModelBuilder:
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
+    Environment Grouping
+    --------------------
+
+    ModelBuilder supports environment grouping to organize entities for multi-environment simulations.
+    Each entity (particle, body, shape, joint, articulation) has an associated group index:
+
+    - Group -1: Global entities shared across all environments (e.g., ground plane)
+    - Group 0, 1, 2, ...: Environment-specific entities
+
+    There are two ways to assign environment groups:
+
+    1. **Direct entity creation**: Entities inherit the builder's `current_env_group` value
+
+       >>> builder = ModelBuilder()
+       >>> builder.current_env_group = -1  # Following entities will be global
+       >>> builder.add_ground_plane()
+       >>> builder.current_env_group = 0  # Following entities will be in environment 0
+       >>> builder.add_body(...)
+
+    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified group
+
+       >>> robot = ModelBuilder()
+       >>> robot.add_body(...)  # Group assignments here will be overridden
+       >>> main = ModelBuilder()
+       >>> main.add_builder(robot, environment=0)  # All robot entities -> group 0
+       >>> main.add_builder(robot, environment=1)  # All robot entities -> group 1
+
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
         than creating your own Model object directly, however it is possible to do so if
@@ -310,7 +337,7 @@ class ModelBuilder:
         self.particle_flags = []
         self.particle_max_velocity = 1e5
         self.particle_color_groups: list[nparray] = []
-        self.particle_group = []
+        self.particle_group = []  # environment group index for each particle
 
         # shapes (each shape has an entry in these arrays)
         self.shape_key = []  # shape keys
@@ -385,7 +412,7 @@ class ModelBuilder:
         self.body_qd = []
         self.body_key = []
         self.body_shapes = {}  # mapping from body to shapes
-        self.body_group = []
+        self.body_group = []  # environment group index for each body
 
         # rigid joints
         self.joint_parent = []  # index of the parent body                      (constant)
@@ -421,16 +448,18 @@ class ModelBuilder:
         self.joint_q_start = []
         self.joint_qd_start = []
         self.joint_dof_dim = []
-        self.joint_group = []
+        self.joint_group = []  # environment group index for each joint
 
         self.articulation_start = []
         self.articulation_key = []
-        self.articulation_group = []
+        self.articulation_group = []  # environment group index for each articulation
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
 
-        # current environment group index for entities being added
+        # current environment group index for entities being added directly to this builder.
+        # set to -1 to create global entities shared across all environments.
+        # note: this value is temporarily overridden when using add_builder().
         self.current_env_group = -1
 
         self.up_axis: Axis = Axis.from_any(up_axis)
@@ -533,12 +562,33 @@ class ModelBuilder:
     ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
 
+        **Environment Group Behavior:**
+        When adding a builder, ALL entities from the source builder will be assigned to the same
+        environment group, overriding any group assignments that existed in the source builder.
+        This ensures that all entities from a sub-builder are grouped together as a single environment.
+
+        To create global entities that are shared across all environments, set the main builder's
+        `current_env_group` to -1 before adding entities directly (not via add_builder).
+
+        Example:
+            >>> main_builder = ModelBuilder()
+            >>> # Create global ground plane
+            >>> main_builder.current_env_group = -1
+            >>> main_builder.add_ground_plane()
+            >>> # Create robot builder
+            >>> robot_builder = ModelBuilder()
+            >>> robot_builder.add_body(...)  # These group assignments will be overridden
+            >>> # Add multiple robot instances
+            >>> main_builder.add_builder(robot_builder, environment=0)  # All entities -> group 0
+            >>> main_builder.add_builder(robot_builder, environment=1)  # All entities -> group 1
+
         Args:
             builder (ModelBuilder): a model builder to add model data from.
             xform (Transform): offset transform applied to root bodies.
             update_num_env_count (bool): if True, the number of environments is incremented by 1.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
-            environment (int | None): environment group index to assign to the entities from this builder. If None, uses the current environment count as the group index. Global entities should use -1.
+            environment (int | None): environment group index to assign to ALL entities from this builder.
+                If None, uses the current environment count as the group index. Use -1 for global entities.
         """
 
         if builder.up_axis != self.up_axis:

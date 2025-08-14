@@ -32,6 +32,17 @@ class Model:
     This class holds the non-time varying description of the system, i.e.:
     all geometry, constraints, and parameters used to describe the simulation.
 
+    Environment Grouping:
+        The model supports grouping entities by environment using group indices:
+        - `particle_group`, `body_group`, `shape_group`, `joint_group`, `articulation_group`
+        - Group -1 indicates global entities shared across all environments
+        - Groups 0, 1, 2, ... indicate environment-specific entities
+
+        These groups can be used for:
+        - Collision detection optimization (separating environments)
+        - Visualization (spacing out different environments)
+        - Parallel processing of independent environments
+
     Note:
         It is strongly recommended to use the ModelBuilder to construct a
         simulation rather than creating your own Model object directly,
