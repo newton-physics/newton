@@ -1884,10 +1884,6 @@ class MuJoCoSolver(SolverBase):
                 stacklevel=2,
             )
 
-        # maps from Newton body index to the transform to be applied to its children
-        # i.e. its inverse joint child transform
-        body_child_tf = {}
-
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
         colliding_shapes = selected_shapes[
@@ -1895,7 +1891,7 @@ class MuJoCoSolver(SolverBase):
         ]
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
-        def add_geoms(warp_body_id: int, incoming_xform: wp.transform | None = None):
+        def add_geoms(warp_body_id: int):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
             if not shapes:
@@ -1926,9 +1922,6 @@ class MuJoCoSolver(SolverBase):
                         maxhullvert=mesh_maxhullvert,
                     )
                     geom_params["meshname"] = name
-                if incoming_xform is not None:
-                    # transform to world space
-                    tf = incoming_xform * tf
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
@@ -1983,14 +1976,10 @@ class MuJoCoSolver(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
             tf = wp.transform(*joint_parent_xform[ji])
+            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
+
             joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            if parent != -1:
-                incoming_xform = body_child_tf.get(parent)
-                if incoming_xform is not None:
-                    # apply the incoming transform from the parent body,
-                    # which is the inverse of the parent joint's child transform
-                    tf = incoming_xform * tf
-                    joint_pos = wp.vec3(0.0, 0.0, 0.0)
+            joint_rot = wp.quat(*joint_child_xform[ji, 3:])
 
             # ensure unique body name
             name = model.body_key[child]
@@ -2036,14 +2025,13 @@ class MuJoCoSolver(SolverBase):
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
-                    axis = wp.vec3(*joint_axis[ai])
+
                     # reverse rotation of body to joint axis
-                    # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
-                    # axis = wp.quat_rotate_inv(tf_q, axis)
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2099,14 +2087,13 @@ class MuJoCoSolver(SolverBase):
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
                     ai = qd_start + i
-                    axis = wp.vec3(*joint_axis[ai])
+
                     # reverse rotation of body to joint axis
-                    # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
-                    # axis = wp.quat_rotate_inv(tf_q, axis)
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+                    
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2162,11 +2149,7 @@ class MuJoCoSolver(SolverBase):
             elif j_type != newton.JOINT_FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
 
-            # add geoms
-            child_tf = wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
-            body_child_tf[child] = child_tf
-
-            add_geoms(child, incoming_xform=child_tf)
+            add_geoms(child)
 
         for i, typ in enumerate(eq_constraint_type):
             if typ == newton.EQ_CONNECT:
