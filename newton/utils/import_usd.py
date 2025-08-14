@@ -175,10 +175,7 @@ def parse_usd(
         if not attr or not attr.HasAuthoredValue():
             return default
         val = attr.Get()
-        if invert_rotations:
-            quat = wp.quat(*val.imaginary, -val.real)
-        else:
-            quat = wp.quat(*val.imaginary, val.real)
+        quat = wp.quat(*val.imaginary, val.real)
         l = wp.length(quat)
         if np.isfinite(l) and l > 0.0:
             return quat
