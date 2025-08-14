@@ -135,6 +135,36 @@ class Camera:
         aspect_ratio = self.width / self.height
         return np.array(PyMat4.perspective_projection(aspect_ratio, self.near, self.far, self.fov))
 
+    def get_world_ray(self, x: float, y: float):
+        """Get the world ray for a given pixel.
+
+        returns:
+            p: wp.vec3, ray origin
+            d: wp.vec3, ray direction
+        """
+        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+
+        aspect_ratio = self.width / self.height
+
+        # pre-compute factor from vertical FOV
+        fov_rad = np.radians(self.fov)
+        alpha = np.tan(fov_rad * 0.5)  # = tan(fov/2)
+
+        # build an orthonormal basis (front, right, up)
+        front = self.get_front()
+        right = -self.get_left()
+        up = self.get_up()
+
+        # normalised pixel coordinates
+        u = 2.0 * (x / self.width) - 1.0  # [-1, 1] left → right
+        v = 2.0 * (y / self.height) - 1.0  # [-1, 1] bottom → top
+
+        # ray direction in world space (before normalisation)
+        direction = front + u * alpha * aspect_ratio * right + v * alpha * up
+        direction = direction / np.linalg.norm(direction)
+
+        return self.pos, PyVec3(*direction)
+
     def update_screen_size(self, width, height):
         """Update screen dimensions."""
         self.width = width

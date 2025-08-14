@@ -80,7 +80,6 @@ def apply_picking_force_kernel(
 def update_pick_target_kernel(
     p: wp.vec3,
     d: wp.vec3,
-    pick_camera_front: wp.vec3,
     # read-write
     pick_state: wp.array(dtype=float),
 ):
