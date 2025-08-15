@@ -177,7 +177,7 @@ def parse_usd(
         if not attr or not attr.HasAuthoredValue():
             return default
         val = attr.Get()
-        quat = wp.quat(*val.imaginary, val.real)
+        quat = from_gfquat(val)
         l = wp.length(quat)
         if np.isfinite(l) and l > 0.0:
             return quat
