@@ -1,6 +1,7 @@
 import numpy as np
 import warp as wp
 
+import newton
 from newton.geometry import raycast
 from newton.viewer.kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
 
@@ -71,8 +72,8 @@ class Picking:
             kernel=update_pick_target_kernel,
             dim=1,
             inputs=[
-                p,
-                d,
+                ray_start,
+                ray_dir,
                 self.pick_state,
             ],
             device=self.model.device,
@@ -122,7 +123,7 @@ class Picking:
             self.pick_dist = dist
 
             # world space hit point
-            hit_point_world = p + d * dist
+            hit_point_world = p + d * float(dist)
 
             wp.launch(
                 kernel=compute_pick_state_kernel,
