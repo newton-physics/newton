@@ -115,18 +115,23 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
 
     Returns:
 
-        A tuple of (mass, inertia) with inertia specified around the origin
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     m = density * wp.pi * r * r * h / 3.0
 
-    Ia = 1 / 20 * m * (3 * r * r + 2 * h * h)
+    # Center of mass is at -h/4 from the geometric center
+    # Since the cone has base at -h/2 and apex at +h/2, the COM is 1/4 of the height from base toward apex
+    com = wp.vec3(0.0, 0.0, -h / 4.0)
+
+    # Inertia about the center of mass
+    Ia = 3 / 20 * m * r * r + 3 / 80 * m * h * h
     Ib = 3 / 10 * m * r * r
 
     # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
     I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
 
-    return (m, wp.vec3(), I)
+    return (m, com, I)
 
 
 def compute_box_inertia_from_mass(mass: float, w: float, h: float, d: float) -> wp.mat33:
