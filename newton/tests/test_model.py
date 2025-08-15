@@ -267,6 +267,111 @@ class TestModel(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)
 
+    def test_environment_grouping(self):
+        """Test environment grouping functionality for Model entities."""
+        main_builder = ModelBuilder()
+
+        # Create global entities (group -1)
+        main_builder.current_env_group = -1
+        ground_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
+        main_builder.add_shape_box(
+            body=ground_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
+        )
+        main_builder.add_particle((0.0, 0.0, 5.0), (0.0, 0.0, 0.0), mass=1.0)
+
+        # Create a simple builder for environments
+        def create_env_builder():
+            env_builder = ModelBuilder()
+            # Add particles
+            p1 = env_builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
+            p2 = env_builder.add_particle((0.1, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
+            env_builder.add_spring(p1, p2, ke=100.0, kd=1.0, control=0.0)
+
+            # Add articulated body
+            env_builder.add_articulation()
+            b1 = env_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
+            b2 = env_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
+            env_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
+            env_builder.add_shape_sphere(
+                body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
+            )
+            env_builder.add_shape_sphere(
+                body=b2, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.05
+            )
+
+            return env_builder
+
+        # Add environment 0
+        env0_builder = create_env_builder()
+        main_builder.add_builder(
+            env0_builder, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), environment=0
+        )
+
+        # Add environment 1
+        env1_builder = create_env_builder()
+        main_builder.add_builder(
+            env1_builder, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), environment=1
+        )
+
+        # Add environment 2 (testing auto-assignment)
+        env2_builder = create_env_builder()
+        main_builder.add_builder(
+            env2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity())
+        )  # should get group 2
+
+        # Finalize the model
+        model = main_builder.finalize()
+
+        # Verify counts
+        self.assertEqual(model.num_envs, 3)
+        self.assertEqual(model.particle_count, 7)  # 1 global + 2*3 = 7
+        self.assertEqual(model.body_count, 7)  # 1 global + 2*3 = 7
+        self.assertEqual(model.shape_count, 7)  # 1 global + 2*3 = 7
+        self.assertEqual(model.joint_count, 3)  # 0 global + 1*3 = 3
+        self.assertEqual(model.articulation_count, 3)  # 0 global + 1*3 = 3
+
+        # Verify group assignments
+        particle_groups = model.particle_group.numpy() if model.particle_group is not None else []
+        body_groups = model.body_group.numpy() if model.body_group is not None else []
+        shape_groups = model.shape_group.numpy() if model.shape_group is not None else []
+        joint_groups = model.joint_group.numpy() if model.joint_group is not None else []
+        articulation_groups = model.articulation_group.numpy() if model.articulation_group is not None else []
+
+        if len(particle_groups) > 0:
+            # Check global entities
+            self.assertEqual(particle_groups[0], -1)  # global particle
+
+            # Check environment 0 entities (indices 1-2 for particles)
+            self.assertTrue(np.all(particle_groups[1:3] == 0))
+
+            # Check environment 1 entities
+            self.assertTrue(np.all(particle_groups[3:5] == 1))
+
+            # Check environment 2 entities (auto-assigned)
+            self.assertTrue(np.all(particle_groups[5:7] == 2))
+
+        if len(body_groups) > 0:
+            self.assertEqual(body_groups[0], -1)  # ground body
+            self.assertTrue(np.all(body_groups[1:3] == 0))
+            self.assertTrue(np.all(body_groups[3:5] == 1))
+            self.assertTrue(np.all(body_groups[5:7] == 2))
+
+        if len(shape_groups) > 0:
+            self.assertEqual(shape_groups[0], -1)  # ground shape
+            self.assertTrue(np.all(shape_groups[1:3] == 0))
+            self.assertTrue(np.all(shape_groups[3:5] == 1))
+            self.assertTrue(np.all(shape_groups[5:7] == 2))
+
+        if len(joint_groups) > 0:
+            self.assertEqual(joint_groups[0], 0)
+            self.assertEqual(joint_groups[1], 1)
+            self.assertEqual(joint_groups[2], 2)
+
+        if len(articulation_groups) > 0:
+            self.assertEqual(articulation_groups[0], 0)
+            self.assertEqual(articulation_groups[1], 1)
+            self.assertEqual(articulation_groups[2], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
