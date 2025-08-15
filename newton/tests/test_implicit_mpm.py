@@ -19,7 +19,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers.implicit_mpm import ImplicitMPMSolver
+from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -55,12 +55,12 @@ def test_sand_cube_on_plane(test, device):
     state_0: newton.State = model.state()
     state_1: newton.State = model.state()
 
-    options = ImplicitMPMSolver.Options()
+    options = SolverImplicitMPM.Options()
     options.dynamic_grid = False  # use static grid as dynamic grid is GPU-only
     options.grid_padding = 3
     options.voxel_size = voxel_size
 
-    solver = ImplicitMPMSolver(model, options)
+    solver = SolverImplicitMPM(model, options)
 
     solver.enrich_state(state_0)
     solver.enrich_state(state_1)

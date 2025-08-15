@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton import ParticleFlags
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -785,7 +785,7 @@ class ClothSim:
         self.set_points_fixed(self.model, self.fixed_particles)
 
         if self.solver_name == "vbd":
-            self.solver = newton.solvers.VBDSolver(
+            self.solver = newton.solvers.SolverVBD(
                 model=self.model,
                 iterations=self.iterations,
                 handle_self_contact=handle_self_contact,
@@ -793,12 +793,12 @@ class ClothSim:
                 self_contact_margin=self.self_contact_margin,
             )
         elif self.solver_name == "xpbd":
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
             )
         elif self.solver_name == "semi_implicit":
-            self.solver = newton.solvers.SemiImplicitSolver(self.model)
+            self.solver = newton.solvers.SolverSemiImplicit(self.model)
         else:
             raise ValueError("Unsupported solver type: " + self.solver_name)
 
@@ -826,7 +826,7 @@ class ClothSim:
         self.sim_time = 0.0
 
         if self.do_rendering:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path="Test Cloth",
                 model=self.model,
                 scaling=self.renderer_scale_factor,
@@ -852,7 +852,7 @@ class ClothSim:
         if len(fixed_particles):
             flags = model.particle_flags.numpy()
             for fixed_v_id in fixed_particles:
-                flags[fixed_v_id] = wp.uint32(int(flags[fixed_v_id]) & ~int(PARTICLE_FLAG_ACTIVE))
+                flags[fixed_v_id] = flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
             model.particle_flags = wp.array(flags, device=model.device)
 

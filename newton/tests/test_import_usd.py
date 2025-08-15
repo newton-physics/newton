@@ -21,7 +21,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.geometry.utils import create_box_mesh, transform_points
+from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
 
@@ -47,14 +47,12 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
         self.assertEqual(builder.joint_coord_count, 15)
-        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 26)
 
         collision_shapes = [
-            i
-            for i in range(builder.shape_count)
-            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
 
@@ -77,14 +75,12 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
         self.assertEqual(builder.joint_coord_count, 15)
-        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
 
         collision_shapes = [
-            i
-            for i in range(builder.shape_count)
-            if builder.shape_flags[i] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES)
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES
         ]
         self.assertEqual(len(collision_shapes), 13)
 
@@ -325,11 +321,7 @@ class TestImportUsd(unittest.TestCase):
         create_collision_mesh("/meshBoundingCube", vertices, indices, UsdPhysics.Tokens.boundingCube)
 
         builder = newton.ModelBuilder()
-        newton.geometry.MESH_MAXHULLVERT = 4
-        parse_usd(
-            stage,
-            builder,
-        )
+        parse_usd(stage, builder, mesh_maxhullvert=4)
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
@@ -349,7 +341,7 @@ class TestImportUsd(unittest.TestCase):
 
         # bounding sphere
         self.assertIsNone(builder.shape_source[2])
-        self.assertEqual(builder.shape_type[2], newton.geometry.GeoType.SPHERE)
+        self.assertEqual(builder.shape_type[2], newton.GeoType.SPHERE)
         self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
@@ -382,8 +374,59 @@ class TestImportUsd(unittest.TestCase):
             self.assertEqual(builder.shape_source[vi], builder.shape_source[ci])
             assert_np_equal(np.array(builder.shape_transform[vi]), np.array(builder.shape_transform[ci]), tol=1e-5)
             assert_np_equal(np.array(builder.shape_scale[vi]), np.array(builder.shape_scale[ci]), tol=1e-5)
-            self.assertFalse(builder.shape_flags[vi] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
-            self.assertTrue(builder.shape_flags[ci] & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            self.assertFalse(builder.shape_flags[vi] & newton.ShapeFlags.COLLIDE_SHAPES)
+            self.assertTrue(builder.shape_flags[ci] & newton.ShapeFlags.COLLIDE_SHAPES)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_symmetric_inertia(self):
+        """Test importing USD with inertia specified in principal axes that don't align with body frame."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        # Create USD stage
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+        # Create box and apply physics APIs
+        box = UsdGeom.Cube.Define(stage, "/World/Box")
+        UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(box.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(box.GetPrim())
+
+        # Set mass
+        mass_api.CreateMassAttr().Set(1.0)
+
+        # Set diagonal inertia in principal axes frame
+        # Principal moments: [2, 4, 6] kg⋅m²
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(2.0, 4.0, 6.0))
+
+        # Set principal axes rotated from body frame
+        # Rotate 45° around Z, then 30° around Y
+        # Hardcoded quaternion values for this rotation
+        q = wp.quat(0.1830127, 0.1830127, 0.6830127, 0.6830127)
+        R = np.array(wp.quat_to_matrix(q)).reshape(3, 3)
+
+        # Set principal axes using quaternion
+        mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(q.w, q.x, q.y, q.z))
+
+        # Parse USD
+        builder = newton.ModelBuilder()
+        parse_usd(stage, builder)
+
+        # Verify parsing
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
+
+        # Get parsed inertia tensor
+        inertia_parsed = np.array(builder.body_inertia[0])
+
+        # Calculate expected inertia tensor in body frame
+        # I_body = R * I_principal * R^T
+        I_principal = np.diag([2.0, 4.0, 6.0])
+        I_body_expected = R @ I_principal @ R.T
+
+        # Verify the parsed inertia matches our calculated body frame inertia
+        np.testing.assert_allclose(inertia_parsed.reshape(3, 3), I_body_expected, rtol=1e-5, atol=1e-8)
 
 
 if __name__ == "__main__":

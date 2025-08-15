@@ -30,7 +30,7 @@ wp.config.enable_backward = False
 
 import newton
 import newton.utils
-from newton.sim import State
+from newton import State
 
 lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
 mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]
@@ -135,22 +135,22 @@ class Example:
             -0.8,
         ]
         for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # Pre-compute tensors that don't change during simulation
         self.lab_to_mujoco_indices = torch.tensor(

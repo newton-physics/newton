@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from newton.thirdparty.unittest_parallel import main
+from newton.tests.thirdparty.unittest_parallel import main
 
 if __name__ == "__main__":
     main()

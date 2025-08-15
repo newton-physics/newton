@@ -31,10 +31,9 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.sim
 import newton.utils
-from newton.utils.recorder import BasicRecorder
-from newton.utils.recorder_gui import RecorderImGuiManager
+from newton.utils import BasicRecorder
+from newton.viewer import RecorderImGuiManager
 
 
 class Example:
@@ -42,7 +41,7 @@ class Example:
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_body_armature = 0.01
         articulation_builder.default_joint_cfg.armature = 0.01
-        articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
+        articulation_builder.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
         articulation_builder.default_joint_cfg.target_ke = 2000.0
         articulation_builder.default_joint_cfg.target_kd = 1.0
         articulation_builder.default_shape_cfg.ke = 1.0e4
@@ -80,13 +79,13 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
-        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
-        # self.solver = newton.solvers.SemiImplicitSolver(self.model)
-        # self.solver = newton.solvers.MuJoCoSolver(self.model)
+        self.solver = newton.solvers.SolverXPBD(self.model)
+        # self.solver = newton.solvers.SolverFeatherstone(self.model)
+        # self.solver = newton.solvers.SolverSemiImplicit(self.model)
+        # self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, path=stage_path)
+            self.renderer = newton.viewer.RendererOpenGL(self.model, path=stage_path)
             self.recorder = BasicRecorder()
             self.gui = RecorderImGuiManager(self.renderer, self.recorder, self)
             self.renderer.render_2d_callbacks.append(self.gui.render_frame)
@@ -100,7 +99,7 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
 
-        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())

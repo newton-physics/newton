@@ -28,7 +28,7 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.sim.ik as ik
+import newton.ik as ik
 import newton.utils
 
 
@@ -167,11 +167,11 @@ class Example:
         objectives = []
 
         for ee, link in enumerate(self.cfg.ee_links):
-            objectives.append(ik.PositionObjective(link, wp.vec3(), zero_pos[ee], max_problems, n_residuals, ee * 3))
+            objectives.append(ik.IKPositionObjective(link, wp.vec3(), zero_pos[ee], max_problems, n_residuals, ee * 3))
 
         for ee, link in enumerate(self.cfg.ee_links):
             objectives.append(
-                ik.RotationObjective(
+                ik.IKRotationObjective(
                     link,
                     wp.quat_identity(),
                     zero_rot[ee],
@@ -183,7 +183,7 @@ class Example:
             )
 
         objectives.append(
-            ik.JointLimitObjective(
+            ik.IKJointLimitObjective(
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 max_problems,
@@ -200,7 +200,7 @@ class Example:
             q0,
             objectives,
             lambda_factor=self.cfg.lambda_factor,
-            jacobian_mode=ik.JacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
         )
         return (
             solver,
@@ -213,7 +213,7 @@ class Example:
         pos, rot = [], []
         for q in q_batch:
             wp.copy(self.model.joint_q, wp.array(q, dtype=wp.float32))
-            newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
+            newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
             body_q = state.body_q.numpy()
             pos.append(body_q[self.cfg.ee_links, :3])
             rot.append(body_q[self.cfg.ee_links, 3:7])
