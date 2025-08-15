@@ -31,7 +31,6 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.utils
 
 
 class Example:
@@ -83,7 +82,7 @@ class Example:
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        self.solver = newton.solvers.VBDSolver(
+        self.solver = newton.solvers.SolverVBD(
             self.model,
             self.iterations,
             handle_self_contact=True,
@@ -95,7 +94,7 @@ class Example:
         self.state_1 = self.model.state()
 
         if stage_path is not None:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=self.renderer_scale_factor,

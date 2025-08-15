@@ -24,7 +24,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.import_urdf import parse_urdf
+from newton.utils import parse_urdf
 
 MESH_URDF = """
 <robot name="mesh_test">
@@ -177,7 +177,7 @@ class TestImportUrdf(unittest.TestCase):
                     def mock_mesh_download(dst, url: str):
                         dst.write(MESH_OBJ.encode("utf-8"))
 
-                    with patch("newton.utils.import_urdf._download_file", side_effect=mock_mesh_download):
+                    with patch("newton._src.utils.import_urdf._download_file", side_effect=mock_mesh_download):
                         self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
@@ -225,7 +225,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Check joint was created with correct properties
         assert builder.joint_count == 2  # base joint + revolute
-        assert builder.joint_type[-1] == newton.JOINT_REVOLUTE
+        assert builder.joint_type[-1] == newton.JointType.REVOLUTE
 
         assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))

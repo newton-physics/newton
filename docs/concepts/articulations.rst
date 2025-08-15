@@ -18,27 +18,27 @@ Joint types
      - DOFs in ``joint_q``
      - DOFs in ``joint_qd``
      - DOFs in ``joint_axis``
-   * - ``JOINT_PRISMATIC``
+   * - ``JointType.PRISMATIC``
      - Prismatic (slider) joint with 1 linear degree of freedom
      - 1
      - 1
      - 1
-   * - ``JOINT_REVOLUTE``
+   * - ``JointType.REVOLUTE``
      - Revolute (hinge) joint with 1 angular degree of freedom
      - 1
      - 1
      - 1
-   * - ``JOINT_BALL``
+   * - ``JointType.BALL``
      - Ball (spherical) joint with quaternion state representation
      - 4
      - 3
      - 3
-   * - ``JOINT_FIXED``
+   * - ``JointType.FIXED``
      - Fixed (static) joint with no degrees of freedom
      - 0
      - 0
      - 0
-   * - ``JOINT_FREE``
+   * - ``JointType.FREE``
      - Free (floating) joint with 6 degrees of freedom in velocity space
      - 7 (3D position + 4D quaternion)
      - 6 (see :ref:`Twist conventions in Newton <Twist conventions>`)
@@ -53,12 +53,12 @@ Joint types
      - 2
      - 2
      - 2
-   * - ``JOINT_DISTANCE``
+   * - ``JointType.DISTANCE``
      - Distance joint that keeps two bodies at a distance within its joint limits
      - 7
      - 6
      - 1
-   * - ``JOINT_D6``
+   * - ``JointType.D6``
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
@@ -172,5 +172,7 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 
 .. autofunction:: newton.eval_fk
+   :noindex:
 
 .. autofunction:: newton.eval_ik
+   :noindex:

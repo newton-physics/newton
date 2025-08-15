@@ -20,10 +20,9 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
-import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView
+from newton.selection import ArticulationView
+from newton.solvers import SolverNotifyFlags
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -82,11 +81,11 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=2.0,
@@ -113,7 +112,7 @@ class Example:
         # ===========================================================
         # create articulation view
         # ===========================================================
-        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JOINT_FREE])
+        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
 
         if USE_TORCH:
             # default ant root states
@@ -156,7 +155,7 @@ class Example:
             self.state_0.clear_forces()
 
             # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
+            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
                 contacts = self.model.collide(self.state_0)
             else:
                 contacts = None
@@ -214,7 +213,7 @@ class Example:
         # print(self.model.shape_material_mu)
 
         # !!! Notify solver of material changes !!!
-        self.solver.notify_model_changed(newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES)
+        self.solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
         # ================================
         # reset transforms and velocities
@@ -224,7 +223,7 @@ class Example:
         self.ants.set_dof_positions(self.state_0, self.default_ant_dof_positions, mask=mask)
         self.ants.set_dof_velocities(self.state_0, self.default_ant_dof_velocities, mask=mask)
 
-        if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
+        if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
 
         self.reset_count += 1

@@ -21,8 +21,8 @@ import warnings
 import numpy as np
 import warp as wp
 
-from newton.geometry.inertia import verify_and_correct_inertia
-from newton.sim import ModelBuilder
+from newton import ModelBuilder
+from newton._src.geometry.inertia import verify_and_correct_inertia
 
 
 class TestInertiaValidation(unittest.TestCase):

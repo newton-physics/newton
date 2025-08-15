@@ -21,14 +21,14 @@ import warp as wp
 import warp.examples
 
 import newton
-from newton.geometry import Mesh
-from newton.geometry.kernels import (
+from newton import Mesh
+from newton._src.geometry.kernels import (
     init_triangle_collision_data_kernel,
     triangle_closest_point,
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
+from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
 
