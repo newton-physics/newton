@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,11 +25,11 @@
 #
 ###########################################################################
 
-import numpy as np
-
 import warp as wp
-import warp.sim
-import warp.sim.render
+
+import newton
+
+import numpy as np
 
 
 @wp.kernel
@@ -74,24 +74,30 @@ class Example:
         kd = 1.0e1
         mu = 0.2
 
-        builder = wp.sim.ModelBuilder()
-        builder.add_particle(pos=wp.vec3(-0.5, 1.0, 0.0), vel=wp.vec3(5.0, -5.0, 0.0), mass=1.0)
-        builder.add_shape_box(body=-1, pos=wp.vec3(2.0, 1.0, 0.0), hx=0.25, hy=1.0, hz=1.0, ke=ke, kf=kf, kd=kd, mu=mu)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_particle(pos=wp.vec3(-0.5, 0.0, 1.0), vel=wp.vec3(5.0, 0.0, -5.0), mass=1.0)
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()),
+            hx=0.25,
+            hy=1.0,
+            hz=1.0,
+            cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
+        )
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
 
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = builder.finalize(requires_grad=True)
-        self.model.ground = True
 
         self.model.soft_contact_ke = ke
         self.model.soft_contact_kf = kf
         self.model.soft_contact_kd = kd
         self.model.soft_contact_mu = mu
-        self.model.soft_contact_margin = 10.0
         self.model.soft_contact_restitution = 1.0
 
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.target = (-2.0, 1.5, 0.0)
+        self.target = (-2.0, 0.0, 1.5)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
 
         # allocate sim states for trajectory
@@ -100,10 +106,13 @@ class Example:
             self.states.append(self.model.state())
 
         # one-shot contact creation (valid if we're doing simple collision against a constant normal plane)
-        wp.sim.collide(self.model, self.states[0])
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
+
+        self.control = self.model.control()
 
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=1.0)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
+            # self.renderer = newton.viewer.RendererOpenGL(self.model, path=stage_path)
         else:
             self.renderer = None
 
@@ -121,7 +130,8 @@ class Example:
         # run control loop
         for i in range(self.sim_steps):
             self.states[i].clear_forces()
-            self.integrator.simulate(self.model, self.states[i], self.states[i + 1], self.sim_dt)
+            # self.contacts = self.model.collide(self.states[i], soft_contact_margin=0.01)
+            self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
 
         # compute loss on final state
         wp.launch(loss_kernel, dim=1, inputs=[self.states[-1].particle_q, self.target, self.loss])
