@@ -20,10 +20,9 @@ from pxr import Usd, UsdGeom
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
 import newton.utils
-from newton.geometry import PARTICLE_FLAG_ACTIVE, Mesh
-from newton.solvers.style3d import CollisionHandler
+from newton import Mesh, ParticleFlags
+from newton._src.solvers.style3d import CollisionHandler
 
 
 class Example:
@@ -38,7 +37,7 @@ class Example:
         self.sim_time = 0.0
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
-        builder = newton.sim.Style3DModelBuilder(up_axis=newton.Axis.Y)
+        builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Y)
         # the BVH used by Style3DSolver will be rebuilt every self.bvh_rebuild_frames
         # When the simulated object deforms significantly, simply refitting the BVH can lead to deterioration of the BVH's
         # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
@@ -119,7 +118,7 @@ class Example:
         # set fixed points
         flags = self.model.particle_flags.numpy()
         for fixed_vertex_id in fixed_points:
-            flags[fixed_vertex_id] = wp.uint32(int(flags[fixed_vertex_id]) & ~int(PARTICLE_FLAG_ACTIVE))
+            flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
         self.model.particle_flags = wp.array(flags)
 
         # set up contact query and contact detection distances
@@ -129,7 +128,7 @@ class Example:
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
 
-        self.solver = newton.solvers.Style3DSolver(
+        self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
             collision_handler=CollisionHandler(self.model),
@@ -144,7 +143,7 @@ class Example:
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, camera_fov=30.0)
+            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, camera_fov=30.0)
             self.renderer.enable_backface_culling = False
             self.renderer.render_wireframe = True
             self.renderer.show_particles = False
