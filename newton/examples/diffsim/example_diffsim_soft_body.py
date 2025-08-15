@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,11 +26,10 @@
 ###########################################################################
 
 import numpy as np
-
 import warp as wp
 import warp.optim
-import warp.sim
-import warp.sim.render
+
+import newton
 
 
 @wp.kernel
@@ -110,12 +109,12 @@ class Example:
         self.cell_dim = 2
         self.cell_size = 0.1
         center = self.cell_size * self.cell_dim * 0.5
-        self.grid_origin = wp.vec3(-0.5, 1.0, -center)
+        self.grid_origin = wp.vec3(-0.5, -center, 1.0)
         self.create_model()
 
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.target = wp.vec3(-1.0, 1.5, 0.0)
+        self.target = wp.vec3(-1.0, 0.0, 1.5)
         # Initialize material parameters
         if self.material_behavior == "anisotropic":
             # Different Lame parameters for each tet
@@ -132,7 +131,7 @@ class Example:
                 requires_grad=True,
             )
 
-        self.optimizer = wp.optim.SGD(
+        self.optimizer = warp.optim.SGD(
             [self.material_params],
             lr=self.train_rate,
             nesterov=False,
@@ -147,8 +146,12 @@ class Example:
         for _i in range(self.sim_steps + 1):
             self.states.append(self.model.state())
 
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
+
+        self.control = self.model.control()
+
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=1.0)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
         else:
             self.renderer = None
 
@@ -163,7 +166,7 @@ class Example:
             self.graph = capture.graph
 
     def create_model(self):
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder()
         builder.default_particle_radius = 0.0005
 
         total_mass = 0.2
@@ -181,7 +184,7 @@ class Example:
         builder.add_soft_grid(
             pos=self.grid_origin,
             rot=wp.quat_identity(),
-            vel=wp.vec3(5.0, -5.0, 0.0),
+            vel=wp.vec3(5.0, 0.0, -5.0),
             dim_x=self.cell_dim,
             dim_y=self.cell_dim,
             dim_z=self.cell_dim,
@@ -206,25 +209,21 @@ class Example:
         mu = 0.2
         builder.add_shape_box(
             body=-1,
-            pos=wp.vec3(2.0, 1.0, 0.0),
+            xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()),
             hx=0.25,
             hy=1.0,
             hz=1.0,
-            ke=ke,
-            kf=kf,
-            kd=kd,
-            mu=mu,
+            cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
         )
 
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = builder.finalize(requires_grad=True)
-        self.model.ground = True
 
         self.model.soft_contact_ke = ke
         self.model.soft_contact_kf = kf
         self.model.soft_contact_kd = kd
         self.model.soft_contact_mu = mu
-        self.model.soft_contact_margin = 0.001
         self.model.soft_contact_restitution = 1.0
 
     def forward(self):
@@ -236,10 +235,9 @@ class Example:
         )
         # run control loop
         for i in range(self.sim_steps):
-            wp.sim.collide(self.model, self.states[i])
             self.states[i].clear_forces()
-
-            self.integrator.simulate(self.model, self.states[i], self.states[i + 1], self.sim_dt)
+            self.contacts = self.model.collide(self.states[i], soft_contact_margin=0.001)
+            self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
 
         # Update loss
         # Compute the center of mass for the last time step.
@@ -343,7 +341,7 @@ class Example:
                 )
                 self.renderer.end_frame()
 
-                from pxr import Gf, UsdGeom
+                from pxr import Gf, UsdGeom  # noqa: PLC0415
 
                 particles_prim = self.renderer.stage.GetPrimAtPath("/root/particles")
                 particles = UsdGeom.Points.Get(self.renderer.stage, particles_prim.GetPath())
