@@ -515,7 +515,7 @@ def parse_usd(
         child_id = path_body_map.get(child_path, -1)
         parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
         child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
-        # If child_id is -1, swap parent and child
+        # If child_id is -1, swap parent and child 
         if child_id == -1:
             if parent_id == -1:
                 if verbose:
