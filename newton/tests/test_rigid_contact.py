@@ -29,7 +29,7 @@ class TestRigidContact(unittest.TestCase):
 
 
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
-    if not isinstance(solver, newton.solvers.MuJoCoSolver):
+    if not isinstance(solver, newton.solvers.SolverMuJoCo):
         contacts = model.collide(state_0, rigid_contact_margin=100.0)
     else:
         contacts = None
@@ -76,7 +76,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     # e.g. MuJoCo transforms the mesh to the origin
     mesh_offset = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     vertices += mesh_offset
-    cube_mesh = newton.geometry.Mesh(
+    cube_mesh = newton.Mesh(
         vertices=vertices,
         indices = [
             0, 1, 2,
@@ -177,11 +177,11 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
 
 devices = get_test_devices()
 solvers = {
-    "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model),
-    "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=True),
-    "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=False),
-    "xpbd": lambda model: newton.solvers.XPBDSolver(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model),
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "mujoco_c": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco=False),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
+    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

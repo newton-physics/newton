@@ -9,9 +9,8 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
-   SimRenderer
-   SimRendererOpenGL
-   SimRendererUsd
+   BasicRecorder
+   ModelAndStateRecorder
 
 .. rubric:: Functions
 
@@ -20,19 +19,29 @@ newton.utils
    :signatures: long
 
    boltzmann
-   check_conditional_graph_support
-   clear_git_cache
+   color_graph
    download_asset
    leaky_max
    leaky_min
    parse_mjcf
    parse_urdf
    parse_usd
+   plot_graph
+   quat_between_axes
+   quat_decompose
+   quat_from_euler
+   quat_to_euler
+   quat_to_rpy
+   quat_twist
+   quat_twist_angle
    smooth_max
    smooth_min
-   topological_sort
+   transform_inertia
+   transform_twist
+   transform_wrench
    vec_abs
    vec_leaky_max
    vec_leaky_min
    vec_max
    vec_min
+   velocity_at_point
