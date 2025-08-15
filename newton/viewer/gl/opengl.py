@@ -619,8 +619,6 @@ class RendererGL:
         self._sun_direction /= np.linalg.norm(self._sun_direction)
 
         self._light_color = (1.0, 1.0, 1.0)
-        self._sky_color = (77.0 / 255.0, 124.0 / 255.0, 255.0 / 255.0)
-        self._ground_color = (1.0 / 255, 2.0 / 255.0, 3.0 / 255.0)
 
         check_gl_error()
 
@@ -1215,15 +1213,6 @@ class RendererGL:
         if self.draw_sky:
             self._draw_sky()
 
-        # compute sky color at the horizon
-        # horizon = (
-        #     (self.sky_upper[0] + self.sky_lower[0]) * 0.5,
-        #     (self.sky_upper[1] + self.sky_lower[1]) * 0.5,
-        #     (self.sky_upper[2] + self.sky_lower[2]) * 0.5,
-        # )
-
-        horizon = self.sky_lower
-
         if self.draw_wireframe:
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
 
@@ -1231,15 +1220,15 @@ class RendererGL:
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
             view_pos=self.camera.pos,
-            fog_color=horizon,
+            fog_color=self.sky_lower,
             up_axis=self.camera.up_axis,
             sun_direction=self._sun_direction,
             enable_shadows=self.draw_shadows,
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
-            sky_color=self._sky_color,
-            ground_color=self._ground_color,
+            sky_color=self.sky_upper,
+            ground_color=self.sky_lower,
         )
 
         with self._shape_shader:
