@@ -18,7 +18,7 @@ import unittest
 
 import numpy as np
 import warp as wp
-
+import math
 import newton
 import newton.examples
 from newton._src.geometry.utils import create_box_mesh, transform_points
@@ -609,6 +609,144 @@ class TestImportSampleAssets(unittest.TestCase):
         print(model.joint_key)
         self.assertEqual(len(joints_found) + 1, model.joint_count)
 
+        body_q_array = model.body_q.numpy()
+        joint_dof_dim_array = model.joint_dof_dim.numpy()
+        body_positions = [body_q_array[i, 0:3].tolist() for i in range(body_q_array.shape[0])]
+        body_quaternions = [body_q_array[i, 3:7].tolist() for i in range(body_q_array.shape[0])]
+
+        total_dofs = 0
+        for j in range(model.joint_count):
+            lin = int(joint_dof_dim_array[j][0])
+            ang = int(joint_dof_dim_array[j][1])
+            total_dofs += lin + ang
+            jt = int(model.joint_type.numpy()[j])
+            
+            if jt == newton.JOINT_REVOLUTE:
+                self.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == newton.JOINT_FIXED:
+                self.assertEqual((lin, ang), (0, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == newton.JOINT_FREE:
+                self.assertGreater(lin + ang, 0, f"{model.joint_key[j]} expected nonzero DOFs for free joint")
+            elif jt == newton.JOINT_PRISMATIC:
+                self.assertEqual((lin, ang), (1, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == newton.JOINT_BALL:
+                self.assertEqual((lin, ang), (0, 3), f"{model.joint_key[j]} DOF dim mismatch")
+                
+        self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
+        joint_enabled = model.joint_enabled.numpy()
+        self.assertTrue(all(joint_enabled[i] != 0 for i in range(len(joint_enabled))))
+
+        axis_vectors = {
+            "X": [1.0, 0.0, 0.0],
+            "Y": [0.0, 1.0, 0.0],
+            "Z": [0.0, 0.0, 1.0],
+        }
+
+        drive_gain_scale = 1.0
+        scene = UsdPhysics.Scene.Get(stage, Sdf.Path("/physicsScene"))
+        if scene:
+            attr = scene.GetPrim().GetAttribute("warp:joint_drive_gains_scaling")
+            if attr and attr.HasAuthoredValue():
+                drive_gain_scale = float(attr.Get())
+
+        for j, key in enumerate(model.joint_key):
+            prim = stage.GetPrimAtPath(key)
+            if not prim:
+                continue
+                
+            dof_index = 0 if j <= 0 else sum(int(joint_dof_dim_array[i][0] + joint_dof_dim_array[i][1]) for i in range(j))
+            
+            p_rel = prim.GetRelationship("physics:body0")
+            c_rel = prim.GetRelationship("physics:body1")
+            p_targets = p_rel.GetTargets() if p_rel and p_rel.HasAuthoredTargets() else []
+            c_targets = c_rel.GetTargets() if c_rel and c_rel.HasAuthoredTargets() else []
+            
+            if len(p_targets) == 1 and len(c_targets) == 1:
+                p_path = str(p_targets[0])
+                c_path = str(c_targets[0])
+                if p_path in body_key_to_idx and c_path in body_key_to_idx:
+                    self.assertEqual(int(model.joint_parent.numpy()[j]), body_key_to_idx[p_path])
+                    self.assertEqual(int(model.joint_child.numpy()[j]), body_key_to_idx[c_path])
+                    
+            if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint):
+                axis_attr = prim.GetAttribute("physics:axis")
+                axis_tok = axis_attr.Get() if axis_attr and axis_attr.HasAuthoredValue() else None
+                if axis_tok:
+                    expected_axis = axis_vectors[str(axis_tok)]
+                    actual_axis = model.joint_axis.numpy()[dof_index].tolist()
+                    
+                    self.assertTrue(all(abs(actual_axis[i] - expected_axis[i]) < 1e-6 for i in range(3)) or 
+                                  all(abs(actual_axis[i] - (-expected_axis[i])) < 1e-6 for i in range(3)))
+                
+                lower_attr = prim.GetAttribute("physics:lowerLimit")
+                upper_attr = prim.GetAttribute("physics:upperLimit")
+                lower = lower_attr.Get() if lower_attr and lower_attr.HasAuthoredValue() else None
+                upper = upper_attr.Get() if upper_attr and upper_attr.HasAuthoredValue() else None
+                
+                if prim.IsA(UsdPhysics.RevoluteJoint):
+                    if lower is not None:
+                        self.assertAlmostEqual(float(model.joint_limit_lower.numpy()[dof_index]), math.radians(lower), places=5)
+                    if upper is not None:
+                        self.assertAlmostEqual(float(model.joint_limit_upper.numpy()[dof_index]), math.radians(upper), places=5)
+                else:
+                    if lower is not None:
+                        self.assertAlmostEqual(float(model.joint_limit_lower.numpy()[dof_index]), float(lower), places=5)
+                    if upper is not None:
+                        self.assertAlmostEqual(float(model.joint_limit_upper.numpy()[dof_index]), float(upper), places=5)
+                        
+            if prim.IsA(UsdPhysics.RevoluteJoint):
+                ke_attr = prim.GetAttribute("drive:angular:physics:stiffness")
+                kd_attr = prim.GetAttribute("drive:angular:physics:damping")
+            elif prim.IsA(UsdPhysics.PrismaticJoint):
+                ke_attr = prim.GetAttribute("drive:linear:physics:stiffness")
+                kd_attr = prim.GetAttribute("drive:linear:physics:damping")
+            else:
+                ke_attr = kd_attr = None
+                
+            if ke_attr:
+                ke_val = ke_attr.Get() if ke_attr.HasAuthoredValue() else None
+                if ke_val is not None:
+                    ke = float(ke_val)
+                    self.assertAlmostEqual(float(model.joint_target_ke.numpy()[dof_index]), ke * drive_gain_scale, places=5)
+                    
+            if kd_attr:
+                kd_val = kd_attr.Get() if kd_attr.HasAuthoredValue() else None
+                if kd_val is not None:
+                    kd = float(kd_val)
+                    self.assertAlmostEqual(float(model.joint_target_kd.numpy()[dof_index]), kd * drive_gain_scale, places=5)
+
+        joint_X_p_array = model.joint_X_p.numpy()
+        joint_X_c_array = model.joint_X_c.numpy()
+        joint_X_p_positions = [joint_X_p_array[i, 0:3].tolist() for i in range(joint_X_p_array.shape[0])]
+        joint_X_p_quaternions = [joint_X_p_array[i, 3:7].tolist() for i in range(joint_X_p_array.shape[0])]
+        joint_X_c_positions = [joint_X_c_array[i, 0:3].tolist() for i in range(joint_X_c_array.shape[0])]
+        joint_X_c_quaternions = [joint_X_c_array[i, 3:7].tolist() for i in range(joint_X_c_array.shape[0])]
+
+        for j in range(model.joint_count):
+            p = int(model.joint_parent.numpy()[j])
+            c = int(model.joint_child.numpy()[j])
+            if p < 0 or c < 0:
+                continue
+                
+            parent_tf = wp.transform(wp.vec3(*body_positions[p]), wp.quat(*body_quaternions[p]))
+            child_tf = wp.transform(wp.vec3(*body_positions[c]), wp.quat(*body_quaternions[c]))
+            joint_parent_tf = wp.transform(wp.vec3(*joint_X_p_positions[j]), wp.quat(*joint_X_p_quaternions[j]))
+            joint_child_tf = wp.transform(wp.vec3(*joint_X_c_positions[j]), wp.quat(*joint_X_c_quaternions[j]))
+            
+            lhs_tf = wp.transform_multiply(parent_tf, joint_parent_tf)
+            rhs_tf = wp.transform_multiply(child_tf, joint_child_tf)
+            
+            lhs_p = wp.transform_get_translation(lhs_tf)
+            rhs_p = wp.transform_get_translation(rhs_tf)
+            lhs_q = wp.transform_get_rotation(lhs_tf)
+            rhs_q = wp.transform_get_rotation(rhs_tf)
+            
+            self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)))
+            
+            q_diff = lhs_q * wp.quat_inverse(rhs_q)
+            angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
+            self.assertLessEqual(angle_diff, 1e-3)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_g1(self):
         builder = newton.ModelBuilder()
@@ -623,6 +761,28 @@ class TestImportSampleAssets(unittest.TestCase):
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_anymal(self):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        asset_root = newton.utils.download_asset("anymal_usd")
+        stage_path = None
+        for root, _, files in os.walk(asset_root):
+            if "anymal_d.usda" in files:
+                stage_path = os.path.join(root, "anymal_d.usda")
+                break
+        if not stage_path or not os.path.exists(stage_path):
+            raise unittest.SkipTest(f"Stage file not found: {stage_path}")
+
+        newton.utils.parse_usd(
+            stage_path,
+            builder,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(stage_path, model)
 
 
 if __name__ == "__main__":
