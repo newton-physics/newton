@@ -428,6 +428,7 @@ class TestImportUsd(unittest.TestCase):
         # Verify the parsed inertia matches our calculated body frame inertia
         np.testing.assert_allclose(inertia_parsed.reshape(3, 3), I_body_expected, rtol=1e-5, atol=1e-8)
 
+<<<<<<< HEAD
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_force_limits(self):
         """Test importing USD with force limits specified."""
@@ -525,6 +526,8 @@ class TestImportUsd(unittest.TestCase):
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
 
+=======
+>>>>>>> 7f6229e (Fix quaternion inversion in USD importer (#559))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
