@@ -25,11 +25,10 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
-
-import numpy as np
 
 
 @wp.kernel
@@ -189,7 +188,7 @@ class Example:
                 )
                 self.renderer.end_frame()
 
-                from pxr import Gf, UsdGeom
+                from pxr import Gf, UsdGeom  # noqa: PLC0415
 
                 particles_prim = self.renderer.stage.GetPrimAtPath("/root/particles")
                 particles = UsdGeom.Points.Get(self.renderer.stage, particles_prim.GetPath())
