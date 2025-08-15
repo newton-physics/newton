@@ -249,8 +249,6 @@ class ViewerGL(ViewerBase):
 
             if self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
-            # self.camera.fov -= dy
-            # self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
 
     def on_mouse_motion(self, x, y, dx, dy):
         pass
@@ -338,22 +336,6 @@ class ViewerGL(ViewerBase):
 
     def _render_ui(self):
         """Render the complete ImGui interface."""
-        imgui = self.ui.imgui
-
-        # Set up docking if available (optional feature)
-        try:
-            if hasattr(imgui, "dock_space_over_viewport"):
-                imgui.dock_space_over_viewport(
-                    imgui.get_main_viewport(), flags=imgui.DOCKNODE_FLAGS_PASS_THRU_CENTRAL_NODE
-                )
-            elif hasattr(imgui, "dockspace_over_viewport"):
-                # Alternative name in some ImGui versions
-                imgui.dockspace_over_viewport(
-                    imgui.get_main_viewport(), flags=imgui.DOCKNODE_FLAGS_PASS_THRU_CENTRAL_NODE
-                )
-        except (AttributeError, NameError):
-            # Docking not available, continue without it
-            pass
 
         # Render left panel
         self._render_left_panel()

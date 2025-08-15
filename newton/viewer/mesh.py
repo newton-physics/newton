@@ -51,7 +51,7 @@ def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_seg
     vertices = []
     indices = []
 
-    x_dir, y_dir, z_dir = ((1, 2, 0), (2, 0, 1), (0, 1, 2))[up_axis]
+    x_dir, y_dir, z_dir = ((1, 2, 0), (2, 0, 1), (1, 2, 0))[up_axis]
     up_vector = np.zeros(3)
     up_vector[up_axis] = half_height
 
@@ -253,58 +253,3 @@ def create_box_mesh(extents):
 
 def create_plane_mesh(width, length):
     return create_box_mesh((width, length, 0.01))
-
-
-# # create functions
-# @abstractmethod
-# def create_mesh(self, points: wp.array, normals: wp.array, uvs: wp.array, indices: wp.array) -> Any:
-#     """Create a mesh from geometry data."""
-#     pass
-
-# @lru_cache
-# def create_plane(self, width: float, length: float, color=None):
-#     # Create a plane as a very thin box
-#     extents = (width, 0.01, length)  # Very thin in Y direction
-#     return self.create_box(extents)
-
-# @lru_cache
-# def create_sphere(self, radius: float = 0.01):
-#     from .mesh import create_sphere_mesh
-
-#     vertices, indices = create_sphere_mesh(radius)
-#     return self.create_mesh(vertices, indices)
-
-# @lru_cache
-# def create_box(self, extents: tuple[float, float, float]):
-#     from .mesh import create_box_mesh
-
-#     vertices, indices = create_box_mesh(extents)
-#     return self.create_mesh(vertices, indices)
-
-# @lru_cache
-# def create_cylinder(self, radius: float, height: float):
-#     from .mesh import create_cylinder_mesh
-
-#     vertices, indices = create_cylinder_mesh(radius, height)
-#     return self.create_mesh(vertices, indices)
-
-# @lru_cache
-# def create_capsule(self, radius: float, height: float):
-#     from .mesh import create_capsule_mesh
-
-#     vertices, indices = create_capsule_mesh(radius, height)
-#     return self.create_mesh(vertices, indices)
-
-# @lru_cache
-# def create_cone(self, radius: float, height: float):
-#     from .mesh import create_cone_mesh
-
-#     vertices, indices = create_cone_mesh(radius, height)
-#     return self.create_mesh(vertices, indices)
-
-# @lru_cache
-# def create_arrow(self, start: tuple[float, float, float], end: tuple[float, float, float], radius: float = 0.02):
-#     from .mesh import create_arrow_mesh
-
-#     vertices, indices = create_arrow_mesh(start, end, radius)
-#     return self.create_mesh(vertices, indices)

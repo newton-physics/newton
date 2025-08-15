@@ -83,26 +83,26 @@ def main():
             p_s = wp.vec3(
                 2.0 + math.sin(t) * 0.5,
                 0.0,
-                1.0 + math.cos(2.0 * t) * 0.3,
+                1.8 + math.cos(2.0 * t) * 0.3,
             )
             x_sphere_anim = wp.array([wp.transform(p_s, qy)], dtype=wp.transform)
 
             # Box: rocking
-            x_box_anim = wp.array([wp.transform([-2.0, 0.0, 0.5], qx)], dtype=wp.transform)
+            x_box_anim = wp.array([wp.transform([-2.0, 0.0, 1.5], qx)], dtype=wp.transform)
 
             # Cone: circular motion
             p_c = wp.vec3(
                 math.cos(0.8 * t) * 1.5,
                 math.sin(0.8 * t) * 1.5,
-                0.8,
+                1.8,
             )
             x_cone_anim = wp.array([wp.transform(p_c, qy)], dtype=wp.transform)
 
             # Cylinder: slow spin
-            x_cyl_anim = wp.array([wp.transform([0.0, 0.0, 0.5], qy)], dtype=wp.transform)
+            x_cyl_anim = wp.array([wp.transform([0.0, 0.0, 1.8], qy)], dtype=wp.transform)
 
             # Capsule: bounce
-            p_cap = wp.vec3(0.0, -2.0, 0.8 + 0.2 * abs(math.sin(t)))
+            p_cap = wp.vec3(0.0, -2.0, 1.8 + 0.2 * abs(math.sin(t)))
             x_cap_anim = wp.array([wp.transform(p_cap, wp.quat_identity())], dtype=wp.transform)
 
             # Update instances via log_shapes

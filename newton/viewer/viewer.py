@@ -242,17 +242,17 @@ class ViewerBase:
             from .mesh import create_capsule_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
-            vertices, indices = create_capsule_mesh(radius, height)
+            vertices, indices = create_capsule_mesh(radius, height, up_axis=2)
         elif geo_type == newton.GEO_CYLINDER:
             from .mesh import create_cylinder_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
-            vertices, indices = create_cylinder_mesh(radius, height)
+            vertices, indices = create_cylinder_mesh(radius, height, up_axis=2)
         elif geo_type == newton.GEO_CONE:
             from .mesh import create_cone_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
-            vertices, indices = create_cone_mesh(radius, height)
+            vertices, indices = create_cone_mesh(radius, height, up_axis=2)
         elif geo_type == newton.GEO_BOX:
             from .mesh import create_box_mesh  # noqa: PLC0415
 
@@ -476,11 +476,6 @@ class ViewerBase:
             scale = np.array([1.0, 1.0, 1.0])
             color = wp.vec3(self._shape_color_map(s))
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
-
-            # handle convention conversion between renderer and Newton
-            # todo: unify these
-            if geo_type in (newton.GEO_CAPSULE, newton.GEO_CYLINDER, newton.GEO_CONE):
-                xform.q = xform.q * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2.0)
 
             if geo_type == newton.GEO_MESH:
                 scale = np.asarray(geo_scale, dtype=np.float32)
