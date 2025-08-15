@@ -25,11 +25,11 @@ from typing import Any
 
 import torch
 import warp as wp
+import yaml
 
 import newton
 import newton.examples
 import newton.utils
-from newton.examples.robot_configs import G1_23DOF, G1_29DOF, Anymal, Go2
 from newton.sim import State
 
 wp.config.enable_backward = False
@@ -317,7 +317,7 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         newton.utils.parse_usd(
-            newton.examples.get_asset(asset_directory + config.asset_path),
+            newton.examples.get_asset(asset_directory + config["asset_path"]),
             builder,
             joint_drive_gains_scaling=1.0,
             collapse_fixed_joints=False,
@@ -340,15 +340,15 @@ class Example:
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
-        builder.joint_q[7:] = config.mjw_joint_pos
+        builder.joint_q[7:] = config["mjw_joint_pos"]
 
         for i in range(len(builder.joint_dof_mode)):
             builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
 
-        for i in range(len(config.mjw_joint_stiffness)):
-            builder.joint_target_ke[i + 6] = config.mjw_joint_stiffness[i]
-            builder.joint_target_kd[i + 6] = config.mjw_joint_damping[i]
-            builder.joint_armature[i + 6] = config.mjw_joint_armature[i]
+        for i in range(len(config["mjw_joint_stiffness"])):
+            builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
+            builder.joint_target_kd[i + 6] = config["mjw_joint_damping"][i]
+            builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
         self.solver = newton.solvers.MuJoCoSolver(
@@ -377,7 +377,7 @@ class Example:
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and not self.use_mujoco
         if self.use_cuda_graph:
-            torch_tensor = torch.zeros(config.num_dofs + 6, device=self.torch_device, dtype=torch.float32)
+            torch_tensor = torch.zeros(config["num_dofs"] + 6, device=self.torch_device, dtype=torch.float32)
             self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -431,7 +431,7 @@ class Example:
             with torch.no_grad():
                 self.act = self.policy(obs)
                 self.rearranged_act = torch.index_select(self.act, 1, self.mjc_to_physx_indices)
-                a = self.joint_pos_initial + self.config.action_scale * self.rearranged_act
+                a = self.joint_pos_initial + self.config["action_scale"] * self.rearranged_act
                 a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(self.control.joint_target, a_wp)
@@ -459,50 +459,57 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument("--num_frames", type=int, default=100000, help="Total number of frames.")
-    parser.add_argument(
-        "--robot", type=str, default="g1_29dof", help="Robot to use. Choose between g1_29dof, g1_23dof, go2, anymal"
-    )
+    parser.add_argument("--robot", type=str, default="g1_29dof.yaml", help="Path to robot configuration YAML file")
     parser.add_argument("--physx", action=argparse.BooleanOptionalAction, help="Run physX policy instead of MJWarp.")
 
     args = parser.parse_known_args()[0]
-    robots = {"g1_29dof": G1_29DOF, "g1_23dof": G1_23DOF, "go2": Go2, "anymal": Anymal}
-    config = robots[args.robot]()
+
+    # Load robot configuration from YAML file
+    try:
+        with open(args.robot, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"[ERROR] Robot configuration file not found: {args.robot}")
+        print("Available YAML files:")
+        import glob
+
+        for yaml_file in glob.glob("*.yaml"):
+            print(f"  - {yaml_file}")
+        exit(1)
+    except yaml.YAMLError as e:
+        print(f"[ERROR] Error parsing YAML file: {e}")
+        exit(1)
+
+    # policy_directory = newton.utils.download_asset("rl_policies")
+    # asset_directory = newton.utils.download_asset(config["asset_path"])
+
     policy_directory = newton.utils.download_asset("rl_policies")
     asset_directory = newton.utils.download_asset(config["asset_path"])
-
-    print("[INFO] Selected robot:", args.robot)
-    mjc_to_physx = list(range(config.num_dofs))
-    physx_to_mjc = list(range(config.num_dofs))
+    print("[INFO] Selected robot config:", args.robot)
+    mjc_to_physx = list(range(config["num_dofs"]))
+    physx_to_mjc = list(range(config["num_dofs"]))
 
     with wp.ScopedDevice(args.device):
         if args.physx:
-            if "physx" not in config.policy_path or not hasattr(config, "physx_joint_names"):
-                raise ValueError(f"PhysX policy/joint mapping not available for robot '{args.robot}'.")
-            policy_path = policy_directory + config.policy_path["physx"]
-            mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config.mjw_joint_names, config.physx_joint_names)
+            if "physx" not in config["policy_path"] or "physx_joint_names" not in config:
+                raise ValueError(f"PhysX policy/joint mapping not available in config file '{args.robot}'.")
+            policy_path = policy_directory + config["policy_path"]["physx"]
+            mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(
+                config["mjw_joint_names"], config["physx_joint_names"]
+            )
         else:
-            policy_path = policy_directory + config.policy_path["mjw"]
+            policy_path = policy_directory + config["policy_path"]["mjw"]
 
         example = Example(config, asset_directory, mjc_to_physx, physx_to_mjc)
 
         # Use utility function to load policy and setup tensors
-        load_policy_and_setup_tensors(example, policy_path, config.num_dofs, slice(7, None))
+        load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
         # Initialize keyboard controller
         keyboard_controller = RobotKeyboardController(
             command_size=3,
             command_limits=(-1.0, 1.0),
         )
-
-        show_mujoco_viewer = False
-        if show_mujoco_viewer:
-            import mujoco
-            import mujoco.viewer
-            import mujoco_warp
-
-            mjm, mjd = example.solver.mj_model, example.solver.mj_data
-            m, d = example.solver.mjw_model, example.solver.mjw_data
-            viewer = mujoco.viewer.launch_passive(mjm, mjd)
 
         running = True
         frame_count = 0
@@ -531,10 +538,6 @@ if __name__ == "__main__":
 
             example.step()
             example.render()
-            if show_mujoco_viewer:
-                if not example.solver.use_mujoco:
-                    mujoco_warp.get_data_into(mjd, mjm, d)
-                viewer.sync()
             elapsed_time = time.monotonic() - start_time
             sleep_time = example.cycle_time - elapsed_time
             if sleep_time > 0:
