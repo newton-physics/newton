@@ -1,0 +1,90 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "Robot" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+)
+{
+    def Xform "Base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "TensorPhysicsArticulationRootAPI"]
+    )
+    {
+        float3 physics:diagonalInertia = (1, 1, 1)
+        float physics:mass = 1000000
+        custom uint physics:warp:articulationIndex = 0
+    }
+
+    def Xform "BodyL" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        point3f physics:centerOfMass = (0, -1, 0)
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 1
+    }
+
+    def Xform "BodyR" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        point3f physics:centerOfMass = (0, -1, 0)
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 1
+    }
+
+    def PhysicsFixedJoint "FixedJoint"
+    {
+        rel physics:body0 = None
+        rel physics:body1 = </Robot/Base>
+    }
+
+    def PhysicsRevoluteJoint "Revolute" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        float drive:angular:physics:damping = 0.002
+        float drive:angular:physics:stiffness = 0.04
+        float drive:angular:physics:targetPosition = 0
+        float drive:angular:physics:targetVelocity = 0
+        uniform token drive:angular:physics:type = "force"
+        uniform token physics:axis = "X"
+        rel physics:body0 = </Robot/Base>
+        rel physics:body1 = </Robot/BodyL>
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+    }
+
+    def PhysicsJoint "D6" (
+        prepend apiSchemas = ["PhysicsDriveAPI:rotX", "PhysicsLimitAPI:rotX"]
+    )
+    {
+        float drive:rotX:physics:damping = 0.002
+        float drive:rotX:physics:stiffness = 0.04
+        float drive:rotX:physics:targetPosition = 0
+        float drive:rotX:physics:targetVelocity = 0
+        uniform token drive:rotX:physics:type = "force"
+        rel physics:body0 = </Robot/Base>
+        rel physics:body1 = </Robot/BodyR>
+        float limit:rotX:physics:high = 180
+        float limit:rotX:physics:low = -180
+        float limit:rotY:physics:high = 0
+        float limit:rotY:physics:low = 0
+        float limit:rotZ:physics:high = 0
+        float limit:rotZ:physics:low = 0
+        float limit:transX:physics:high = 0
+        float limit:transX:physics:low = 0
+        float limit:transY:physics:high = 0
+        float limit:transY:physics:low = 0
+        float limit:transZ:physics:high = 0
+        float limit:transZ:physics:low = 0
+    }
+}
