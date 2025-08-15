@@ -112,7 +112,6 @@ class Example:
 
         if stage_path:
             self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
-            # self.renderer = newton.viewer.RendererOpenGL(self.model, path=stage_path)
         else:
             self.renderer = None
 
@@ -130,7 +129,6 @@ class Example:
         # run control loop
         for i in range(self.sim_steps):
             self.states[i].clear_forces()
-            # self.contacts = self.model.collide(self.states[i], soft_contact_margin=0.01)
             self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
 
         # compute loss on final state
