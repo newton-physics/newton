@@ -594,6 +594,9 @@ class RendererGL:
         self._key_callbacks = []
         self._key_release_callbacks = []
         self._mouse_drag_callbacks = []
+        self._mouse_press_callbacks = []
+        self._mouse_release_callbacks = []
+        self._mouse_motion_callbacks = []
         self._mouse_scroll_callbacks = []
         self._resize_callbacks = []
 
@@ -789,8 +792,12 @@ class RendererGL:
         self._key_handler = pyglet.window.key.KeyStateHandler()
         self.window.push_handlers(self._key_handler)
 
+        self.window.push_handlers(on_mouse_press=self._on_mouse_press)
+        self.window.push_handlers(on_mouse_release=self._on_mouse_release)
+
         self.window.on_mouse_scroll = self._on_scroll
         self.window.on_mouse_drag = self._on_mouse_drag
+        self.window.on_mouse_motion = self._on_mouse_motion
 
         # track pressed keys
         self._key_state: dict[int, bool] = {}
@@ -811,6 +818,22 @@ class RendererGL:
         """
         self._key_release_callbacks.append(callback)
 
+    def register_mouse_press(self, callback):
+        """Register a callback for mouse press events.
+
+        Args:
+            callback: Function that takes (x, y, button, modifiers) parameters
+        """
+        self._mouse_press_callbacks.append(callback)
+
+    def register_mouse_release(self, callback):
+        """Register a callback for mouse release events.
+
+        Args:
+            callback: Function that takes (x, y, button, modifiers) parameters
+        """
+        self._mouse_release_callbacks.append(callback)
+
     def register_mouse_drag(self, callback):
         """Register a callback for mouse drag events.
 
@@ -818,6 +841,14 @@ class RendererGL:
             callback: Function that takes (x, y, dx, dy, buttons, modifiers) parameters
         """
         self._mouse_drag_callbacks.append(callback)
+
+    def register_mouse_motion(self, callback):
+        """Register a callback for mouse motion events.
+
+        Args:
+            callback: Function that takes (x, y, dx, dy) parameters
+        """
+        self._mouse_motion_callbacks.append(callback)
 
     def register_mouse_scroll(self, callback):
         """Register a callback for mouse scroll events.
@@ -851,10 +882,25 @@ class RendererGL:
         for callback in self._key_release_callbacks:
             callback(symbol, modifiers)
 
+    def _on_mouse_press(self, x, y, button, modifiers):
+        """Handle mouse button press events."""
+        for callback in self._mouse_press_callbacks:
+            callback(x, y, button, modifiers)
+
+    def _on_mouse_release(self, x, y, button, modifiers):
+        """Handle mouse button release events."""
+        for callback in self._mouse_release_callbacks:
+            callback(x, y, button, modifiers)
+
     def _on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         # Then call registered callbacks
         for callback in self._mouse_drag_callbacks:
             callback(x, y, dx, dy, buttons, modifiers)
+
+    def _on_mouse_motion(self, x, y, dx, dy):
+        """Handle mouse motion events."""
+        for callback in self._mouse_motion_callbacks:
+            callback(x, y, dx, dy)
 
     def _on_scroll(self, x, y, scroll_x, scroll_y):
         for callback in self._mouse_scroll_callbacks:

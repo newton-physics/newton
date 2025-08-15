@@ -152,7 +152,7 @@ class Camera:
 
         # build an orthonormal basis (front, right, up)
         front = self.get_front()
-        right = -self.get_left()
+        right = self.get_left()
         up = self.get_up()
 
         # normalised pixel coordinates
@@ -161,7 +161,7 @@ class Camera:
 
         # ray direction in world space (before normalisation)
         direction = front + u * alpha * aspect_ratio * right + v * alpha * up
-        direction = direction / np.linalg.norm(direction)
+        direction = direction / float(np.linalg.norm(direction))
 
         return self.pos, PyVec3(*direction)
 

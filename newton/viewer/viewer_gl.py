@@ -25,6 +25,7 @@ from newton.utils.selection import ArticulationView
 from newton.viewer.camera import Camera
 from newton.viewer.gl.gui import UI
 from newton.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL
+from newton.viewer.gl.picking import Picking
 from newton.viewer.viewer import ViewerBase
 
 
@@ -65,8 +66,12 @@ class ViewerGL(ViewerBase):
             "error_message": "",
         }
 
+        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
+        self.renderer.register_mouse_press(self.on_mouse_press)
+        self.renderer.register_mouse_release(self.on_mouse_release)
         self.renderer.register_mouse_drag(self.on_mouse_drag)
         self.renderer.register_mouse_scroll(self.on_mouse_scroll)
         self.renderer.register_resize(self.on_resize)
@@ -85,6 +90,10 @@ class ViewerGL(ViewerBase):
 
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
+
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera.width = fb_w
+        self.camera.height = fb_h
 
         self.ui = UI(self.renderer.window)
 
@@ -195,7 +204,29 @@ class ViewerGL(ViewerBase):
     # events
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-        pass
+        """Handle mouse scroll for zooming (FOV adjustment)."""
+        if self.ui.is_capturing():
+            return
+
+        fov_delta = scroll_y * 2.0
+        self.camera.fov -= fov_delta
+        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        if self.ui.is_capturing():
+            return
+
+        import pyglet  # noqa: PLC0415
+
+        # Handle right-click for picking
+        if button == pyglet.window.mouse.RIGHT:
+            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+            print(f"ray: start {ray_start}, dir {ray_dir}")
+            self.picking.pick(self._last_state, ray_start, ray_dir)
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        """Handle mouse release events to stop dragging."""
+        self.picking.release()
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         if self.ui.is_capturing():
@@ -214,8 +245,15 @@ class ViewerGL(ViewerBase):
             self.camera.pitch += dy
 
         if buttons & pyglet.window.mouse.RIGHT:
-            self.camera.fov -= dy
-            self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+
+            if self.picking.is_picking():
+                self.picking.update(ray_start, ray_dir)
+            # self.camera.fov -= dy
+            # self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        pass
 
     def on_key_press(self, symbol, modifiers):
         try:
@@ -275,9 +313,8 @@ class ViewerGL(ViewerBase):
         self.camera.pos += dv * (dt * self._frame_speed)
 
     def on_resize(self, width, height):
-        self.camera.width = width
-        self.camera.height = height
-        self.camera.aspect = width / height
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera.update_screen_size(fb_w, fb_h)
 
         self.ui.resize(width, height)
 
