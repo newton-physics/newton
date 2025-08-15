@@ -1149,5 +1149,6 @@ class TestMuJoCoConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
 
+
 if __name__ == "__main__":
     unittest.main()
