@@ -1983,6 +1983,8 @@ class SolverMuJoCo(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
+
+            # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[ji])
             tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
 
