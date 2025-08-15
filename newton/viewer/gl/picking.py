@@ -18,7 +18,7 @@ class Picking:
         self.lock = None
         self._contact_points0 = None
         self._contact_points1 = None
-        self._debug = True
+        self._debug = False
 
         # picking state
         if model and model.device.is_cuda:

@@ -78,8 +78,8 @@ class Camera:
             front_z = np.sin(np.deg2rad(self.yaw)) * np.cos(np.deg2rad(pitch))
             return PyVec3(front_x, front_y, front_z).normalize()
 
-    def get_left(self):
-        """Get the camera left direction vector (read-only)."""
+    def get_right(self):
+        """Get the camera right direction vector (read-only)."""
         from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
 
         return PyVec3.cross(self.get_front(), self.get_up()).normalize()
@@ -152,7 +152,7 @@ class Camera:
 
         # build an orthonormal basis (front, right, up)
         front = self.get_front()
-        right = self.get_left()
+        right = self.get_right()
         up = self.get_up()
 
         # normalised pixel coordinates

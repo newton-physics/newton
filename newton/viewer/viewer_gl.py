@@ -273,19 +273,19 @@ class ViewerGL(ViewerBase):
 
         # camera-relative basis
         forward = np.array(self.camera.get_front(), dtype=np.float32)
-        left = np.array(self.camera.get_left(), dtype=np.float32)
+        right = np.array(self.camera.get_right(), dtype=np.float32)
         up = np.array(self.camera.get_up(), dtype=np.float32)
 
         # keep motion in the horizontal plane
         forward -= up * float(np.dot(forward, up))
-        left -= up * float(np.dot(left, up))
+        right -= up * float(np.dot(right, up))
         # renormalize
         fn = float(np.linalg.norm(forward))
-        ln = float(np.linalg.norm(left))
+        ln = float(np.linalg.norm(right))
         if fn > 1.0e-6:
             forward /= fn
         if ln > 1.0e-6:
-            left /= ln
+            right /= ln
 
         import pyglet  # noqa: PLC0415
 
@@ -295,9 +295,9 @@ class ViewerGL(ViewerBase):
         if self.renderer.is_key_down(pyglet.window.key.S) or self.renderer.is_key_down(pyglet.window.key.DOWN):
             desired -= forward
         if self.renderer.is_key_down(pyglet.window.key.A) or self.renderer.is_key_down(pyglet.window.key.LEFT):
-            desired -= left  # strafe left
+            desired -= right  # strafe left
         if self.renderer.is_key_down(pyglet.window.key.D) or self.renderer.is_key_down(pyglet.window.key.RIGHT):
-            desired += left  # strafe right
+            desired += right  # strafe right
 
         dn = float(np.linalg.norm(desired))
         if dn > 1.0e-6:
