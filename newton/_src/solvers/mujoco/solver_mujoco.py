@@ -1990,7 +1990,7 @@ class SolverMuJoCo(SolverBase):
                 child_xform = wp.transform(*body_q[child])
                 parent_xform = wp.transform(*body_q[parent])
 
-                relative_xform = child_xform * wp.transform_inverse(parent_xform)
+                relative_xform = wp.transform_inverse(parent_xform) * child_xform
             else:
                 relative_xform = wp.transform(*body_q[child])
 
