@@ -34,9 +34,9 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 import newton.utils
-from newton.sim import Model, ModelBuilder, State, eval_fk
-from newton.solvers import FeatherstoneSolver, VBDSolver
-from newton.solvers.featherstone.kernels import transform_twist
+from newton import Model, ModelBuilder, State, eval_fk
+from newton.solvers import SolverFeatherstone, SolverVBD
+from newton.utils import transform_twist
 
 
 def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
@@ -273,16 +273,16 @@ class Example:
         self.sim_time = 0.0
 
         # initialize robot solver
-        self.robot_solver = FeatherstoneSolver(self.model, update_mass_matrix_interval=self.num_substeps)
+        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.num_substeps)
         self.set_up_control()
 
-        self.cloth_solver: VBDSolver | None = None
+        self.cloth_solver: SolverVBD | None = None
         if self.add_cloth:
             # initialize cloth solver
-            #   set edge rest angle to zero to disable bending, this is currently a workaround to make VBDSolver stable
-            #   TODO: fix VBDSolver's bending issue
+            #   set edge rest angle to zero to disable bending, this is currently a workaround to make SolverVBD stable
+            #   TODO: fix SolverVBD's bending issue
             self.model.edge_rest_angle.zero_()
-            self.cloth_solver = VBDSolver(
+            self.cloth_solver = SolverVBD(
                 self.model,
                 iterations=self.iterations,
                 self_contact_radius=self.self_contact_radius,
@@ -295,7 +295,7 @@ class Example:
             )
 
         if self.stage_path is not None:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=self.stage_path,
                 model=self.model,
                 scaling=0.05,
