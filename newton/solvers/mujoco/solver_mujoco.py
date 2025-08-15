@@ -1769,8 +1769,10 @@ class MuJoCoSolver(SolverBase):
         model_joint_solimp = None
         if model.joint_solref is not None:
             model_joint_solref = model.joint_solref.numpy()
+            assert model_joint_solref.shape[0] == model.joint_dof_count
         if model.joint_solimp is not None:
             model_joint_solimp = model.joint_solimp.numpy()
+            assert model_joint_solimp.shape[0] == model.joint_dof_count
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -2062,11 +2064,11 @@ class MuJoCoSolver(SolverBase):
                     joint_params["frictionloss"] = joint_friction[ai]
                     # Set solref and solimp if available (using solref_limit and solimp_limit for joint limits)
                     if model_joint_solref is not None:
-                        joint_params["solref_limit"] = model_joint_solref[ai]
+                        joint_params["solref_limit"] = tuple(model_joint_solref[ai])
                     elif joint_solref is not None:
                         joint_params["solref_limit"] = joint_solref
                     if model_joint_solimp is not None:
-                        joint_params["solimp_limit"] = model_joint_solimp[ai]
+                        joint_params["solimp_limit"] = tuple(model_joint_solimp[ai])
                     elif joint_solimp is not None:
                         joint_params["solimp_limit"] = joint_solimp
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -2134,11 +2136,11 @@ class MuJoCoSolver(SolverBase):
                     joint_params["frictionloss"] = joint_friction[ai]
                     # Set solref and solimp if available (using solref_limit and solimp_limit for joint limits)
                     if model_joint_solref is not None:
-                        joint_params["solref_limit"] = model_joint_solref[ai]
+                        joint_params["solref_limit"] = tuple(model_joint_solref[ai])
                     elif joint_solref is not None:
                         joint_params["solref_limit"] = joint_solref
                     if model_joint_solimp is not None:
-                        joint_params["solimp_limit"] = model_joint_solimp[ai]
+                        joint_params["solimp_limit"] = tuple(model_joint_solimp[ai])
                     elif joint_solimp is not None:
                         joint_params["solimp_limit"] = joint_solimp
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]

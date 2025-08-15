@@ -524,14 +524,12 @@ def parse_usd(
 
         # Parse custom solref and solimp attributes
         joint_solref, joint_solimp = None, None
-        if joint_prim.HasAttribute("warp:joint_solref"):
-            solref_attr = joint_prim.GetAttribute("warp:joint_solref").Get()
-            if solref_attr and len(solref_attr) >= 2:
-                joint_solref = (float(solref_attr[0]), float(solref_attr[1]))
-        if joint_prim.HasAttribute("warp:joint_solimp"):
-            solimp_attr = joint_prim.GetAttribute("warp:joint_solimp").Get()
-            if solimp_attr and len(solimp_attr) >= 5:
-                joint_solimp = tuple(float(v) for v in solimp_attr[:5])
+        solref_vec = parse_vec(joint_prim, "warp:joint_solref")
+        if solref_vec is not None and len(solref_vec) >= 2:
+            joint_solref = (float(solref_vec[0]), float(solref_vec[1]))
+        solimp_vec = parse_vec(joint_prim, "warp:joint_solimp")
+        if solimp_vec is not None and len(solimp_vec) >= 5:
+            joint_solimp = tuple(float(v) for v in solimp_vec[:5])
 
         joint_params = {
             "parent": parent_id,

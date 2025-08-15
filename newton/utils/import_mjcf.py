@@ -491,13 +491,19 @@ def parse_mjcf(
                 joint_solref = None
                 joint_solimp = None
                 if "solref" in joint_attrib:
-                    solref_vals = parse_vec(joint_attrib, "solref", None)
-                    if solref_vals is not None and len(solref_vals) >= 2:
-                        joint_solref = (float(solref_vals[0]), float(solref_vals[1]))
+                    try:
+                        solref_vals = np.fromstring(joint_attrib["solref"], sep=" ", dtype=np.float32)
+                        if len(solref_vals) >= 2 and np.isfinite(solref_vals[:2]).all():
+                            joint_solref = (float(solref_vals[0]), float(solref_vals[1]))
+                    except (ValueError, TypeError):
+                        pass  # Skip malformed values
                 if "solimp" in joint_attrib:
-                    solimp_vals = parse_vec(joint_attrib, "solimp", None)
-                    if solimp_vals is not None and len(solimp_vals) >= 5:
-                        joint_solimp = tuple(float(v) for v in solimp_vals[:5])
+                    try:
+                        solimp_vals = np.fromstring(joint_attrib["solimp"], sep=" ", dtype=np.float32)
+                        if len(solimp_vals) >= 5 and np.isfinite(solimp_vals[:5]).all():
+                            joint_solimp = tuple(float(v) for v in solimp_vals[:5])
+                    except (ValueError, TypeError):
+                        pass  # Skip malformed values
 
                 if joint_type_str == "free":
                     joint_type = newton.JOINT_FREE

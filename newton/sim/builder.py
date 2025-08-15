@@ -682,6 +682,8 @@ class ModelBuilder:
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
+            "joint_solref",
+            "joint_solimp",
             "shape_key",
             "shape_flags",
             "shape_type",
@@ -1659,19 +1661,23 @@ class ModelBuilder:
             }
             num_lin_axes, num_ang_axes = self.joint_dof_dim[i]
             for j in range(qd_start, qd_start + num_lin_axes + num_ang_axes):
-                data["axes"].append(
-                    {
-                        "axis": self.joint_axis[j],
-                        "axis_mode": self.joint_dof_mode[j],
-                        "target_ke": self.joint_target_ke[j],
-                        "target_kd": self.joint_target_kd[j],
-                        "limit_ke": self.joint_limit_ke[j],
-                        "limit_kd": self.joint_limit_kd[j],
-                        "limit_lower": self.joint_limit_lower[j],
-                        "limit_upper": self.joint_limit_upper[j],
-                        "act": self.joint_target[j],
-                    }
-                )
+                axis_data = {
+                    "axis": self.joint_axis[j],
+                    "axis_mode": self.joint_dof_mode[j],
+                    "target_ke": self.joint_target_ke[j],
+                    "target_kd": self.joint_target_kd[j],
+                    "limit_ke": self.joint_limit_ke[j],
+                    "limit_kd": self.joint_limit_kd[j],
+                    "limit_lower": self.joint_limit_lower[j],
+                    "limit_upper": self.joint_limit_upper[j],
+                    "act": self.joint_target[j],
+                }
+                # Add solref and solimp if available
+                if j < len(self.joint_solref):
+                    axis_data["solref"] = self.joint_solref[j]
+                if j < len(self.joint_solimp):
+                    axis_data["solimp"] = self.joint_solimp[j]
+                data["axes"].append(axis_data)
 
             joint_data[(parent, child)] = data
 
@@ -1842,6 +1848,8 @@ class ModelBuilder:
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
+        self.joint_solref.clear()
+        self.joint_solimp.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1866,6 +1874,9 @@ class ModelBuilder:
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_target.append(axis["act"])
+                # Restore solref and solimp if available
+                self.joint_solref.append(axis.get("solref", (0.02, 1.0)))
+                self.joint_solimp.append(axis.get("solimp", (0.9, 0.95, 0.001, 0.5, 2.0)))
 
         return {
             "body_remap": body_remap,
