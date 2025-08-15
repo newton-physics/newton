@@ -47,15 +47,15 @@ class Example:
         self.model = builder.finalize()
         self.model.ground = True
 
-        self.solver = newton.solvers.XPBDSolver(self.model)
+        self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         if not headless:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
+            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
         elif stage_path:
-            self.renderer = newton.utils.SimRendererUsd(self.model, stage_path)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
         else:
             self.renderer = None
 

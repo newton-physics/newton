@@ -22,7 +22,7 @@ import warp as wp
 import warp.examples
 
 from newton import ModelBuilder
-from newton.sim.graph_coloring import (
+from newton._src.sim.graph_coloring import (
     ColoringAlgorithm,
     construct_trimesh_graph_edges,
     convert_to_color_groups,

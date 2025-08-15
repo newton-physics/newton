@@ -17,10 +17,8 @@ import unittest
 
 import warp as wp
 
-from newton.geometry import (
-    GeoType,
-)
-from newton.geometry.gjk import build_ccd_generic
+from newton import GeoType
+from newton._src.geometry.gjk import build_ccd_generic
 
 MAX_ITERATIONS = 10
 

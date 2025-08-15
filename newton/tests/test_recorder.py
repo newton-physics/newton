@@ -21,8 +21,8 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.recorder import BasicRecorder, ModelAndStateRecorder
 from newton.tests.unittest_utils import add_function_test, get_test_devices
-from newton.utils.recorder import BasicRecorder, ModelAndStateRecorder
 
 wp.config.quiet = True
 

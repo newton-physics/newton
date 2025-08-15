@@ -21,11 +21,11 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton.geometry import Mesh
-from newton.solvers import MuJoCoSolver
+from newton import Mesh
+from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 # Import the kernels for coordinate conversion
-from newton.utils import SimRendererOpenGL
+from newton.viewer import RendererOpenGL
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -55,11 +55,11 @@ class TestMuJoCoSolver(unittest.TestCase):
         model = builder.finalize()
 
         # Test with ls_parallel=True
-        solver = MuJoCoSolver(model, ls_parallel=True)
+        solver = SolverMuJoCo(model, ls_parallel=True)
         self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
 
         # Test with ls_parallel=False (default)
-        solver_default = MuJoCoSolver(model, ls_parallel=False)
+        solver_default = SolverMuJoCo(model, ls_parallel=False)
         self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
 
     @unittest.skip("Trajectory rendering for debugging")
@@ -73,32 +73,30 @@ class TestMuJoCoSolver(unittest.TestCase):
         use_cuda_graph = wp.get_device().is_cuda
 
         try:
-            print("Debug: Attempting to initialize MuJoCoSolver for trajectory test...")
-            solver = MuJoCoSolver(self.model, iterations=10, ls_iterations=10)
-            print("Debug: MuJoCoSolver initialized successfully for trajectory test.")
+            print("Debug: Attempting to initialize SolverMuJoCo for trajectory test...")
+            solver = SolverMuJoCo(self.model, iterations=10, ls_iterations=10)
+            print("Debug: SolverMuJoCo initialized successfully for trajectory test.")
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping trajectory rendering: {e}")
             return
         except Exception as e:
-            self.skipTest(f"Error initializing MuJoCoSolver for trajectory test: {e}")
+            self.skipTest(f"Error initializing SolverMuJoCo for trajectory test: {e}")
             return
 
         if self.debug_stage_path:
             try:
-                print(f"Debug: Attempting to initialize SimRendererOpenGL (stage: {self.debug_stage_path})...")
+                print(f"Debug: Attempting to initialize RendererOpenGL (stage: {self.debug_stage_path})...")
                 stage_dir = os.path.dirname(self.debug_stage_path)
                 if stage_dir and not os.path.exists(stage_dir):
                     os.makedirs(stage_dir)
                     print(f"Debug: Created directory for stage: {stage_dir}")
-                renderer = SimRendererOpenGL(
-                    path=self.debug_stage_path, model=self.model, scaling=1.0, show_joints=True
-                )
-                print("Debug: SimRendererOpenGL initialized successfully for trajectory test.")
+                renderer = RendererOpenGL(path=self.debug_stage_path, model=self.model, scaling=1.0, show_joints=True)
+                print("Debug: RendererOpenGL initialized successfully for trajectory test.")
             except ImportError as e:
-                self.skipTest(f"SimRendererOpenGL dependencies not met. Skipping trajectory rendering: {e}")
+                self.skipTest(f"RendererOpenGL dependencies not met. Skipping trajectory rendering: {e}")
                 return
             except Exception as e:
-                self.skipTest(f"Error initializing SimRendererOpenGL for trajectory test: {e}")
+                self.skipTest(f"Error initializing RendererOpenGL for trajectory test: {e}")
                 return
         else:
             self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
@@ -267,7 +265,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_mass.assign(new_masses)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
@@ -293,7 +291,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_mass.assign(updated_masses)
 
         # Notify solver of mass changes
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
 
         # Check that updated masses were transferred correctly
         for env_idx in range(self.model.num_envs):
@@ -317,7 +315,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_com.assign(new_coms)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, ls_iterations=1, iterations=1, disable_contacts=True, nefc_per_env=1)
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True, nefc_per_env=1)
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
@@ -353,7 +351,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_com.assign(updated_coms)
 
         # Notify solver of COM changes
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
 
         # Check that updated COM positions were transferred correctly
         for env_idx in range(self.model.num_envs):
@@ -404,7 +402,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
-        solver = MuJoCoSolver(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
 
         # Get body mapping once outside the loop
         body_mapping = self.model.to_mjc_body_index.numpy()
@@ -458,7 +456,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_inertia.assign(updated_inertias)
 
         # Notify solver of inertia changes
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_BODY_INERTIAL_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
 
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
@@ -514,7 +512,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_armature.assign(initial_armature)
 
         # Step 2: Create solver (this should apply values to MuJoCo)
-        solver = MuJoCoSolver(self.model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Step 3: Verify initial values were applied to MuJoCo
 
@@ -596,7 +594,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_armature.assign(updated_armature)
 
         # Step 5: Notify MuJoCo of changes
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         # Step 6: Verify all changes were applied
 
@@ -657,7 +655,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         Note: geom_rbound is computed by MuJoCo from geom size during conversion.
         """
         # Create solver
-        solver = MuJoCoSolver(self.model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Verify to_newton_shape_index mapping exists
         self.assertTrue(hasattr(self.model, "to_newton_shape_index"))
@@ -820,7 +818,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         This includes: friction, contact parameters (solref), collision radius (rbound), size, position, and orientation.
         """
         # Create solver with initial values
-        solver = MuJoCoSolver(self.model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Get mappings
         to_newton_shape_index = self.model.to_newton_shape_index.numpy()
@@ -879,7 +877,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.model.shape_transform.assign(wp.array(new_transforms, dtype=wp.transform, device=self.model.device))
 
         # Notify solver of all shape property changes
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_SHAPE_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
         # Verify ALL properties were updated
         updated_friction = solver.mjw_model.geom_friction.numpy()
@@ -1075,7 +1073,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         model = builder.finalize()
 
         # Create MuJoCo solver
-        solver = MuJoCoSolver(model)
+        solver = SolverMuJoCo(model)
 
         # The solver should have used the per-mesh maxhullvert values
         # We can't directly verify this without inspecting MuJoCo internals,
@@ -1113,7 +1111,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def test_sphere_on_plane_with_newton_contacts(self):
         """Test that a sphere correctly collides with a plane using Newton contacts."""
         try:
-            solver = MuJoCoSolver(self.model, use_mujoco_contacts=False)
+            solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
@@ -1148,7 +1146,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         b = builder.add_body(mass=1.0, com=(1.0, 2.0, 3.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
         builder.add_joint_prismatic(-1, b)
         model = builder.finalize()
-        solver = MuJoCoSolver(model)
+        solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
 
 
