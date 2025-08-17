@@ -629,15 +629,15 @@ class RendererGL:
             # by calling update() in a loop
             from pyglet.window import Window  # noqa: PLC0415
 
-            Window._enable_event_queue = False
+            #Window._enable_event_queue = False
 
             self.window.dispatch_pending_events()
 
-            platform_event_loop = self.app.platform_event_loop
-            platform_event_loop.start()
+            #platform_event_loop = self.app.platform_event_loop
+            #platform_event_loop.start()
 
             # start event loop
-            self.app.event_loop.dispatch_event("on_enter")
+            #self.app.event_loop.dispatch_event("on_enter")
 
         # create frame buffer for rendering to a texture
         self._setup_shadow_buffer()
@@ -657,7 +657,10 @@ class RendererGL:
         self._make_current()
 
         if not self.headless:
-            # Poll and dispatch OS events to handle user input
+            import pyglet
+            pyglet.clock.tick()
+
+            self.app.platform_event_loop.step(0.001) # 1ms app polling latency
             self.window.dispatch_events()
 
     def render(self, camera, objects):
@@ -758,7 +761,8 @@ class RendererGL:
 
     def present(self):
         if not self.headless:
-            self.app.event_loop._redraw_windows(1.0 / 60.0)
+            self.window.flip()
+        #    self.app.event_loop._redraw_windows(1.0 / 60.0)
 
     def resize(self, width, height):
         self._screen_width, self._screen_height = self.window.get_framebuffer_size()
@@ -788,6 +792,8 @@ class RendererGL:
         self.window.push_handlers(on_key_press=self._on_key_press)
         self.window.push_handlers(on_key_release=self._on_key_release)
         self.window.push_handlers(on_close=self._on_close)
+        self.window.push_handlers(on_deactivate=self._on_deactivate)
+        self.window.push_handlers(on_hide=self._on_deactivate)
 
         self._key_handler = pyglet.window.key.KeyStateHandler()
         self.window.push_handlers(self._key_handler)
@@ -801,6 +807,9 @@ class RendererGL:
 
         # track pressed keys
         self._key_state: dict[int, bool] = {}
+
+    def _on_deactivate(self):
+        self._key_state.clear()
 
     def register_key_press(self, callback):
         """Register a callback for key press events.
