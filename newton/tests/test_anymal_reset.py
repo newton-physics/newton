@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests that reset results in the same data and converge of solver is preserved."""
+
 import copy
 import unittest
 
@@ -54,8 +56,6 @@ class TestAnymalReset(unittest.TestCase):
             collapse_fixed_joints=False,
         )
 
-        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.8]
-
         for i in range(len(articulation_builder.joint_dof_mode)):
             articulation_builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
 
@@ -63,7 +63,8 @@ class TestAnymalReset(unittest.TestCase):
             articulation_builder.joint_target_ke[i] = 0
             articulation_builder.joint_target_kd[i] = 0
 
-        builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        z0 = 0.8
+        builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(0.0, 0.0, z0), wp.quat_identity()))
 
         robots_per_row = int(np.sqrt(self.num_envs))
         spacing = 3.0
@@ -74,12 +75,11 @@ class TestAnymalReset(unittest.TestCase):
             x = col * spacing
             y = row * spacing
 
-            builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(x, y, 0.0), wp.quat_identity()))
+            builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(x, y, z0), wp.quat_identity()))
 
         builder.add_ground_plane()
 
         self.sim_time = 0.0
-        self.sim_step = 0
         fps = 100
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 2
@@ -113,7 +113,7 @@ class TestAnymalReset(unittest.TestCase):
         self.simulate()
         self.save_initial_mjw_data()
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
+        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(self.device)
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -214,7 +214,7 @@ class TestAnymalReset(unittest.TestCase):
                         max_diff = np.max(np.abs(initial_value - current_value))
                         mean_diff = np.mean(np.abs(initial_value - current_value))
                         tolerance = 1e-3
-                        diff_mask = ~np.isclose(initial_value, current_value, atol=tolerance)
+                        diff_mask = ~np.isclose(initial_value, current_value, atol=tolerance, equal_nan=True)
 
                         diff_indices = np.where(diff_mask)
                         num_different = len(diff_indices[0])
@@ -241,7 +241,8 @@ class TestAnymalReset(unittest.TestCase):
             return True
 
     def reset_robot_state(self):
-        self.anymal.set_root_transforms(self.state_0, self.default_root_transforms)
+        initial_root_transforms = wp.from_torch(self.default_root_transforms, dtype=wp.transform)
+        self.anymal.set_root_transforms(self.state_0, initial_root_transforms)
 
         initial_dof_positions = wp.from_torch(self.initial_dof_positions, dtype=wp.float32)
         self.anymal.set_dof_positions(self.state_0, initial_dof_positions)
@@ -249,8 +250,8 @@ class TestAnymalReset(unittest.TestCase):
         initial_root_velocities = wp.from_torch(self.default_root_velocities, dtype=wp.float32)
         self.anymal.set_root_velocities(self.state_0, initial_root_velocities)
 
-        zero_dof_velocities = wp.from_torch(self.initial_dof_velocities, dtype=wp.float32)
-        self.anymal.set_dof_velocities(self.state_0, zero_dof_velocities)
+        initial_dof_velocities = wp.from_torch(self.initial_dof_velocities, dtype=wp.float32)
+        self.anymal.set_dof_velocities(self.state_0, initial_dof_velocities)
 
         self.sim_time = 0.0
 
@@ -317,5 +318,4 @@ class TestAnymalReset(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.init()
     unittest.main()
