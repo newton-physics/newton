@@ -148,12 +148,19 @@ vec2 poissonDisk[16] = vec2[](
 float ShadowCalculation()
 {
     vec3 normal = normalize(Normal);
+
+    if (!gl_FrontFacing)
+        normal = -normal;
+
     vec3 lightDir = normalize(sun_direction);
 
-    // bias in normal dir
+    // bias in normal dir - adjust for backfacing triangles
     float worldTexel = 20.0 / float(4096); // world extent / shadow map resolution
     float normalBias = 2.0 * worldTexel;   // tune ~1-3
-    vec4 light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+
+    // For backfacing triangles, we might need different bias handling
+    vec4 light_space_pos;
+    light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
     vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
 
     // map to [0,1]
@@ -225,6 +232,10 @@ void main()
 
     // surface vectors
     vec3 N = normalize(Normal);
+    // Flip normal for backfacing triangles
+    if (!gl_FrontFacing) {
+        N = -N;
+    }
     vec3 V = normalize(view_pos - FragPos);
     vec3 L = normalize(sun_direction);
     vec3 H = normalize(V + L);
@@ -273,6 +284,7 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
+    //FragColor = vec4(N*0.5 + vec3(0.5), 1.0);
     FragColor = vec4(color, 1.0);
 }
 """

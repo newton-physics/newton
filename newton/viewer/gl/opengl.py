@@ -96,7 +96,7 @@ def normalize_normals(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
-    def __init__(self, num_points, num_indices, device):
+    def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True):
         """Initialize mesh data with vertices and indices."""
         gl = RendererGL.gl
 
@@ -105,9 +105,11 @@ class MeshGL:
 
         # Store references to input buffers and rendering data
         self.device = device
+        self.hidden = hidden
+        self.backface_culling = backface_culling
 
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
-        self.indices = wp.zeros(num_indices, dtype=wp.uint32, device=self.device)
+        self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
 
         # Set up vertex attributes in the packed format the shaders expect
@@ -162,12 +164,10 @@ class MeshGL:
         #   column 3  (0,0,0,1)
         gl.glVertexAttrib4f(6, 0.0, 0.0, 0.0, 1.0)
 
-        # albedo colour  = mid-gray  (whatever you prefer)
-        gl.glVertexAttrib3f(7, 0.7, 0.7, 0.7)
-        # secondary colour not used unless checker-board enabled
-        gl.glVertexAttrib3f(8, 0.7, 0.7, 0.7)
-        # material.x = metallic, material.y = roughness, .zw unused
-        gl.glVertexAttrib4f(9, 0.0, 0.7, 0.0, 0.0)
+        # albedo
+        gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
+        # material, roughness, metallic, checker, unused
+        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)
 
@@ -203,9 +203,6 @@ class MeshGL:
         if len(points) != len(self.vertices):
             raise RuntimeError("Number of points does not match")
 
-        if len(indices) != len(self.indices):
-            raise RuntimeError("Number of indices does not match")
-
         # update gfx vertices
         wp.launch(
             fill_vertex_data,
@@ -215,14 +212,13 @@ class MeshGL:
             device=self.device,
         )
 
-        # always upload indices via. host since they change infrequently
-        if indices:
-            self.indices.assign(indices)
+        # only update indices the first time (no topology changes)
+        if self.indices is None:
+            self.indices = wp.clone(indices).view(dtype=wp.uint32)
 
-            host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
             gl.glBufferData(
-                gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
+                gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo_size, self.indices.numpy().ctypes.data, gl.GL_STATIC_DRAW
             )
 
         # if points are changing but not the normals
@@ -260,13 +256,18 @@ class MeshGL:
         # Compute average normals per vertex
         wp.launch(normalize_normals, dim=len(self.vertices), inputs=[self.normals, self.vertices], device=self.device)
 
-    # def render(self):
+    def render(self):
+        if not self.hidden:
+            gl = RendererGL.gl
 
-    #     gl = RendererGL.gl
+            if self.backface_culling:
+                gl.glEnable(gl.GL_CULL_FACE)
+            else:
+                gl.glDisable(gl.GL_CULL_FACE)
 
-    #     gl.glBindVertexArray(self.vao)
-    #     gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
-    #     gl.glBindVertexArray(0)
+            gl.glBindVertexArray(self.vao)
+            gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
 
 
 @wp.kernel
@@ -504,6 +505,11 @@ class MeshInstancerGL:
     def render(self):
         gl = RendererGL.gl
 
+        if self.mesh.backface_culling:
+            gl.glEnable(gl.GL_CULL_FACE)
+        else:
+            gl.glDisable(gl.GL_CULL_FACE)
+
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.num_instances)
         gl.glBindVertexArray(0)
@@ -523,7 +529,6 @@ class RendererGL:
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
-        self.draw_backface_culling = True
         self.draw_wireframe = False
         self.vsync = vsync
 
@@ -688,11 +693,6 @@ class RendererGL:
         # reset viewport
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
-        if self.draw_backface_culling:
-            gl.glEnable(gl.GL_CULL_FACE)
-        else:
-            gl.glDisable(gl.GL_CULL_FACE)
-
         # select target framebuffer (MSAA or regular) for scene rendering
         target_fbo = self._frame_msaa_fbo if getattr(self, "msaa_samples", 0) > 0 else self._frame_fbo
 
@@ -791,8 +791,6 @@ class RendererGL:
         self.window.push_handlers(on_key_press=self._on_key_press)
         self.window.push_handlers(on_key_release=self._on_key_release)
         self.window.push_handlers(on_close=self._on_close)
-        self.window.push_handlers(on_deactivate=self._on_deactivate)
-        self.window.push_handlers(on_hide=self._on_deactivate)
 
         self._key_handler = pyglet.window.key.KeyStateHandler()
         self.window.push_handlers(self._key_handler)
@@ -803,12 +801,6 @@ class RendererGL:
         self.window.on_mouse_scroll = self._on_scroll
         self.window.on_mouse_drag = self._on_mouse_drag
         self.window.on_mouse_motion = self._on_mouse_motion
-
-        # track pressed keys
-        self._key_state: dict[int, bool] = {}
-
-    def _on_deactivate(self):
-        self._key_state.clear()
 
     def register_key_press(self, callback):
         """Register a callback for key press events.
@@ -880,13 +872,11 @@ class RendererGL:
 
     def _on_key_press(self, symbol, modifiers):
         # update key state
-        self._key_state[symbol] = True
         for callback in self._key_callbacks:
             callback(symbol, modifiers)
 
     def _on_key_release(self, symbol, modifiers):
         # update key state
-        self._key_state[symbol] = False
         for callback in self._key_release_callbacks:
             callback(symbol, modifiers)
 
@@ -928,7 +918,7 @@ class RendererGL:
 
     # public query for key state
     def is_key_down(self, symbol: int) -> bool:
-        return bool(self._key_state.get(symbol, False))
+        return bool(self._key_handler[symbol])
 
     def _setup_sky_mesh(self):
         gl = RendererGL.gl

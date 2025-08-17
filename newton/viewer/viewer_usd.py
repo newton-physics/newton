@@ -56,7 +56,16 @@ class ViewerUSD(ViewerBase):
         if model:
             self._populate(model)
 
-    def log_mesh(self, name, points: wp.array, indices: wp.array, normals: wp.array = None, uvs: wp.array = None):
+    def log_mesh(
+        self,
+        name,
+        points: wp.array,
+        indices: wp.array,
+        normals: wp.array = None,
+        uvs: wp.array = None,
+        hidden=False,
+        backface_culling=True,
+    ):
         """Create a USD mesh prototype from vertex/index data.
 
         Args:

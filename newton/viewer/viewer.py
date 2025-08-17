@@ -25,6 +25,7 @@ class ViewerBase:
 
     def _populate(self, model):
         self._populate_shapes()
+
         # self._populate_joints()
 
     def begin_frame(self, time):
@@ -46,6 +47,15 @@ class ViewerBase:
                 shapes.scales if self.model_changed else None,
                 shapes.colors if self.model_changed else None,
                 shapes.materials if self.model_changed else None,
+            )
+
+        if self.model.tri_count:
+            self.log_mesh(
+                "model/triangles",
+                state.particle_q,
+                self.model.tri_indices.flatten(),
+                hidden=False,
+                backface_culling=False,
             )
 
         # # update joints
@@ -189,6 +199,7 @@ class ViewerBase:
         geo_thickness: float,
         geo_is_solid: bool,
         geo_src=None,
+        hidden=False,
     ):
         """
         Create a primitive mesh and upload it via log_mesh.
@@ -222,7 +233,7 @@ class ViewerBase:
             if geo_src._uvs is not None:
                 uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
 
-            self.log_mesh(name, points, indices, normals, uvs)
+            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
             return
 
         # Generate vertices/indices for supported primitive types
@@ -270,10 +281,19 @@ class ViewerBase:
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
         indices = wp.array(indices, dtype=wp.uint32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs)
+        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
 
     @abstractmethod
-    def log_mesh(self, name, points: wp.array, indices: wp.array, normals: wp.array = None, uvs: wp.array = None):
+    def log_mesh(
+        self,
+        name,
+        points: wp.array,
+        indices: wp.array,
+        normals: wp.array = None,
+        uvs: wp.array = None,
+        hidden=False,
+        backface_culling=True,
+    ):
         pass
 
     @abstractmethod
@@ -411,6 +431,7 @@ class ViewerBase:
             float(thickness),
             bool(is_solid),
             geo_src=geo_src if geo_type == newton.GEO_MESH else None,
+            hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
         return mesh_path
@@ -485,13 +506,6 @@ class ViewerBase:
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GEO_PLANE:
-                # color = wp.vec3(0.5, 0.5, 0.5)
-                # # enable checkerboard in material's z component
-                # try:
-                #     material[2] = 1.0
-                # except Exception:
-                #     material = wp.vec4(material[0], material[1], 1.0, material[3])
-
                 color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 

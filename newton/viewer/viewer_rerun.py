@@ -59,7 +59,16 @@ class ViewerRerun(ViewerBase):
 
         self._populate(model)
 
-    def log_mesh(self, name, points: wp.array, indices: wp.array, normals: wp.array = None, uvs: wp.array = None):
+    def log_mesh(
+        self,
+        name,
+        points: wp.array,
+        indices: wp.array,
+        normals: wp.array = None,
+        uvs: wp.array = None,
+        hidden=False,
+        backface_culling=True,
+    ):
         """Log mesh data to rerun.
 
         Args:

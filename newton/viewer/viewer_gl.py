@@ -35,9 +35,10 @@ class ViewerGL(ViewerBase):
 
         # map from path to any object type
         self.objects = {}
-        self.camera = Camera(up_axis=model.up_axis)
         self.renderer = RendererGL()
         self.renderer.set_title("Newton Viewer")
+
+        self._paused = False
 
         self.options = {
             "show_joints": False,
@@ -78,22 +79,17 @@ class ViewerGL(ViewerBase):
 
         # Camera movement settings
         self._camera_speed = 0.04
-        self._frame_speed = 1.0
-
-        # Smooth camera motion state
         self._cam_vel = np.zeros(3, dtype=np.float32)
         self._cam_speed = 4.0  # m/s
-        # Damping time-constant; ~95% attenuation in ~3*tau ≈ 0.25s
         self._cam_damp_tau = 0.083  # s
+
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(up_axis=model.up_axis, width=fb_w, height=fb_h)
 
         self._populate(model)
 
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
-
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
-        self.camera.width = fb_w
-        self.camera.height = fb_h
 
         self.ui = UI(self.renderer.window)
 
@@ -106,14 +102,25 @@ class ViewerGL(ViewerBase):
         # UI visibility toggle
         self.show_ui = True
 
-    def log_mesh(self, name, points: wp.array, indices: wp.array, normals: wp.array = None, uvs: wp.array = None):
+    def log_mesh(
+        self,
+        name,
+        points: wp.array,
+        indices: wp.array,
+        normals: wp.array = None,
+        uvs: wp.array = None,
+        hidden=False,
+        backface_culling=True,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
 
         if name not in self.objects:
-            self.objects[name] = MeshGL(len(points), len(indices), self.device)
+            self.objects[name] = MeshGL(
+                len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
+            )
 
         self.objects[name].update(points, indices, normals, uvs)
 
@@ -163,6 +170,13 @@ class ViewerGL(ViewerBase):
         destroyed results in a crash (access violation).  Therefore we check
         whether an exit was requested and early-out before touching GL if so.
         """
+        self._update()
+
+        # continue running the viewer update while the simulation is paused
+        while self.is_paused():
+            self._update()
+
+    def _update(self):
         # Process events and update the internal state
         self.renderer.update()
 
@@ -196,6 +210,10 @@ class ViewerGL(ViewerBase):
     def is_running(self) -> bool:
         """Check if the viewer is still running."""
         return not self.renderer.has_exit()
+
+    def is_paused(self) -> bool:
+        """Check if the simulation is paused."""
+        return self._paused
 
     def close(self):
         """Close the viewer and clean up resources."""
@@ -308,7 +326,7 @@ class ViewerGL(ViewerBase):
 
         # integrate position
         dv = type(self.camera.pos)(*self._cam_vel)
-        self.camera.pos += dv * (dt * self._frame_speed)
+        self.camera.pos += dv * dt
 
     def on_resize(self, width, height):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
@@ -384,6 +402,9 @@ class ViewerGL(ViewerBase):
                 gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                 imgui.text(gravity_text)
 
+                # Pause simulation checkbox
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+
             # Visualization Controls section
             if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
                 imgui.set_next_item_open(True, cond)
@@ -435,17 +456,12 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
-                # Backface culling
-                changed, self.renderer.draw_backface_culling = imgui.checkbox(
-                    "Backface Culling", self.renderer.draw_backface_culling
-                )
-
                 # # Light color
                 # changed, self.renderer._light_color = imgui.color_edit3("Light Color", *self.renderer._light_color)
                 # # Sky color
-                # changed, self.renderer._sky_color = imgui.color_edit3("Sky Color", *self.renderer._sky_color)
+                # changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", *self.renderer.sky_upper)
                 # # Ground color
-                # changed, self.renderer._ground_color = imgui.color_edit3("Ground Color", *self.renderer._ground_color)
+                # changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
 
             # Camera Information section
             if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
