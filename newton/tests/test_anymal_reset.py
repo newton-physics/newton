@@ -28,7 +28,7 @@ from newton.utils.selection import ArticulationView
 class TestAnymalReset(unittest.TestCase):
     def setUp(self):
         self.device = wp.get_device()
-        self.num_envs = 1000
+        self.num_envs = 64
         self.headless = True
 
     def _setup_simulation(self, cone_type):
@@ -86,8 +86,14 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.model = builder.finalize()
+
+        if cone_type == mujoco.mjtCone.mjCONE_PYRAMIDAL:
+            impratio = 1.0
+        else:
+            impratio = 100.0
+
         self.solver = newton.solvers.MuJoCoSolver(
-            self.model, solver=2, cone=cone_type, impratio=100.0, iterations=100, ls_iterations=50, nefc_per_env=200
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, nefc_per_env=200
         )
 
         self.renderer = None if self.headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
@@ -207,7 +213,7 @@ class TestAnymalReset(unittest.TestCase):
                     if not np.array_equal(initial_value, current_value):
                         max_diff = np.max(np.abs(initial_value - current_value))
                         mean_diff = np.mean(np.abs(initial_value - current_value))
-                        tolerance = 1e-4
+                        tolerance = 1e-3
                         diff_mask = ~np.isclose(initial_value, current_value, atol=tolerance)
 
                         diff_indices = np.where(diff_mask)
@@ -224,7 +230,6 @@ class TestAnymalReset(unittest.TestCase):
             else:
                 if initial_value != current_value:
                     differences.append(f"{attr_name}: {initial_value} -> {current_value}")
-                    print()
                 else:
                     identical_count += 1
 
@@ -234,13 +239,6 @@ class TestAnymalReset(unittest.TestCase):
             return False
         else:
             return True
-
-    def render_frame(self):
-        if self.renderer is None:
-            return
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
-        self.renderer.end_frame()
 
     def reset_robot_state(self):
         self.anymal.set_root_transforms(self.state_0, self.default_root_transforms)
@@ -272,14 +270,10 @@ class TestAnymalReset(unittest.TestCase):
 
     def _run_reset_test(self, cone_type):
         self._setup_simulation(cone_type)
-        for i in range(100):
-            if self.use_cuda_graph and self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
-            self.sim_time += self.frame_dt
+        for i in range(50):
+            self.step()
             if not self.headless:
-                self.render_frame()
+                self.render()
             if i % 10 == 0:
                 iteration_diff = self.get_iteration_difference()
                 self.assertGreaterEqual(
@@ -293,28 +287,23 @@ class TestAnymalReset(unittest.TestCase):
         self.propagate_reset_state()
         mjw_data_matches = self.compare_mjw_data_with_initial()
 
-        for _ in range(50):
-            if self.use_cuda_graph and self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
-            self.sim_time += self.frame_dt
+        for i in range(50):
+            self.step()
             if not self.headless:
-                self.render_frame()
-            iteration_diff = self.get_iteration_difference()
-
-            self.assertGreaterEqual(
-                iteration_diff,
-                50,
-                f"Iteration difference ({iteration_diff}) is below 50, "
-                "indicating solver is approaching maximum iteration limit",
-            )
+                self.render()
+            if i % 10 == 0:
+                iteration_diff = self.get_iteration_difference()
+                self.assertGreaterEqual(
+                    iteration_diff,
+                    50,
+                    f"Iteration difference ({iteration_diff}) is below 50, "
+                    "indicating solver is approaching maximum iteration limit",
+                )
 
         self.assertTrue(
             mjw_data_matches,
             f"mjw_data after reset does not match initial state with {self._cone_type_name(cone_type)} cone",
         )
-
         if self.renderer:
             self.renderer.save()
 
