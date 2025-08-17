@@ -97,7 +97,7 @@ class TestAnymalReset(unittest.TestCase):
         self.control = self.model.control()
         newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self.anymal = ArticulationView(
-            self.model, "/World/envs/env_0/Robot/base", verbose=False, exclude_joint_types=[newton.JOINT_FREE]
+            self.model, "/World/envs/*/Robot/base", verbose=False, exclude_joint_types=[newton.JOINT_FREE]
         )
         self.default_root_transforms = wp.to_torch(self.anymal.get_root_transforms(self.model)).clone()
         self.default_root_velocities = wp.to_torch(self.anymal.get_root_velocities(self.model)).clone()
