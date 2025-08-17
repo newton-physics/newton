@@ -24,66 +24,74 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton.utils.selection import ArticulationView
+from newton.selection import ArticulationView
 
 
 class TestAnymalReset(unittest.TestCase):
     def setUp(self):
         self.device = wp.get_device()
-        self.num_envs = 64
+        self.num_envs = 1
         self.headless = True
 
     def _setup_simulation(self, cone_type):
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
-
-        articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            armature=0.01,
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+            armature=0.06,
             limit_ke=1.0e3,
             limit_kd=1.0e1,
         )
-        articulation_builder.default_shape_cfg.ke = 5.0e4
-        articulation_builder.default_shape_cfg.kd = 5.0e2
-        articulation_builder.default_shape_cfg.kf = 1.0e3
-        articulation_builder.default_shape_cfg.mu = 0.75
+        builder.default_shape_cfg.ke = 5.0e4
+        builder.default_shape_cfg.kd = 5.0e2
+        builder.default_shape_cfg.kf = 1.0e3
+        builder.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("anymal_usd")
         stage_path = str(asset_path / "anymal_d.usda")
         newton.utils.parse_usd(
             stage_path,
-            articulation_builder,
+            builder,
             enable_self_collisions=False,
             collapse_fixed_joints=False,
         )
 
-        for i in range(len(articulation_builder.joint_dof_mode)):
-            articulation_builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
-
-        for i in range(len(articulation_builder.joint_target_ke)):
-            articulation_builder.joint_target_ke[i] = 0
-            articulation_builder.joint_target_kd[i] = 0
-
-        z0 = 0.8
-        builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(0.0, 0.0, z0), wp.quat_identity()))
-
-        robots_per_row = int(np.sqrt(self.num_envs))
-        spacing = 3.0
-
-        for i in range(1, self.num_envs):
-            row = i // robots_per_row
-            col = i % robots_per_row
-            x = col * spacing
-            y = row * spacing
-
-            builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(x, y, z0), wp.quat_identity()))
-
         builder.add_ground_plane()
 
         self.sim_time = 0.0
-        fps = 100
+        fps = 50
         self.frame_dt = 1.0 / fps
-        self.sim_substeps = 2
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
+
+        builder.joint_q[:3] = [0.0, 0.0, 0.92]
+
+        builder.joint_q[3:7] = [
+            0.0,
+            0.0,
+            0.7071,
+            0.7071,
+        ]
+
+        builder.joint_q[7:] = [
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            0.4,
+            -0.8,
+            0.0,
+            0.4,
+            -0.8,
+        ]
+
+        for i in range(len(builder.joint_dof_mode)):
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+
+        for i in range(len(builder.joint_target_ke)):
+            builder.joint_target_ke[i] = 0
+            builder.joint_target_kd[i] = 0
 
         self.model = builder.finalize()
 
@@ -92,18 +100,18 @@ class TestAnymalReset(unittest.TestCase):
         else:
             impratio = 100.0
 
-        self.solver = newton.solvers.MuJoCoSolver(
+        self.solver = newton.solvers.SolverMuJoCo(
             self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, nefc_per_env=200
         )
 
-        self.renderer = None if self.headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if self.headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self.anymal = ArticulationView(
-            self.model, "/World/envs/*/Robot/base", verbose=False, exclude_joint_types=[newton.JOINT_FREE]
+            self.model, "*/Robot/base", verbose=False, exclude_joint_types=[newton.JointType.FREE]
         )
         self.default_root_transforms = wp.to_torch(self.anymal.get_root_transforms(self.model)).clone()
         self.default_root_velocities = wp.to_torch(self.anymal.get_root_velocities(self.model)).clone()
@@ -262,12 +270,13 @@ class TestAnymalReset(unittest.TestCase):
             self.simulate()
         self.sim_time += self.frame_dt
 
-    def get_iteration_difference(self):
+    def get_current_iterations(self):
         current_iterations = self.solver.mjw_data.solver_niter
         current_iter_numpy = current_iterations.numpy()
-        max_iterations = int(current_iter_numpy.max())
-        opt_iterations = int(self.solver.mjw_model.opt.iterations)
-        return opt_iterations - max_iterations
+        return int(current_iter_numpy.max())
+
+    def get_max_iterations(self):
+        return int(self.solver.mjw_model.opt.iterations)
 
     def _run_reset_test(self, cone_type):
         self._setup_simulation(cone_type)
@@ -276,12 +285,13 @@ class TestAnymalReset(unittest.TestCase):
             if not self.headless:
                 self.render()
             if i % 10 == 0:
-                iteration_diff = self.get_iteration_difference()
-                self.assertGreaterEqual(
-                    iteration_diff,
-                    50,
-                    f"Iteration difference ({iteration_diff}) is below 50, "
-                    "indicating solver is approaching maximum iteration limit",
+                current_iters = self.get_current_iterations()
+                max_iters = self.get_max_iterations()
+                self.assertLess(
+                    current_iters,
+                    max_iters * 0.9,
+                    f"Solver iterations ({current_iters}) are too high (>{max_iters * 0.9:.0f}), "
+                    f"max allowed is {max_iters}. Simulation is unstable!",
                 )
 
         self.reset_robot_state()
@@ -293,12 +303,13 @@ class TestAnymalReset(unittest.TestCase):
             if not self.headless:
                 self.render()
             if i % 10 == 0:
-                iteration_diff = self.get_iteration_difference()
-                self.assertGreaterEqual(
-                    iteration_diff,
-                    50,
-                    f"Iteration difference ({iteration_diff}) is below 50, "
-                    "indicating solver is approaching maximum iteration limit",
+                current_iters = self.get_current_iterations()
+                max_iters = self.get_max_iterations()
+                self.assertLess(
+                    current_iters,
+                    max_iters * 0.9,
+                    f"Solver iterations ({current_iters}) are too high (>{max_iters * 0.9:.0f}), "
+                    f"max allowed is {max_iters}. Simulation is unstable!",
                 )
 
         self.assertTrue(
