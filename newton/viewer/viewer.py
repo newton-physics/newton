@@ -172,8 +172,8 @@ class ViewerBase:
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GEO_PLANE:
-            default_color = wp.vec3(0.5, 0.5, 0.5)
-            default_material = wp.vec4(0.0, 0.7, 1.0, 0.0)
+            default_color = wp.vec3(0.125, 0.125, 0.25)
+            default_material = wp.vec4(0.5, 0.7, 1.0, 0.0)
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
@@ -485,12 +485,15 @@ class ViewerBase:
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GEO_PLANE:
-                color = wp.vec3(0.5, 0.5, 0.5)
-                # enable checkerboard in material's z component
-                try:
-                    material[2] = 1.0
-                except Exception:
-                    material = wp.vec4(material[0], material[1], 1.0, material[3])
+                # color = wp.vec3(0.5, 0.5, 0.5)
+                # # enable checkerboard in material's z component
+                # try:
+                #     material[2] = 1.0
+                # except Exception:
+                #     material = wp.vec4(material[0], material[1], 1.0, material[3])
+
+                color = wp.vec3(0.125, 0.125, 0.15)
+                material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
             batch.add(parent, xform, scale, color, material)
