@@ -25,12 +25,6 @@ import newton.utils
 from newton.utils.selection import ArticulationView
 
 
-@wp.kernel
-def set_gravity_kernel(gravity_array: wp.array(dtype=wp.vec3), gravity_z: float):
-    i = wp.tid()
-    gravity_array[i][2] = gravity_z
-
-
 class TestAnymalReset(unittest.TestCase):
     def setUp(self):
         self.device = wp.get_device()
@@ -102,7 +96,6 @@ class TestAnymalReset(unittest.TestCase):
         self.state_1 = self.model.state()
         self.control = self.model.control()
         newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        self.simulate()
         self.anymal = ArticulationView(
             self.model, "/World/envs/env_0/Robot/base", verbose=False, exclude_joint_types=[newton.JOINT_FREE]
         )
@@ -111,6 +104,7 @@ class TestAnymalReset(unittest.TestCase):
 
         self.initial_dof_positions = wp.to_torch(self.anymal.get_dof_positions(self.state_0)).clone()
         self.initial_dof_velocities = wp.to_torch(self.anymal.get_dof_velocities(self.state_0)).clone()
+        self.simulate()
         self.save_initial_mjw_data()
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
@@ -143,14 +137,6 @@ class TestAnymalReset(unittest.TestCase):
             self.simulate()
         self.sim_time += self.frame_dt
 
-        current_iterations = self.solver.mjw_data.solver_niter
-        current_iter_numpy = current_iterations.numpy()
-        max_iterations = int(current_iter_numpy.max())
-        opt_iterations = int(self.solver.mjw_model.opt.iterations)
-        iteration_difference = opt_iterations - max_iterations
-
-        return iteration_difference < 50
-
     def render(self):
         if self.renderer is None:
             return
@@ -176,7 +162,6 @@ class TestAnymalReset(unittest.TestCase):
             "ncon",
         }
 
-        saved_count = 0
         for attr_name in all_attributes:
             if attr_name in skip_attributes:
                 continue
@@ -184,19 +169,10 @@ class TestAnymalReset(unittest.TestCase):
 
             if hasattr(attr_value, "numpy"):
                 self.initial_mjw_data[attr_name] = attr_value.numpy().copy()
-                saved_count += 1
             elif isinstance(attr_value, np.ndarray):
                 self.initial_mjw_data[attr_name] = attr_value.copy()
-                saved_count += 1
             elif isinstance(attr_value, (int, float, bool)):
                 self.initial_mjw_data[attr_name] = copy.deepcopy(attr_value)
-                saved_count += 1
-            else:
-                try:
-                    self.initial_mjw_data[attr_name] = copy.deepcopy(attr_value)
-                    saved_count += 1
-                except:
-                    pass
 
     def compare_mjw_data_with_initial(self):
         mjw_data = self.solver.mjw_data
@@ -279,10 +255,6 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_time = 0.0
 
     def propagate_reset_state(self):
-        wp.launch(
-            set_gravity_kernel, dim=self.num_envs, inputs=[self.solver.mjw_model.opt.gravity, 0.0], device=self.device
-        )
-
         if self.use_cuda_graph and self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -319,7 +291,7 @@ class TestAnymalReset(unittest.TestCase):
         self.propagate_reset_state()
         mjw_data_matches = self.compare_mjw_data_with_initial()
 
-        for i in range(50):
+        for _ in range(50):
             if self.use_cuda_graph and self.graph:
                 wp.capture_launch(self.graph)
             else:
