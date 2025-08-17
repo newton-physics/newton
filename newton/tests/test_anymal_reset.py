@@ -160,6 +160,8 @@ class TestAnymalReset(unittest.TestCase):
             "solver_nisland",
             "nefc",
             "ncon",
+            "cfrc_int",
+            "collision_worldid",
         }
 
         for attr_name in all_attributes:
