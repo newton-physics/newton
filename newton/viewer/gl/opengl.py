@@ -627,15 +627,15 @@ class RendererGL:
             # by calling update() in a loop
             from pyglet.window import Window  # noqa: PLC0415
 
-            #Window._enable_event_queue = False
+            Window._enable_event_queue = False
 
             self.window.dispatch_pending_events()
 
-            #platform_event_loop = self.app.platform_event_loop
-            #platform_event_loop.start()
+            platform_event_loop = self.app.platform_event_loop
+            platform_event_loop.start()
 
             # start event loop
-            #self.app.event_loop.dispatch_event("on_enter")
+            # self.app.event_loop.dispatch_event("on_enter")
 
         # create frame buffer for rendering to a texture
         self._setup_shadow_buffer()
@@ -655,10 +655,11 @@ class RendererGL:
         self._make_current()
 
         if not self.headless:
-            import pyglet
+            import pyglet  # noqa: PLC0415
+
             pyglet.clock.tick()
 
-            self.app.platform_event_loop.step(0.001) # 1ms app polling latency
+            self.app.platform_event_loop.step(0.001)  # 1ms app polling latency
             self.window.dispatch_events()
 
     def render(self, camera, objects):
