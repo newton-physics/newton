@@ -648,105 +648,80 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
                 )
 
-    def test_joint_solref_solimp_parameters(self):
-        """
-        Test that joint solref and solimp parameters from ModelBuilder are properly passed to MuJoCo solver.
-        """
-        # Create a simple model with joints having custom solref/solimp values
+    def test_joint_limit_solver_params(self):
+        """Test that joint limit solver parameters affect simulation behavior."""
+        # Create simple pendulum model
         builder = newton.ModelBuilder()
 
-        # Ground is the world body, represented by -1
+        # Add proper inertia for the bodies (diagonal inertia matrix for a sphere)
+        I_sphere = [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]]  # Simple diagonal inertia
+        body = builder.add_body(mass=1.0, I_m=I_sphere, xform=wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()))
 
-        # Add first body with custom joint parameters
-        body1 = builder.add_body(
-            xform=wp.transform(p=(0, 0, 1)),
-            mass=1.0,
-            I_m=wp.mat33(np.eye(3) * 0.1),  # Add proper inertia
-            key="body1",
-        )
-
-        # Joint 1: Revolute joint with custom solref and solimp
-        joint_axis1 = newton.ModelBuilder.JointDofConfig(
-            axis=newton.core.Axis.Z,
-            limit_lower=-np.pi,
-            limit_upper=np.pi,
-            solref=(0.05, 2.0),  # Custom solver reference parameters
-            solimp=(0.8, 0.9, 0.002, 0.6, 3.0),  # Custom solver impedance parameters
-        )
-
-        builder.add_joint(
-            joint_type=newton.JOINT_REVOLUTE,
-            parent=-1,  # world body
-            child=body1,
-            angular_axes=[joint_axis1],
-            key="joint1",
-        )
-
-        # Add second body with default joint parameters
-        body2 = builder.add_body(
-            xform=wp.transform(p=(0, 1, 1)),
-            mass=1.0,
-            I_m=wp.mat33(np.eye(3) * 0.1),  # Add proper inertia
-            key="body2",
-        )
-
-        # Joint 2: Prismatic joint without custom solref/solimp (should use defaults)
-        joint_axis2 = newton.ModelBuilder.JointDofConfig(
-            axis=newton.core.Axis.X,
-            limit_lower=-1.0,
+        # Add joint with custom solver params - very soft limits
+        builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            limit_lower=0.0,  # Set lower limit at 0
             limit_upper=1.0,
-            # No solref/solimp specified - should use defaults
+            limit_solref=(0.1, 2.0),  # Soft limits - larger time constant
+            limit_solimp=(0.5, 0.6, 0.01, 0.5, 2.0),  # Lower d_imp means softer
         )
 
-        builder.add_joint(
-            joint_type=newton.JOINT_PRISMATIC,
-            parent=-1,  # world body
+        # Create another pendulum with stiff limits
+        body2 = builder.add_body(mass=1.0, I_m=I_sphere, xform=wp.transform(wp.vec3(2.0, 1.0, 0.0), wp.quat_identity()))
+        builder.add_joint_revolute(
+            parent=-1,
             child=body2,
-            linear_axes=[joint_axis2],
-            key="joint2",
+            axis=newton.Axis.Z,
+            limit_lower=0.0,  # Set lower limit at 0
+            limit_upper=1.0,
+            limit_solref=(0.01, 1.0),  # Stiff limits - smaller time constant
+            limit_solimp=(0.99, 0.999, 0.0001, 0.5, 2.0),  # Higher d_imp means stiffer
         )
 
-        # Build the model
         model = builder.finalize()
+        solver = MuJoCoSolver(model)
 
-        # Verify values were stored in the model
-        self.assertIsNotNone(model.joint_solref, "joint_solref should not be None")
-        self.assertIsNotNone(model.joint_solimp, "joint_solimp should not be None")
+        # Set both joints at positive position with negative velocity toward lower limit
+        state = model.state()
+        state.joint_q.assign([0.5, 0.5])  # Start at positive position
+        state.joint_qd.assign([-3.0, -3.0])  # Strong velocity toward lower limit (0)
 
-        solref_values = model.joint_solref.numpy()
-        solimp_values = model.joint_solimp.numpy()
+        # Simulate
+        dt = 0.01
+        positions = []
+        for _ in range(200):  # More steps to see behavior
+            solver.step(state, state, model.control(), None, dt)
+            positions.append(state.joint_q.numpy().copy())
 
-        # Check first joint has custom values
-        np.testing.assert_array_almost_equal(
-            solref_values[0], [0.05, 2.0], err_msg="First joint should have custom solref values"
+        positions = np.array(positions)
+
+        # Find minimum positions (how far they penetrated beyond limit)
+        min_pos_soft = np.min(positions[:, 0])
+        min_pos_stiff = np.min(positions[:, 1])
+
+        # Both should violate the limit somewhat due to momentum
+        self.assertLess(min_pos_soft, 0.0, "Soft joint should penetrate beyond lower limit")
+        self.assertLess(min_pos_stiff, 0.0, "Stiff joint should penetrate beyond lower limit")
+
+        # Soft joint should penetrate MORE than stiff joint
+        self.assertLess(
+            min_pos_soft,
+            min_pos_stiff,
+            f"Soft joint (min={min_pos_soft:.4f}) should penetrate more than stiff joint (min={min_pos_stiff:.4f})",
         )
-        np.testing.assert_array_almost_equal(
-            solimp_values[0], [0.8, 0.9, 0.002, 0.6, 3.0], err_msg="First joint should have custom solimp values"
-        )
 
-        # Check second joint has default values
-        np.testing.assert_array_almost_equal(
-            solref_values[1], [0.02, 1.0], err_msg="Second joint should have default solref values"
-        )
-        np.testing.assert_array_almost_equal(
-            solimp_values[1], [0.9, 0.95, 0.001, 0.5, 2.0], err_msg="Second joint should have default solimp values"
-        )
+        # Calculate penetration depths
+        soft_penetration = abs(min_pos_soft)
+        stiff_penetration = abs(min_pos_stiff)
 
-        # Create MuJoCo solver with different default values
-        try:
-            solver = MuJoCoSolver(
-                model,
-                iterations=1,
-                disable_contacts=True,
-                joint_solref=(0.1, 1.5),  # Different defaults - should not override model values
-                joint_solimp=(0.95, 0.98, 0.0005, 0.4, 1.5),  # Different defaults
-            )
-        except ImportError as e:
-            self.skipTest(f"MuJoCo not installed. Skipping test: {e}")
-            return
-
-        # The test passes if the solver was created successfully with the custom parameters
-        self.assertIsNotNone(solver, "MuJoCo solver should be created successfully")
+        # Soft joint should penetrate significantly more
+        self.assertGreater(
+            soft_penetration,
+            stiff_penetration * 1.5,
+            f"Soft penetration ({soft_penetration:.4f}) should be at least 1.5x stiff penetration ({stiff_penetration:.4f})",
+        )
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):

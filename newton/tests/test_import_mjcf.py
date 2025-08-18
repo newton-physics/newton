@@ -213,82 +213,28 @@ class TestImportMjcf(unittest.TestCase):
         assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
 
     def test_joint_solref_solimp_import(self):
-        """Test that joint solref and solimp parameters are correctly imported from MJCF."""
-        # Create a temporary MJCF file with custom joint solref and solimp values
-        mjcf_content = """
+        """Test importing joint solver parameters from MJCF."""
+        mjcf_str = """
         <mujoco>
             <worldbody>
-                <body name="body1" pos="0 0 1">
-                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
-                    <joint name="joint1" type="hinge" axis="0 0 1"
-                           solref="0.05 2.0"
-                           solimp="0.8 0.9 0.002 0.6 3.0"/>
-                </body>
-                <body name="body2" pos="1 0 1">
-                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
-                    <joint name="joint2" type="slide" axis="1 0 0"
-                           solref="0.1 1.5"/>
-                    <!-- joint2 has solref but no solimp, should use defaults -->
-                </body>
-                <body name="body3" pos="2 0 1">
-                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
-                    <joint name="joint3" type="hinge" axis="0 1 0"/>
-                    <!-- joint3 has neither solref nor solimp, should use defaults -->
+                <body name="link1">
+                    <joint name="j1" type="hinge" limited="true" range="-1 1"
+                           solreflimit="0.05 2" solimplimit="0.8 0.9 0.002 0.6 3"/>
                 </body>
             </worldbody>
         </mujoco>
         """
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False) as f:
-            f.write(mjcf_content)
-            mjcf_filename = f.name
+        builder = newton.ModelBuilder()
+        newton.utils.parse_mjcf(mjcf_str, builder)
+        model = builder.finalize()
 
-        try:
-            # Import the MJCF file
-            builder = newton.ModelBuilder()
-            newton.utils.parse_mjcf(mjcf_filename, builder)
-            model = builder.finalize()
+        # Check values were imported
+        solref = model.joint_limit_solref.numpy()[0]
+        solimp = model.joint_limit_solimp.numpy()[0]
 
-            # Check that we have 3 joints
-            self.assertEqual(model.joint_count, 3)
-            self.assertEqual(model.joint_dof_count, 3)
-
-            # Check joint_solref and joint_solimp arrays exist
-            self.assertIsNotNone(model.joint_solref, "joint_solref should not be None")
-            self.assertIsNotNone(model.joint_solimp, "joint_solimp should not be None")
-
-            solref_values = model.joint_solref.numpy()
-            solimp_values = model.joint_solimp.numpy()
-
-            # Joint 1: Should have custom solref and solimp
-            np.testing.assert_array_almost_equal(
-                solref_values[0], [0.05, 2.0], err_msg="Joint 1 should have custom solref values from MJCF"
-            )
-            np.testing.assert_array_almost_equal(
-                solimp_values[0],
-                [0.8, 0.9, 0.002, 0.6, 3.0],
-                err_msg="Joint 1 should have custom solimp values from MJCF",
-            )
-
-            # Joint 2: Should have custom solref but default solimp
-            np.testing.assert_array_almost_equal(
-                solref_values[1], [0.1, 1.5], err_msg="Joint 2 should have custom solref values from MJCF"
-            )
-            np.testing.assert_array_almost_equal(
-                solimp_values[1], [0.9, 0.95, 0.001, 0.5, 2.0], err_msg="Joint 2 should have default solimp values"
-            )
-
-            # Joint 3: Should have default solref and solimp
-            np.testing.assert_array_almost_equal(
-                solref_values[2], [0.02, 1.0], err_msg="Joint 3 should have default solref values"
-            )
-            np.testing.assert_array_almost_equal(
-                solimp_values[2], [0.9, 0.95, 0.001, 0.5, 2.0], err_msg="Joint 3 should have default solimp values"
-            )
-
-        finally:
-            # Clean up the temporary file
-            os.unlink(mjcf_filename)
+        np.testing.assert_array_almost_equal(solref, [0.05, 2.0])
+        np.testing.assert_array_almost_equal(solimp, [0.8, 0.9, 0.002, 0.6, 3.0])
 
 
 if __name__ == "__main__":

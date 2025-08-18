@@ -487,24 +487,6 @@ def parse_mjcf(
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
                 joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
 
-                # Parse solref and solimp if present
-                joint_solref = None
-                joint_solimp = None
-                if "solref" in joint_attrib:
-                    try:
-                        solref_vals = np.fromstring(joint_attrib["solref"], sep=" ", dtype=np.float32)
-                        if len(solref_vals) >= 2 and np.isfinite(solref_vals[:2]).all():
-                            joint_solref = (float(solref_vals[0]), float(solref_vals[1]))
-                    except (ValueError, TypeError):
-                        pass  # Skip malformed values
-                if "solimp" in joint_attrib:
-                    try:
-                        solimp_vals = np.fromstring(joint_attrib["solimp"], sep=" ", dtype=np.float32)
-                        if len(solimp_vals) >= 5 and np.isfinite(solimp_vals[:5]).all():
-                            joint_solimp = tuple(float(v) for v in solimp_vals[:5])
-                    except (ValueError, TypeError):
-                        pass  # Skip malformed values
-
                 if joint_type_str == "free":
                     joint_type = newton.JOINT_FREE
                     break
@@ -515,6 +497,16 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+                # Parse solver parameters from joint attributes
+                limit_solref = None
+                limit_solimp = None
+                if "solreflimit" in joint_attrib:
+                    solref_vals = [float(x) for x in joint_attrib["solreflimit"].split()]
+                    limit_solref = tuple(solref_vals) if len(solref_vals) == 2 else (0.02, 1.0)
+                if "solimplimit" in joint_attrib:
+                    solimp_vals = [float(x) for x in joint_attrib["solimplimit"].split()]
+                    limit_solimp = tuple(solimp_vals[:5]) if len(solimp_vals) >= 5 else (0.9, 0.95, 0.001, 0.5, 2.0)
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -522,8 +514,8 @@ def parse_mjcf(
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                     armature=joint_armature[-1],
-                    solref=joint_solref,
-                    solimp=joint_solimp,
+                    limit_solref=limit_solref,
+                    limit_solimp=limit_solimp,
                 )
                 if is_angular:
                     angular_axes.append(ax)

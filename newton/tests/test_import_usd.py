@@ -332,192 +332,79 @@ class TestImportUsd(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_solref_solimp_import(self):
-        """Test that joint solref and solimp parameters are correctly imported from USD."""
-        try:
-            from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-        except ImportError:
-            self.skipTest("USD not available")
+        """Test importing joint solver parameters from USD."""
 
-        # Create a temporary USD file with custom joint newton:joint_solref and newton:joint_solimp attributes
-        with tempfile.NamedTemporaryFile(suffix=".usda", delete=False) as f:
-            usd_filename = f.name
+        usda_str = """#usda 1.0
 
-        try:
-            # Create USD stage
-            stage = Usd.Stage.CreateNew(usd_filename)
-
-            # Add physics scene
-            physics_scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
-            physics_scene.CreateGravityDirectionAttr().Set((0.0, 0.0, -1.0))
-            physics_scene.CreateGravityMagnitudeAttr().Set(9.81)
-
-            # Create an articulation to contain our bodies and joints
-            UsdPhysics.ArticulationRootAPI.Apply(stage.DefinePrim("/articulation", "Xform"))
-
-            # Create ground body with collision shape as part of articulation
-            ground_prim = stage.DefinePrim("/articulation/ground", "Xform")
-            rigid_body = UsdPhysics.RigidBodyAPI.Apply(ground_prim)
-            rigid_body.CreateRigidBodyEnabledAttr().Set(True)
-            UsdPhysics.MassAPI.Apply(ground_prim)
-
-            # Add collision shape to ground
-            ground_shape = UsdGeom.Cube.Define(stage, "/articulation/ground/shape")
-            ground_shape.CreateSizeAttr().Set(10.0)
-            UsdPhysics.CollisionAPI.Apply(ground_shape.GetPrim())
-
-            # Create first body with joint that has custom solref/solimp
-            body1_prim = stage.DefinePrim("/articulation/body1", "Xform")
-            UsdGeom.Xform(body1_prim).AddTranslateOp().Set((0.0, 0.0, 1.0))
-            rigid_body1 = UsdPhysics.RigidBodyAPI.Apply(body1_prim)
-            rigid_body1.CreateRigidBodyEnabledAttr().Set(True)
-            mass_api1 = UsdPhysics.MassAPI.Apply(body1_prim)
-            mass_api1.CreateMassAttr().Set(1.0)
-
-            # Add collision shape to body1
-            body1_shape = UsdGeom.Cube.Define(stage, "/articulation/body1/shape")
-            body1_shape.CreateSizeAttr().Set(0.5)
-            UsdPhysics.CollisionAPI.Apply(body1_shape.GetPrim())
-
-            # Create revolute joint with custom solref/solimp
-            joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/articulation/joint1")
-            joint1.CreateAxisAttr().Set("Z")
-            joint1.CreateBody0Rel().SetTargets(["/articulation/ground"])
-            joint1.CreateBody1Rel().SetTargets(["/articulation/body1"])
-            joint1.CreateLowerLimitAttr().Set(-90.0)
-            joint1.CreateUpperLimitAttr().Set(90.0)
-
-            # Add custom warp attributes
-            joint1_prim = joint1.GetPrim()
-            joint1_prim.CreateAttribute("warp:joint_solref", Sdf.ValueTypeNames.FloatArray).Set([0.05, 2.0])
-            joint1_prim.CreateAttribute("warp:joint_solimp", Sdf.ValueTypeNames.FloatArray).Set(
-                [0.8, 0.9, 0.002, 0.6, 3.0]
+        def Xform "World"
+        {
+            def Xform "Link0" (
+                prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
             )
+            {
+                float physics:mass = 1.0
+                bool physics:rigidBodyEnabled = 1
 
-            # Create second body with joint that has only solref
-            body2_prim = stage.DefinePrim("/articulation/body2", "Xform")
-            UsdGeom.Xform(body2_prim).AddTranslateOp().Set((1.0, 0.0, 1.0))
-            rigid_body2 = UsdPhysics.RigidBodyAPI.Apply(body2_prim)
-            rigid_body2.CreateRigidBodyEnabledAttr().Set(True)
-            mass_api2 = UsdPhysics.MassAPI.Apply(body2_prim)
-            mass_api2.CreateMassAttr().Set(1.0)
+                def PhysicsFixedJoint "FixedJoint"
+                {
+                    rel physics:body1 = </World/Link0>
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+            }
 
-            # Add collision shape to body2
-            body2_shape = UsdGeom.Cube.Define(stage, "/articulation/body2/shape")
-            body2_shape.CreateSizeAttr().Set(0.5)
-            UsdPhysics.CollisionAPI.Apply(body2_shape.GetPrim())
+            def Xform "Link1" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            )
+            {
+                float physics:mass = 1.0
+                bool physics:rigidBodyEnabled = 1
 
-            # Create prismatic joint with only custom solref
-            joint2 = UsdPhysics.PrismaticJoint.Define(stage, "/articulation/joint2")
-            joint2.CreateAxisAttr().Set("X")
-            joint2.CreateBody0Rel().SetTargets(["/articulation/ground"])
-            joint2.CreateBody1Rel().SetTargets(["/articulation/body2"])
-            joint2.CreateLowerLimitAttr().Set(-1.0)
-            joint2.CreateUpperLimitAttr().Set(1.0)
+                def PhysicsRevoluteJoint "Joint" (
+                    prepend apiSchemas = ["PhysicsLimitAPI", "PhysicsDriveAPI"]
+                )
+                {
+                    uniform token physics:axis = "Z"
+                    float physics:lowerLimit = -1.0
+                    float physics:upperLimit = 1.0
+                    rel physics:body0 = </World/Link0>
+                    rel physics:body1 = </World/Link1>
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
 
-            # Add only solref attribute
-            joint2_prim = joint2.GetPrim()
-            joint2_prim.CreateAttribute("warp:joint_solref", Sdf.ValueTypeNames.FloatArray).Set([0.1, 1.5])
+                    # Custom solver parameters
+                    float[] newton:joint_limit_solref = [0.05, 2.0]
+                    float[] newton:joint_limit_solimp = [0.8, 0.9, 0.002, 0.6, 3.0]
+                }
+            }
+        }
+        """
 
-            # Create third body with joint that has no custom attributes
-            body3_prim = stage.DefinePrim("/articulation/body3", "Xform")
-            UsdGeom.Xform(body3_prim).AddTranslateOp().Set((2.0, 0.0, 1.0))
-            rigid_body3 = UsdPhysics.RigidBodyAPI.Apply(body3_prim)
-            rigid_body3.CreateRigidBodyEnabledAttr().Set(True)
-            mass_api3 = UsdPhysics.MassAPI.Apply(body3_prim)
-            mass_api3.CreateMassAttr().Set(1.0)
+        # Write to temp file since parse_usd expects a file path
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".usda", delete=False) as f:
+            f.write(usda_str)
+            temp_path = f.name
 
-            # Add collision shape to body3
-            body3_shape = UsdGeom.Cube.Define(stage, "/articulation/body3/shape")
-            body3_shape.CreateSizeAttr().Set(0.5)
-            UsdPhysics.CollisionAPI.Apply(body3_shape.GetPrim())
-
-            # Create revolute joint with no custom attributes
-            joint3 = UsdPhysics.RevoluteJoint.Define(stage, "/articulation/joint3")
-            joint3.CreateAxisAttr().Set("Y")
-            joint3.CreateBody0Rel().SetTargets(["/articulation/ground"])
-            joint3.CreateBody1Rel().SetTargets(["/articulation/body3"])
-            joint3.CreateLowerLimitAttr().Set(-45.0)
-            joint3.CreateUpperLimitAttr().Set(45.0)
-
-            # Save the stage
-            stage.Save()
-
-            # Import the USD file
+        try:
             builder = newton.ModelBuilder()
-            parse_usd(usd_filename, builder)
+            parse_usd(temp_path, builder)
             model = builder.finalize()
 
-            # Check joints - there will be free joints for each body plus our defined joints
-            # Filter to only the joints we explicitly defined
-            joint_types = model.joint_type.numpy()
+            # Verify values were imported
+            self.assertGreater(model.joint_dof_count, 0, "No joints were imported")
 
-            # Debug: print all joint types (commented out)
-            # print(f"Total joints: {model.joint_count}")
-            # print(f"Joint types: {joint_types}")
-            # print(f"Joint type values: FREE={newton.JOINT_FREE}, REVOLUTE={newton.JOINT_REVOLUTE}, PRISMATIC={newton.JOINT_PRISMATIC}, D6={newton.JOINT_D6}")
-            # print(f"Body count: {model.body_count}")
+            solref = model.joint_limit_solref.numpy()[0]
+            solimp = model.joint_limit_solimp.numpy()[0]
 
-            revolute_joints = [i for i in range(model.joint_count) if joint_types[i] == newton.JOINT_REVOLUTE]
-            prismatic_joints = [i for i in range(model.joint_count) if joint_types[i] == newton.JOINT_PRISMATIC]
-
-            # The joints might be imported as D6 joints
-            d6_joints = [i for i in range(model.joint_count) if joint_types[i] == newton.JOINT_D6]
-
-            # We should have at least 3 non-free joints
-            non_free_joints = len(revolute_joints) + len(prismatic_joints) + len(d6_joints)
-            self.assertGreaterEqual(
-                non_free_joints,
-                3,
-                f"Should have at least 3 non-free joints, but got {non_free_joints} (revolute: {len(revolute_joints)}, prismatic: {len(prismatic_joints)}, d6: {len(d6_joints)})",
-            )
-
-            # Check joint_solref and joint_solimp arrays exist
-            self.assertIsNotNone(model.joint_solref, "joint_solref should not be None")
-            self.assertIsNotNone(model.joint_solimp, "joint_solimp should not be None")
-
-            solref_values = model.joint_solref.numpy()
-            solimp_values = model.joint_solimp.numpy()
-
-            # Check that we have the expected solref/solimp values somewhere in the arrays
-            # Since free joints are added, we need to search for our specific values
-
-            # Find DOFs with custom solref values
-            custom_solref1_found = False
-            custom_solref2_found = False
-
-            for i in range(model.joint_dof_count):
-                if np.allclose(solref_values[i], [0.05, 2.0]):
-                    # This should be joint1 with custom solref and solimp
-                    custom_solref1_found = True
-                    np.testing.assert_array_almost_equal(
-                        solimp_values[i],
-                        [0.8, 0.9, 0.002, 0.6, 3.0],
-                        err_msg="Joint with solref [0.05, 2.0] should have custom solimp values",
-                    )
-                elif np.allclose(solref_values[i], [0.1, 1.5]):
-                    # This should be joint2 with custom solref but default solimp
-                    custom_solref2_found = True
-                    np.testing.assert_array_almost_equal(
-                        solimp_values[i],
-                        [0.9, 0.95, 0.001, 0.5, 2.0],
-                        err_msg="Joint with solref [0.1, 1.5] should have default solimp values",
-                    )
-
-            self.assertTrue(custom_solref1_found, "Should find joint with custom solref [0.05, 2.0]")
-            self.assertTrue(custom_solref2_found, "Should find joint with custom solref [0.1, 1.5]")
-
-            # Also check that some joints have default values
-            default_joints = [
-                i
-                for i in range(model.joint_dof_count)
-                if np.allclose(solref_values[i], [0.02, 1.0])
-                and np.allclose(solimp_values[i], [0.9, 0.95, 0.001, 0.5, 2.0])
-            ]
-            self.assertGreater(len(default_joints), 0, "Should have at least one joint with default solref/solimp")
-
+            np.testing.assert_array_almost_equal(solref, [0.05, 2.0])
+            np.testing.assert_array_almost_equal(solimp, [0.8, 0.9, 0.002, 0.6, 3.0])
         finally:
-            # Clean up the temporary file
-            os.unlink(usd_filename)
+            # Clean up temp file
+            os.unlink(temp_path)
 
 
 if __name__ == "__main__":

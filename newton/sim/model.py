@@ -241,10 +241,6 @@ class Model:
         """Joint velocity limits, shape [joint_dof_count], float."""
         self.joint_friction = None
         """Joint friction coefficient, shape [joint_dof_count], float."""
-        self.joint_solref = None
-        """MuJoCo solver reference parameters for joint constraints, shape [joint_dof_count, 2], float. Each row contains (stiffness_time_const, damping_time_const)."""
-        self.joint_solimp = None
-        """MuJoCo solver impedance parameters for joint constraints, shape [joint_dof_count, 5], float. Each row contains (dmin, dmax, width, midpoint, power)."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_dof_mode = None
@@ -259,6 +255,10 @@ class Model:
         """Joint position limit stiffness (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
         self.joint_limit_kd = None
         """Joint position limit damping (used by :class:`~newton.solvers.SemiImplicitSolver` and :class:`~newton.solvers.FeatherstoneSolver`), shape [joint_dof_count], float."""
+        self.joint_limit_solref = None
+        """Joint position limit solver reference parameters (time constants), shape [joint_dof_count, 2], float."""
+        self.joint_limit_solimp = None
+        """Joint position limit solver impedance parameters, shape [joint_dof_count, 5], float."""
         self.joint_twist_lower = None
         """Joint lower twist limit, shape [joint_count], float."""
         self.joint_twist_upper = None
@@ -403,8 +403,6 @@ class Model:
         self.attribute_frequency["joint_effort_limit"] = "joint_dof"
         self.attribute_frequency["joint_friction"] = "joint_dof"
         self.attribute_frequency["joint_velocity_limit"] = "joint_dof"
-        self.attribute_frequency["joint_solref"] = "joint_dof"
-        self.attribute_frequency["joint_solimp"] = "joint_dof"
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = "shape"
