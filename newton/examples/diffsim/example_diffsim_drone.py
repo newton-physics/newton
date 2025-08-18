@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,18 +23,17 @@
 ###########################################################################
 
 import os
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
-
 import warp as wp
-import warp.examples
 import warp.optim
-import warp.sim
-import warp.sim.render
-from warp.sim.collide import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 
-DEFAULT_DRONE_PATH = os.path.join(warp.examples.get_asset_directory(), "crazyflie.usd")  # Path to input drone asset
+import newton
+import newton.examples
+from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
+
+DEFAULT_DRONE_PATH = os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd")  # Path to input drone asset
 
 
 @wp.struct
@@ -116,8 +115,8 @@ def drone_cost(
 
     pos_drone = wp.transform_get_translation(tf)
     pos_cost = wp.length_sq(pos_drone - target)
-    altitude_cost = wp.max(pos_drone[1] - 0.75, 0.0) + wp.max(0.25 - pos_drone[1], 0.0)
-    upvector = wp.vec3(0.0, 1.0, 0.0)
+    altitude_cost = wp.max(pos_drone[2] - 0.75, 0.0) + wp.max(0.25 - pos_drone[2], 0.0)
+    upvector = wp.vec3(0.0, 0.0, 1.0)
     drone_up = wp.transform_vector(tf, upvector)
     upright_cost = 1.0 - wp.dot(drone_up, upvector)
 
@@ -163,7 +162,10 @@ def collision_cost(
     body_q: wp.array(dtype=wp.transform),
     obstacle_ids: wp.array(dtype=int, ndim=2),
     shape_X_bs: wp.array(dtype=wp.transform),
-    geo: wp.sim.ModelShapeGeometry,
+    # geo: wp.sim.ModelShapeGeometry,
+    shape_type: wp.array(dtype=int),
+    shape_scale: wp.array(dtype=wp.vec3),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
     margin: float,
     weighting: float,
     cost: wp.array(dtype=wp.float32),
@@ -179,34 +181,34 @@ def collision_cost(
     x_local = wp.transform_point(wp.transform_inverse(X_bs), px)
 
     # geo description
-    geo_type = geo.type[shape_index]
-    geo_scale = geo.scale[shape_index]
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
 
     # evaluate shape sdf
     d = 1e6
 
-    if geo_type == wp.sim.GEO_SPHERE:
+    if geo_type == newton.GeoType.SPHERE:
         d = sphere_sdf(wp.vec3(), geo_scale[0], x_local)
-    elif geo_type == wp.sim.GEO_BOX:
+    elif geo_type == newton.GeoType.BOX:
         d = box_sdf(geo_scale, x_local)
-    elif geo_type == wp.sim.GEO_CAPSULE:
+    elif geo_type == newton.GeoType.CAPSULE:
         d = capsule_sdf(geo_scale[0], geo_scale[1], x_local)
-    elif geo_type == wp.sim.GEO_CYLINDER:
+    elif geo_type == newton.GeoType.CYLINDER:
         d = cylinder_sdf(geo_scale[0], geo_scale[1], x_local)
-    elif geo_type == wp.sim.GEO_CONE:
+    elif geo_type == newton.GeoType.CONE:
         d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
-    elif geo_type == wp.sim.GEO_MESH:
-        mesh = geo.source[shape_index]
+    elif geo_type == newton.GeoType.MESH:
+        mesh = shape_source_ptr[shape_index]
         min_scale = wp.min(geo_scale)
         max_dist = margin / min_scale
         d = mesh_sdf(mesh, wp.cw_div(x_local, geo_scale), max_dist)
         d *= min_scale  # TODO fix this, mesh scaling needs to be handled properly
-    elif geo_type == wp.sim.GEO_SDF:
-        volume = geo.source[shape_index]
+    elif geo_type == newton.GeoType.SDF:
+        volume = shape_source_ptr[shape_index]
         xpred_local = wp.volume_world_to_index(volume, wp.cw_div(x_local, geo_scale))
         nn = wp.vec3(0.0, 0.0, 0.0)
         d = wp.volume_sample_grad_f(volume, xpred_local, wp.Volume.LINEAR, nn)
-    elif geo_type == wp.sim.GEO_PLANE:
+    elif geo_type == newton.GeoType.PLANE:
         d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
 
     d = wp.max(d, 0.0)
@@ -297,7 +299,7 @@ def define_propeller(
     prop = Propeller()
     prop.body = drone
     prop.pos = pos
-    prop.dir = wp.vec3(0.0, 1.0, 0.0)
+    prop.dir = wp.vec3(0.0, 0.0, 1.0)
     prop.thrust = thrust
     prop.power = power
     prop.diameter = diameter
@@ -316,7 +318,7 @@ class Drone:
         self,
         name: str,
         fps: float,
-        trajectory_shape: Tuple[int, int],
+        trajectory_shape: tuple[int, int],
         variation_count: int = 1,
         size: float = 1.0,
         requires_grad: bool = False,
@@ -329,7 +331,7 @@ class Drone:
         self.sim_tick = 0
 
         # Initialize the helper to build a physics scene.
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder()
         builder.rigid_contact_margin = 0.05
 
         # Initialize the rigid bodies, propellers, and colliders.
@@ -341,24 +343,22 @@ class Drone:
         carbon_fiber_density = 1750.0  # kg / m^3
         for i in range(variation_count):
             # Register the drone as a rigid body in the simulation model.
-            body = builder.add_body(name=f"{name}_{i}")
+            body = builder.add_body(key=f"{name}_{i}")
 
             # Define the shapes making up the drone's rigid body.
             builder.add_shape_box(
                 body,
-                hx=crossbar_length,
-                hy=crossbar_height,
-                hz=crossbar_width,
-                density=carbon_fiber_density,
-                collision_group=i,
+                hx=crossbar_width,
+                hy=crossbar_length,
+                hz=crossbar_height,
+                cfg=newton.ModelBuilder.ShapeConfig(density=carbon_fiber_density, collision_group=i),
             )
             builder.add_shape_box(
                 body,
-                hx=crossbar_width,
-                hy=crossbar_height,
-                hz=crossbar_length,
-                density=carbon_fiber_density,
-                collision_group=i,
+                hx=crossbar_length,
+                hy=crossbar_width,
+                hz=crossbar_height,
+                cfg=newton.ModelBuilder.ShapeConfig(density=carbon_fiber_density, collision_group=i),
             )
 
             # Initialize the propellers.
@@ -366,25 +366,25 @@ class Drone:
                 (
                     define_propeller(
                         body,
-                        wp.vec3(crossbar_length, 0.0, 0.0),
+                        wp.vec3(0.0, crossbar_length, 0.0),
                         fps,
                         turning_direction=-1.0,
                     ),
                     define_propeller(
                         body,
+                        wp.vec3(0.0, -crossbar_length, 0.0),
+                        fps,
+                        turning_direction=1.0,
+                    ),
+                    define_propeller(
+                        body,
+                        wp.vec3(crossbar_length, 0.0, 0.0),
+                        fps,
+                        turning_direction=1.0,
+                    ),
+                    define_propeller(
+                        body,
                         wp.vec3(-crossbar_length, 0.0, 0.0),
-                        fps,
-                        turning_direction=1.0,
-                    ),
-                    define_propeller(
-                        body,
-                        wp.vec3(0.0, 0.0, crossbar_length),
-                        fps,
-                        turning_direction=1.0,
-                    ),
-                    define_propeller(
-                        body,
-                        wp.vec3(0.0, 0.0, -crossbar_length),
                         fps,
                         turning_direction=-1.0,
                     ),
@@ -396,10 +396,10 @@ class Drone:
                 (
                     builder.add_shape_capsule(
                         -1,
-                        pos=(0.5, 2.0, 0.5),
+                        xform=wp.transform(wp.vec3(0.5, 0.5, 2.0), wp.quat_identity()),
                         radius=0.15,
                         half_height=2.0,
-                        collision_group=i,
+                        cfg=newton.ModelBuilder.ShapeConfig(collision_group=i),
                     ),
                 ),
             )
@@ -408,7 +408,6 @@ class Drone:
 
         # Build the model and set-up its properties.
         self.model = builder.finalize(requires_grad=requires_grad)
-        self.model.ground = False
 
         # Initialize the required simulation states.
         if requires_grad:
@@ -439,15 +438,15 @@ class Drone:
         self.collision_radius = crossbar_length
 
     @property
-    def state(self) -> wp.sim.State:
+    def state(self) -> newton.State:
         return self.states[self.sim_tick if self.requires_grad else 0]
 
     @property
-    def next_state(self) -> wp.sim.State:
+    def next_state(self) -> newton.State:
         return self.states[self.sim_tick + 1 if self.requires_grad else 1]
 
     @property
-    def control(self) -> wp.sim.Control:
+    def control(self) -> newton.Control:
         return self.controls[min(len(self.controls) - 1, self.sim_tick) if self.requires_grad else 0]
 
 
@@ -482,8 +481,8 @@ class Example:
 
         # Targets positions that the drone will try to reach in turn.
         self.targets = (
-            wp.vec3(0.0, 0.5, 1.0),
-            wp.vec3(1.0, 0.5, 0.0),
+            wp.vec3(1.0, 0.0, 0.5),
+            wp.vec3(0.0, 1.0, 0.5),
         )
 
         # Define the index of the active target.
@@ -537,7 +536,7 @@ class Example:
         self.rollout_costs = wp.zeros(self.rollout_count, dtype=float, requires_grad=True)
 
         # Use the Euler integrator for stepping through the simulation.
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.rollouts.model)
 
         self.optimizer = wp.optim.SGD(
             [self.rollouts.trajectories.flatten()],
@@ -550,13 +549,13 @@ class Example:
 
         if stage_path:
             if not headless:
-                self.renderer = wp.sim.render.SimRendererOpenGL(self.drone.model, stage_path, fps=self.fps)
+                self.renderer = newton.viewer.RendererOpenGL(self.drone.model, stage_path, fps=self.fps)
             else:
                 # Helper to render the physics scene as a USD file.
-                self.renderer = wp.sim.render.SimRenderer(self.drone.model, stage_path, fps=self.fps)
+                self.renderer = newton.viewer.RendererUsd(self.drone.model, stage_path, fps=self.fps)
 
-            if isinstance(self.renderer, warp.sim.render.SimRendererUsd):
-                from pxr import UsdGeom
+            if isinstance(self.renderer, newton.viewer.RendererUsd):
+                from pxr import UsdGeom  # noqa: PLC0415
 
                 # Remove the default drone geometries.
                 drone_root_prim = self.renderer.stage.GetPrimAtPath("/root/body_0_drone_0")
@@ -567,8 +566,9 @@ class Example:
                 drone_prim = self.renderer.stage.OverridePrim(f"{drone_root_prim.GetPath()}/crazyflie")
                 drone_prim.GetReferences().AddReference(drone_path)
                 drone_xform = UsdGeom.Xform(drone_prim)
-                drone_xform.AddTranslateOp().Set((0.0, -0.05, 0.0))
-                drone_xform.AddRotateYOp().Set(45.0)
+                drone_xform.AddTranslateOp().Set((0.0, 0.0, -0.05))
+                drone_xform.AddRotateXOp().Set(90.0)
+                drone_xform.AddRotateYOp().Set(135.0)
                 drone_xform.AddScaleOp().Set((drone_size * 20.0,) * 3)
 
                 # Get the propellers to spin
@@ -623,12 +623,13 @@ class Example:
             outputs=(drone.state.body_f,),
         )
 
-        self.integrator.simulate(
-            drone.model,
+        self.solver.step(
+            # drone.model,
             drone.state,
             drone.next_state,
+            None,
+            None,
             self.sim_dt,
-            drone.control,
         )
 
         drone.sim_tick += 1
@@ -679,7 +680,10 @@ class Example:
                     self.rollouts.state.body_q,
                     self.rollouts.colliders,
                     self.rollouts.model.shape_transform,
-                    self.rollouts.model.shape_geo,
+                    # self.rollouts.model.shape_geo,
+                    self.rollouts.model.shape_type,
+                    self.rollouts.model.shape_scale,
+                    self.rollouts.model.shape_source_ptr,
                     self.rollouts.collision_radius,
                     1e4,
                 ),
@@ -835,12 +839,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--drone_path",
         type=str,
-        default=os.path.join(warp.examples.get_asset_directory(), "crazyflie.usd"),
+        default=os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd"),
         help="Path to the USD file to use as the reference for the drone prim in the output stage.",
     )
     parser.add_argument("--render_rollouts", action="store_true", help="Add rollout trajectories to the output stage.")
     parser.add_argument(
         "--headless",
+        default=True,
         action="store_true",
         help="Run in headless mode, suppressing the opening of any graphical windows.",
     )
