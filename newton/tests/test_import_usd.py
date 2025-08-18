@@ -428,6 +428,103 @@ class TestImportUsd(unittest.TestCase):
         # Verify the parsed inertia matches our calculated body frame inertia
         np.testing.assert_allclose(inertia_parsed.reshape(3, 3), I_body_expected, rtol=1e-5, atol=1e-8)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_force_limits(self):
+        """Test importing USD with force limits specified."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        self.assertTrue(stage)
+
+        bodies = {}
+        for name, is_root in [("A", True), ("B", False), ("C", False), ("D", False)]:
+            path = f"/{name}"
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            if is_root:
+                UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(1.0)
+            mass_api.CreateDiagonalInertiaAttr().Set((1.0, 1.0, 1.0))
+            bodies[name] = body
+
+        # Common drive parameters
+        default_stiffness = 100.0
+        default_damping = 10.0
+
+        joint_configs = {
+            "/joint_AB": {
+                "type": UsdPhysics.RevoluteJoint,
+                "bodies": ["A", "B"],
+                "drive_type": "angular",
+                "max_force": 24.0,
+            },
+            "/joint_AC": {
+                "type": UsdPhysics.PrismaticJoint,
+                "bodies": ["A", "C"],
+                "axis": "Z",
+                "drive_type": "linear",
+                "max_force": 15.0,
+            },
+            "/joint_AD": {
+                "type": UsdPhysics.Joint,
+                "bodies": ["A", "D"],
+                "limits": {"transX": {"low": -1.0, "high": 1.0}},
+                "drive_type": "transX",
+                "max_force": 30.0,
+            },
+        }
+
+        joints = {}
+        for path, config in joint_configs.items():
+            joint = config["type"].Define(stage, path)
+
+            if "axis" in config:
+                joint.CreateAxisAttr().Set(config["axis"])
+
+            if "limits" in config:
+                for dof, limits in config["limits"].items():
+                    limit_api = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), dof)
+                    limit_api.CreateLowAttr().Set(limits["low"])
+                    limit_api.CreateHighAttr().Set(limits["high"])
+
+            # Set bodies using names from config
+            joint.CreateBody0Rel().SetTargets([bodies[config["bodies"][0]].GetPrim().GetPath()])
+            joint.CreateBody1Rel().SetTargets([bodies[config["bodies"][1]].GetPrim().GetPath()])
+
+            # Apply drive with default stiffness/damping
+            drive_api = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), config["drive_type"])
+            drive_api.CreateStiffnessAttr().Set(default_stiffness)
+            drive_api.CreateDampingAttr().Set(default_damping)
+            drive_api.CreateMaxForceAttr().Set(config["max_force"])
+
+            joints[path] = joint
+
+        builder = newton.ModelBuilder()
+        parse_usd(stage, builder)
+
+        model = builder.finalize()
+
+        # Test revolute joint (A-B)
+        joint_idx = model.joint_key.index("/joint_AB")
+        self.assertEqual(model.joint_type.numpy()[joint_idx], newton.JointType.REVOLUTE)
+        joint_dof_idx = model.joint_qd_start.numpy()[joint_idx]
+        self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx], 24.0)
+
+        # Test prismatic joint (A-C)
+        joint_idx_AC = model.joint_key.index("/joint_AC")
+        self.assertEqual(model.joint_type.numpy()[joint_idx_AC], newton.JointType.PRISMATIC)
+        joint_dof_idx_AC = model.joint_qd_start.numpy()[joint_idx_AC]
+        self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AC], 15.0)
+
+        # Test D6 joint (A-D) - check transX DOF
+        joint_idx_AD = model.joint_key.index("/joint_AD")
+        self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
+        joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
+        self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
