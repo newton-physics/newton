@@ -431,7 +431,13 @@ def parse_mjcf(
 
         return shapes
 
-    def parse_body(body, parent, incoming_defaults: dict, childclass: str | None = None, parent_world_xform: wp.transform | None = None):
+    def parse_body(
+        body,
+        parent,
+        incoming_defaults: dict,
+        childclass: str | None = None,
+        parent_world_xform: wp.transform | None = None,
+    ):
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -449,10 +455,10 @@ def parse_mjcf(
         body_name = body_name.replace("-", "_")  # ensure valid USD path
         body_pos = parse_vec(body_attrib, "pos", (0.0, 0.0, 0.0))
         body_ori = parse_orientation(body_attrib)
-        
+
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
-        
+
         # Compose transforms properly through the hierarchy
         if parent == -1:
             # Root body: apply the root transform
@@ -463,7 +469,7 @@ def parse_mjcf(
         else:
             # Fallback (shouldn't happen in normal cases)
             world_xform = local_xform
-            
+
         # For joint positioning, we need the relative position/orientation scaled
         body_pos_for_joints = body_pos * scale
         body_ori_for_joints = body_ori
@@ -606,7 +612,7 @@ def parse_mjcf(
                     key="_".join(joint_name),
                     parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori_for_joints),
                 )
-                
+
                 # Set joint_q to the body's world coordinates
                 start = builder.joint_q_start[link]
                 builder.joint_q[start + 0] = world_xform.p[0]
