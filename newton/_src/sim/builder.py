@@ -116,21 +116,22 @@ class ModelBuilder:
 
     There are two ways to assign environment groups:
 
-    1. **Direct entity creation**: Entities inherit the builder's `current_env_group` value
+    1. **Direct entity creation**: Entities inherit the builder's `current_env_group` value::
 
-       >>> builder = ModelBuilder()
-       >>> builder.current_env_group = -1  # Following entities will be global
-       >>> builder.add_ground_plane()
-       >>> builder.current_env_group = 0  # Following entities will be in environment 0
-       >>> builder.add_body(...)
+           builder = ModelBuilder()
+           builder.current_env_group = -1  # Following entities will be global
+           builder.add_ground_plane()
+           builder.current_env_group = 0  # Following entities will be in environment 0
+           builder.add_body(...)
 
-    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified group
+    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified group::
 
-       >>> robot = ModelBuilder()
-       >>> robot.add_body(...)  # Group assignments here will be overridden
-       >>> main = ModelBuilder()
-       >>> main.add_builder(robot, environment=0)  # All robot entities -> group 0
-       >>> main.add_builder(robot, environment=1)  # All robot entities -> group 1
+           robot = ModelBuilder()
+           robot.add_body(...)  # Group assignments here will be overridden
+
+           main = ModelBuilder()
+           main.add_builder(robot, environment=0)  # All robot entities -> group 0
+           main.add_builder(robot, environment=1)  # All robot entities -> group 1
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -558,17 +559,20 @@ class ModelBuilder:
         To create global entities that are shared across all environments, set the main builder's
         `current_env_group` to -1 before adding entities directly (not via add_builder).
 
-        Example:
-            >>> main_builder = ModelBuilder()
-            >>> # Create global ground plane
-            >>> main_builder.current_env_group = -1
-            >>> main_builder.add_ground_plane()
-            >>> # Create robot builder
-            >>> robot_builder = ModelBuilder()
-            >>> robot_builder.add_body(...)  # These group assignments will be overridden
-            >>> # Add multiple robot instances
-            >>> main_builder.add_builder(robot_builder, environment=0)  # All entities -> group 0
-            >>> main_builder.add_builder(robot_builder, environment=1)  # All entities -> group 1
+        Example::
+
+            main_builder = ModelBuilder()
+            # Create global ground plane
+            main_builder.current_env_group = -1
+            main_builder.add_ground_plane()
+
+            # Create robot builder
+            robot_builder = ModelBuilder()
+            robot_builder.add_body(...)  # These group assignments will be overridden
+
+            # Add multiple robot instances
+            main_builder.add_builder(robot_builder, environment=0)  # All entities -> group 0
+            main_builder.add_builder(robot_builder, environment=1)  # All entities -> group 1
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
