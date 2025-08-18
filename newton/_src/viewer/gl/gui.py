@@ -235,6 +235,12 @@ class UI:
         if not self.is_available:
             return
 
+        try:
+            self.impl.process_inputs()
+        except AttributeError:
+            # Older integrations may not require this
+            pass
+
         self.imgui.new_frame()
 
     def end_frame(self):
