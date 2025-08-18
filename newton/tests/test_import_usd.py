@@ -135,9 +135,9 @@ class TestImportUsd(unittest.TestCase):
         )
 
         # Verify joint types
-        self.assertEqual(builder.joint_type[free_joint_idx], newton.JOINT_FREE)
-        self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JOINT_REVOLUTE)
-        self.assertEqual(builder.joint_type[fixed_joint_idx], newton.JOINT_FIXED)
+        self.assertEqual(builder.joint_type[free_joint_idx], newton.JointType.FREE)
+        self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JointType.REVOLUTE)
+        self.assertEqual(builder.joint_type[fixed_joint_idx], newton.JointType.FIXED)
 
         # The key test: verify the FixedJoint connects CenterPivot to world
         # because body1 was missing in the USD file
