@@ -1149,6 +1149,132 @@ class TestMuJoCoConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
 
+    def test_joint_transform_composition(self):
+        """
+        Test that the MuJoCo solver correctly handles joint transform composition.
+        This verifies that parent and child joint transforms are properly combined
+        to ensure all rotations from parent to child body are captured.
+        """
+        # Create a simple parent-child model with non-identity rotations in joint frames
+        builder = newton.ModelBuilder()
+
+        # Parent body with non-identity rotation
+        parent_body = builder.add_body(
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        )
+
+        # Add free joint to parent body so it can be connected to the world
+        builder.add_joint_free(parent_body)
+
+        # Child body
+        child_body = builder.add_body(
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        )
+
+        # Add a revolute joint with non-identity parent and child transforms
+        # Parent transform: rotate 60° around Y axis (no translation)
+        parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 3))
+
+        # Child transform: rotate 45° around X axis (no translation)
+        child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 4))
+
+        # Add the joint with these transforms
+        builder.add_joint_revolute(
+            parent=parent_body,
+            child=child_body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=(0.0, 0.0, 1.0),  # Rotation around Z axis
+        )
+
+        # Add some shapes for visualization
+        builder.add_shape_box(body=parent_body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=child_body, hx=0.1, hy=0.1, hz=0.1)
+
+        model = builder.finalize()
+
+        # Create MuJoCo solver
+        try:
+            solver = SolverMuJoCo(
+                model, iterations=1, disable_contacts=True, save_to_mjcf="test_joint_transform_composition.xml"
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+            return
+
+        # Run forward kinematics using mujoco_warp directly
+        # This should properly compose the joint transforms
+        try:
+            import mujoco_warp
+
+            mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        except ImportError as e:
+            self.skipTest(f"mujoco_warp not installed. Skipping test: {e}")
+            return
+
+        # Get the body transforms from mujoco_warp data
+        # Note: mujoco_warp uses [w, x, y, z] quaternion format
+        # World body is at index 0, so actual bodies start at index 1
+        parent_pos = solver.mjw_data.xpos.numpy()[0, 1]  # First world, first actual body
+        parent_quat = solver.mjw_data.xquat.numpy()[0, 1]  # [w, x, y, z] format
+        child_pos = solver.mjw_data.xpos.numpy()[0, 2]  # First world, second actual body
+        child_quat = solver.mjw_data.xquat.numpy()[0, 2]  # [w, x, y, z] format
+
+        # Expected parent transform: should be identity (root body)
+        expected_parent_pos = np.array([0.0, 0.0, 0.0])
+        expected_parent_quat = np.array([1.0, 0.0, 0.0, 0.0])  # Identity quaternion [w, x, y, z]
+
+        # Expected child transform: should be the composition of parent and child joint transforms
+        # Using the correct formula from the documentation:
+        # x_wc = x_wp * x_pj * x_j * x_cj^(-1)
+        # where:
+        # - x_wp = parent world transform (identity for root)
+        # - x_pj = parent_xform (parent to joint)
+        # - x_j = joint transform (identity for revolute joint at rest)
+        # - x_cj = child_xform (child to joint)
+
+        # For a revolute joint at rest, the joint transform is identity
+        joint_transform = wp.transform_identity()
+
+        # Parent world transform (identity since it's the root)
+        parent_world = wp.transform_identity()
+
+        # Compose: parent_world * parent_xform * joint_transform * inverse(child_xform)
+        step1 = wp.transform_multiply(parent_world, parent_xform)
+        step2 = wp.transform_multiply(step1, joint_transform)
+        step3 = wp.transform_multiply(step2, wp.transform_inverse(child_xform))
+
+        expected_child_xform = step3
+        expected_child_pos = expected_child_xform.p
+        expected_child_quat = expected_child_xform.q
+
+        # Convert expected quaternion to mujoco_warp format [w, x, y, z]
+        expected_child_quat_mjc = np.array(
+            [expected_child_quat.w, expected_child_quat.x, expected_child_quat.y, expected_child_quat.z]
+        )
+
+        # Verify parent body transform
+        np.testing.assert_allclose(
+            parent_pos, expected_parent_pos, atol=1e-6, err_msg="Parent body position should be at origin"
+        )
+        np.testing.assert_allclose(
+            parent_quat, expected_parent_quat, atol=1e-6, err_msg="Parent body quaternion should be identity"
+        )
+
+        # Verify child body transform
+        np.testing.assert_allclose(
+            child_pos,
+            expected_child_pos,
+            atol=1e-6,
+            err_msg="Child body position should match composed joint transforms",
+        )
+        np.testing.assert_allclose(
+            child_quat,
+            expected_child_quat_mjc,
+            atol=1e-6,
+            err_msg="Child body quaternion should match composed joint transforms",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
