@@ -105,6 +105,34 @@ class ModelBuilder:
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
+    Environment Grouping
+    --------------------
+
+    ModelBuilder supports environment grouping to organize entities for multi-environment simulations.
+    Each entity (particle, body, shape, joint, articulation) has an associated group index:
+
+    - Group -1: Global entities shared across all environments (e.g., ground plane)
+    - Group 0, 1, 2, ...: Environment-specific entities
+
+    There are two ways to assign environment groups:
+
+    1. **Direct entity creation**: Entities inherit the builder's `current_env_group` value::
+
+           builder = ModelBuilder()
+           builder.current_env_group = -1  # Following entities will be global
+           builder.add_ground_plane()
+           builder.current_env_group = 0  # Following entities will be in environment 0
+           builder.add_body(...)
+
+    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified group::
+
+           robot = ModelBuilder()
+           robot.add_body(...)  # Group assignments here will be overridden
+
+           main = ModelBuilder()
+           main.add_builder(robot, environment=0)  # All robot entities -> group 0
+           main.add_builder(robot, environment=1)  # All robot entities -> group 1
+
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
         than creating your own Model object directly, however it is possible to do so if
@@ -300,6 +328,7 @@ class ModelBuilder:
         self.particle_flags = []
         self.particle_max_velocity = 1e5
         self.particle_color_groups: list[nparray] = []
+        self.particle_group = []  # environment group index for each particle
 
         # shapes (each shape has an entry in these arrays)
         self.shape_key = []  # shape keys
@@ -326,6 +355,8 @@ class ModelBuilder:
         self.last_collision_group = 0
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
+        # environment group index for each shape
+        self.shape_group = []
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs = set()
@@ -373,6 +404,7 @@ class ModelBuilder:
         self.body_qd = []
         self.body_key = []
         self.body_shapes = {}  # mapping from body to shapes
+        self.body_group = []  # environment group index for each body
 
         # rigid joints
         self.joint_parent = []  # index of the parent body                      (constant)
@@ -408,12 +440,19 @@ class ModelBuilder:
         self.joint_q_start = []
         self.joint_qd_start = []
         self.joint_dof_dim = []
+        self.joint_group = []  # environment group index for each joint
 
         self.articulation_start = []
         self.articulation_key = []
+        self.articulation_group = []  # environment group index for each articulation
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
+
+        # current environment group index for entities being added directly to this builder.
+        # set to -1 to create global entities shared across all environments.
+        # note: this value is temporarily overridden when using add_builder().
+        self.current_env_group = -1
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
@@ -503,6 +542,7 @@ class ModelBuilder:
         # articulations are automatically 'closed' when calling finalize
         self.articulation_start.append(self.joint_count)
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
+        self.articulation_group.append(self.current_env_group)
 
     def add_builder(
         self,
@@ -510,18 +550,58 @@ class ModelBuilder:
         xform: Transform | None = None,
         update_num_env_count: bool = True,
         separate_collision_group: bool = True,
+        environment: int | None = None,
     ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
+
+        **Environment Group Behavior:**
+        When adding a builder, ALL entities from the source builder will be assigned to the same
+        environment group, overriding any group assignments that existed in the source builder.
+        This ensures that all entities from a sub-builder are grouped together as a single environment.
+
+        To create global entities that are shared across all environments, set the main builder's
+        `current_env_group` to -1 before adding entities directly (not via add_builder).
+
+        Example::
+
+            main_builder = ModelBuilder()
+            # Create global ground plane
+            main_builder.current_env_group = -1
+            main_builder.add_ground_plane()
+
+            # Create robot builder
+            robot_builder = ModelBuilder()
+            robot_builder.add_body(...)  # These group assignments will be overridden
+
+            # Add multiple robot instances
+            main_builder.add_builder(robot_builder, environment=0)  # All entities -> group 0
+            main_builder.add_builder(robot_builder, environment=1)  # All entities -> group 1
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
             xform (Transform): offset transform applied to root bodies.
-            update_num_env_count (bool): if True, the number of environments is incremented by 1.
+            update_num_env_count (bool): if True, the number of environments is updated appropriately.
+                For non-global entities (environment >= 0), this either increments num_envs (when environment is None)
+                or ensures num_envs is at least environment+1. Global entities (environment=-1) do not affect num_envs.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
+            environment (int | None): environment group index to assign to ALL entities from this builder.
+                If None, uses the current environment count as the group index. Use -1 for global entities.
+                Note: environment=-1 does not increase num_envs even when update_num_env_count=True.
         """
 
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
+
+        # Set the environment group for entities being added
+        if environment is None:
+            # Use the current environment count as the group index if not specified
+            group_idx = self.num_envs if update_num_env_count else self.current_env_group
+        else:
+            group_idx = environment
+
+        # Save the previous environment group
+        prev_env_group = self.current_env_group
+        self.current_env_group = group_idx
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
@@ -636,6 +716,33 @@ class ModelBuilder:
         elif builder.last_collision_group > -1:
             self.last_collision_group += builder.last_collision_group
 
+        # Handle environment group assignments
+        # For particles
+        if builder.particle_count > 0:
+            # Override all group indices with current environment group
+            particle_groups = [self.current_env_group] * builder.particle_count
+            self.particle_group.extend(particle_groups)
+
+        # For bodies
+        if builder.body_count > 0:
+            body_groups = [self.current_env_group] * builder.body_count
+            self.body_group.extend(body_groups)
+
+        # For shapes
+        if builder.shape_count > 0:
+            shape_groups = [self.current_env_group] * builder.shape_count
+            self.shape_group.extend(shape_groups)
+
+        # For joints
+        if builder.joint_count > 0:
+            joint_groups = [self.current_env_group] * builder.joint_count
+            self.joint_group.extend(joint_groups)
+
+        # For articulations
+        if builder.articulation_count > 0:
+            articulation_groups = [self.current_env_group] * builder.articulation_count
+            self.articulation_group.extend(articulation_groups)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -718,7 +825,17 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         if update_num_env_count:
-            self.num_envs += 1
+            # Globals do not contribute to the environment count
+            if group_idx >= 0:
+                # If an explicit environment is provided, ensure num_envs >= group_idx+1.
+                # Otherwise, auto-increment for the next environment.
+                if environment is None:
+                    self.num_envs += 1
+                else:
+                    self.num_envs = max(self.num_envs, group_idx + 1)
+
+        # Restore the previous environment group
+        self.current_env_group = prev_env_group
 
     def add_body(
         self,
@@ -781,6 +898,7 @@ class ModelBuilder:
 
         self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
+        self.body_group.append(self.current_env_group)
         return body_id
 
     # region joints
@@ -845,6 +963,7 @@ class ModelBuilder:
         self.joint_key.append(key or f"joint_{self.joint_count}")
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
+        self.joint_group.append(self.current_env_group)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -1735,6 +1854,9 @@ class ModelBuilder:
                 dfs(-1, body, wp.transform(), -1)
 
         # repopulate the model
+        # save original body groups before clearing
+        original_body_group = self.body_group[:] if self.body_group else []
+
         self.body_key.clear()
         self.body_q.clear()
         self.body_qd.clear()
@@ -1743,6 +1865,7 @@ class ModelBuilder:
         self.body_com.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
+        self.body_group.clear()  # Clear body groups
         if -1 in self.body_shapes:
             static_shapes = self.body_shapes[-1]
             self.body_shapes.clear()
@@ -1772,6 +1895,12 @@ class ModelBuilder:
                 self.body_inv_mass.append(body["inv_mass"])
                 self.body_inv_inertia.append(body["inv_inertia"])
             self.body_shapes[new_id] = body["shapes"]
+            # Rebuild body group - use original group if it exists
+            if original_body_group and body["original_id"] < len(original_body_group):
+                self.body_group.append(original_body_group[body["original_id"]])
+            else:
+                # If no group was assigned, use default -1
+                self.body_group.append(-1)
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -1789,6 +1918,9 @@ class ModelBuilder:
             self.articulation_start[i] = joint_remap.get(start_i, start_i)
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
+
+        # save original joint groups before clearing
+        original_joint_group = self.joint_group[:] if self.joint_group else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -1812,6 +1944,7 @@ class ModelBuilder:
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
+        self.joint_group.clear()  # Clear joint groups
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1826,6 +1959,12 @@ class ModelBuilder:
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
             self.joint_dof_dim.append(joint["axis_dim"])
+            # Rebuild joint group - use original group if it exists
+            if original_joint_group and joint["original_id"] < len(original_joint_group):
+                self.joint_group.append(original_joint_group[joint["original_id"]])
+            else:
+                # If no group was assigned, use default -1
+                self.joint_group.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_dof_mode.append(axis["axis_mode"])
@@ -1948,6 +2087,7 @@ class ModelBuilder:
         self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
+        self.shape_group.append(self.current_env_group)
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -2213,14 +2353,15 @@ class ModelBuilder:
     ) -> int:
         """Adds a cone collision shape to a body.
 
-        The cone's base is centered at its local origin as defined by `xform` and it extends along the specified `axis` towards its apex.
+        The cone's origin is at its geometric center, with the base at -half_height and apex at +half_height along the specified `axis`.
+        The center of mass is located at -half_height/2 from the origin (1/4 of the total height from the base toward the apex).
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the cone in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cone's base. Defaults to `1.0`.
-            half_height (float): The half-height of the cone (distance from the center of the base to the apex along the `axis`). Defaults to `0.5`.
-            axis (AxisType): The local axis of the cone along which its height is aligned, pointing from base to apex (e.g., `Axis.X`, `Axis.Y`, `Axis.Z`). Defaults to `Axis.Z`.
+            half_height (float): The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
+            axis (AxisType): The local axis of the cone along which its height is aligned. The apex points toward the positive direction of this axis. Defaults to `Axis.Z`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -2551,6 +2692,7 @@ class ModelBuilder:
             radius = self.default_particle_radius
         self.particle_radius.append(radius)
         self.particle_flags.append(flags)
+        self.particle_group.append(self.current_env_group)
 
         particle_id = self.particle_count - 1
 
@@ -2585,6 +2727,8 @@ class ModelBuilder:
             flags = [ParticleFlags.ACTIVE] * len(pos)
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
+        # Maintain environment grouping for bulk particle creation
+        self.particle_group.extend([self.current_env_group] * len(pos))
 
     def add_spring(self, i: int, j, ke: float, kd: float, control: float):
         """Adds a spring between two particles in the system
@@ -3593,6 +3737,7 @@ class ModelBuilder:
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_flags = wp.array([flag_to_int(f) for f in self.particle_flags], dtype=wp.int32)
+            m.particle_group = wp.array(self.particle_group, dtype=wp.int32) if self.particle_count > 0 else None
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 
@@ -3635,6 +3780,7 @@ class ModelBuilder:
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_group = wp.array(self.shape_group, dtype=wp.int32) if self.shape_count > 0 else None
 
             m.shape_source = self.shape_source  # used for rendering
 
@@ -3790,6 +3936,7 @@ class ModelBuilder:
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_key = self.body_key
+            m.body_group = wp.array(self.body_group, dtype=wp.int32) if self.body_count > 0 else None
 
             # joints
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
@@ -3802,6 +3949,7 @@ class ModelBuilder:
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_key = self.joint_key
+            m.joint_group = wp.array(self.joint_group, dtype=wp.int32) if self.joint_count > 0 else None
             # compute joint ancestors
             child_to_joint = {}
             for i, child in enumerate(self.joint_child):
@@ -3840,6 +3988,9 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
+            m.articulation_group = (
+                wp.array(self.articulation_group, dtype=wp.int32) if self.articulation_count > 0 else None
+            )
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)

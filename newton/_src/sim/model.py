@@ -32,6 +32,17 @@ class Model:
     This class holds the non-time varying description of the system, i.e.:
     all geometry, constraints, and parameters used to describe the simulation.
 
+    Environment Grouping:
+        The model supports grouping entities by environment using group indices:
+        - `particle_group`, `body_group`, `shape_group`, `joint_group`, `articulation_group`
+        - Group -1 indicates global entities shared across all environments
+        - Groups 0, 1, 2, ... indicate environment-specific entities
+
+        These groups can be used for:
+        - Collision detection optimization (separating environments)
+        - Visualization (spacing out different environments)
+        - Parallel processing of independent environments
+
     Note:
         It is strongly recommended to use the ModelBuilder to construct a
         simulation rather than creating your own Model object directly,
@@ -80,6 +91,8 @@ class Model:
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity = 1e5
         """Maximum particle velocity (to prevent instability). Default is 1e5."""
+        self.particle_group = None
+        """Environment group index for each particle, shape [particle_count], int. Global entities have group index -1."""
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -136,6 +149,8 @@ class Model:
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
         """Number of shape contact pairs."""
+        self.shape_group = None
+        """Environment group index for each shape, shape [shape_count], int. Global entities have group index -1."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -208,6 +223,8 @@ class Model:
         """Rigid body inverse mass, shape [body_count], float."""
         self.body_key = []
         """Rigid body keys, shape [body_count], str."""
+        self.body_group = None
+        """Environment group index for each body, shape [body_count], int. Global entities have group index -1."""
 
         self.joint_q = None
         """Generalized joint positions used for state initialization, shape [joint_coord_count], float."""
@@ -267,10 +284,14 @@ class Model:
         """Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via ``joint_qd_start[i+1] - joint_qd_start[i]``), shape [joint_count + 1], int."""
         self.joint_key = []
         """Joint keys, shape [joint_count], str."""
+        self.joint_group = None
+        """Environment group index for each joint, shape [joint_count], int. Global entities have group index -1."""
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
+        self.articulation_group = None
+        """Environment group index for each articulation, shape [articulation_count], int. Global entities have group index -1."""
 
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`). Default is 1.0e3."""
