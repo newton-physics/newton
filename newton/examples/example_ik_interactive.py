@@ -25,10 +25,10 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.sim.ik as ik
+import newton.ik as ik
 import newton.utils
-from newton.sim import eval_fk
-from newton.utils.gizmo import GizmoSystem
+from newton import eval_fk
+from newton.viewer import GizmoSystem
 
 # -------------------------------------------------------------------------
 # Utility classes
@@ -113,7 +113,7 @@ class Example:
         ) = self._create_objectives()
 
         # joint limits -------------------------------------------------
-        joint_limit_objective = ik.JointLimitObjective(
+        joint_limit_objective = ik.IKJointLimitObjective(
             joint_limit_lower=self.singleton_model.joint_limit_lower,
             joint_limit_upper=self.singleton_model.joint_limit_upper,
             n_problems=num_envs,
@@ -128,13 +128,13 @@ class Example:
             joint_q=self.joint_q,
             objectives=self.position_objectives + self.rotation_objectives + [joint_limit_objective],
             lambda_initial=0.1,
-            jacobian_mode=ik.JacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
         )
 
         # renderer & gizmos -------------------------------------------
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=1.0)
+            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=1.0)
             self._setup_gizmos()
 
         # warm-up + CUDA graph ----------------------------------------
@@ -292,7 +292,7 @@ class Example:
 
         # position objectives -----------------------------------------
         for ee_idx, (link_idx, offset) in enumerate(zip(self.ee_link_indices, self.ee_link_offsets)):
-            obj = ik.PositionObjective(
+            obj = ik.IKPositionObjective(
                 link_index=link_idx,
                 link_offset=offset,
                 target_positions=self.position_target_arrays[ee_idx],
@@ -304,7 +304,7 @@ class Example:
 
         # rotation objectives -----------------------------------------
         for ee_idx, link_idx in enumerate(self.ee_link_indices):
-            obj = ik.RotationObjective(
+            obj = ik.IKRotationObjective(
                 link_index=link_idx,
                 link_offset_rotation=wp.quat_identity(),
                 target_rotations=self.rotation_target_arrays[ee_idx],

@@ -33,8 +33,7 @@ from pxr import Usd, UsdGeom
 wp.config.enable_backward = False
 
 import newton
-import newton.utils
-from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton import ParticleFlags
 
 
 @wp.kernel
@@ -130,7 +129,7 @@ class Example:
         self.num_substeps = 10
         self.iterations = 4
         self.dt = self.frame_dt / self.num_substeps
-        # the BVH used by VBDSolver will be rebuilt every self.bvh_rebuild_frames
+        # the BVH used by SolverVBD will be rebuilt every self.bvh_rebuild_frames
         # When the simulated object deforms significantly, simply refitting the BVH can lead to deterioration of the BVH's
         # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
         self.bvh_rebuild_frames = 10
@@ -183,11 +182,11 @@ class Example:
         if len(rot_point_indices):
             flags = self.model.particle_flags.numpy()
             for fixed_vertex_id in rot_point_indices:
-                flags[fixed_vertex_id] = wp.uint32(int(flags[fixed_vertex_id]) & ~int(PARTICLE_FLAG_ACTIVE))
+                flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
 
             self.model.particle_flags = wp.array(flags)
 
-        self.solver = newton.solvers.VBDSolver(
+        self.solver = newton.solvers.SolverVBD(
             self.model,
             self.iterations,
             handle_self_contact=True,
@@ -227,7 +226,7 @@ class Example:
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
+            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
             self.renderer.enable_backface_culling = False
             self.renderer.draw_grid = False
             self.renderer.render_wireframe = True

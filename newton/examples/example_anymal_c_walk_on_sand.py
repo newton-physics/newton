@@ -31,8 +31,9 @@ wp.config.enable_backward = False
 
 import newton
 import newton.utils
+import newton.viewer
 from newton.examples.example_anymal_c_walk import AnymalController
-from newton.solvers.implicit_mpm import ImplicitMPMSolver
+from newton.solvers import SolverImplicitMPM
 
 
 @wp.kernel
@@ -179,9 +180,9 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
-        self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        self.solver = newton.solvers.SolverFeatherstone(self.model)
 
-        options = ImplicitMPMSolver.Options()
+        options = SolverImplicitMPM.Options()
         options.voxel_size = voxel_size
         options.max_fraction = max_fraction
         options.tolerance = tolerance
@@ -192,10 +193,10 @@ class Example:
         if not dynamic_grid:
             options.grid_padding = 5
 
-        self.mpm_solver = ImplicitMPMSolver(self.model, options)
+        self.mpm_solver = SolverImplicitMPM(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -203,7 +204,7 @@ class Example:
         self.mpm_solver.enrich_state(self.state_0)
         self.mpm_solver.enrich_state(self.state_1)
 
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
         self.control = self.model.control()
