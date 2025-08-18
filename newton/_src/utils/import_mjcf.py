@@ -598,7 +598,6 @@ def parse_mjcf(
                 builder.add_joint_free(
                     link,
                     key="_".join(joint_name),
-                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori_for_joints),
                 )
 
             else:
