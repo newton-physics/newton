@@ -123,7 +123,7 @@ class Mesh:
             indices: List of triangle indices, 3 per-element
             normals: Optional per-vertex normals (len == len(vertices)), shape (N, 3)
             uvs: Optional per-vertex texture coordinates (len == len(vertices)), shape (N, 2)
-            compute_inertia: If True, the mass, inertia tensor and center of mass will be compute assuming density of 1.0
+            compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
             is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
             maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
             color: Optional per-mesh base color (Vec3 in [0, 1])
