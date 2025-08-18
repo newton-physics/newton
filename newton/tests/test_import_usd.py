@@ -747,6 +747,98 @@ class TestImportSampleAssets(unittest.TestCase):
             angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
             self.assertLessEqual(angle_diff, 1e-3)
 
+        shape_body_array = model.shape_body.numpy()
+        shape_type_array = model.shape_type.numpy()
+        shape_transform_array = model.shape_transform.numpy()
+        shape_scale_array = model.shape_scale.numpy()
+        shape_flags_array = model.shape_flags.numpy()
+        
+        shape_to_path = {}
+        usd_shape_specs = {}
+        
+        shape_type_mapping = {
+            newton.GeoType.BOX: UsdPhysics.ObjectType.CubeShape,
+            newton.GeoType.SPHERE: UsdPhysics.ObjectType.SphereShape,
+            newton.GeoType.CAPSULE: UsdPhysics.ObjectType.CapsuleShape,
+            newton.GeoType.CYLINDER: UsdPhysics.ObjectType.CylinderShape,
+            newton.GeoType.CONE: UsdPhysics.ObjectType.ConeShape,
+            newton.GeoType.MESH: UsdPhysics.ObjectType.MeshShape,
+            newton.GeoType.PLANE: UsdPhysics.ObjectType.PlaneShape,
+        }
+        
+        for shape_type, shape_objtype in shape_type_mapping.items():
+            if shape_objtype not in parsed:
+                continue
+            for xpath, shape_spec in zip(*parsed[shape_objtype]):
+                path = str(xpath)
+                if path in shape_key_to_idx:
+                    sid = shape_key_to_idx[path]
+                    shape_to_path[sid] = path
+                    usd_shape_specs[sid] = shape_spec
+                    self.assertEqual(shape_type_array[sid], int(shape_type), 
+                                   f"Shape {sid} type mismatch: USD={shape_type}, Newton={shape_type_array[sid]}")
+        
+        def from_gfquat(gfquat):
+            return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
+        
+        def quaternions_match(q1, q2, tolerance=1e-5):
+            return (all(abs(q1[i] - q2[i]) < tolerance for i in range(4)) or
+                    all(abs(q1[i] + q2[i]) < tolerance for i in range(4)))
+        
+        for sid, path in shape_to_path.items():
+            prim = stage.GetPrimAtPath(path)
+            shape_spec = usd_shape_specs[sid]
+            newton_type = shape_type_array[sid]
+            newton_transform = shape_transform_array[sid]
+            newton_scale = shape_scale_array[sid]
+            newton_flags = shape_flags_array[sid]
+            
+            collision_enabled_usd = True
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                attr = prim.GetAttribute("physics:collisionEnabled")
+                if attr and attr.HasAuthoredValue():
+                    collision_enabled_usd = attr.Get()
+            
+            collision_enabled_newton = bool(newton_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            self.assertEqual(collision_enabled_newton, collision_enabled_usd,
+                           f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}")
+            
+            usd_quat = from_gfquat(shape_spec.localRot)
+            newton_pos = newton_transform[:3]
+            newton_quat = newton_transform[3:7]
+            
+            for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos)):
+                self.assertAlmostEqual(n_pos, u_pos, places=5,
+                                     msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}")
+            
+            if newton_type in [3, 5]:
+                from newton.core import quat_between_axes
+                usd_axis = int(shape_spec.axis) if hasattr(shape_spec, 'axis') else 2
+                axis_quat = (quat_between_axes(newton.Axis.Z, newton.Axis.X) if usd_axis == 0 else
+                           quat_between_axes(newton.Axis.Z, newton.Axis.Y) if usd_axis == 1 else
+                           wp.quat_identity())
+                expected_quat = wp.mul(usd_quat, axis_quat)
+            else:
+                expected_quat = usd_quat
+            
+            if not quaternions_match(newton_quat, expected_quat):
+                q_diff = wp.mul(newton_quat, wp.quat_inverse(expected_quat))
+                angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
+                self.fail(f"Shape {sid} rotation mismatch: expected={expected_quat}, Newton={newton_quat}, angle_diff={math.degrees(angle_diff)}°")
+            
+            if newton_type == newton.GeoType.CAPSULE:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+                self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
+            elif newton_type == newton.GeoType.BOX:
+                for i, (n_scale, u_extent) in enumerate(zip(newton_scale, shape_spec.halfExtents)):
+                    self.assertAlmostEqual(n_scale, u_extent, places=5,
+                                         msg=f"Box {sid} extent[{i}]: USD={u_extent}, Newton={n_scale}")
+            elif newton_type == newton.GeoType.SPHERE:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+            elif newton_type == newton.GeoType.CYLINDER:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+                self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_g1(self):
         builder = newton.ModelBuilder()
