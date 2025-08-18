@@ -459,16 +459,8 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose transforms properly through the hierarchy
-        if parent == -1:
-            # Root body: apply the root transform
-            world_xform = xform * local_xform
-        elif parent_world_xform is not None:
-            # Child body: compose with parent's world transform
-            world_xform = parent_world_xform * local_xform
-        else:
-            # Fallback (shouldn't happen in normal cases)
-            world_xform = local_xform
+        # Compose with either the passed parent world transform or the import root xform
+        world_xform = (parent_world_xform or xform) * local_xform
 
         # For joint positioning, we need the relative position/orientation scaled
         body_pos_for_joints = body_pos * scale
@@ -888,7 +880,7 @@ def parse_mjcf(
     # add bodies
 
     for body in world.findall("body"):
-        parse_body(body, -1, world_defaults, parent_world_xform=None)
+        parse_body(body, -1, world_defaults, parent_world_xform=xform)
 
     # -----------------
     # add static geoms
