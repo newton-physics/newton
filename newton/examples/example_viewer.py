@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 """
-Example: Viewer demo with basic geometries and live updates.
+Example: Viewer demo with basic geometries, lines, and live updates.
 
 This script demonstrates how to:
 - Build a minimal Newton Model (with a ground plane)
 - Create a viewer backend (OpenGL by default; optionally USD)
 - Add basic meshes (box, sphere, plane, cone, capsule, cylinder)
 - Create and update instanced transforms/colors/materials over time
+- Render animated lines (axes, grid, connections, rotating spokes)
 - Render in a loop using begin_frame(time)/end_frame()
 """
 
@@ -146,6 +147,38 @@ def main():
                 col_capsule,
                 mat_default,
             )
+
+            # Demonstrate log_lines() with animated debug/visualization lines
+            axis_eps = 0.01
+            axis_length = 2.0
+            axes_begins = wp.array(
+                [
+                    wp.vec3(0.0, 0.0, axis_eps),  # X axis start
+                    wp.vec3(0.0, 0.0, axis_eps),  # Y axis start
+                    wp.vec3(0.0, 0.0, axis_eps),  # Z axis start
+                ],
+                dtype=wp.vec3,
+            )
+
+            axes_ends = wp.array(
+                [
+                    wp.vec3(axis_length, 0.0, axis_eps),  # X axis end
+                    wp.vec3(0.0, axis_length, axis_eps),  # Y axis end
+                    wp.vec3(0.0, 0.0, axis_length + axis_eps),  # Z axis end
+                ],
+                dtype=wp.vec3,
+            )
+
+            axes_colors = wp.array(
+                [
+                    wp.vec3(1.0, 0.0, 0.0),  # Red X
+                    wp.vec3(0.0, 1.0, 0.0),  # Green Y
+                    wp.vec3(0.0, 0.0, 1.0),  # Blue Z
+                ],
+                dtype=wp.vec3,
+            )
+
+            viewer.log_lines("coordinate_axes", axes_begins, axes_ends, axes_colors)
 
             # End frame (process events, render, present)
             viewer.end_frame()

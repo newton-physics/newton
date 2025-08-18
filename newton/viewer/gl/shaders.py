@@ -29,6 +29,35 @@ void main() { }
 """
 
 
+line_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aColor;
+
+uniform mat4 view;
+uniform mat4 projection;
+
+out vec3 vertexColor;
+
+void main()
+{
+    vertexColor = aColor;
+    gl_Position = projection * view * vec4(aPos, 1.0);
+}
+"""
+
+line_fragment_shader = """
+#version 330 core
+in vec3 vertexColor;
+out vec4 FragColor;
+
+void main()
+{
+    FragColor = vec4(vertexColor, 1.0);
+}
+"""
+
+
 shape_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -568,3 +597,27 @@ class FrameShader(ShaderGL):
         """Update texture uniform."""
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
+
+
+class ShaderLine(ShaderGL):
+    """Simple shader for rendering lines with per-vertex colors."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(line_vertex_shader, "vertex"), Shader(line_fragment_shader, "fragment")
+        )
+
+        # Get uniform locations
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+
+    def update(self, view_matrix: np.ndarray, projection_matrix: np.ndarray):
+        """Update view and projection matrices for line rendering."""
+        with self:
+            self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+            self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))

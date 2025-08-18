@@ -219,7 +219,7 @@ class ViewerRerun(ViewerBase):
             pass
 
     # Not implemented yet - placeholder methods from ViewerBase
-    def log_lines(self, name, state):
+    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         pass
 
     def log_points(self, name, state):

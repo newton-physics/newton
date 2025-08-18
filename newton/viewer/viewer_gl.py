@@ -24,7 +24,7 @@ import newton as nt
 from newton.utils.selection import ArticulationView
 from newton.viewer.camera import Camera
 from newton.viewer.gl.gui import UI
-from newton.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL
+from newton.viewer.gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from newton.viewer.gl.picking import Picking
 from newton.viewer.viewer import ViewerBase
 
@@ -35,6 +35,7 @@ class ViewerGL(ViewerBase):
 
         # map from path to any object type
         self.objects = {}
+        self.lines = {}
         self.renderer = RendererGL()
         self.renderer.set_title("Newton Viewer")
 
@@ -138,8 +139,35 @@ class ViewerGL(ViewerBase):
 
         self.objects[name].update(xforms, scales, colors, materials)
 
-    def log_lines(self, name, state):
-        pass
+    def log_lines(
+        self,
+        name,
+        line_begins: wp.array,
+        line_ends: wp.array,
+        line_colors: wp.array,
+        hidden=False,
+    ):
+        """Log line data for rendering.
+
+        Args:
+            name: Unique identifier for the line batch
+            line_begins: Array of line start positions (shape: [N, 3])
+            line_ends: Array of line end positions (shape: [N, 3])
+            line_colors: Array of line colors (shape: [N, 3])
+            hidden: Whether the lines are initially hidden
+        """
+        assert isinstance(line_begins, wp.array)
+        assert isinstance(line_ends, wp.array)
+        assert isinstance(line_colors, wp.array)
+
+        num_lines = len(line_begins)
+        assert len(line_ends) == num_lines, "Number of line ends must match line begins"
+        assert len(line_colors) == num_lines, "Number of line colors must match line begins"
+
+        if name not in self.lines:
+            self.lines[name] = LinesGL(num_lines, self.device, hidden=hidden)
+
+        self.lines[name].update(line_begins, line_ends, line_colors)
 
     def log_points(self, name, state):
         pass
@@ -191,7 +219,7 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        self.renderer.render(self.camera, self.objects)
+        self.renderer.render(self.camera, self.objects, self.lines)
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()

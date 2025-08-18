@@ -1,6 +1,7 @@
 import ctypes
 import io
 import os
+import sys
 
 import numpy as np
 import warp as wp
@@ -9,6 +10,7 @@ from newton.viewer.mesh import create_sphere_mesh
 
 from .shaders import (
     FrameShader,
+    ShaderLine,
     ShaderShape,
     ShaderSky,
     ShadowShader,
@@ -36,6 +38,12 @@ class RenderVertex:
     pos: wp.vec3
     normal: wp.vec3
     uv: wp.vec2
+
+
+@wp.struct
+class LineVertex:
+    pos: wp.vec3
+    color: wp.vec3
 
 
 @wp.kernel
@@ -91,6 +99,27 @@ def normalize_normals(
 ):
     tid = wp.tid()
     vertices[tid].normal = wp.normalize(normals[tid])
+
+
+@wp.kernel
+def fill_line_vertex_data(
+    line_begins: wp.array(dtype=wp.vec3),
+    line_ends: wp.array(dtype=wp.vec3),
+    line_colors: wp.array(dtype=wp.vec3),
+    vertices: wp.array(dtype=LineVertex),
+):
+    tid = wp.tid()
+
+    # Each line has 2 vertices (begin and end)
+    vertex_idx = tid * 2
+
+    # First vertex (line begin)
+    vertices[vertex_idx].pos = line_begins[tid]
+    vertices[vertex_idx].color = line_colors[tid]
+
+    # Second vertex (line end)
+    vertices[vertex_idx + 1].pos = line_ends[tid]
+    vertices[vertex_idx + 1].color = line_colors[tid]
 
 
 class MeshGL:
@@ -267,6 +296,118 @@ class MeshGL:
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
+
+
+class LinesGL:
+    """Encapsulates line data and OpenGL buffers for line rendering."""
+
+    def __init__(self, num_lines, device, hidden=False):
+        """Initialize line data with the specified number of lines.
+
+        Args:
+            num_lines: Number of lines to render
+            device: Warp device to use
+            hidden: Whether the lines are initially hidden
+        """
+        gl = RendererGL.gl
+
+        self.num_lines = num_lines
+        self.num_vertices = num_lines * 2  # Each line has 2 vertices
+
+        # Store references to input buffers and rendering data
+        self.device = device
+        self.hidden = hidden
+
+        self.vertices = wp.zeros(self.num_vertices, dtype=LineVertex, device=self.device)
+
+        # Set up vertex attributes for lines (position + color)
+        self.vertex_byte_size = 12 + 12  # 3 floats for pos + 3 floats for color
+        self.vbo_size = self.vertex_byte_size * self.num_vertices
+
+        # Create OpenGL buffers
+        self.vao = gl.GLuint()
+        gl.glGenVertexArrays(1, self.vao)
+        gl.glBindVertexArray(self.vao)
+
+        self.vbo = gl.GLuint()
+        gl.glGenBuffers(1, self.vbo)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.vbo_size, None, gl.GL_DYNAMIC_DRAW)
+
+        # positions (location 0)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, self.vertex_byte_size, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+
+        # colors (location 1)
+        gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, self.vertex_byte_size, ctypes.c_void_p(3 * 4))
+        gl.glEnableVertexAttribArray(1)
+
+        gl.glBindVertexArray(0)
+
+        # Create CUDA-GL interop buffer for efficient updates
+        if self.device.is_cuda:
+            self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
+        else:
+            self.vertex_cuda_buffer = None
+
+    def destroy(self):
+        """Clean up OpenGL resources."""
+        gl = RendererGL.gl
+        try:
+            if hasattr(self, "vao"):
+                gl.glDeleteVertexArrays(1, self.vao)
+            if hasattr(self, "vbo"):
+                gl.glDeleteBuffers(1, self.vbo)
+        except Exception:
+            # Ignore any errors if the GL context has already been torn down
+            pass
+
+    def update(self, line_begins, line_ends, line_colors):
+        """Update line data in the VBO.
+
+        Args:
+            line_begins: Array of line start positions (warp array of vec3)
+            line_ends: Array of line end positions (warp array of vec3)
+            line_colors: Array of line colors (warp array of vec3)
+        """
+        gl = RendererGL.gl
+
+        if len(line_begins) != self.num_lines:
+            raise RuntimeError("Number of line begins does not match expected number of lines")
+        if len(line_ends) != self.num_lines:
+            raise RuntimeError("Number of line ends does not match expected number of lines")
+        if len(line_colors) != self.num_lines:
+            raise RuntimeError("Number of line colors does not match expected number of lines")
+
+        # Update line vertex data using the kernel
+        wp.launch(
+            fill_line_vertex_data,
+            dim=self.num_lines,
+            inputs=[line_begins, line_ends, line_colors],
+            outputs=[self.vertices],
+            device=self.device,
+        )
+
+        # Upload vertices to GL
+        if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
+            # Upload points via CUDA if possible
+            vbo_vertices = self.vertex_cuda_buffer.map(dtype=LineVertex, shape=self.vertices.shape)
+            wp.copy(vbo_vertices, self.vertices)
+            self.vertex_cuda_buffer.unmap()
+        else:
+            host_vertices = self.vertices.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_DYNAMIC_DRAW)
+
+    def render(self):
+        if not self.hidden:
+            gl = RendererGL.gl
+
+            gl.glDisable(gl.GL_CULL_FACE)  # Lines don't need culling
+
+            gl.glBindVertexArray(self.vao)
+            gl.glDrawArrays(gl.GL_LINES, 0, self.num_vertices)
             gl.glBindVertexArray(0)
 
 
@@ -652,6 +793,7 @@ class RendererGL:
         self._shape_shader = ShaderShape(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
+        self._line_shader = ShaderLine(gl)
 
         if not headless:
             self._setup_window_callbacks()
@@ -667,7 +809,7 @@ class RendererGL:
             self.app.platform_event_loop.step(0.001)  # 1ms app polling latency
             self.window.dispatch_events()
 
-    def render(self, camera, objects):
+    def render(self, camera, objects, lines=None):
         gl = RendererGL.gl
         self._make_current()
 
@@ -688,6 +830,7 @@ class RendererGL:
         gl.glClear(gl.GL_DEPTH_BUFFER_BIT)
 
         if self.draw_shadows:
+            # Note: lines are skipped during shadow pass since they don't cast shadows
             self._render_shadow_map(objects)
 
         # reset viewport
@@ -707,6 +850,10 @@ class RendererGL:
         gl.glBindVertexArray(0)
 
         self._render_scene(objects)
+
+        # Render lines after main scene but before MSAA resolve
+        if lines:
+            self._render_lines(lines)
 
         # ------------------------------------------------------------------
         # If MSAA is enabled, resolve the multi-sample buffer into texture FBO
@@ -1235,6 +1382,18 @@ class RendererGL:
             self._draw_objects(objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+
+        check_gl_error()
+
+    def _render_lines(self, lines):
+        """Render all line objects using the line shader."""
+        # Set up line shader once for all line objects
+        self._line_shader.update(self._view_matrix, self._projection_matrix)
+
+        with self._line_shader:
+            for line_obj in lines.values():
+                if hasattr(line_obj, "render"):
+                    line_obj.render()
 
         check_gl_error()
 

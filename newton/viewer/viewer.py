@@ -301,7 +301,7 @@ class ViewerBase:
         pass
 
     @abstractmethod
-    def log_lines(self, name, state):
+    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         pass
 
     @abstractmethod

@@ -265,7 +265,7 @@ class ViewerUSD(ViewerBase):
         self.stage.GetRootLayer().Save()
 
     # Abstract methods that need basic implementations
-    def log_lines(self, name, state):
+    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         """Log lines (not implemented for USD backend)."""
         pass
 

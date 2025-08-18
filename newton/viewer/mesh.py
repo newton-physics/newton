@@ -252,4 +252,4 @@ def create_box_mesh(extents):
 
 
 def create_plane_mesh(width, length):
-    return create_box_mesh((width, length, 0.01))
+    return create_box_mesh((width, length, 0.005))
