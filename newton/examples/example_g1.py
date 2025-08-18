@@ -90,7 +90,8 @@ class Example:
 
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.viewer = newton.viewer.ViewerGL(self.model)
+        if stage_path:
+            self.viewer = newton.viewer.ViewerGL(self.model)
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 

@@ -83,7 +83,8 @@ class Example:
         # self.solver = newton.solvers.SolverSemiImplicit(self.model)
         # self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.viewer = newton.viewer.ViewerGL(self.model)
+        if stage_path:
+            self.viewer = newton.viewer.ViewerGL(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
