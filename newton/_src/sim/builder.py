@@ -1840,6 +1840,9 @@ class ModelBuilder:
                 dfs(-1, body, wp.transform(), -1)
 
         # repopulate the model
+        # save original body groups before clearing
+        original_body_group = self.body_group[:] if self.body_group else []
+
         self.body_key.clear()
         self.body_q.clear()
         self.body_qd.clear()
@@ -1848,6 +1851,7 @@ class ModelBuilder:
         self.body_com.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
+        self.body_group.clear()  # Clear body groups
         if -1 in self.body_shapes:
             static_shapes = self.body_shapes[-1]
             self.body_shapes.clear()
@@ -1877,6 +1881,12 @@ class ModelBuilder:
                 self.body_inv_mass.append(body["inv_mass"])
                 self.body_inv_inertia.append(body["inv_inertia"])
             self.body_shapes[new_id] = body["shapes"]
+            # Rebuild body group - use original group if it exists
+            if original_body_group and body["original_id"] < len(original_body_group):
+                self.body_group.append(original_body_group[body["original_id"]])
+            else:
+                # If no group was assigned, use default -1
+                self.body_group.append(-1)
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
@@ -1894,6 +1904,9 @@ class ModelBuilder:
             self.articulation_start[i] = joint_remap.get(start_i, start_i)
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
+
+        # save original joint groups before clearing
+        original_joint_group = self.joint_group[:] if self.joint_group else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -1917,6 +1930,7 @@ class ModelBuilder:
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
+        self.joint_group.clear()  # Clear joint groups
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1931,6 +1945,12 @@ class ModelBuilder:
             self.joint_X_p.append(list(joint["parent_xform"]))
             self.joint_X_c.append(list(joint["child_xform"]))
             self.joint_dof_dim.append(joint["axis_dim"])
+            # Rebuild joint group - use original group if it exists
+            if original_joint_group and joint["original_id"] < len(original_joint_group):
+                self.joint_group.append(original_joint_group[joint["original_id"]])
+            else:
+                # If no group was assigned, use default -1
+                self.joint_group.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_dof_mode.append(axis["axis_mode"])
@@ -2691,6 +2711,8 @@ class ModelBuilder:
             flags = [ParticleFlags.ACTIVE] * len(pos)
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
+        # Maintain environment grouping for bulk particle creation
+        self.particle_group.extend([self.current_env_group] * len(pos))
 
     def add_spring(self, i: int, j, ke: float, kd: float, control: float):
         """Adds a spring between two particles in the system

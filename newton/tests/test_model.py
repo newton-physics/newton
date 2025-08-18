@@ -267,6 +267,28 @@ class TestModel(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)
 
+    def test_add_particles_grouping(self):
+        """Test that add_particles correctly assigns environment groups."""
+        builder = ModelBuilder()
+
+        # Test with default group (-1)
+        builder.add_particles(
+            pos=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], vel=[(0.0, 0.0, 0.0)] * 3, mass=[1.0] * 3
+        )
+
+        # Change to group 0 and add more particles
+        builder.current_env_group = 0
+        builder.add_particles(pos=[(3.0, 0.0, 0.0), (4.0, 0.0, 0.0)], vel=[(0.0, 0.0, 0.0)] * 2, mass=[1.0] * 2)
+
+        # Finalize and check groups
+        model = builder.finalize()
+        particle_groups = model.particle_group.numpy()
+
+        # First 3 particles should be in group -1
+        self.assertTrue(np.all(particle_groups[0:3] == -1))
+        # Next 2 particles should be in group 0
+        self.assertTrue(np.all(particle_groups[3:5] == 0))
+
     def test_environment_grouping(self):
         """Test environment grouping functionality for Model entities."""
         main_builder = ModelBuilder()
@@ -371,6 +393,104 @@ class TestModel(unittest.TestCase):
             self.assertEqual(articulation_groups[0], 0)
             self.assertEqual(articulation_groups[1], 1)
             self.assertEqual(articulation_groups[2], 2)
+
+    def test_collapse_fixed_joints_with_groups(self):
+        """Test that collapse_fixed_joints correctly preserves environment groups."""
+        builder = ModelBuilder()
+
+        # Environment 0: Chain with fixed joints
+        builder.current_env_group = 0
+        b0_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_2 = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+
+        # Connect to world so collapse_fixed_joints processes this chain
+        builder.add_joint_revolute(
+            parent=-1,
+            child=b0_0,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            axis=(0.0, 0.0, 1.0),
+        )
+
+        # Add fixed joint (will be collapsed)
+        builder.add_joint_fixed(
+            parent=b0_0, child=b0_1, parent_xform=wp.transform_identity(), child_xform=wp.transform_identity()
+        )
+
+        # Add revolute joint (will be retained)
+        builder.add_joint_revolute(
+            parent=b0_1,
+            child=b0_2,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            axis=(0.0, 1.0, 0.0),
+        )
+
+        # Environment 1: Another chain
+        builder.current_env_group = 1
+        b1_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+        b1_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+
+        # Connect to world
+        builder.add_joint_revolute(
+            parent=-1,
+            child=b1_0,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            axis=(1.0, 0.0, 0.0),
+        )
+
+        # Add revolute joint
+        builder.add_joint_revolute(
+            parent=b1_0,
+            child=b1_1,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            axis=(0.0, 0.0, 1.0),
+        )
+
+        # Global body (not connected to world via joints, will be ignored by collapse)
+        builder.current_env_group = -1
+        builder.add_body(xform=wp.transform(wp.vec3(0.0, -5.0, 0.0), wp.quat_identity()), mass=0.0)
+
+        # Check groups before collapse
+        self.assertEqual(builder.body_group, [0, 0, 0, 1, 1, -1])
+        self.assertEqual(builder.joint_group, [0, 0, 0, 1, 1])  # 5 joints now
+
+        # Collapse fixed joints
+        builder.collapse_fixed_joints(verbose=False)
+
+        # After collapse:
+        # - b0_0 and b0_1 are merged (b0_1 removed)
+        # - Fixed joint is removed
+        # - Remaining bodies: b0_0 (merged), b0_2, b1_0, b1_1
+        # - Note: global_body is removed because it's not connected to world
+        # - Remaining joints: world->b0_0, b0_0->b0_2, world->b1_0, b1_0->b1_1
+
+        self.assertEqual(builder.body_count, 4)  # Two bodies removed (b0_1 merged, global_body removed)
+        self.assertEqual(builder.joint_count, 4)  # One joint removed (fixed joint)
+
+        # Check that groups are preserved correctly
+        self.assertEqual(builder.body_group, [0, 0, 1, 1])  # Groups preserved for retained bodies
+        self.assertEqual(builder.joint_group, [0, 0, 1, 1])  # Groups preserved for retained joints
+
+        # Finalize and verify
+        model = builder.finalize()
+        body_groups = model.body_group.numpy()
+        joint_groups = model.joint_group.numpy()
+
+        # Verify body groups
+        self.assertEqual(body_groups[0], 0)  # Merged b0_0
+        self.assertEqual(body_groups[1], 0)  # b0_2
+        self.assertEqual(body_groups[2], 1)  # b1_0
+        self.assertEqual(body_groups[3], 1)  # b1_1
+
+        # Verify joint groups (world connections and body-to-body joints)
+        self.assertEqual(joint_groups[0], 0)  # world->b0_0 from env 0
+        self.assertEqual(joint_groups[1], 0)  # b0_0->b0_2 from env 0
+        self.assertEqual(joint_groups[2], 1)  # world->b1_0 from env 1
+        self.assertEqual(joint_groups[3], 1)  # b1_0->b1_1 from env 1
 
 
 if __name__ == "__main__":
