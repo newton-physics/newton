@@ -19,17 +19,17 @@
 # Shows how to control Anymal C with a policy pretrained in physx.
 #
 # Example usage:
-# uv run --extra cu12 newton/examples/example_anymal_c_walk_physx_policy.py
+# uv run  newton/examples/example_anymal_d.py
 #
 ###########################################################################
 
 import warp as wp
 
 wp.config.enable_backward = False
+import mujoco
 
 import newton
 import newton.utils
-from newton import State
 
 
 class Example:
@@ -37,20 +37,15 @@ class Example:
         self.device = wp.get_device()
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            armature=0.06,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
-        )
+        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-
         if stage_path is None:
             asset_path = newton.utils.download_asset("anymal_usd")
-            stage_path = str(asset_path /  "anymal_d.usda")
+            stage_path = str(asset_path / "anymal_d.usda")
         newton.utils.parse_usd(
             stage_path,
             builder,
@@ -71,27 +66,6 @@ class Example:
 
         builder.joint_q[:3] = [0.0, 0.0, 0.62]
 
-        builder.joint_q[3:7] = [
-            0.0,
-            0.0,
-            0.7071,
-            0.7071,
-        ]
-
-        builder.joint_q[7:] = [
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-        ]
         for i in range(len(builder.joint_dof_mode)):
             builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
@@ -100,7 +74,9 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
+        )
 
         self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
