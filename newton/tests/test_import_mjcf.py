@@ -436,12 +436,6 @@ class TestImportMjcf(unittest.TestCase):
         expected_pos = expected_xform.p
         expected_quat = expected_xform.q
 
-        # Debug output to see what's happening
-        print(f"Root transform: pos={root_xform.p}, quat={root_xform.q}")
-        print(f"Child local transform: pos={child_local_xform.p}, quat={child_local_xform.q}")
-        print(f"Expected composed: pos={expected_pos}, quat={expected_quat}")
-        print(f"Actual joint_q: pos={joint_pos}, quat={joint_quat}")
-
         # Verify position and orientation match
         np.testing.assert_allclose(joint_pos, expected_pos, atol=1e-6)
         np.testing.assert_allclose(joint_quat, expected_quat, atol=1e-6)
