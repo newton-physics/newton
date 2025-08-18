@@ -595,11 +595,11 @@ def parse_mjcf(
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
             if joint_type == JointType.FREE:
+                assert parent == -1, "Free joints must have the world body as parent"
                 builder.add_joint_free(
                     link,
                     key="_".join(joint_name),
                 )
-
             else:
                 # TODO parse ref, springref values from joint_attrib
                 builder.add_joint(
