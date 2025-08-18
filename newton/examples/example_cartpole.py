@@ -17,7 +17,7 @@
 # Example Sim Cartpole
 #
 # Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a URDF using newton.ModelBuilder().
+# from a USD stage using newton.ModelBuilder().
 #
 ###########################################################################
 
@@ -39,10 +39,9 @@ class Example:
         articulation_builder.default_joint_cfg.armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
-        newton.utils.parse_urdf(
-            newton.examples.get_asset("cartpole.urdf"),
+        newton.utils.parse_usd(
+            newton.examples.get_asset("cartpole.usda"),
             articulation_builder,
-            floating=False,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
