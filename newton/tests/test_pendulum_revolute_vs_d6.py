@@ -38,8 +38,8 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         jt = model.joint_type.numpy()
 
         # Find the revolute and D6 joints by their types
-        rev_indices = np.where(jt == newton.JOINT_REVOLUTE)[0]
-        d6_indices = np.where(jt == newton.JOINT_D6)[0]
+        rev_indices = np.where(jt == newton.JointType.REVOLUTE)[0]
+        d6_indices = np.where(jt == newton.JointType.D6)[0]
 
         if len(rev_indices) == 0 or len(d6_indices) == 0:
             self.fail(f"Expected REVOLUTE and D6 joints not found. types={jt}")
@@ -77,13 +77,13 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         state_0.joint_qd.assign(model.joint_qd)
 
         # Evaluate FK for initial state
-        newton.sim.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-        # Simulate with MuJoCoSolver (Warp backend)
+        # Simulate with SolverMuJoCo (Warp backend)
         try:
-            solver = newton.solvers.MuJoCoSolver(model, use_mujoco=False, disable_contacts=True, iterations=2)
+            solver = newton.solvers.SolverMuJoCo(model, use_mujoco=False, disable_contacts=True, iterations=2)
         except Exception as e:
-            self.skipTest(f"MuJoCoSolver unavailable: {e}")
+            self.skipTest(f"SolverMuJoCo unavailable: {e}")
 
         sim_dt = 1.0 / 240.0
         steps = 480
