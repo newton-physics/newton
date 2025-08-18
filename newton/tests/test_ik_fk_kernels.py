@@ -21,19 +21,19 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.sim.ik as ik
-from newton import JOINT_BALL, JOINT_D6, JOINT_FREE, JOINT_PRISMATIC, JOINT_REVOLUTE
+import newton.ik as ik
+from newton import JointType
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 # -----------------------------------------------------------------------------
 # Joint types we want to hit
 # -----------------------------------------------------------------------------
 JOINT_KINDS: list[int] = [
-    JOINT_REVOLUTE,
-    JOINT_PRISMATIC,
-    JOINT_BALL,
-    JOINT_D6,
-    JOINT_FREE,
+    JointType.REVOLUTE,
+    JointType.PRISMATIC,
+    JointType.BALL,
+    JointType.D6,
+    JointType.FREE,
 ]
 
 
@@ -91,7 +91,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
         hz=0.05,
     )
 
-    if jt == JOINT_REVOLUTE:
+    if jt == JointType.REVOLUTE:
         builder.add_joint_revolute(
             parent=-1,
             child=child,
@@ -100,7 +100,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
             axis=[0.0, 0.0, 1.0],
         )
 
-    elif jt == JOINT_PRISMATIC:
+    elif jt == JointType.PRISMATIC:
         builder.add_joint_prismatic(
             parent=-1,
             child=child,
@@ -109,7 +109,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
             axis=[1.0, 0.0, 0.0],
         )
 
-    elif jt == JOINT_BALL:
+    elif jt == JointType.BALL:
         builder.add_joint_ball(
             parent=-1,
             child=child,
@@ -117,7 +117,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
             child_xform=child_xf,
         )
 
-    elif jt == JOINT_D6:
+    elif jt == JointType.D6:
         builder.add_joint_d6(
             -1,
             child,
@@ -135,7 +135,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
             child_xform=child_xf,
         )
 
-    elif jt == JOINT_FREE:
+    elif jt == JointType.FREE:
         builder.add_joint_free(
             parent=-1,
             child=child,
@@ -167,13 +167,13 @@ def _randomize_joint_q(model: newton.Model, seed: int = 0) -> None:
     for j, jt in enumerate(model.joint_type.numpy()):
         q0 = model.joint_q_start.numpy()[j]  # first coord idx
 
-        if jt == JOINT_REVOLUTE:
+        if jt == JointType.REVOLUTE:
             q_np[q0] = rng.uniform(-np.pi / 2, np.pi / 2)
 
-        elif jt == JOINT_PRISMATIC:
+        elif jt == JointType.PRISMATIC:
             q_np[q0] = rng.uniform(-0.2, 0.2)  # metres
 
-        elif jt == JOINT_BALL:
+        elif jt == JointType.BALL:
             # random small-angle quaternion
             axis = rng.normal(size=3)
             axis /= np.linalg.norm(axis) + 1e-8
@@ -182,13 +182,13 @@ def _randomize_joint_q(model: newton.Model, seed: int = 0) -> None:
             qv = axis * np.sin(angle / 2.0)
             q_np[q0 : q0 + 4] = (*qv, qw)
 
-        elif jt == newton.JOINT_D6:
+        elif jt == newton.JointType.D6:
             # lin X,Y,Z
             q_np[q0 + 0 : q0 + 3] = rng.uniform(-0.1, 0.1, size=3)
             # rot XYZ
             q_np[q0 + 3 : q0 + 6] = rng.uniform(-np.pi / 8, np.pi / 8, size=3)
 
-        elif jt == newton.JOINT_FREE:
+        elif jt == newton.JointType.FREE:
             # translation
             q_np[q0 + 0 : q0 + 3] = rng.uniform(-0.3, 0.3, size=3)
             # quaternion
@@ -214,11 +214,11 @@ def _fk_parity_for_joint(test, device, jt):
 
         # reference FK
         state_ref = model.state()
-        newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_ref)
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_ref)
 
         # two-pass FK (via IKSolver helper)
         joint_q = model.joint_q.reshape((1, model.joint_coord_count))
-        ik_solver = ik.IKSolver(model, joint_q, objectives=[_NoopObjective()], jacobian_mode=ik.JacobianMode.AUTODIFF)
+        ik_solver = ik.IKSolver(model, joint_q, objectives=[_NoopObjective()], jacobian_mode=ik.IKJacobianMode.AUTODIFF)
         ik_solver._fk_two_pass(model, ik_solver.joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
 
         assert_np_equal(state_ref.body_q.numpy(), ik_solver.body_q.numpy(), tol=1e-6)

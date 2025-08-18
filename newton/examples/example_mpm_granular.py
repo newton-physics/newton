@@ -21,7 +21,7 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-from newton.solvers.implicit_mpm import ImplicitMPMSolver
+from newton.solvers import SolverImplicitMPM
 
 
 class Example:
@@ -61,7 +61,7 @@ class Example:
         self.state_1: newton.State = model.state()
 
         self.sim_time = 0.0
-        self.solver = ImplicitMPMSolver(model, options)
+        self.solver = SolverImplicitMPM(model, options)
         self.solver.setup_collider(model, colliders=colliders)
 
         self.solver.enrich_state(self.state_0)
@@ -70,7 +70,7 @@ class Example:
         if options.headless:
             self.renderer = None
         else:
-            self.renderer = newton.utils.SimRendererOpenGL(self.model, "MPM Granular")
+            self.renderer = newton.viewer.RendererOpenGL(self.model, "MPM Granular")
 
     def simulate(self):
         for _ in range(self.sim_substeps):

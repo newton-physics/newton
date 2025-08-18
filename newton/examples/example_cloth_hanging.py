@@ -28,11 +28,11 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.utils
 
 
 class SolverType(Enum):
     EULER = "euler"
+    STYLE3D = "style3d"
     XPBD = "xpbd"
     VBD = "vbd"
 
@@ -59,6 +59,8 @@ class Example:
 
         if self.solver_type == SolverType.EULER:
             self.num_substeps = 32
+        elif self.solver_type == SolverType.STYLE3D:
+            self.num_substeps = 2
         else:
             self.num_substeps = 10
 
@@ -72,7 +74,10 @@ class Example:
 
         self.renderer_scale_factor = 1.0
 
-        builder = newton.ModelBuilder()
+        if self.solver_type == SolverType.STYLE3D:
+            builder = newton.sim.Style3DModelBuilder()
+        else:
+            builder = newton.ModelBuilder()
 
         if self.solver_type == SolverType.EULER:
             ground_cfg = builder.default_shape_cfg.copy()
@@ -106,6 +111,13 @@ class Example:
                 "tri_kd": 1.0e1,
             }
 
+        elif self.solver_type == SolverType.STYLE3D:
+            common_params.pop("edge_ke")
+            solver_params = {
+                "tri_aniso_ke": wp.vec3(1.0e4, 1.0e4, 1.0e3),
+                "edge_aniso_ke": wp.vec3(2.0e-6, 1.0e-6, 5.0e-6),
+            }
+
         elif self.solver_type == SolverType.XPBD:
             solver_params = {
                 "add_springs": True,
@@ -120,7 +132,10 @@ class Example:
                 "tri_kd": 1.0e-1,
             }
 
-        builder.add_cloth_grid(**common_params, **solver_params)
+        if self.solver_type == SolverType.STYLE3D:
+            builder.add_aniso_cloth_grid(**common_params, **solver_params)
+        else:
+            builder.add_cloth_grid(**common_params, **solver_params)
 
         if self.solver_type == SolverType.VBD:
             builder.color(include_bending=True)
@@ -131,20 +146,26 @@ class Example:
         self.model.soft_contact_mu = 1.0
 
         if self.solver_type == SolverType.EULER:
-            self.solver = newton.solvers.SemiImplicitSolver(model=self.model)
+            self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
+        elif self.solver_type == SolverType.STYLE3D:
+            self.solver = newton.solvers.SolverStyle3D(
+                model=self.model,
+                iterations=self.iterations,
+            )
+            self.solver.precompute(builder)
         elif self.solver_type == SolverType.XPBD:
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
             )
         else:  # self.solver_type == SolverType.VBD
-            self.solver = newton.solvers.VBDSolver(model=self.model, iterations=self.iterations)
+            self.solver = newton.solvers.SolverVBD(model=self.model, iterations=self.iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         if stage_path is not None:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=self.renderer_scale_factor,
