@@ -44,6 +44,7 @@ class ViewerGL(ViewerBase):
 
         # State caching for selection panel
         self._last_state = None
+        self._last_control = None
 
         # Selection panel state
         self._selection_ui_state = {

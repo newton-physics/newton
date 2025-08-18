@@ -165,7 +165,9 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.viewer = newton.viewer.ViewerGL(model=self.model)
+        self.viewer = None
+        if stage_path:
+            self.viewer = newton.viewer.ViewerGL(model=self.model)
 
         self.cuda_graph = None
         if self.use_cuda_graph:
