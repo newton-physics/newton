@@ -40,13 +40,11 @@ def create_model() -> newton.Model:
 
 
 class Example:
-
     def __init__(self, type: str):
-
         # Create a minimal model and viewer
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
-        
+
         self.model = builder.finalize()
 
         if args.viewer == "usd":
@@ -104,7 +102,6 @@ class Example:
             dtype=wp.vec3,
         )
 
-
         if args.viewer == "gl":
             print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
 
@@ -115,7 +112,6 @@ class Example:
         pass
 
     def render(self):
-
         t = time.time() - self.start
 
         # Begin frame with time
@@ -200,7 +196,6 @@ class Example:
             self.mat_default,
         )
 
-   
         self.viewer.log_lines("coordinate_self.axes", self.axes_begins, self.axes_ends, self.axes_colors)
 
         # End frame (process events, render, present)
@@ -209,10 +204,9 @@ class Example:
         self.frame += 1
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="rerun", help="Viewer backend to use.")
     args = parser.parse_args()
 
     example = Example(args.viewer)
