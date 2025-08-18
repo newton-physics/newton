@@ -144,7 +144,7 @@ class ViewerGL(ViewerBase):
         name,
         line_begins: wp.array,
         line_ends: wp.array,
-        line_colors: wp.array,
+        line_colors,
         hidden=False,
     ):
         """Log line data for rendering.
@@ -153,19 +153,38 @@ class ViewerGL(ViewerBase):
             name: Unique identifier for the line batch
             line_begins: Array of line start positions (shape: [N, 3])
             line_ends: Array of line end positions (shape: [N, 3])
-            line_colors: Array of line colors (shape: [N, 3])
+            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB
             hidden: Whether the lines are initially hidden
         """
         assert isinstance(line_begins, wp.array)
         assert isinstance(line_ends, wp.array)
-        assert isinstance(line_colors, wp.array)
 
         num_lines = len(line_begins)
         assert len(line_ends) == num_lines, "Number of line ends must match line begins"
+
+        # Handle tuple/list colors by expanding to array
+        if isinstance(line_colors, (tuple, list)):
+            if num_lines > 0:
+                color_vec = wp.vec3(*line_colors)
+                line_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+                line_colors.fill_(color_vec)  # Efficiently fill on GPU
+            else:
+                # Handle zero lines case
+                line_colors = wp.array([], dtype=wp.vec3, device=self.device)
+
+        assert isinstance(line_colors, wp.array)
         assert len(line_colors) == num_lines, "Number of line colors must match line begins"
 
+        # Create or resize LinesGL object based on current requirements
         if name not in self.lines:
-            self.lines[name] = LinesGL(num_lines, self.device, hidden=hidden)
+            # Start with reasonable default size, will expand as needed
+            max_lines = max(num_lines, 1000)  # Reasonable default
+            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
+        elif num_lines > self.lines[name].max_lines:
+            # Need to recreate with larger capacity
+            self.lines[name].destroy()
+            max_lines = max(num_lines, self.lines[name].max_lines * 2)
+            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
 
         self.lines[name].update(line_begins, line_ends, line_colors)
 

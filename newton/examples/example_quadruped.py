@@ -105,8 +105,9 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            if self.viewer and hasattr(self.viewer, "apply_picking_force"):
-                self.viewer.apply_picking_force(self.state_0)
+
+            self.viewer.picking._apply_picking_force(self.state_0)
+
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -126,6 +127,7 @@ class Example:
         with wp.ScopedTimer("render"):
             self.viewer.begin_frame(self.sim_time)
             self.viewer.log_model(self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_0)
             self.viewer.end_frame()
 
 

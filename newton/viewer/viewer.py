@@ -23,6 +23,10 @@ class ViewerBase:
         # maps from geometry hash -> mesh path
         self._geometry_cache: dict[str, str] = {}
 
+        # line vertices for contact vizualization
+        self._contact_points0 = None
+        self._contact_points1 = None
+
     def _populate(self, model):
         self._populate_shapes()
 
@@ -72,41 +76,62 @@ class ViewerBase:
 
         self.model_changed = False
 
-    def log_contacts(self, name, contacts, state):
+    def log_contacts(self, contacts, state):
         """
-        Computes the world-space positions of contact points for rendering.
+        Creates line segments along contact normals for rendering.
         Args:
-            body_q (wp.array): Array of body transformations.
+            name: Identifier for the contact lines
             contacts (newton.Contacts): The contacts to render.
+            state: Current simulation state
         """
-        if self._contact_points0 is None or len(self._contact_points0) < contacts.rigid_contact_max:
-            self._contact_points0 = wp.array(
-                np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
-            )
-            self._contact_points1 = wp.array(
-                np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+        # Get contact count (handle case where it might be zero)
+        num_contacts = contacts.rigid_contact_count.numpy()[0]
+        max_contacts = contacts.rigid_contact_max
+
+        # Ensure we have buffers for line endpoints
+        if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
+            self._contact_points0 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.model.device)
+            self._contact_points1 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.model.device)
+
+        # Always run the kernel to ensure buffers are properly cleared/updated
+        if max_contacts > 0:
+            from newton.utils.render import compute_contact_lines  # noqa: PLC0415
+
+            wp.launch(
+                kernel=compute_contact_lines,
+                dim=max_contacts,
+                inputs=[
+                    state.body_q,
+                    self.model.shape_body,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    0.1,  # line length scale factor
+                ],
+                outputs=[
+                    self._contact_points0,  # line start points
+                    self._contact_points1,  # line end points
+                ],
+                device=self.model.device,
             )
 
-        from newton.utils.render import compute_contact_points  # noqa: PLC0415
+        # Always call log_lines to update the renderer (handles zero contacts gracefully)
+        if num_contacts > 0:
+            # Slice arrays to only include active contacts
+            line_begins = self._contact_points0[:num_contacts]
+            line_ends = self._contact_points1[:num_contacts]
+        else:
+            # Create empty arrays for zero contacts case
+            line_begins = wp.array([], dtype=wp.vec3, device=self.model.device)
+            line_ends = wp.array([], dtype=wp.vec3, device=self.model.device)
 
-        wp.launch(
-            kernel=compute_contact_points,
-            dim=contacts.rigid_contact_max,
-            inputs=[
-                state.body_q,
-                self.model.shape_body,
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-            ],
-            outputs=[
-                self._contact_points0,
-                self._contact_points1,
-            ],
-            device=self.model.device,
-        )
+        # Use orange-red color for contact normals
+        line_colors = (0.0, 1.0, 0.0)
+
+        self.log_lines("/contacts", line_begins, line_ends, line_colors)
 
     def log_shapes(
         self,

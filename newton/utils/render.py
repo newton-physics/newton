@@ -119,7 +119,7 @@ def update_pick_target_kernel(
 
 
 @wp.kernel
-def compute_contact_points(
+def compute_contact_lines(
     body_q: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
@@ -127,23 +127,27 @@ def compute_contact_points(
     contact_shape1: wp.array(dtype=int),
     contact_point0: wp.array(dtype=wp.vec3),
     contact_point1: wp.array(dtype=wp.vec3),
+    contact_normal: wp.array(dtype=wp.vec3),
+    line_scale: float,
     # outputs
-    contact_pos0: wp.array(dtype=wp.vec3),
-    contact_pos1: wp.array(dtype=wp.vec3),
+    line_start: wp.array(dtype=wp.vec3),
+    line_end: wp.array(dtype=wp.vec3),
 ):
+    """Create line segments along contact normals for visualization."""
     tid = wp.tid()
     count = contact_count[0]
     if tid >= count:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
         return
 
+    # Get world transforms for both shapes
     body_a = shape_body[shape_a]
     body_b = shape_body[shape_b]
     X_wb_a = wp.transform_identity()
@@ -153,8 +157,19 @@ def compute_contact_points(
     if body_b >= 0:
         X_wb_b = body_q[body_b]
 
-    contact_pos0[tid] = wp.transform_point(X_wb_a, contact_point0[tid])
-    contact_pos1[tid] = wp.transform_point(X_wb_b, contact_point1[tid])
+    # Compute world space contact positions
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
+    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
+    # Use the midpoint of the contact as the line start
+    contact_center = (world_pos0 + world_pos1) * 0.5
+
+    # Create line along normal direction
+    # Normal points from shape0 to shape1, draw from center in normal direction
+    normal = contact_normal[tid]
+    line_vector = normal * line_scale
+
+    line_start[tid] = contact_center
+    line_end[tid] = contact_center + line_vector
 
 
 def CreateSimRenderer(renderer):

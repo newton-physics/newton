@@ -302,28 +302,29 @@ class MeshGL:
 class LinesGL:
     """Encapsulates line data and OpenGL buffers for line rendering."""
 
-    def __init__(self, num_lines, device, hidden=False):
-        """Initialize line data with the specified number of lines.
+    def __init__(self, max_lines, device, hidden=False):
+        """Initialize line data with the specified maximum number of lines.
 
         Args:
-            num_lines: Number of lines to render
+            max_lines: Maximum number of lines that can be rendered
             device: Warp device to use
             hidden: Whether the lines are initially hidden
         """
         gl = RendererGL.gl
 
-        self.num_lines = num_lines
-        self.num_vertices = num_lines * 2  # Each line has 2 vertices
+        self.max_lines = max_lines
+        self.max_vertices = max_lines * 2  # Each line has 2 vertices
+        self.num_lines = 0  # Current number of active lines to render
 
         # Store references to input buffers and rendering data
         self.device = device
         self.hidden = hidden
 
-        self.vertices = wp.zeros(self.num_vertices, dtype=LineVertex, device=self.device)
+        self.vertices = wp.zeros(self.max_vertices, dtype=LineVertex, device=self.device)
 
         # Set up vertex attributes for lines (position + color)
         self.vertex_byte_size = 12 + 12  # 3 floats for pos + 3 floats for color
-        self.vbo_size = self.vertex_byte_size * self.num_vertices
+        self.vbo_size = self.vertex_byte_size * self.max_vertices
 
         # Create OpenGL buffers
         self.vao = gl.GLuint()
@@ -373,21 +374,26 @@ class LinesGL:
         """
         gl = RendererGL.gl
 
-        if len(line_begins) != self.num_lines:
-            raise RuntimeError("Number of line begins does not match expected number of lines")
-        if len(line_ends) != self.num_lines:
-            raise RuntimeError("Number of line ends does not match expected number of lines")
-        if len(line_colors) != self.num_lines:
-            raise RuntimeError("Number of line colors does not match expected number of lines")
+        # Update current line count
+        self.num_lines = len(line_begins)
 
-        # Update line vertex data using the kernel
-        wp.launch(
-            fill_line_vertex_data,
-            dim=self.num_lines,
-            inputs=[line_begins, line_ends, line_colors],
-            outputs=[self.vertices],
-            device=self.device,
-        )
+        if self.num_lines > self.max_lines:
+            raise RuntimeError(f"Number of lines ({self.num_lines}) exceeds maximum ({self.max_lines})")
+        if len(line_ends) != self.num_lines:
+            raise RuntimeError("Number of line ends does not match line begins")
+        if len(line_colors) != self.num_lines:
+            raise RuntimeError("Number of line colors does not match line begins")
+
+        # Only update vertex data if we have lines to render
+        if self.num_lines > 0:
+            # Update line vertex data using the kernel
+            wp.launch(
+                fill_line_vertex_data,
+                dim=self.num_lines,
+                inputs=[line_begins, line_ends, line_colors],
+                outputs=[self.vertices],
+                device=self.device,
+            )
 
         # Upload vertices to GL
         if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
@@ -401,13 +407,15 @@ class LinesGL:
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_DYNAMIC_DRAW)
 
     def render(self):
-        if not self.hidden:
+        if not self.hidden and self.num_lines > 0:
             gl = RendererGL.gl
 
             gl.glDisable(gl.GL_CULL_FACE)  # Lines don't need culling
 
             gl.glBindVertexArray(self.vao)
-            gl.glDrawArrays(gl.GL_LINES, 0, self.num_vertices)
+            # Only render vertices for the current number of lines
+            current_vertices = self.num_lines * 2
+            gl.glDrawArrays(gl.GL_LINES, 0, current_vertices)
             gl.glBindVertexArray(0)
 
 
