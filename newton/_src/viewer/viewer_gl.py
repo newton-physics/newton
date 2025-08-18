@@ -565,12 +565,12 @@ class ViewerGL(ViewerBase):
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
-                # # Light color
-                # changed, self.renderer._light_color = imgui.color_edit3("Light Color", *self.renderer._light_color)
-                # # Sky color
-                # changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", *self.renderer.sky_upper)
-                # # Ground color
-                # changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
+                # Light color
+                changed, self.renderer._light_color = imgui.color_edit3("Light Color", *self.renderer._light_color)
+                # Sky color
+                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", *self.renderer.sky_upper)
+                # Ground color
+                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
 
             # Camera Information section
             if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):

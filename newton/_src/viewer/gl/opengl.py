@@ -698,10 +698,10 @@ class RendererGL:
         self.draw_wireframe = False
         self.vsync = vsync
 
-        self.background_color = (0.25, 0.3, 0.35)
+        self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
         self.sky_upper = self.background_color
-        self.sky_lower = (0.1, 0.1, 0.1)
+        self.sky_lower = (139.0 / 255.0, 151 / 255.0, 186.0 / 255.0)
 
         try:
             import pyglet  # noqa: PLC0415
@@ -786,7 +786,7 @@ class RendererGL:
         self._frame_fbo = None
         self._frame_pbo = None
 
-        self._sun_direction = np.array((-0.2, 0.3, 0.8))
+        self._sun_direction = np.array((0.2, -0.3, 0.8))
         self._sun_direction /= np.linalg.norm(self._sun_direction)
 
         self._light_color = (1.0, 1.0, 1.0)

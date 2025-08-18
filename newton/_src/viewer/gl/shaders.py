@@ -305,8 +305,8 @@ void main()
 
     // fog
     float dist = length(FragPos - view_pos);
-    float fog_start = 10.0;
-    float fog_end   = 100.0;
+    float fog_start = 20.0;
+    float fog_end   = 200.0;
     float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
     color = mix(color, pow(fogColor, vec3(2.2)), fog_factor);
 

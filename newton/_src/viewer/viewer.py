@@ -268,8 +268,8 @@ class ViewerBase:
         # Generate vertices/indices for supported primitive types
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
-            width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 100.0
-            length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 100.0
+            width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 1000.0
+            length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
             vertices, indices = create_plane_mesh(width, length)
 
         elif geo_type == newton.GeoType.SPHERE:
