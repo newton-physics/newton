@@ -577,10 +577,13 @@ class ModelBuilder:
         Args:
             builder (ModelBuilder): a model builder to add model data from.
             xform (Transform): offset transform applied to root bodies.
-            update_num_env_count (bool): if True, the number of environments is incremented by 1.
+            update_num_env_count (bool): if True, the number of environments is updated appropriately.
+                For non-global entities (environment >= 0), this either increments num_envs (when environment is None)
+                or ensures num_envs is at least environment+1. Global entities (environment=-1) do not affect num_envs.
             separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
             environment (int | None): environment group index to assign to ALL entities from this builder.
                 If None, uses the current environment count as the group index. Use -1 for global entities.
+                Note: environment=-1 does not increase num_envs even when update_num_env_count=True.
         """
 
         if builder.up_axis != self.up_axis:
@@ -818,7 +821,14 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         if update_num_env_count:
-            self.num_envs += 1
+            # Globals do not contribute to the environment count
+            if group_idx >= 0:
+                # If an explicit environment is provided, ensure num_envs >= group_idx+1.
+                # Otherwise, auto-increment for the next environment.
+                if environment is None:
+                    self.num_envs += 1
+                else:
+                    self.num_envs = max(self.num_envs, group_idx + 1)
 
         # Restore the previous environment group
         self.current_env_group = prev_env_group

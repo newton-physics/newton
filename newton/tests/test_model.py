@@ -394,6 +394,46 @@ class TestModel(unittest.TestCase):
             self.assertEqual(articulation_groups[1], 1)
             self.assertEqual(articulation_groups[2], 2)
 
+    def test_num_envs_tracking(self):
+        """Test that num_envs is properly tracked when using add_builder with environment groups."""
+        main_builder = ModelBuilder()
+
+        # Create a simple sub-builder
+        sub_builder = ModelBuilder()
+        sub_builder.add_body(mass=1.0)
+
+        # Test 1: Global entities should not increment num_envs
+        self.assertEqual(main_builder.num_envs, 0)
+        main_builder.add_builder(sub_builder, environment=-1, update_num_env_count=True)
+        self.assertEqual(main_builder.num_envs, 0)  # Should still be 0
+
+        # Test 2: Auto-increment with environment=None
+        main_builder.add_builder(sub_builder, environment=None, update_num_env_count=True)
+        self.assertEqual(main_builder.num_envs, 1)
+
+        main_builder.add_builder(sub_builder, environment=None, update_num_env_count=True)
+        self.assertEqual(main_builder.num_envs, 2)
+
+        # Test 3: Explicit environment indices
+        main_builder2 = ModelBuilder()
+
+        # Add environment 3 directly (skipping 0, 1, 2)
+        main_builder2.add_builder(sub_builder, environment=3, update_num_env_count=True)
+        self.assertEqual(main_builder2.num_envs, 4)  # Should be 3+1
+
+        # Add environment 1 (should not change num_envs since 4 > 1+1)
+        main_builder2.add_builder(sub_builder, environment=1, update_num_env_count=True)
+        self.assertEqual(main_builder2.num_envs, 4)  # Should still be 4
+
+        # Add environment 5 (should increase to 6)
+        main_builder2.add_builder(sub_builder, environment=5, update_num_env_count=True)
+        self.assertEqual(main_builder2.num_envs, 6)  # Should be 5+1
+
+        # Test 4: update_num_env_count=False should not change num_envs
+        main_builder3 = ModelBuilder()
+        main_builder3.add_builder(sub_builder, environment=2, update_num_env_count=False)
+        self.assertEqual(main_builder3.num_envs, 0)  # Should remain 0
+
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves environment groups."""
         builder = ModelBuilder()
