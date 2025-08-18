@@ -587,18 +587,6 @@ def parse_mjcf(
                     )
             elif floating is not None and floating:
                 builder.add_joint_free(link, key="floating_base")
-
-                # set dofs to the body's world transform
-                start = builder.joint_q_start[link]
-
-                builder.joint_q[start + 0] = world_xform.p[0]
-                builder.joint_q[start + 1] = world_xform.p[1]
-                builder.joint_q[start + 2] = world_xform.p[2]
-
-                builder.joint_q[start + 3] = world_xform.q[0]
-                builder.joint_q[start + 4] = world_xform.q[1]
-                builder.joint_q[start + 5] = world_xform.q[2]
-                builder.joint_q[start + 6] = world_xform.q[3]
             else:
                 builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base")
 
@@ -613,15 +601,6 @@ def parse_mjcf(
                     parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori_for_joints),
                 )
 
-                # Set joint_q to the body's world coordinates
-                start = builder.joint_q_start[link]
-                builder.joint_q[start + 0] = world_xform.p[0]
-                builder.joint_q[start + 1] = world_xform.p[1]
-                builder.joint_q[start + 2] = world_xform.p[2]
-                builder.joint_q[start + 3] = world_xform.q[0]
-                builder.joint_q[start + 4] = world_xform.q[1]
-                builder.joint_q[start + 5] = world_xform.q[2]
-                builder.joint_q[start + 6] = world_xform.q[3]
             else:
                 # TODO parse ref, springref values from joint_attrib
                 builder.add_joint(
