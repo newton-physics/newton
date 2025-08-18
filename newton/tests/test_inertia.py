@@ -22,6 +22,7 @@ from warp.render import OpenGLRenderer
 import newton
 from newton._src.geometry.inertia import (
     compute_box_inertia,
+    compute_cone_inertia,
     compute_mesh_inertia,
     compute_sphere_inertia,
 )
@@ -248,6 +249,77 @@ class TestInertia(unittest.TestCase):
         self.assertNotAlmostEqual(
             I_cone[0, 0], I_cone[2, 2], delta=1e-3, msg="I_xx should not equal I_zz for Z-axis cone"
         )
+
+    def test_cone_mesh_inertia(self):
+        """Test cone inertia by comparing analytical formula with mesh computation."""
+
+        def create_cone_mesh(radius=1.0, half_height=1.0, num_segments=32):
+            """Create a cone mesh with vertices and triangles.
+
+            The cone has its apex at +half_height and base at -half_height,
+            matching our cone primitive convention.
+            """
+            vertices = []
+            indices = []
+
+            # Add apex vertex
+            vertices.append([0, 0, half_height])
+
+            # Add base center vertex
+            vertices.append([0, 0, -half_height])
+
+            # Add vertices around the base circle
+            for i in range(num_segments):
+                angle = 2 * np.pi * i / num_segments
+                x = radius * np.cos(angle)
+                y = radius * np.sin(angle)
+                vertices.append([x, y, -half_height])
+
+            # Create triangles for the conical surface (from apex to base edge)
+            for i in range(num_segments):
+                next_i = (i + 1) % num_segments
+                # Triangle: apex, current base vertex, next base vertex
+                indices.append([0, i + 2, next_i + 2])
+
+            # Create triangles for the base (fan from center)
+            for i in range(num_segments):
+                next_i = (i + 1) % num_segments
+                # Triangle: base center, next base vertex, current base vertex
+                indices.append([1, next_i + 2, i + 2])
+
+            return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
+
+        # Test parameters
+        radius = 2.5
+        half_height = 3.0
+        density = 1000.0
+
+        # Create high-resolution cone mesh
+        vertices, indices = create_cone_mesh(radius, half_height, num_segments=500)
+
+        # Compute mesh inertia
+        mass_mesh, com_mesh, I_mesh, vol_mesh = compute_mesh_inertia(
+            density=density,
+            vertices=vertices,
+            indices=indices,
+            is_solid=True,
+        )
+
+        # Compute analytical inertia
+        mass_cone, com_cone, I_cone = compute_cone_inertia(density, radius, 2 * half_height)
+
+        # Check mass (within 0.1%)
+        self.assertAlmostEqual(mass_mesh, mass_cone, delta=mass_cone * 0.001)
+
+        # Check COM (cone COM is at -half_height/2 from center)
+        assert_np_equal(np.array(com_mesh), np.array(com_cone), tol=1e-3)
+
+        # Check inertia (within 0.1%)
+        assert_np_equal(np.array(I_mesh), np.array(I_cone), tol=I_cone[0, 0] * 0.001)
+
+        # Check volume
+        vol_cone = np.pi * radius**2 * (2 * half_height) / 3
+        self.assertAlmostEqual(vol_mesh, vol_cone, delta=vol_cone * 0.001)
 
 
 if __name__ == "__main__":
