@@ -292,16 +292,16 @@ class ViewerBase:
             vertices, indices = create_sphere_mesh(radius)
 
         elif geo_type == newton.GeoType.CAPSULE:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_capsule_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_capsule_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.CYLINDER:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_cylinder_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_cylinder_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.CONE:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_cone_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_cone_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:
