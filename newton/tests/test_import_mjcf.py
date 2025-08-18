@@ -347,12 +347,12 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder, floating=True)
+        newton.utils.parse_mjcf(mjcf_content, builder)
         model = builder.finalize()
 
         # For floating base, joint_q should contain the body's world transform
         body_idx = model.body_key.index("floating_body")
-        joint_idx = model.joint_key.index("floating_base")
+        joint_idx = model.joint_key.index("floating_body_freejoint")
 
         # Get joint arrays at once
         joint_q_start = model.joint_q_start.numpy()
