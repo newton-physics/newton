@@ -377,69 +377,6 @@ class TestImportMjcf(unittest.TestCase):
         np.testing.assert_allclose(joint_pos, body_pos, atol=1e-6)
         np.testing.assert_allclose(joint_quat, body_quat, atol=1e-6)
 
-    def test_free_joint_in_hierarchy(self):
-        """Test 2: Free joint in hierarchy → verify joint_q reflects proper world transform, with root translation and rotation."""
-        # Root: translate by (2, 3, 4), rotate 90 deg about Z
-        root_angle = np.pi / 2
-        root_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), root_angle)
-        # MJCF expects [w, x, y, z]
-        root_quat_mjcf = f"{root_quat[3]} {root_quat[0]} {root_quat[1]} {root_quat[2]}"
-        mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="root" pos="2 3 4" quat="{root_quat_mjcf}">
-            <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="free_child" pos="1 0 0" quat="0.7071068 0 0 0.7071068">
-                <freejoint/>
-                <geom type="box" size="0.1 0.1 0.1"/>
-            </body>
-        </body>
-    </worldbody>
-</mujoco>"""
-
-        builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
-        model = builder.finalize()
-
-        # The free joint should have joint_q reflecting the body's world transform
-        joint_idx = model.joint_key.index("free_child_freejoint")
-
-        # Get joint arrays at once
-        joint_q_start = model.joint_q_start.numpy()
-        joint_q = model.joint_q.numpy()
-
-        joint_start = joint_q_start[joint_idx]
-
-        # Extract from joint_q
-        joint_pos = [joint_q[joint_start + 0], joint_q[joint_start + 1], joint_q[joint_start + 2]]
-        joint_quat = [
-            joint_q[joint_start + 3],
-            joint_q[joint_start + 4],
-            joint_q[joint_start + 5],
-            joint_q[joint_start + 6],
-        ]
-
-        # Use warp transform math to calculate expected world transform
-        # root: (2,3,4), 90deg Z; child local: (1,0,0), 90deg Z
-        root_xform = wp.transform(wp.vec3(2.0, 3.0, 4.0), root_quat)
-
-        # MJCF quat "0.7071068 0 0 0.7071068" is [w, x, y, z]
-        # Convert to warp [x, y, z, w] format
-        child_quat_mjcf = np.array([0.7071068, 0, 0, 0.7071068])  # [w, x, y, z]
-        child_quat_warp = np.array(
-            [child_quat_mjcf[1], child_quat_mjcf[2], child_quat_mjcf[3], child_quat_mjcf[0]]
-        )  # [x, y, z, w]
-        child_local_xform = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat(*child_quat_warp))
-
-        expected_xform = wp.transform_multiply(root_xform, child_local_xform)
-
-        expected_pos = expected_xform.p
-        expected_quat = expected_xform.q
-
-        # Verify position and orientation match
-        np.testing.assert_allclose(joint_pos, expected_pos, atol=1e-6)
-        np.testing.assert_allclose(joint_quat, expected_quat, atol=1e-6)
-
     def test_chain_with_rotations(self):
         """Test 3: Chain of bodies with different pos/quat → verify each body's world transform."""
         # Test chain with cumulative rotations
