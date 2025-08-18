@@ -238,16 +238,28 @@ class UI:
         self.imgui.new_frame()
 
     def end_frame(self):
+        if not self.is_available:
+            return
+
         self.imgui.render()
         self.imgui.end_frame()
 
     def render(self):
+        if not self.is_available:
+            return
+
         self.impl.render(self.imgui.get_draw_data())
 
     def is_capturing(self):
+        if not self.is_available:
+            return False
+
         return self.io.want_capture_mouse or self.io.want_capture_keyboard
 
     def resize(self, width, height):
+        if not self.is_available:
+            return
+
         self.io.display_size = width, height
 
     def get_theme_color(self, color_id, fallback_color=(1.0, 1.0, 1.0, 1.0)):

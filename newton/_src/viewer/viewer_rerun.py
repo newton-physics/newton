@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 import warp as wp
 
-from newton.viewer.viewer import ViewerBase
+from .viewer import ViewerBase
 
 try:
     import rerun as rr

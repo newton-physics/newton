@@ -6,8 +6,7 @@ import sys
 import numpy as np
 import warp as wp
 
-from newton.viewer.mesh import create_sphere_mesh
-
+from ..mesh import create_sphere_mesh
 from .shaders import (
     FrameShader,
     ShaderLine,

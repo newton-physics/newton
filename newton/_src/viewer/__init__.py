@@ -28,28 +28,12 @@ Example usage:
     ```
 """
 
-__all__ = []
+from .viewer_gl import ViewerGL
+from .viewer_rerun import ViewerRerun
+from .viewer_usd import ViewerUSD
 
-try:
-    from .viewer_gl import ViewerGL  # noqa: F401
-
-    __all__.append("ViewerGL")
-except ImportError:
-    # OpenGL not available
-    pass
-
-try:
-    from .viewer_rerun import ViewerRerun  # noqa: F401
-
-    __all__.append("ViewerRerun")
-except ImportError:
-    # Rerun not available
-    pass
-
-try:
-    from .viewer_usd import ViewerUSD  # noqa: F401
-
-    __all__.append("ViewerUSD")
-except ImportError:
-    # USD (pxr) not available
-    pass
+__all__ = [
+    "ViewerGL",
+    "ViewerRerun",
+    "ViewerUSD",
+]

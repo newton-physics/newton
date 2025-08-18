@@ -21,12 +21,13 @@ import numpy as np
 import warp as wp
 
 import newton as nt
-from newton.utils.selection import ArticulationView
-from newton.viewer.camera import Camera
-from newton.viewer.gl.gui import UI
-from newton.viewer.gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
-from newton.viewer.gl.picking import Picking
-from newton.viewer.viewer import ViewerBase
+from newton.selection import ArticulationView
+
+from .camera import Camera
+from .gl.gui import UI
+from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .picking import Picking
+from .viewer import ViewerBase
 
 
 class ViewerGL(ViewerBase):
@@ -459,6 +460,9 @@ class ViewerGL(ViewerBase):
 
     def _render_ui(self):
         """Render the complete ImGui interface."""
+
+        if not self.ui.is_available:
+            return
 
         # Render left panel
         self._render_left_panel()

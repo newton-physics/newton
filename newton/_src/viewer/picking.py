@@ -2,8 +2,9 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import raycast
-from newton.viewer.kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
+
+from ..geometry import raycast
+from .kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
 
 
 class Picking:
@@ -104,8 +105,8 @@ class Picking:
                 state.body_q,
                 self.model.shape_body,
                 self.model.shape_transform,
-                self.model.shape_geo.type,
-                self.model.shape_geo.scale,
+                self.model.shape_type,
+                self.model.shape_scale,
                 p,
                 d,
                 self.lock,

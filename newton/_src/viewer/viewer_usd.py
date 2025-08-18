@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import numpy as np
-from pxr import Gf, Sdf, Usd, UsdGeom
+import warp as wp
 
 try:
-    import warp as wp
-except Exception:  # pragma: no cover - optional during docs/lint
-    wp = None  # type: ignore[assignment]
-from newton.viewer.viewer import ViewerBase
+    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+except ImportError:
+    Gf = Sdf = Usd = UsdGeom = Vt = None
+
+from .viewer import ViewerBase
 
 
 class ViewerUSD(ViewerBase):
@@ -24,6 +27,9 @@ class ViewerUSD(ViewerBase):
     """
 
     def __init__(self, model, output_path, fps=60, up_axis="Z", num_frames=None):
+        if Usd is None:
+            raise ImportError("usd-core package is required for ViewerUSD. Install with: pip install usd-core")
+
         super().__init__(model)
 
         self.output_path = output_path

@@ -113,7 +113,7 @@ def main():
             # Update instances via log_shapes
             viewer.log_shapes(
                 "/sphere_instance",
-                newton.GEO_SPHERE,
+                newton.GeoType.SPHERE,
                 0.5,
                 x_sphere_anim,
                 col_sphere,
@@ -121,7 +121,7 @@ def main():
             )
             viewer.log_shapes(
                 "/box_instance",
-                newton.GEO_BOX,
+                newton.GeoType.BOX,
                 (0.5, 0.3, 0.8),
                 x_box_anim,
                 col_box,
@@ -129,7 +129,7 @@ def main():
             )
             viewer.log_shapes(
                 "/cone_instance",
-                newton.GEO_CONE,
+                newton.GeoType.CONE,
                 (0.4, 1.2),
                 x_cone_anim,
                 col_cone,
@@ -137,7 +137,7 @@ def main():
             )
             viewer.log_shapes(
                 "/cylinder_instance",
-                newton.GEO_CYLINDER,
+                newton.GeoType.CYLINDER,
                 (0.35, 1.0),
                 x_cyl_anim,
                 col_cylinder,
@@ -145,7 +145,7 @@ def main():
             )
             viewer.log_shapes(
                 "/capsule_instance",
-                newton.GEO_CAPSULE,
+                newton.GeoType.CAPSULE,
                 (0.3, 1.0),
                 x_cap_anim,
                 col_capsule,

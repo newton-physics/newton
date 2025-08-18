@@ -90,7 +90,7 @@ class ViewerBase:
 
         # Always run the kernel to ensure buffers are properly cleared/updated
         if max_contacts > 0:
-            from newton.viewer.kernels import compute_contact_lines  # noqa: PLC0415
+            from .kernels import compute_contact_lines  # noqa: PLC0415
 
             wp.launch(
                 kernel=compute_contact_lines,
@@ -201,7 +201,7 @@ class ViewerBase:
         default_material = wp.vec4(0.0, 0.7, 0.0, 0.0)
 
         # planes default to checkerboard and mid-gray if not overridden
-        if geo_type == newton.GEO_PLANE:
+        if geo_type == newton.GeoType.PLANE:
             default_color = wp.vec3(0.125, 0.125, 0.25)
             default_material = wp.vec4(0.5, 0.7, 1.0, 0.0)
 
@@ -229,7 +229,7 @@ class ViewerBase:
         """
 
         # GEO_MESH handled by provided source geometry
-        if geo_type == newton.GEO_MESH:
+        if geo_type == newton.GeoType.MESH:
             if geo_src is None:
                 raise ValueError("log_geo requires geo_src for GEO_MESH")
 
@@ -257,34 +257,34 @@ class ViewerBase:
             return
 
         # Generate vertices/indices for supported primitive types
-        if geo_type == newton.GEO_PLANE:
+        if geo_type == newton.GeoType.PLANE:
             from .mesh import create_plane_mesh  # noqa: PLC0415
 
             # Handle "infinite" planes encoded with non-positive scales
             width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 100.0
             length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 100.0
             vertices, indices = create_plane_mesh(width, length)
-        elif geo_type == newton.GEO_SPHERE:
+        elif geo_type == newton.GeoType.SPHERE:
             from .mesh import create_sphere_mesh  # noqa: PLC0415
 
             radius = geo_scale[0]
             vertices, indices = create_sphere_mesh(radius)
-        elif geo_type == newton.GEO_CAPSULE:
+        elif geo_type == newton.GeoType.CAPSULE:
             from .mesh import create_capsule_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
             vertices, indices = create_capsule_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GEO_CYLINDER:
+        elif geo_type == newton.GeoType.CYLINDER:
             from .mesh import create_cylinder_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
             vertices, indices = create_cylinder_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GEO_CONE:
+        elif geo_type == newton.GeoType.CONE:
             from .mesh import create_cone_mesh  # noqa: PLC0415
 
             radius, height = geo_scale[:2]
             vertices, indices = create_cone_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GEO_BOX:
+        elif geo_type == newton.GeoType.BOX:
             from .mesh import create_box_mesh  # noqa: PLC0415
 
             if len(geo_scale) == 1:
@@ -431,13 +431,13 @@ class ViewerBase:
             return self._geometry_cache[geo_hash]
 
         base_name = {
-            newton.GEO_PLANE: "plane",
-            newton.GEO_SPHERE: "sphere",
-            newton.GEO_CAPSULE: "capsule",
-            newton.GEO_CYLINDER: "cylinder",
-            newton.GEO_CONE: "cone",
-            newton.GEO_BOX: "box",
-            newton.GEO_MESH: "mesh",
+            newton.GeoType.PLANE: "plane",
+            newton.GeoType.SPHERE: "sphere",
+            newton.GeoType.CAPSULE: "capsule",
+            newton.GeoType.CYLINDER: "cylinder",
+            newton.GeoType.CONE: "cone",
+            newton.GeoType.BOX: "box",
+            newton.GeoType.MESH: "mesh",
         }.get(geo_type)
 
         if base_name is None:
@@ -450,7 +450,7 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type == newton.GEO_MESH else None,
+            geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -460,11 +460,11 @@ class ViewerBase:
     def _populate_shapes(self):
         # convert to NumPy
         shape_body = self.model.shape_body.numpy()
-        shape_geo_src = self.model.shape_geo_src
-        shape_geo_type = self.model.shape_geo.type.numpy()
-        shape_geo_scale = self.model.shape_geo.scale.numpy()
-        shape_geo_thickness = self.model.shape_geo.thickness.numpy()
-        shape_geo_is_solid = self.model.shape_geo.is_solid.numpy()
+        shape_geo_src = self.model.shape_source
+        shape_geo_type = self.model.shape_type.numpy()
+        shape_geo_scale = self.model.shape_scale.numpy()
+        shape_geo_thickness = self.model.shape_thickness.numpy()
+        shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_count = len(shape_body)
@@ -472,7 +472,7 @@ class ViewerBase:
         # loop over shapes
         for s in range(shape_count):
             # skip invisible
-            if (shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE)) == 0:
+            if (shape_flags[s] & int(newton.ShapeFlags.VISIBLE)) == 0:
                 continue
 
             geo_type = shape_geo_type[s]
@@ -482,7 +482,7 @@ class ViewerBase:
             geo_src = shape_geo_src[s]
 
             # skip unsupported
-            if geo_type == newton.GEO_SDF:
+            if geo_type == newton.GeoType.SDF:
                 continue
 
             # check whether we can instance an already created shape with the same geometry
@@ -503,7 +503,7 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type == newton.GEO_MESH else None,
+                    geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
                 )
 
                 # add instances
@@ -518,14 +518,14 @@ class ViewerBase:
             color = wp.vec3(self._shape_color_map(s))
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            if geo_type == newton.GEO_MESH:
+            if geo_type == newton.GeoType.MESH:
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
                 if geo_src._color is not None:
                     color = wp.vec3(geo_src._color[0:3])
 
             # plane appearance: checkerboard + gray
-            if geo_type == newton.GEO_PLANE:
+            if geo_type == newton.GeoType.PLANE:
                 color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
@@ -563,7 +563,7 @@ class ViewerBase:
 
         # Run the kernel to compute joint basis lines
         # Launch with 3 * num_joints threads (3 lines per joint)
-        from newton.viewer.kernels import compute_joint_basis_lines  # noqa: PLC0415
+        from .kernels import compute_joint_basis_lines  # noqa: PLC0415
 
         wp.launch(
             kernel=compute_joint_basis_lines,

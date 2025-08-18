@@ -206,7 +206,7 @@ def compute_joint_basis_lines(
         return
 
     joint_t = joint_type[joint_id]
-    if joint_t != int(newton.JOINT_REVOLUTE) and joint_t != int(newton.JOINT_D6):
+    if joint_t != int(newton.JointType.REVOLUTE) and joint_t != int(newton.JointType.D6):
         # Set NaN for unsupported joints to hide them
         line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
         line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
