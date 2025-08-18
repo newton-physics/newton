@@ -1195,9 +1195,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create MuJoCo solver
         try:
-            solver = SolverMuJoCo(
-                model, iterations=1, disable_contacts=True, save_to_mjcf="test_joint_transform_composition.xml"
-            )
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
@@ -1205,7 +1203,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Run forward kinematics using mujoco_warp directly
         # This should properly compose the joint transforms
         try:
-            import mujoco_warp # noqa: PLC0415
+            import mujoco_warp  # noqa: PLC0415
 
             mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         except ImportError as e:
