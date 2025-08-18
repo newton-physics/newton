@@ -113,11 +113,11 @@ class TestAnymalReset(unittest.TestCase):
         self.anymal = ArticulationView(
             self.model, "*/Robot/base", verbose=False, exclude_joint_types=[newton.JointType.FREE]
         )
-        self.default_root_transforms = wp.to_torch(self.anymal.get_root_transforms(self.model)).clone()
-        self.default_root_velocities = wp.to_torch(self.anymal.get_root_velocities(self.model)).clone()
+        self.default_root_transforms = wp.clone(self.anymal.get_root_transforms(self.model))
+        self.default_root_velocities = wp.clone(self.anymal.get_root_velocities(self.model))
 
-        self.initial_dof_positions = wp.to_torch(self.anymal.get_dof_positions(self.state_0)).clone()
-        self.initial_dof_velocities = wp.to_torch(self.anymal.get_dof_velocities(self.state_0)).clone()
+        self.initial_dof_positions = wp.clone(self.anymal.get_dof_positions(self.state_0))
+        self.initial_dof_velocities = wp.clone(self.anymal.get_dof_velocities(self.state_0))
         self.simulate()
         self.save_initial_mjw_data()
 
@@ -176,6 +176,17 @@ class TestAnymalReset(unittest.TestCase):
             "ncon",
             "cfrc_int",
             "collision_worldid",
+            "epa_face",
+            "epa_horizon",
+            "epa_index",
+            "epa_map",
+            "epa_norm2",
+            "epa_pr",
+            "epa_vert",
+            "epa_vert1",
+            "epa_vert2",
+            "epa_vert_index1",
+            "epa_vert_index2",
         }
 
         for attr_name in all_attributes:
@@ -249,17 +260,10 @@ class TestAnymalReset(unittest.TestCase):
             return True
 
     def reset_robot_state(self):
-        initial_root_transforms = wp.from_torch(self.default_root_transforms, dtype=wp.transform)
-        self.anymal.set_root_transforms(self.state_0, initial_root_transforms)
-
-        initial_dof_positions = wp.from_torch(self.initial_dof_positions, dtype=wp.float32)
-        self.anymal.set_dof_positions(self.state_0, initial_dof_positions)
-
-        initial_root_velocities = wp.from_torch(self.default_root_velocities, dtype=wp.float32)
-        self.anymal.set_root_velocities(self.state_0, initial_root_velocities)
-
-        initial_dof_velocities = wp.from_torch(self.initial_dof_velocities, dtype=wp.float32)
-        self.anymal.set_dof_velocities(self.state_0, initial_dof_velocities)
+        self.anymal.set_root_transforms(self.state_0, self.default_root_transforms)
+        self.anymal.set_dof_positions(self.state_0, self.initial_dof_positions)
+        self.anymal.set_root_velocities(self.state_0, self.default_root_velocities)
+        self.anymal.set_dof_velocities(self.state_0, self.initial_dof_velocities)
 
         self.sim_time = 0.0
 
