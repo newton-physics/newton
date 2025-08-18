@@ -591,7 +591,7 @@ def parse_mjcf(
                 builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base")
 
         else:
-            joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
+            joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
             if joint_type == JointType.FREE:
