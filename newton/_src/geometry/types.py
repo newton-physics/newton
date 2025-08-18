@@ -114,21 +114,21 @@ class Mesh:
     ):
         """Construct a Mesh object from a triangle mesh
 
-                The mesh center of mass and inertia tensor will automatically be
-                calculated using a density of 1.0. This computation is only valid
-                if the mesh is closed (two-manifold).
+        The mesh center of mass and inertia tensor will automatically be
+        calculated using a density of 1.0. This computation is only valid
+        if the mesh is closed (two-manifold).
 
-                Args:
-                 Args:
-                     vertices: List of vertices in the mesh
-                     indices: List of triangle indices, 3 per-element
-        +            normals: Optional per-vertex normals (len == len(vertices)), shape (N, 3)
-        +            uvs: Optional per-vertex texture coordinates (len == len(vertices)), shape (N, 2)
-                     compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
-                     is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
-                     maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
-        +            color: Optional per-mesh base color (Vec3 in [0, 1])
+        Args:
+            vertices: List of vertices in the mesh
+            indices: List of triangle indices, 3 per-element
+            normals: Optional per-vertex normals (len == len(vertices)), shape (N, 3)
+            uvs: Optional per-vertex texture coordinates (len == len(vertices)), shape (N, 2)
+            compute_inertia: If True, the mass, inertia tensor and center of mass will be compute assuming density of 1.0
+            is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
+            maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
+            color: Optional per-mesh base color (Vec3 in [0, 1])
         """
+
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
         self._vertices = np.array(vertices).reshape(-1, 3)
