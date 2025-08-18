@@ -28,7 +28,6 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.viewer
 
 
 class SolverType(Enum):
@@ -73,7 +72,7 @@ class Example:
         self.profiler = {}
         self.use_cuda_graph = wp.get_device().is_cuda
 
-        self.viewer_scale_factor = 1.0
+        self.renderer_scale_factor = 1.0
 
         if self.solver_type == SolverType.STYLE3D:
             builder = newton.sim.Style3DModelBuilder()
@@ -165,9 +164,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.viewer = None
-        if stage_path:
-            self.viewer = newton.viewer.ViewerGL(model=self.model)
+        if stage_path is not None:
+            self.renderer = newton.viewer.RendererOpenGL(
+                path=stage_path,
+                model=self.model,
+                scaling=self.renderer_scale_factor,
+                enable_backface_culling=False,
+            )
+        else:
+            self.renderer = None
 
         self.cuda_graph = None
         if self.use_cuda_graph:
@@ -197,12 +202,12 @@ class Example:
             print(f"[{i:4d}/{self.num_frames}]")
 
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_model(self.state_0)
-        self.viewer.end_frame()
+        self.renderer.begin_frame(self.sim_time)
+        self.renderer.render(self.state_0)
+        self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -237,12 +242,10 @@ if __name__ == "__main__":
             width=args.width,
             num_frames=args.num_frames,
         )
-        while example.viewer.is_running():
-            example.step()
-            example.render()
+        example.run()
 
         frame_times = example.profiler["step"]
         print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
 
-        if example.viewer:
-            example.viewer.close()
+        if example.renderer:
+            example.renderer.save()
