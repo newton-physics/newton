@@ -2270,6 +2270,13 @@ class SolverMuJoCo(SolverBase):
                         shape_incoming_xform[global_shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
+            for shape_idx, geom_idx in shape_mapping.items():
+                if geom_idx >= 0:
+                    original_tf = wp.transform(*shape_transform[shape_idx])
+                    mjc_p = self.mj_model.geom_pos[geom_idx]
+                    mjc_q = self.mj_model.geom_quat[geom_idx]
+                    mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                    shape_incoming_xform[shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
