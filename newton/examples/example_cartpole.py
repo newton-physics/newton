@@ -17,7 +17,7 @@
 # Example Sim Cartpole
 #
 # Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a URDF using newton.ModelBuilder().
+# from a USD stage using newton.ModelBuilder().
 #
 ###########################################################################
 
