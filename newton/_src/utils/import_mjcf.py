@@ -436,7 +436,7 @@ def parse_mjcf(
         parent,
         incoming_defaults: dict,
         childclass: str | None = None,
-        parent_world_xform: wp.transform | None = None,
+        parent_world_xform: Transform | None = None,
     ):
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
