@@ -40,18 +40,18 @@ def create_model() -> newton.Model:
 
 
 class Example:
-    def __init__(self, type: str):
+    def __init__(self, viewer_type: str):
         # Create a minimal model and viewer
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
         self.model = builder.finalize()
 
-        if args.viewer == "usd":
+        if viewer_type == "usd":
             from newton.viewer import ViewerUSD  # noqa: PLC0415
 
             self.viewer = ViewerUSD(self.model, output_path="example_viewer.usd", num_frames=600)
-        elif args.viewer == "rerun":
+        elif viewer_type == "rerun":
             from newton.viewer import ViewerRerun  # noqa: PLC0415
 
             self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
@@ -102,7 +102,7 @@ class Example:
             dtype=wp.vec3,
         )
 
-        if args.viewer == "gl":
+        if viewer_type == "gl":
             print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
 
         self.start = time.time()
