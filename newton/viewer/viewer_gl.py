@@ -305,8 +305,14 @@ class ViewerGL(ViewerBase):
         except Exception:
             return
 
-        if symbol == getattr(pyglet.window.key, "H", None):
+        if symbol == pyglet.window.key.H:
             self.show_ui = not self.show_ui
+        elif symbol == pyglet.window.key.SPACE:
+            # Toggle pause with space key
+            self._paused = not self._paused
+        elif symbol == pyglet.window.key.ESCAPE or symbol == pyglet.window.key.Q:
+            # Exit with Escape or Q key
+            self.renderer.close()
 
     def on_key_release(self, symbol, modifiers):
         pass
