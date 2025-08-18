@@ -213,7 +213,7 @@ class MeshGL:
         gl.glBindVertexArray(0)
 
         # Create CUDA-GL interop buffer for efficient updates
-        if self.device.is_cuda:
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
         else:
             self.vertex_cuda_buffer = None
@@ -359,7 +359,7 @@ class LinesGL:
         gl.glBindVertexArray(0)
 
         # Create CUDA-GL interop buffer for efficient updates
-        if self.device.is_cuda:
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
         else:
             self.vertex_cuda_buffer = None
@@ -617,9 +617,12 @@ class MeshInstancerGL:
         gl.glBindVertexArray(0)
 
         # Create CUDA buffer for instance transforms
-        self._instance_transform_cuda_buffer = wp.RegisteredGLBuffer(
-            int(self.instance_transform_buffer.value), self.device
-        )
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
+            self._instance_transform_cuda_buffer = wp.RegisteredGLBuffer(
+                int(self.instance_transform_buffer.value), self.device
+            )
+        else:
+            self._instance_transform_cuda_buffer = None
 
     def update(
         self,
