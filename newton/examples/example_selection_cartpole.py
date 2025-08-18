@@ -20,10 +20,8 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
-import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView
+from newton.selection import ArticulationView
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -79,7 +77,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model, disable_contacts=True)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -106,12 +104,12 @@ class Example:
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
-        if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
+        if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=1.0,

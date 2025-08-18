@@ -10,13 +10,13 @@ Solvers
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
 | **warp.sim**                                                                 | **Newton**                                                                          |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
-|:class:`warp.sim.FeatherstoneIntegrator`                                      |:class:`newton.solvers.FeatherstoneSolver`                                           |
+|:class:`warp.sim.FeatherstoneIntegrator`                                      |:class:`newton.solvers.SolverFeatherstone`                                           |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
-|:class:`warp.sim.SemiImplicitIntegrator`                                      |:class:`newton.solvers.SemiImplicitSolver`                                           |
+|:class:`warp.sim.SemiImplicitIntegrator`                                      |:class:`newton.solvers.SolverSemiImplicit`                                           |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
-|:class:`warp.sim.VBDIntegrator`                                               |:class:`newton.solvers.VBDSolver`                                                    |
+|:class:`warp.sim.VBDIntegrator`                                               |:class:`newton.solvers.SolverVBD`                                                    |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
-|:class:`warp.sim.XPBDIntegrator`                                              |:class:`newton.solvers.XPBDSolver`                                                   |
+|:class:`warp.sim.XPBDIntegrator`                                              |:class:`newton.solvers.SolverXPBD`                                                   |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
 | ``integrator.simulate(self.model, self.state0, self.state1, self.dt, None)`` | ``solver.step(self.state0, self.state1, self.control, None, self.dt)``              |
 +------------------------------------------------------------------------------+-------------------------------------------------------------------------------------+
@@ -95,7 +95,7 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 The :class:`newton.Control` class now has a :attr:`newton.Control.joint_f` attribute which encodes the generalized force (torque) input to the joints.
 In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` now includes the dofs of the free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
 The control mode ``JOINT_MODE_FORCE`` has been removed, since it is now realized by setting :attr:`Control.joint_f` instead of ``joint_act``.
-To disable joint target control for a dof, use ``JOINT_MODE_NONE``.
+To disable joint target control for a dof, use ``JointMode.NONE``.
 
 The :class:`newton.Control` class now has a :attr:`newton.Control.joint_target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
 depending on the control mode selected for the joint dof.
@@ -140,7 +140,7 @@ The ``ModelBuilder.add_joint_*()`` functions now use ``None`` as default args va
 
 The ``ModelBuilder.add_joint*()`` methods no longer accept ``linear_compliance`` and ``angular_compliance`` arguments
 and the ``Model`` no longer stores them as attributes.
-Instead, you can pass them as arguments to the :class:`newton.solvers.XPBDSolver` constructor. Note that now these values
+Instead, you can pass them as arguments to the :class:`newton.solvers.SolverXPBD` constructor. Note that now these values
 apply to all joints and cannot be set individually per joint anymore. So far we have not found applications that require
 per-joint compliance settings and have decided to remove this feature for memory efficiency.
 
@@ -155,9 +155,7 @@ Renderers
 +-----------------------------------------------+----------------------------------------------+
 | **warp.sim**                                  | **Newton**                                   |
 +-----------------------------------------------+----------------------------------------------+
-|``warp.sim.render.SimRenderer``                |:class:`newton.utils.SimRenderer`             |
+|:class:`warp.sim.render.UsdRenderer`           |:class:`newton.viewer.RendererUsd`            |
 +-----------------------------------------------+----------------------------------------------+
-|:attr:`warp.sim.render.SimRendererUsd`         |:class:`newton.utils.SimRendererUsd`          |
-+-----------------------------------------------+----------------------------------------------+
-|:attr:`warp.sim.render.SimRendererOpenGL`      |:class:`newton.utils.SimRendererOpenGL`       |
+|:class:`warp.sim.render.OpenGLRenderer`        |:class:`newton.viewer.RendererOpenGL`         |
 +-----------------------------------------------+----------------------------------------------+
