@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 """
-Example: Viewer demo with basic geometries, lines, and live updates.
+Example: Viewer demo with organized layout, instancing, and line rendering.
 
 This script demonstrates how to:
 - Build a minimal Newton Model (with a ground plane)
 - Create a viewer backend (OpenGL by default; optionally USD)
-- Add basic meshes (box, sphere, plane, cone, capsule, cylinder)
-- Create and update instanced transforms/colors/materials over time
-- Render animated lines (axes, grid, connections, rotating spokes)
+- Add basic meshes (box, sphere, cone, capsule, cylinder) in organized layout
+- Use instancing to efficiently render many small objects
+- Create animated coordinate axes using line rendering
 - Render in a loop using begin_frame(time)/end_frame()
 """
 
@@ -76,35 +76,39 @@ def main():
             # Render model-driven content (ground plane)
             viewer.log_model(model.state())
 
-            # Animate transforms
-            qy = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * t)
-            qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3 * t)
+            # Clean layout: arrange objects in a line along X-axis
+            # All objects at same height to avoid ground intersection
+            base_height = 2.0
+            base_left = -4.0
+            spacing = 2.0
 
-            # Sphere: orbiting
-            p_s = wp.vec3(
-                2.0 + math.sin(t) * 0.5,
-                0.0,
-                1.8 + math.cos(2.0 * t) * 0.3,
-            )
-            x_sphere_anim = wp.array([wp.transform(p_s, qy)], dtype=wp.transform)
+            # Simple rotation animations
+            qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * t)
+            qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * t)
+            qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * t)
 
-            # Box: rocking
-            x_box_anim = wp.array([wp.transform([-2.0, 0.0, 1.5], qx)], dtype=wp.transform)
+            # Sphere: gentle bounce at x = -6
+            sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * t)))
+            x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
 
-            # Cone: circular motion
-            p_c = wp.vec3(
-                math.cos(0.8 * t) * 1.5,
-                math.sin(0.8 * t) * 1.5,
-                1.8,
-            )
-            x_cone_anim = wp.array([wp.transform(p_c, qy)], dtype=wp.transform)
+            base_left += spacing
 
-            # Cylinder: slow spin
-            x_cyl_anim = wp.array([wp.transform([0.0, 0.0, 1.8], qy)], dtype=wp.transform)
+            # Box: rocking rotation at x = -3
+            x_box_anim = wp.array([wp.transform([0.0, base_left, base_height], qx_slow)], dtype=wp.transform)
+            base_left += spacing
 
-            # Capsule: bounce
-            p_cap = wp.vec3(0.0, -2.0, 1.8 + 0.2 * abs(math.sin(t)))
-            x_cap_anim = wp.array([wp.transform(p_cap, wp.quat_identity())], dtype=wp.transform)
+            # Cone: spinning at origin (x = 0)
+            x_cone_anim = wp.array([wp.transform([0.0, base_left, base_height], qy_slow)], dtype=wp.transform)
+            base_left += spacing
+
+            # Cylinder: spinning on different axis at x = 3
+            x_cyl_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
+            base_left += spacing
+
+            # Capsule: gentle sway at x = 6
+            capsule_pos = wp.vec3(0.3 * math.sin(0.8 * t), base_left, base_height)
+            x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
+            base_left += spacing
 
             # Update instances via log_shapes
             viewer.log_shapes(
