@@ -94,17 +94,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        if stage_path is not None:
-            # self.viewer = newton.utils.SimViewerOpenGL(
-            #     path=stage_path,
-            #     model=self.model,
-            #     scaling=self.viewer_scale_factor,
-            #     enable_backface_culling=False,
-            # )
-
-            self.viewer = newton.viewer.ViewerGL(model=self.model)
-        else:
-            self.viewer = None
+        self.viewer = newton.viewer.ViewerGL(model=self.model)
 
         self.cuda_graph = None
         if self.use_cuda_graph:

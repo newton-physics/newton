@@ -5,6 +5,8 @@ These kernels handle mesh operations and transformations.
 
 import warp as wp
 
+import newton
+
 
 @wp.kernel
 def compute_pick_state_kernel(
@@ -98,45 +100,6 @@ def update_pick_target_kernel(
 
 
 @wp.kernel
-def compute_contact_points(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    # outputs
-    contact_pos0: wp.array(dtype=wp.vec3),
-    contact_pos1: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    count = contact_count[0]
-    if tid >= count:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-    shape_a = contact_shape0[tid]
-    shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-
-    body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
-    X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
-    if body_a >= 0:
-        X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
-
-    contact_pos0[tid] = wp.transform_point(X_wb_a, contact_point0[tid])
-    contact_pos1[tid] = wp.transform_point(X_wb_b, contact_point1[tid])
-
-
-@wp.kernel
 def update_shape_xforms(
     shape_xforms: wp.array(dtype=wp.transform),
     shape_parents: wp.array(dtype=int),
@@ -154,3 +117,133 @@ def update_shape_xforms(
         world_xform = shape_xform
 
     world_xforms[tid] = world_xform
+
+
+@wp.kernel
+def compute_contact_lines(
+    body_q: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    contact_count: wp.array(dtype=int),
+    contact_shape0: wp.array(dtype=int),
+    contact_shape1: wp.array(dtype=int),
+    contact_point0: wp.array(dtype=wp.vec3),
+    contact_point1: wp.array(dtype=wp.vec3),
+    contact_normal: wp.array(dtype=wp.vec3),
+    line_scale: float,
+    # outputs
+    line_start: wp.array(dtype=wp.vec3),
+    line_end: wp.array(dtype=wp.vec3),
+):
+    """Create line segments along contact normals for visualization."""
+    tid = wp.tid()
+    count = contact_count[0]
+    if tid >= count:
+        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        return
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+    if shape_a == shape_b:
+        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        return
+
+    # Get world transforms for both shapes
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+
+    # Compute world space contact positions
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
+    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
+    # Use the midpoint of the contact as the line start
+    contact_center = (world_pos0 + world_pos1) * 0.5
+
+    # Create line along normal direction
+    # Normal points from shape0 to shape1, draw from center in normal direction
+    normal = contact_normal[tid]
+    line_vector = normal * line_scale
+
+    line_start[tid] = contact_center
+    line_end[tid] = contact_center + line_vector
+
+
+@wp.kernel
+def compute_joint_basis_lines(
+    joint_type: wp.array(dtype=int),
+    joint_parent: wp.array(dtype=int),
+    joint_child: wp.array(dtype=int),
+    joint_transform: wp.array(dtype=wp.transform),
+    body_q: wp.array(dtype=wp.transform),
+    shape_collision_radius: wp.array(dtype=float),
+    shape_body: wp.array(dtype=int),
+    line_scale: float,
+    # outputs - unified buffers for all joint lines
+    line_starts: wp.array(dtype=wp.vec3),
+    line_ends: wp.array(dtype=wp.vec3),
+    line_colors: wp.array(dtype=wp.vec3),
+):
+    """Create line segments for joint basis vectors for visualization.
+    Each joint produces 3 lines (x, y, z axes).
+    Thread ID maps to line index: joint_id * 3 + axis_id
+    """
+    tid = wp.tid()
+
+    # Determine which joint and which axis this thread handles
+    joint_id = tid // 3
+    axis_id = tid % 3
+
+    # Check if this is a supported joint type
+    if joint_id >= len(joint_type):
+        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
+        return
+
+    joint_t = joint_type[joint_id]
+    if joint_t != int(newton.JOINT_REVOLUTE) and joint_t != int(newton.JOINT_D6):
+        # Set NaN for unsupported joints to hide them
+        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
+        return
+
+    # Get joint transform
+    joint_tf = joint_transform[joint_id]
+    joint_pos = wp.transform_get_translation(joint_tf)
+    joint_rot = wp.transform_get_rotation(joint_tf)
+
+    # Get parent body transform
+    parent_body = joint_parent[joint_id]
+    if parent_body >= 0:
+        parent_tf = body_q[parent_body]
+        # Transform joint to world space
+        world_pos = wp.transform_point(parent_tf, joint_pos)
+        world_rot = wp.mul(wp.transform_get_rotation(parent_tf), joint_rot)
+    else:
+        world_pos = joint_pos
+        world_rot = joint_rot
+
+    # Determine scale based on child body shapes
+    scale_factor = line_scale
+
+    # Create the appropriate basis vector based on axis_id
+    if axis_id == 0:  # X-axis (red)
+        axis_vec = wp.quat_rotate(world_rot, wp.vec3(1.0, 0.0, 0.0))
+        color = wp.vec3(1.0, 0.0, 0.0)
+    elif axis_id == 1:  # Y-axis (green)
+        axis_vec = wp.quat_rotate(world_rot, wp.vec3(0.0, 1.0, 0.0))
+        color = wp.vec3(0.0, 1.0, 0.0)
+    else:  # Z-axis (blue)
+        axis_vec = wp.quat_rotate(world_rot, wp.vec3(0.0, 0.0, 1.0))
+        color = wp.vec3(0.0, 0.0, 1.0)
+
+    # Set line endpoints
+    line_starts[tid] = world_pos
+    line_ends[tid] = world_pos + axis_vec * scale_factor
+    line_colors[tid] = color

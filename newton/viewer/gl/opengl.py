@@ -368,11 +368,16 @@ class LinesGL:
         """Update line data in the VBO.
 
         Args:
-            line_begins: Array of line start positions (warp array of vec3)
-            line_ends: Array of line end positions (warp array of vec3)
-            line_colors: Array of line colors (warp array of vec3)
+            line_begins: Array of line start positions (warp array of vec3) or None
+            line_ends: Array of line end positions (warp array of vec3) or None
+            line_colors: Array of line colors (warp array of vec3) or None
         """
         gl = RendererGL.gl
+
+        # Handle None values by setting line count to zero
+        if line_begins is None or line_ends is None or line_colors is None:
+            self.num_lines = 0
+            return
 
         # Update current line count
         self.num_lines = len(line_begins)

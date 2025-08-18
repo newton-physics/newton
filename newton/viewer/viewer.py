@@ -17,7 +17,6 @@ class ViewerBase:
 
         # map from shape hash -> Instances
         self.shape_instances = {}
-        self.joint_instances = None
 
         # cache for geometry created via log_shapes()
         # maps from geometry hash -> mesh path
@@ -26,6 +25,20 @@ class ViewerBase:
         # line vertices for contact vizualization
         self._contact_points0 = None
         self._contact_points1 = None
+
+        # line vertices for joint basis vectors (3 lines per joint)
+        self._joint_points0 = None
+        self._joint_points1 = None
+        self._joint_colors = None
+
+        self.options = {
+            "show_joints": False,
+            "show_com": False,
+            "show_particles": False,
+            "show_contacts": False,
+            "show_springs": False,
+            "show_triangles": False,
+        }
 
     def _populate(self, model):
         self._populate_shapes()
@@ -53,26 +66,8 @@ class ViewerBase:
                 shapes.materials if self.model_changed else None,
             )
 
-        if self.model.tri_count:
-            self.log_mesh(
-                "model/triangles",
-                state.particle_q,
-                self.model.tri_indices.flatten(),
-                hidden=False,
-                backface_culling=False,
-            )
-
-        # # update joints
-        # if self.joint_instances:
-        #     self.joint_instances.update(state)
-        #     self.log_instances(
-        #         "joints",
-        #         self.joint_instances.mesh,
-        #         self.joint_instances.xforms,
-        #         self.joint_instances.scales,
-        #         self.joint_instances.colors,
-        #         self.joint_instances.materials,
-        #     )
+        self._log_triangles(state)
+        self._log_joints(state)
 
         self.model_changed = False
 
@@ -95,7 +90,7 @@ class ViewerBase:
 
         # Always run the kernel to ensure buffers are properly cleared/updated
         if max_contacts > 0:
-            from newton.utils.render import compute_contact_lines  # noqa: PLC0415
+            from newton.viewer.kernels import compute_contact_lines  # noqa: PLC0415
 
             wp.launch(
                 kernel=compute_contact_lines,
@@ -541,60 +536,68 @@ class ViewerBase:
         for batch in self.shape_instances.values():
             batch.finalize()
 
-    def populate_joints(self) -> int:
-        # convert to NumPy
-        joint_type = self.model.joint_type.numpy()
-        joint_axis = self.model.joint_axis.numpy()
-        joint_qd_start = self.model.joint_qd_start.numpy()
-        joint_dof_dim = self.model.joint_dof_dim.numpy()
-        joint_parent = self.model.joint_parent.numpy()
-        joint_child = self.model.joint_child.numpy()
-        joint_transform = self.model.joint_transform.numpy()
-        shape_collision_radius = self.model.shape_collision_radius.numpy()
-        body_shapes = self.model.body_shapes
+    def _log_joints(self, state):
+        """
+        Creates line segments for joint basis vectors for rendering.
+        Args:
+            state: Current simulation state
+        """
+        if not self.options["show_joints"]:
+            # Pass None to hide joints - renderer will handle creating empty arrays
+            self.log_lines("/joints", None, None, None)
+            return
 
-        y_axis = wp.vec3(0.0, 1.0, 0.0)
-        color = (1.0, 0.0, 1.0)
+        # Get the number of joints
+        num_joints = len(self.model.joint_type)
+        if num_joints == 0:
+            return
 
-        self.joint_instances = Instances("joints", self.model.device)
+        # Each joint produces 3 lines (x, y, z axes)
+        max_lines = num_joints * 3
 
-        for i, t in enumerate(joint_type):
-            if t not in {
-                newton.JOINT_REVOLUTE,
-                # newton.JOINT_PRISMATIC,
-                newton.JOINT_D6,
-            }:
-                continue
-            tf = joint_transform[i]
-            body = int(joint_parent[i])
+        # Ensure we have buffers for joint line endpoints
+        if self._joint_points0 is None or len(self._joint_points0) < max_lines:
+            self._joint_points0 = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
+            self._joint_points1 = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
+            self._joint_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
 
-            num_linear_axes = int(joint_dof_dim[i][0])
-            num_angular_axes = int(joint_dof_dim[i][1])
+        # Run the kernel to compute joint basis lines
+        # Launch with 3 * num_joints threads (3 lines per joint)
+        from newton.viewer.kernels import compute_joint_basis_lines  # noqa: PLC0415
 
-            # find a good scale for the arrow based on the average radius
-            # of the shapes attached to the joint child body
-            scale = np.ones(3, dtype=np.float32)
-            child = int(joint_child[i])
-            if child >= 0:
-                radii = []
-                bs = body_shapes.get(child, [])
-                for s in bs:
-                    radii.append(shape_collision_radius[s])
-                if len(radii) > 0:
-                    scale *= np.mean(radii) * 2.0
+        wp.launch(
+            kernel=compute_joint_basis_lines,
+            dim=max_lines,
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_child,
+                self.model.joint_X_p,
+                state.body_q,
+                self.model.shape_collision_radius,
+                self.model.shape_body,
+                0.1,  # line scale factor
+            ],
+            outputs=[
+                self._joint_points0,
+                self._joint_points1,
+                self._joint_colors,
+            ],
+            device=self.model.device,
+        )
 
-            for a in range(num_linear_axes, num_linear_axes + num_angular_axes):
-                index = joint_qd_start[i] + a
-                axis = joint_axis[index]
-                if np.linalg.norm(axis) < 1e-6:
-                    continue
-                p = wp.vec3(tf[:3])
-                q = wp.quat(tf[3:])
-                # compute rotation between axis and y
-                axis = axis / np.linalg.norm(axis)
-                q = q * wp.quat_between_vectors(wp.vec3(axis), y_axis)
+        # Log all joint lines in a single call
+        self.log_lines("/joints", self._joint_points0, self._joint_points1, self._joint_colors)
 
-                self.joint_instances.add(body, p, q, scale, color)
+    def _log_triangles(self, state):
+        if self.model.tri_count:
+            self.log_mesh(
+                "model/triangles",
+                state.particle_q,
+                self.model.tri_indices.flatten(),
+                hidden=False,
+                backface_culling=False,
+            )
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:

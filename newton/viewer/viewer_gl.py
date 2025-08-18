@@ -41,15 +41,6 @@ class ViewerGL(ViewerBase):
 
         self._paused = False
 
-        self.options = {
-            "show_joints": False,
-            "show_com": False,
-            "show_particles": False,
-            "show_contacts": False,
-            "show_springs": False,
-            "show_triangles": False,
-        }
-
         # State caching for selection panel
         self._last_state = None
 
@@ -151,18 +142,23 @@ class ViewerGL(ViewerBase):
 
         Args:
             name: Unique identifier for the line batch
-            line_begins: Array of line start positions (shape: [N, 3])
-            line_ends: Array of line end positions (shape: [N, 3])
-            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB
+            line_begins: Array of line start positions (shape: [N, 3]) or None for empty
+            line_ends: Array of line end positions (shape: [N, 3]) or None for empty
+            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty
             hidden: Whether the lines are initially hidden
         """
+        # Handle empty logs by resetting the LinesGL object
+        if line_begins is None or line_ends is None or line_colors is None:
+            if name in self.lines:
+                self.lines[name].update(None, None, None)
+            return
+
         assert isinstance(line_begins, wp.array)
         assert isinstance(line_ends, wp.array)
-
         num_lines = len(line_begins)
         assert len(line_ends) == num_lines, "Number of line ends must match line begins"
 
-        # Handle tuple/list colors by expanding to array
+        # Handle tuple/list colors by expanding to array (only if not already converted above)
         if isinstance(line_colors, (tuple, list)):
             if num_lines > 0:
                 color_vec = wp.vec3(*line_colors)

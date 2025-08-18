@@ -118,60 +118,6 @@ def update_pick_target_kernel(
     pick_state[5] = new_target[2]
 
 
-@wp.kernel
-def compute_contact_lines(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
-    line_scale: float,
-    # outputs
-    line_start: wp.array(dtype=wp.vec3),
-    line_end: wp.array(dtype=wp.vec3),
-):
-    """Create line segments along contact normals for visualization."""
-    tid = wp.tid()
-    count = contact_count[0]
-    if tid >= count:
-        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-    shape_a = contact_shape0[tid]
-    shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
-        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-
-    # Get world transforms for both shapes
-    body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
-    X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
-    if body_a >= 0:
-        X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
-
-    # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
-    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
-    # Use the midpoint of the contact as the line start
-    contact_center = (world_pos0 + world_pos1) * 0.5
-
-    # Create line along normal direction
-    # Normal points from shape0 to shape1, draw from center in normal direction
-    normal = contact_normal[tid]
-    line_vector = normal * line_scale
-
-    line_start[tid] = contact_center
-    line_end[tid] = contact_center + line_vector
-
-
 def CreateSimRenderer(renderer):
     """A factory function to create a simulation renderer class."""
 
