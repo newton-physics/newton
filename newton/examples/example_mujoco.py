@@ -147,10 +147,9 @@ def _setup_cartpole(articulation_builder):
     articulation_builder.default_joint_cfg.armature = 0.1
     articulation_builder.default_body_armature = 0.1
 
-    newton.utils.parse_urdf(
-        newton.examples.get_asset("cartpole.urdf"),
+    newton.utils.parse_usd(
+        newton.examples.get_asset("cartpole.usda"),
         articulation_builder,
-        floating=False,
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )

@@ -55,14 +55,12 @@ class Example:
         up_axis = newton.Axis.Z
 
         articulation_builder = newton.ModelBuilder(up_axis=up_axis)
-        newton.utils.parse_urdf(
-            newton.examples.get_asset("cartpole.urdf"),
+        newton.utils.parse_usd(
+            newton.examples.get_asset("cartpole.usda"),
             articulation_builder,
-            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
             enable_self_collisions=False,
-            floating=False,
         )
 
         env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
@@ -90,7 +88,7 @@ class Example:
         # =======================
         # get cartpole view
         # =======================
-        self.cartpoles = ArticulationView(self.model, "cartpole", verbose=VERBOSE)
+        self.cartpoles = ArticulationView(self.model, "/cartPole", verbose=VERBOSE)
 
         # =========================
         # randomize initial state
