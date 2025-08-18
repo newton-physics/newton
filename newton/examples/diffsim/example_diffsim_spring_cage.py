@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 ###########################################################################
 # Example Diff Sim Spring Cage
 #
@@ -22,11 +23,9 @@
 #
 ###########################################################################
 
-import numpy as np
-
 import warp as wp
-import warp.sim
-import warp.sim.render
+
+import newton
 
 
 @wp.kernel
@@ -65,7 +64,7 @@ class Example:
 
         # Target position that we want the main particle to reach by optimising
         # the rest lengths of the springs.
-        self.target_pos = (0.125, 0.25, 0.375)
+        self.target_pos = (0.375, 0.125, 0.25)
 
         # Number of training iterations.
         self.train_iters = train_iters
@@ -76,7 +75,7 @@ class Example:
         self.train_rate = 0.5
 
         # Initialize the helper to build a physics scene.
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder(gravity=0.0)
 
         # Define the main particle at the origin.
         particle_mass = 1.0
@@ -85,14 +84,14 @@ class Example:
         # Define the cage made of points that will be pulling our main particle
         # using springs.
         # fmt: off
-        builder.add_particle((-0.7,  0.8,  0.2), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle(( 0.0,  0.2,  1.1), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle(( 0.1,  0.1, -1.2), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle(( 0.6,  0.4,  0.4), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle(( 0.7, -0.9, -0.2), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle((-0.8, -0.8,  0.1), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle((-0.9,  0.2, -0.8), (0.0, 0.0, 0.0), 0.0)
-        builder.add_particle(( 1.0,  0.4, -0.1), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle(( 0.2, -0.7,  0.8), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle(( 1.1,  0.0,  0.2), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle((-1.2,  0.1,  0.1), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle(( 0.4,  0.6,  0.4), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle((-0.2,  0.7, -0.9), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle(( 0.1, -0.8, -0.8), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle((-0.8, -0.9,  0.2), (0.0, 0.0, 0.0), 0.0)
+        builder.add_particle((-0.1,  1.0,  0.4), (0.0, 0.0, 0.0), 0.0)
         # fmt: on
 
         # Define the spring constraints between the main particle and the cage points.
@@ -103,11 +102,9 @@ class Example:
 
         # Build the model and set-up its properties.
         self.model = builder.finalize(requires_grad=True)
-        self.model.gravity = np.array((0.0, 0.0, 0.0))
-        self.model.ground = False
 
         # Use the Euler integrator for stepping through the simulation.
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
         # Initialize a state for each simulation step.
         self.states = tuple(self.model.state() for _ in range(self.num_frames * self.sim_substep_count + 1))
@@ -119,7 +116,7 @@ class Example:
 
         if stage_path:
             # Helper to render the physics scene as a USD file.
-            self.renderer = warp.sim.render.SimRenderer(self.model, stage_path, fps=self.fps, scaling=10.0)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path, fps=self.fps, scaling=10.0)
 
             # Allows rendering one simulation to USD every N training iterations.
             self.render_iteration_steps = 2
@@ -145,11 +142,12 @@ class Example:
             prev = self.states[i - 1]
             curr = self.states[i]
             prev.clear_forces()
-            self.integrator.simulate(
-                self.model,
+            self.solver.step(
                 prev,
                 curr,
-                self.sim_dt,
+                control=None,
+                contacts=None,
+                dt=self.sim_dt,
             )
 
         last_state = self.states[-1]
