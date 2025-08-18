@@ -456,8 +456,6 @@ class ShaderShape(ShaderGL):
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
-            self.loc_metallic = self._get_uniform_location("metallic")
-            self.loc_roughness = self._get_uniform_location("roughness")
             self.loc_fog_color = self._get_uniform_location("fogColor")
             self.loc_up_axis = self._get_uniform_location("up_axis")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")

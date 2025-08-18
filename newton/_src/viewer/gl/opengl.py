@@ -29,7 +29,20 @@ def check_gl_error():
 
     error = gl.glGetError()
     if error != gl.GL_NO_ERROR:
-        print(f"OpenGL error: {error}")
+        error_strings = {
+            gl.GL_INVALID_ENUM: "GL_INVALID_ENUM",
+            gl.GL_INVALID_VALUE: "GL_INVALID_VALUE",
+            gl.GL_INVALID_OPERATION: "GL_INVALID_OPERATION",
+            gl.GL_INVALID_FRAMEBUFFER_OPERATION: "GL_INVALID_FRAMEBUFFER_OPERATION",
+            gl.GL_OUT_OF_MEMORY: "GL_OUT_OF_MEMORY",
+        }
+        error_name = error_strings.get(error, f"Unknown error code: {error}")
+
+        import traceback  # noqa: PLC0415
+
+        stack = traceback.format_stack()
+        print(f"OpenGL error: {error_name} ({error:#x})")
+        print(f"Called from: {''.join(stack[-2:-1])}")
 
 
 @wp.struct

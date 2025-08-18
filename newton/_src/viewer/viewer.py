@@ -5,6 +5,15 @@ import warp as wp
 
 import newton
 
+from .mesh import (
+    create_box_mesh,
+    create_capsule_mesh,
+    create_cone_mesh,
+    create_cylinder_mesh,
+    create_plane_mesh,
+    create_sphere_mesh,
+)
+
 
 class ViewerBase:
     def __init__(self, model):
@@ -258,35 +267,28 @@ class ViewerBase:
 
         # Generate vertices/indices for supported primitive types
         if geo_type == newton.GeoType.PLANE:
-            from .mesh import create_plane_mesh  # noqa: PLC0415
-
             # Handle "infinite" planes encoded with non-positive scales
             width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 100.0
             length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 100.0
             vertices, indices = create_plane_mesh(width, length)
-        elif geo_type == newton.GeoType.SPHERE:
-            from .mesh import create_sphere_mesh  # noqa: PLC0415
 
+        elif geo_type == newton.GeoType.SPHERE:
             radius = geo_scale[0]
             vertices, indices = create_sphere_mesh(radius)
-        elif geo_type == newton.GeoType.CAPSULE:
-            from .mesh import create_capsule_mesh  # noqa: PLC0415
 
+        elif geo_type == newton.GeoType.CAPSULE:
             radius, height = geo_scale[:2]
             vertices, indices = create_capsule_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GeoType.CYLINDER:
-            from .mesh import create_cylinder_mesh  # noqa: PLC0415
 
+        elif geo_type == newton.GeoType.CYLINDER:
             radius, height = geo_scale[:2]
             vertices, indices = create_cylinder_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GeoType.CONE:
-            from .mesh import create_cone_mesh  # noqa: PLC0415
 
+        elif geo_type == newton.GeoType.CONE:
             radius, height = geo_scale[:2]
             vertices, indices = create_cone_mesh(radius, height, up_axis=2)
-        elif geo_type == newton.GeoType.BOX:
-            from .mesh import create_box_mesh  # noqa: PLC0415
 
+        elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:
                 ext = (geo_scale[0],) * 3
             else:
