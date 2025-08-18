@@ -2043,7 +2043,7 @@ class SolverMuJoCo(SolverBase):
                     ai = qd_start + i
 
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
-                    
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
