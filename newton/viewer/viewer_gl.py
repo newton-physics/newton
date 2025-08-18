@@ -247,6 +247,62 @@ class ViewerGL(ViewerBase):
         """Close the viewer and clean up resources."""
         self.renderer.close()
 
+    def is_key_down(self, key):
+        """Check if a key is currently pressed.
+
+        Args:
+            key: Either a string representing a character/key name, or an int
+                 representing a pyglet key constant.
+
+                 String examples: 'w', 'a', 's', 'd', 'space', 'escape', 'ent
+                 Int examples: pyglet.window.key.W, pyglet.window.key.SPACE
+
+        Returns:
+            bool: True if the key is currently pressed, False otherwise.
+        """
+        try:
+            import pyglet  # noqa: PLC0415
+        except Exception:
+            return False
+
+        if isinstance(key, str):
+            # Convert string to pyglet key constant
+            key = key.lower()
+
+            # Handle single characters
+            if len(key) == 1 and key.isalpha():
+                key_code = getattr(pyglet.window.key, key.upper(), None)
+            elif len(key) == 1 and key.isdigit():
+                key_code = getattr(pyglet.window.key, f"_{key}", None)
+            else:
+                # Handle special key names
+                special_keys = {
+                    "space": pyglet.window.key.SPACE,
+                    "escape": pyglet.window.key.ESCAPE,
+                    "esc": pyglet.window.key.ESCAPE,
+                    "enter": pyglet.window.key.ENTER,
+                    "return": pyglet.window.key.ENTER,
+                    "tab": pyglet.window.key.TAB,
+                    "shift": pyglet.window.key.LSHIFT,
+                    "ctrl": pyglet.window.key.LCTRL,
+                    "alt": pyglet.window.key.LALT,
+                    "up": pyglet.window.key.UP,
+                    "down": pyglet.window.key.DOWN,
+                    "left": pyglet.window.key.LEFT,
+                    "right": pyglet.window.key.RIGHT,
+                    "backspace": pyglet.window.key.BACKSPACE,
+                    "delete": pyglet.window.key.DELETE,
+                }
+                key_code = special_keys.get(key, None)
+
+            if key_code is None:
+                return False
+        else:
+            # Assume it's already a pyglet key constant
+            key_code = key
+
+        return self.renderer.is_key_down(key_code)
+
     # events
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
