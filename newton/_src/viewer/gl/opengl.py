@@ -264,7 +264,7 @@ class MeshGL:
 
         # if points are changing but not the normals
         # then we recompute normals before uploading to GL
-        if points and not normals:
+        if points is not None and normals is None:
             self.recompute_normals()
 
         # upload vertices to GL

@@ -4,7 +4,6 @@ import numpy as np
 default_num_segments = 32
 
 
-@staticmethod
 def create_sphere_mesh(
     radius=1.0,
     num_latitudes=default_num_segments,
@@ -46,7 +45,6 @@ def create_sphere_mesh(
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
 
 
-@staticmethod
 def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
     vertices = []
     indices = []
@@ -95,13 +93,11 @@ def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_seg
     return vertex_data, index_data
 
 
-@staticmethod
 def create_cone_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
     # render it as a cylinder with zero top radius so we get correct normals on the sides
     return create_cylinder_mesh(radius, half_height, up_axis, segments, 0.0)
 
 
-@staticmethod
 def create_cylinder_mesh(radius, half_height, up_axis=1, segments=default_num_segments, top_radius=None):
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
@@ -173,7 +169,6 @@ def create_cylinder_mesh(radius, half_height, up_axis=1, segments=default_num_se
     return vertex_data, index_data
 
 
-@staticmethod
 def create_arrow_mesh(
     base_radius, base_height, cap_radius=None, cap_height=None, up_axis=1, segments=default_num_segments
 ):
@@ -200,7 +195,6 @@ def create_arrow_mesh(
     return vertex_data, index_data
 
 
-@staticmethod
 def create_box_mesh(extents):
     x_extent, y_extent, z_extent = extents
 
