@@ -24,7 +24,7 @@ import newton.examples
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
-from newton.sim import joints
+from newton import JointType
 
 devices = get_test_devices()
 
@@ -586,13 +586,13 @@ class TestImportSampleAssets(unittest.TestCase):
         self.assertEqual(len(inertia_verified), model.body_count)
 
         joint_mapping = {
-            joints.JOINT_PRISMATIC: UsdPhysics.ObjectType.PrismaticJoint,
-            joints.JOINT_REVOLUTE: UsdPhysics.ObjectType.RevoluteJoint,
-            joints.JOINT_BALL: UsdPhysics.ObjectType.SphericalJoint,
-            joints.JOINT_FIXED: UsdPhysics.ObjectType.FixedJoint,
-            # joints.JOINT_FREE: None,
-            joints.JOINT_DISTANCE: UsdPhysics.ObjectType.DistanceJoint,
-            joints.JOINT_D6: UsdPhysics.ObjectType.D6Joint,
+            JointType.PRISMATIC: UsdPhysics.ObjectType.PrismaticJoint,
+            JointType.REVOLUTE: UsdPhysics.ObjectType.RevoluteJoint,
+            JointType.BALL: UsdPhysics.ObjectType.SphericalJoint,
+            JointType.FIXED: UsdPhysics.ObjectType.FixedJoint,
+            # JointType.FREE: None,
+            JointType.DISTANCE: UsdPhysics.ObjectType.DistanceJoint,
+            JointType.D6: UsdPhysics.ObjectType.D6Joint,
         }
 
         joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count)))
@@ -621,15 +621,15 @@ class TestImportSampleAssets(unittest.TestCase):
             total_dofs += lin + ang
             jt = int(model.joint_type.numpy()[j])
             
-            if jt == newton.JOINT_REVOLUTE:
+            if jt == JointType.REVOLUTE:
                 self.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")
-            elif jt == newton.JOINT_FIXED:
+            elif jt == JointType.FIXED:
                 self.assertEqual((lin, ang), (0, 0), f"{model.joint_key[j]} DOF dim mismatch")
-            elif jt == newton.JOINT_FREE:
+            elif jt == JointType.FREE:
                 self.assertGreater(lin + ang, 0, f"{model.joint_key[j]} expected nonzero DOFs for free joint")
-            elif jt == newton.JOINT_PRISMATIC:
+            elif jt == JointType.PRISMATIC:
                 self.assertEqual((lin, ang), (1, 0), f"{model.joint_key[j]} DOF dim mismatch")
-            elif jt == newton.JOINT_BALL:
+            elif jt == JointType.BALL:
                 self.assertEqual((lin, ang), (0, 3), f"{model.joint_key[j]} DOF dim mismatch")
                 
         self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
@@ -799,7 +799,7 @@ class TestImportSampleAssets(unittest.TestCase):
                 if attr and attr.HasAuthoredValue():
                     collision_enabled_usd = attr.Get()
             
-            collision_enabled_newton = bool(newton_flags & int(newton.geometry.SHAPE_FLAG_COLLIDE_SHAPES))
+            collision_enabled_newton = bool(newton_flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
             self.assertEqual(collision_enabled_newton, collision_enabled_usd,
                            f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}")
             
