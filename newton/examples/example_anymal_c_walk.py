@@ -34,7 +34,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-from newton.sim import Control, State
+from newton import Control, State
 
 
 @wp.kernel
@@ -302,14 +302,14 @@ class Example:
         self.model.body_mass = wp.array([27.99286, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505], dtype=wp.float32,)
         # fmt: on
 
-        self.solver = newton.solvers.FeatherstoneSolver(self.model)
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.solver = newton.solvers.SolverFeatherstone(self.model)
+        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.controller = AnymalController(self.model, self.device)
         self.controller.get_control(self.state_0)

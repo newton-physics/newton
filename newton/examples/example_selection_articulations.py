@@ -20,10 +20,8 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
-import newton.utils
 from newton.examples import compute_env_offsets
-from newton.utils.selection import ArticulationView
+from newton.selection import ArticulationView
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -112,11 +110,11 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=2.0,
@@ -143,8 +141,10 @@ class Example:
         # ===========================================================
         # create articulation views
         # ===========================================================
-        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JOINT_FREE])
-        self.hums = ArticulationView(self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JOINT_FREE])
+        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
+        self.hums = ArticulationView(
+            self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE]
+        )
 
         if USE_TORCH:
             import torch  # noqa: PLC0415
@@ -213,7 +213,7 @@ class Example:
             self.state_0.clear_forces()
 
             # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
+            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
                 contacts = self.model.collide(self.state_0)
             else:
                 contacts = None
@@ -281,8 +281,9 @@ class Example:
         self.hums.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
         self.hums.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
 
-        if not isinstance(self.solver, newton.solvers.MuJoCoSolver):
+        if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
+            self.hums.eval_fk(self.state_0, mask=mask)
 
     def render(self):
         if self.renderer is None:

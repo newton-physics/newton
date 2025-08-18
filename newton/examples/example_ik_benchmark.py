@@ -28,7 +28,7 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.sim.ik as ik
+import newton.ik as ik
 import newton.utils
 
 
@@ -121,8 +121,7 @@ class Example:
         self.pos_thresh_m = 5e-3
         self.ori_thresh_rad = 0.05
 
-        self.device = "cuda" if wp.get_preferred_device().is_cuda else "cpu"
-        wp.set_device(self.device)
+        self.use_cuda_graph = wp.get_device().is_cuda
 
         self.cfg = ROBOTS[robot]
         self.model = self._create_robot()
@@ -168,22 +167,23 @@ class Example:
         objectives = []
 
         for ee, link in enumerate(self.cfg.ee_links):
-            objectives.append(ik.PositionObjective(link, wp.vec3(), zero_pos[ee], max_problems, n_residuals, ee * 3))
+            objectives.append(ik.IKPositionObjective(link, wp.vec3(), zero_pos[ee], max_problems, n_residuals, ee * 3))
 
         for ee, link in enumerate(self.cfg.ee_links):
             objectives.append(
-                ik.RotationObjective(
+                ik.IKRotationObjective(
                     link,
                     wp.quat_identity(),
                     zero_rot[ee],
                     max_problems,
                     n_residuals,
                     len(self.cfg.ee_links) * 3 + ee * 3,
+                    canonicalize_quat_err=False,
                 )
             )
 
         objectives.append(
-            ik.JointLimitObjective(
+            ik.IKJointLimitObjective(
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 max_problems,
@@ -200,7 +200,7 @@ class Example:
             q0,
             objectives,
             lambda_factor=self.cfg.lambda_factor,
-            jacobian_mode=ik.JacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
         )
         return (
             solver,
@@ -213,7 +213,7 @@ class Example:
         pos, rot = [], []
         for q in q_batch:
             wp.copy(self.model.joint_q, wp.array(q, dtype=wp.float32))
-            newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
+            newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
             body_q = state.body_q.numpy()
             pos.append(body_q[self.cfg.ee_links, :3])
             rot.append(body_q[self.cfg.ee_links, 3:7])
@@ -229,7 +229,7 @@ class Example:
             solver.X_local,
             sb_size,
         )
-        wp.synchronize()
+        wp.synchronize_device()
 
         bq = solver.body_q.numpy()[:sb_size]
         ee = np.asarray(self.cfg.ee_links)
@@ -263,22 +263,24 @@ class Example:
 
             solver, pos_obj, rot_obj = self._build_ik_solver(max_problems)
 
-            winners_d = wp.zeros((batch, self.n_coords), dtype=wp.float32, device=self.device)
-            best_d = wp.zeros(sub, dtype=int, device=self.device)
-            off_d = wp.zeros(1, dtype=int, device=self.device)
+            winners_d = wp.zeros((batch, self.n_coords), dtype=wp.float32)
+            best_d = wp.zeros(sub, dtype=int)
+            off_d = wp.zeros(1, dtype=int)
 
             solver.solve(self.iterations, self.step_size)
 
-            with wp.ScopedCapture() as cap:
-                solver.solve(self.iterations, self.step_size)
-                wp.launch(_pick_best, dim=sub, inputs=[solver.costs, self.cfg.seeds, best_d], device=self.device)
-                wp.launch(
-                    _scatter_winner,
-                    dim=sub,
-                    inputs=[solver.joint_q, winners_d, best_d, off_d, self.cfg.seeds, self.n_coords],
-                    device=self.device,
-                )
-            solve_graph = cap.graph
+            if self.use_cuda_graph:
+                with wp.ScopedCapture() as cap:
+                    solver.solve(self.iterations, self.step_size)
+                    wp.launch(_pick_best, dim=sub, inputs=[solver.costs, self.cfg.seeds, best_d])
+                    wp.launch(
+                        _scatter_winner,
+                        dim=sub,
+                        inputs=[solver.joint_q, winners_d, best_d, off_d, self.cfg.seeds, self.n_coords],
+                    )
+                solve_graph = cap.graph
+            else:
+                solve_graph = None
 
             q_gt = self._random_solutions(batch)
             tgt_p, tgt_r = self._fk_targets(q_gt)
@@ -299,7 +301,7 @@ class Example:
             times = []
 
             for _ in range(self.repeats):
-                wp.synchronize()
+                wp.synchronize_device()
                 t0 = time.perf_counter()
 
                 for sb_start in range(0, batch, sub):
@@ -322,9 +324,19 @@ class Example:
                     )
 
                     off_d.fill_(sb_start)
-                    wp.capture_launch(solve_graph)
 
-                wp.synchronize()
+                    if self.use_cuda_graph:
+                        wp.capture_launch(solve_graph)
+                    else:
+                        solver.solve(self.iterations, self.step_size)
+                        wp.launch(_pick_best, dim=sub, inputs=[solver.costs, self.cfg.seeds, best_d])
+                        wp.launch(
+                            _scatter_winner,
+                            dim=sub,
+                            inputs=[solver.joint_q, winners_d, best_d, off_d, self.cfg.seeds, self.n_coords],
+                        )
+
+                wp.synchronize_device()
                 times.append(time.perf_counter() - t0)
 
             q_best = winners_d.numpy()
@@ -399,18 +411,22 @@ class Example:
 
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument("--robot", type=str, default="h1", choices=ROBOTS.keys(), help="Robot model to benchmark.")
+    parser.add_argument("--repeats", type=int, default=3, help="Number of times to run the benchmark.")
     parser.add_argument(
-        "--robot",
-        type=str,
-        default="h1",
-        choices=ROBOTS.keys(),
-        help="Robot model to benchmark",
+        "--batch-sizes",
+        type=int,
+        nargs="+",
+        default=[1, 10, 100, 1_000, 2_000],
+        help="A list of batch sizes to run the script with (e.g., --batch_sizes 1 10 100).",
     )
     args = parser.parse_known_args()[0]
 
-    example = Example(robot=args.robot, repeats=3)
-    example.run()
-    example.print_results()
+    with wp.ScopedDevice(args.device):
+        example = Example(robot=args.robot, batch_sizes=args.batch_sizes, repeats=args.repeats)
+        example.run()
+        example.print_results()
 
 
 if __name__ == "__main__":

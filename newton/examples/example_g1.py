@@ -69,7 +69,7 @@ class Example:
         self.control = self.model.control()
         if self.use_mujoco:
             self.sim_substeps = 4
-            self.solver = newton.solvers.MuJoCoSolver(
+            self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco=False,
                 solver="newton",
@@ -81,7 +81,7 @@ class Example:
             )
         else:
             self.sim_substeps = 10
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 self.model,
                 iterations=20,
                 angular_damping=0.01,
@@ -94,7 +94,7 @@ class Example:
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
-        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.contacts = None
         if not self.use_mujoco:
             self.contacts = self.model.collide(self.state_0)

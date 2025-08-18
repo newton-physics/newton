@@ -83,7 +83,7 @@ class Example:
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        self.solver = newton.solvers.VBDSolver(
+        self.solver = newton.solvers.SolverVBD(
             self.model,
             self.iterations,
             handle_self_contact=True,

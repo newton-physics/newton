@@ -23,7 +23,7 @@ The renderer requires pyglet (version >= 2.0) to be installed.
 
 .. code-block:: python
 
-    renderer = newton.utils.SimRendererOpenGL(model=model, path="Newton Simulator", scaling=2.0)
+    renderer = newton.viewer.RendererOpenGL(model=model, path="Newton Simulator", scaling=2.0)
 
     # at every frame:
     renderer.begin_frame(sim_time)
@@ -33,7 +33,7 @@ The renderer requires pyglet (version >= 2.0) to be installed.
     # pause the simulation (blocks the control flow):
     renderer.pause = True
 
-Keyboard shortcuts when working with the OpenGLRenderer (aka newton.utils.SimRendererOpenGL):
+Keyboard shortcuts when working with the OpenGLRenderer (aka newton.viewer.RendererOpenGL):
 
 .. list-table:: Keyboard Shortcuts
     :header-rows: 1

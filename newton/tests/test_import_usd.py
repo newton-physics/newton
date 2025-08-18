@@ -20,7 +20,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry.utils import create_box_mesh, transform_points
+import newton.examples
+from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import parse_usd
 
@@ -38,14 +39,50 @@ class TestImportUsd(unittest.TestCase):
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 9)
-        self.assertEqual(builder.shape_count, 13)
+        self.assertEqual(builder.shape_count, 26)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
         self.assertEqual(builder.joint_coord_count, 15)
-        self.assertEqual(builder.joint_type, [newton.JOINT_FREE] + [newton.JOINT_REVOLUTE] * 8)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
+        self.assertEqual(len(results["path_body_map"]), 9)
+        self.assertEqual(len(results["path_shape_map"]), 26)
+
+        collision_shapes = [
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+        ]
+        self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_no_visuals(self):
+        builder = newton.ModelBuilder()
+
+        results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            load_non_physics_prims=False,
+        )
+        self.assertEqual(builder.body_count, 9)
+        self.assertEqual(builder.shape_count, 13)
+        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
+        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
+        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        # 8 joints + 1 free joint for the root body
+        self.assertEqual(builder.joint_count, 9)
+        self.assertEqual(builder.joint_dof_count, 14)
+        self.assertEqual(builder.joint_coord_count, 15)
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE] + [newton.JointType.REVOLUTE] * 8)
         self.assertEqual(len(results["path_body_map"]), 9)
         self.assertEqual(len(results["path_shape_map"]), 13)
+
+        collision_shapes = [
+            i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES
+        ]
+        self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_with_mesh(self):
@@ -157,6 +194,33 @@ class TestImportUsd(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_cube_cylinder_joint_count(self):
+        builder = newton.ModelBuilder()
+        import_results = parse_usd(
+            os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
+            builder,
+            collapse_fixed_joints=True,
+            invert_rotations=True,
+        )
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.joint_count, 1)
+
+        usd_path_to_shape = import_results["path_shape_map"]
+        expected = {
+            "/World/Cylinder_dynamic/cylinder_reverse/mesh_0": {"mu": 0.2, "restitution": 0.3},
+            "/World/Cube_static/cube2/mesh_0": {"mu": 0.75, "restitution": 0.3},
+        }
+        # Reverse mapping: shape index -> USD path
+        shape_idx_to_usd_path = {v: k for k, v in usd_path_to_shape.items()}
+        for shape_idx in range(builder.shape_count):
+            usd_path = shape_idx_to_usd_path[shape_idx]
+            if usd_path in expected:
+                self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
+                self.assertAlmostEqual(
+                    builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
+                )
+
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
@@ -201,36 +265,112 @@ class TestImportUsd(unittest.TestCase):
         create_collision_mesh("/meshBoundingCube", vertices, indices, UsdPhysics.Tokens.boundingCube)
 
         builder = newton.ModelBuilder()
-        newton.geometry.MESH_MAXHULLVERT = 4
-        parse_usd(
-            stage,
-            builder,
-        )
+        parse_usd(stage, builder, mesh_maxhullvert=4)
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
-        self.assertEqual(builder.shape_geo_type, [newton.GEO_MESH, newton.GEO_MESH, newton.GEO_SPHERE, newton.GEO_BOX])
+        self.assertEqual(
+            builder.shape_type, [newton.GeoType.MESH, newton.GeoType.MESH, newton.GeoType.SPHERE, newton.GeoType.BOX]
+        )
 
         # original mesh
-        mesh_original = builder.shape_geo_src[0]
+        mesh_original = builder.shape_source[0]
         self.assertEqual(mesh_original.vertices.shape, (8, 3))
         assert_np_equal(mesh_original.vertices, vertices)
         assert_np_equal(mesh_original.indices, indices)
 
         # convex hull
-        mesh_convex_hull = builder.shape_geo_src[1]
+        mesh_convex_hull = builder.shape_source[1]
         self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
 
         # bounding sphere
-        self.assertIsNone(builder.shape_geo_src[2])
-        self.assertEqual(builder.shape_geo_type[2], newton.geometry.GEO_SPHERE)
-        self.assertAlmostEqual(builder.shape_geo_scale[2][0], wp.length(scale))
+        self.assertIsNone(builder.shape_source[2])
+        self.assertEqual(builder.shape_type[2], newton.GeoType.SPHERE)
+        self.assertAlmostEqual(builder.shape_scale[2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
         # bounding box
-        assert_np_equal(npsorted(builder.shape_geo_scale[3]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_match_collision_shapes(self):
+        builder = newton.ModelBuilder()
+        parse_usd(
+            newton.examples.get_asset("humanoid.usda"),
+            builder,
+        )
+        self.assertEqual(builder.shape_count, 38)
+        self.assertEqual(builder.body_count, 16)
+        visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
+        collision_shape_keys = [k for k in builder.shape_key if "collisions" in k]
+        self.assertEqual(len(visual_shape_keys), 19)
+        self.assertEqual(len(collision_shape_keys), 19)
+        visual_shapes = [i for i, k in enumerate(builder.shape_key) if "visuals" in k]
+        # corresponding collision shapes
+        collision_shapes = [builder.shape_key.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
+        # ensure that the visual and collision shapes match
+        for i in range(len(visual_shapes)):
+            vi = visual_shapes[i]
+            ci = collision_shapes[i]
+            self.assertEqual(builder.shape_type[vi], builder.shape_type[ci])
+            self.assertEqual(builder.shape_source[vi], builder.shape_source[ci])
+            assert_np_equal(np.array(builder.shape_transform[vi]), np.array(builder.shape_transform[ci]), tol=1e-5)
+            assert_np_equal(np.array(builder.shape_scale[vi]), np.array(builder.shape_scale[ci]), tol=1e-5)
+            self.assertFalse(builder.shape_flags[vi] & newton.ShapeFlags.COLLIDE_SHAPES)
+            self.assertTrue(builder.shape_flags[ci] & newton.ShapeFlags.COLLIDE_SHAPES)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_symmetric_inertia(self):
+        """Test importing USD with inertia specified in principal axes that don't align with body frame."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        # Create USD stage
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+        # Create box and apply physics APIs
+        box = UsdGeom.Cube.Define(stage, "/World/Box")
+        UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(box.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(box.GetPrim())
+
+        # Set mass
+        mass_api.CreateMassAttr().Set(1.0)
+
+        # Set diagonal inertia in principal axes frame
+        # Principal moments: [2, 4, 6] kg⋅m²
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(2.0, 4.0, 6.0))
+
+        # Set principal axes rotated from body frame
+        # Rotate 45° around Z, then 30° around Y
+        # Hardcoded quaternion values for this rotation
+        q = wp.quat(0.1830127, 0.1830127, 0.6830127, 0.6830127)
+        R = np.array(wp.quat_to_matrix(q)).reshape(3, 3)
+
+        # Set principal axes using quaternion
+        mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(q.w, q.x, q.y, q.z))
+
+        # Parse USD
+        builder = newton.ModelBuilder()
+        parse_usd(stage, builder)
+
+        # Verify parsing
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
+
+        # Get parsed inertia tensor
+        inertia_parsed = np.array(builder.body_inertia[0])
+
+        # Calculate expected inertia tensor in body frame
+        # I_body = R * I_principal * R^T
+        I_principal = np.diag([2.0, 4.0, 6.0])
+        I_body_expected = R @ I_principal @ R.T
+
+        # Verify the parsed inertia matches our calculated body frame inertia
+        np.testing.assert_allclose(inertia_parsed.reshape(3, 3), I_body_expected, rtol=1e-5, atol=1e-8)
 
 
 if __name__ == "__main__":

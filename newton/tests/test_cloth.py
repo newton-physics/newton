@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import PARTICLE_FLAG_ACTIVE
+from newton import ParticleFlags
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -702,6 +702,74 @@ class ClothSim:
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = stretching_stiffness
 
+    def set_up_stitching_experiment(self):
+        self.num_test_frames = 200
+        vs = [
+            # triangle 1
+            [0.0, 0.1, 0.0],
+            [0.0, 0.1, 1.0],
+            [1.0, 0.1, 1.0],
+            # triangle 2
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+        fs = [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+        ]
+
+        if self.solver_name != "semi_implicit":
+            stretching_stiffness = 1e4
+            spring_ke = 1e3
+            stitching_spring_ke = 1e4
+            bending_ke = 10
+        else:
+            stretching_stiffness = 1e2
+            spring_ke = 1e2
+            stitching_spring_ke = 1e3
+            bending_ke = 10
+        particle_radius = 0.2
+
+        vs = [wp.vec3(v) for v in vs]
+        self.builder.add_cloth_mesh(
+            vertices=vs,
+            indices=fs,
+            scale=1,
+            density=2,
+            pos=wp.vec3(0.0, 3, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            edge_ke=bending_ke,
+            edge_kd=0.0,
+            tri_ke=stretching_stiffness,
+            tri_ka=stretching_stiffness,
+            tri_kd=0.0,
+            add_springs=self.solver_name == "xpbd",
+            spring_ke=spring_ke,
+            spring_kd=0.0,
+            particle_radius=particle_radius,
+        )
+
+        self.springs = [
+            [2, 3],
+            [0, 5],
+        ]
+
+        for spring_idx in range(len(self.springs)):
+            self.builder.add_spring(*self.springs[spring_idx], stitching_spring_ke, 0, 0)
+        self.renderer_scale_factor = 1
+        self.fixed_particles = [1]
+
+        self.self_contact_radius = 0.1
+        self.self_contact_margin = 0.1
+
+        self.finalize(handle_self_contact=True, ground=False, use_gravity=True)
+
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
         builder.add_builder(self.builder)
@@ -717,7 +785,7 @@ class ClothSim:
         self.set_points_fixed(self.model, self.fixed_particles)
 
         if self.solver_name == "vbd":
-            self.solver = newton.solvers.VBDSolver(
+            self.solver = newton.solvers.SolverVBD(
                 model=self.model,
                 iterations=self.iterations,
                 handle_self_contact=handle_self_contact,
@@ -725,12 +793,12 @@ class ClothSim:
                 self_contact_margin=self.self_contact_margin,
             )
         elif self.solver_name == "xpbd":
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
             )
         elif self.solver_name == "semi_implicit":
-            self.solver = newton.solvers.SemiImplicitSolver(self.model)
+            self.solver = newton.solvers.SolverSemiImplicit(self.model)
         else:
             raise ValueError("Unsupported solver type: " + self.solver_name)
 
@@ -758,7 +826,7 @@ class ClothSim:
         self.sim_time = 0.0
 
         if self.do_rendering:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path="Test Cloth",
                 model=self.model,
                 scaling=self.renderer_scale_factor,
@@ -784,7 +852,7 @@ class ClothSim:
         if len(fixed_particles):
             flags = model.particle_flags.numpy()
             for fixed_v_id in fixed_particles:
-                flags[fixed_v_id] = wp.uint32(int(flags[fixed_v_id]) & ~int(PARTICLE_FLAG_ACTIVE))
+                flags[fixed_v_id] = flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
             model.particle_flags = wp.array(flags, device=model.device)
 
@@ -1012,6 +1080,24 @@ def test_cloth_body_collision(test, device, solver):
     test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
 
 
+def test_cloth_stitching(test, device, solver):
+    example = ClothSim(device, solver)
+    example.set_up_stitching_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_pos = example.state0.particle_q.numpy()
+
+    for spring_idx in range(len(example.springs)):
+        test.assertTrue(
+            (
+                np.linalg.norm(final_pos[example.springs[spring_idx][0]] - final_pos[example.springs[spring_idx][1]])
+                < 1.0
+            ).all()
+        )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -1029,6 +1115,7 @@ tests_to_run = {
         test_cloth_bending_with_complex_rest_angles,
         test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
+        test_cloth_stitching,
     ],
     "semi_implicit": [
         test_cloth_free_fall,
@@ -1050,6 +1137,7 @@ tests_to_run = {
         test_cloth_bending_with_complex_rest_angles,
         test_cloth_free_fall_with_internal_forces_and_damping,
         test_cloth_body_collision,
+        test_cloth_stitching,
     ],
 }
 

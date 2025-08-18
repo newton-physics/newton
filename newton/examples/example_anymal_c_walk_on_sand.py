@@ -31,8 +31,9 @@ wp.config.enable_backward = False
 
 import newton
 import newton.utils
+import newton.viewer
 from newton.examples.example_anymal_c_walk import AnymalController
-from newton.solvers.implicit_mpm import ImplicitMPMSolver
+from newton.solvers import SolverImplicitMPM
 
 
 @wp.kernel
@@ -165,13 +166,13 @@ class Example:
         ## Grab meshes for collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
-            [[m for m in self.model.body_shapes[b] if self.model.shape_geo_src[m]] for b in collider_body_idx]
+            [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
         )
 
         collider_points, collider_indices, collider_v_shape_ids = _merge_meshes(
-            [self.model.shape_geo_src[m].vertices for m in collider_shape_ids],
-            [self.model.shape_geo_src[m].indices for m in collider_shape_ids],
-            [self.model.shape_geo.scale.numpy()[m] for m in collider_shape_ids],
+            [self.model.shape_source[m].vertices for m in collider_shape_ids],
+            [self.model.shape_source[m].indices for m in collider_shape_ids],
+            [self.model.shape_scale.numpy()[m] for m in collider_shape_ids],
             collider_shape_ids,
         )
 
@@ -179,9 +180,9 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
-        self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        self.solver = newton.solvers.SolverFeatherstone(self.model)
 
-        options = ImplicitMPMSolver.Options()
+        options = SolverImplicitMPM.Options()
         options.voxel_size = voxel_size
         options.max_fraction = max_fraction
         options.tolerance = tolerance
@@ -192,10 +193,10 @@ class Example:
         if not dynamic_grid:
             options.grid_padding = 5
 
-        self.mpm_solver = ImplicitMPMSolver(self.model, options)
+        self.mpm_solver = SolverImplicitMPM(self.model, options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = None if headless else newton.utils.SimRendererOpenGL(self.model, stage_path)
+        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -203,7 +204,7 @@ class Example:
         self.mpm_solver.enrich_state(self.state_0)
         self.mpm_solver.enrich_state(self.state_1)
 
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
         self.control = self.model.control()

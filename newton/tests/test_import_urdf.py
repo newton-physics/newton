@@ -24,7 +24,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.import_urdf import parse_urdf
+from newton.utils import parse_urdf
 
 MESH_URDF = """
 <robot name="mesh_test">
@@ -161,8 +161,8 @@ class TestImportUrdf(unittest.TestCase):
         self.parse_urdf(SPHERE_URDF, builder)
 
         assert builder.shape_count == 1
-        assert builder.shape_geo_type[0] == newton.GEO_SPHERE
-        assert builder.shape_geo_scale[0][0] == 0.5
+        assert builder.shape_type[0] == newton.GeoType.SPHERE
+        assert builder.shape_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
     def test_mesh_urdf(self):
@@ -177,23 +177,23 @@ class TestImportUrdf(unittest.TestCase):
                     def mock_mesh_download(dst, url: str):
                         dst.write(MESH_OBJ.encode("utf-8"))
 
-                    with patch("newton.utils.import_urdf._download_file", side_effect=mock_mesh_download):
+                    with patch("newton._src.utils.import_urdf._download_file", side_effect=mock_mesh_download):
                         self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
-                assert builder.shape_geo_type[0] == newton.GEO_MESH
-                assert_np_equal(builder.shape_geo_scale[0], np.array([1.0, 1.0, 1.0]))
+                assert builder.shape_type[0] == newton.GeoType.MESH
+                assert_np_equal(builder.shape_scale[0], np.array([1.0, 1.0, 1.0]))
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
-                assert builder.shape_geo_src[0].vertices.shape[0] == 8
-                assert builder.shape_geo_src[0].indices.shape[0] == 3 * 12
+                assert builder.shape_source[0].vertices.shape[0] == 8
+                assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         self.parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
 
-        assert builder.shape_geo_type[0] == newton.GEO_CAPSULE
-        assert builder.shape_geo_scale[0][0] == 0.5
-        assert builder.shape_geo_scale[0][1] == 0.5  # half height
+        assert builder.shape_type[0] == newton.GeoType.CAPSULE
+        assert builder.shape_scale[0][0] == 0.5
+        assert builder.shape_scale[0][1] == 0.5  # half height
         assert_np_equal(
             np.array(builder.shape_transform[0][:]), np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]), tol=1e-6
         )
@@ -225,7 +225,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Check joint was created with correct properties
         assert builder.joint_count == 2  # base joint + revolute
-        assert builder.joint_type[-1] == newton.JOINT_REVOLUTE
+        assert builder.joint_type[-1] == newton.JointType.REVOLUTE
 
         assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
