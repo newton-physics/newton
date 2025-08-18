@@ -561,8 +561,13 @@ def parse_usd(
                     joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = JointMode.TARGET_POSITION
 
+<<<<<<< HEAD
                 joint_params["target_ke"] = joint_desc.drive.stiffness
                 joint_params["target_kd"] = joint_desc.drive.damping
+=======
+                joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
+                joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+>>>>>>> 7357e49 (Parse joint drive force limits in `parse_usd` (#512))
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
