@@ -678,6 +678,7 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
+            "shape_material_condim",
             "shape_collision_radius",
             "particle_qd",
             "particle_mass",

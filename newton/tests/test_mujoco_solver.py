@@ -1122,7 +1122,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(condim_values[shape4], 6, "Shape 4 should have condim=6")
 
         # Create MuJoCo solver
-        solver = MuJoCoSolver(model)
+        solver = SolverMuJoCo(model)
 
         # Verify that condim values are propagated to MuJoCo geom properties
         geom_condim = solver.mjw_model.geom_condim.numpy()
