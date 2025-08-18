@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,11 +25,9 @@
 #
 ###########################################################################
 
-import math
-
 import warp as wp
-import warp.sim
-import warp.sim.render
+
+import newton
 
 
 @wp.kernel
@@ -78,7 +76,7 @@ class Example:
 
         self.train_rate = 5.0
 
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder()
         builder.default_particle_radius = 0.01
 
         dim_x = 16
@@ -86,8 +84,8 @@ class Example:
 
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
-            vel=wp.vec3(0.1, 0.1, 0.0),
-            rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.25),
+            vel=wp.vec3(0.0, 0.1, 0.1),
+            rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.75),
             dim_x=dim_x,
             dim_y=dim_y,
             cell_x=1.0 / dim_x,
@@ -101,11 +99,10 @@ class Example:
         )
 
         self.model = builder.finalize()
-        self.model.ground = False
 
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.target = (8.0, 0.0, 0.0)
+        self.target = (0.0, 8.0, 0.0)
         self.com = wp.zeros(1, dtype=wp.vec3, requires_grad=True)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
 
@@ -115,7 +112,7 @@ class Example:
             self.states.append(self.model.state(requires_grad=True))
 
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=4.0)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path, scaling=4.0)
         else:
             self.renderer = None
 
@@ -134,7 +131,7 @@ class Example:
         for i in range(self.sim_steps):
             self.states[i].clear_forces()
 
-            self.integrator.simulate(self.model, self.states[i], self.states[i + 1], self.sim_dt)
+            self.solver.step(self.states[i], self.states[i + 1], None, None, self.sim_dt)
 
         # compute loss on final state
         self.com.zero_()
