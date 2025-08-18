@@ -2036,8 +2036,7 @@ class SolverMuJoCo(SolverBase):
                 for i in range(lin_axis_count):
                     ai = qd_start + i
 
-                    # map axis from joint frame to child body frame: axis_body = R_cj^{-1} * axis_joint
-                    axis = wp.quat_rotate_inv(joint_rot, wp.vec3(*joint_axis[ai]))
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
@@ -2098,8 +2097,7 @@ class SolverMuJoCo(SolverBase):
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
                     ai = qd_start + i
 
-                    # map axis from joint frame to child body frame: axis_body = R_cj^{-1} * axis_joint
-                    axis = wp.quat_rotate_inv(joint_rot, wp.vec3(*joint_axis[ai]))
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
