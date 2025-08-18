@@ -19,7 +19,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, Vec3, nparray, override
+from ..core.types import Devicelike, Vec2, Vec3, nparray, override
 
 
 class GeoType(enum.IntEnum):
