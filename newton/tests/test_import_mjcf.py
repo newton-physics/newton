@@ -317,7 +317,6 @@ class TestImportMjcf(unittest.TestCase):
         child_quat = body_q[child_idx, 3:]
 
         # Compose transforms using warp
-        quat_child = np.array([0, 0, 0, 1])  # placeholder, will be overwritten
         quat_child_mjcf = np.array([0.7071068, 0, 0, 0.7071068])
         # MJCF: [w, x, y, z] → warp: [x, y, z, w]
         quat_child = np.array([quat_child_mjcf[1], quat_child_mjcf[2], quat_child_mjcf[3], quat_child_mjcf[0]])
