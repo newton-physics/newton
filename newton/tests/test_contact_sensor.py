@@ -18,8 +18,8 @@ import unittest
 import warp as wp
 
 import newton
+from newton.sensors import ContactSensor
 from newton.tests.unittest_utils import assert_np_equal
-from newton.utils.contact_sensor import ContactSensor
 
 
 class MockModel:
@@ -31,7 +31,7 @@ class MockModel:
 
 def create_contacts(device, pairs, nconmax, positions=None, normals=None, separations=None, forces=None):
     """Helper to create Contacts with specified contacts"""
-    contacts = newton.sim.contacts.Contacts(0, 0)
+    contacts = newton.Contacts(0, 0)
 
     n_contacts = len(pairs)
 
