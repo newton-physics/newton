@@ -20,19 +20,17 @@
 # from a URDF using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
 #
-# Users can pick bodies by right-clicking and dragging with the mouse.
-#
 ###########################################################################
+
 
 import numpy as np
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
+import newton.collision
+import newton.core.articulation
 import newton.examples
 import newton.utils
-import newton.viewer
 
 
 class Example:
@@ -40,7 +38,7 @@ class Example:
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_body_armature = 0.01
         articulation_builder.default_joint_cfg.armature = 0.01
-        articulation_builder.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
+        articulation_builder.default_joint_cfg.mode = newton.JOINT_MODE_TARGET_POSITION
         articulation_builder.default_joint_cfg.target_ke = 2000.0
         articulation_builder.default_joint_cfg.target_kd = 1.0
         articulation_builder.default_shape_cfg.ke = 1.0e4
@@ -50,9 +48,8 @@ class Example:
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             articulation_builder,
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+            xform=wp.transform([0.0, 0.7, 0.0], wp.quat_identity()),
             floating=True,
-            enable_self_collisions=False,
         )
         articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
         articulation_builder.joint_target[-12:] = articulation_builder.joint_q[-12:]
@@ -72,26 +69,25 @@ class Example:
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 
-        builder.add_ground_plane()
-
         np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
+        self.model.ground = True
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
-        # self.solver = newton.solvers.SolverFeatherstone(self.model)
-        # self.solver = newton.solvers.SolverSemiImplicit(self.model)
-        # self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.XPBDSolver(self.model)
+        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
+        # self.solver = newton.solvers.SemiImplicitSolver(self.model)
 
         if stage_path:
-            self.viewer = newton.viewer.ViewerGL(self.model)
+            self.renderer = newton.utils.SimRendererOpenGL(self.model, stage_path)
+        else:
+            self.renderer = None
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
 
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
 
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
@@ -105,11 +101,8 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-
-            self.viewer.picking._apply_picking_force(self.state_0)
-
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            newton.collision.collide(self.model, self.state_0)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -121,14 +114,13 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
         with wp.ScopedTimer("render"):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_model(self.state_0)
-            self.viewer.log_contacts(self.contacts, self.state_0)
-            self.viewer.end_frame()
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state_0)
+            self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -137,27 +129,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage-path",
+        "--stage_path",
         type=lambda x: None if x == "None" else str(x),
         default="example_quadruped.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num-frames", type=int, default=30000, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=8, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-        if example.viewer:
-            while example.viewer.is_running():
-                example.step()
-                example.render()
-        else:
-            for _ in range(args.num_frames):
-                example.step()
-                example.render()
+        for _ in range(args.num_frames):
+            example.step()
+            example.render()
 
-    if example.viewer:
-        example.viewer.close()
+        if example.renderer:
+            example.renderer.save()

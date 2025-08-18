@@ -21,22 +21,22 @@
 #
 ###########################################################################
 
+
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
+import newton.core.articulation
 import newton.examples
-import newton.viewer
+import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_cartpole.usd", num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path="example_cartpole.usd", num_envs=8):
         self.num_envs = num_envs
 
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_shape_cfg.density = 100.0
-        articulation_builder.default_joint_cfg.armature = 0.1
+        articulation_builder.default_joint_armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
         newton.utils.parse_urdf(
@@ -56,7 +56,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
+        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 0.0, 2.0))
 
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
@@ -66,52 +66,50 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
+        self.model.ground = False
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
-        # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
-        # self.solver = newton.solvers.SolverFeatherstone(self.model)
+        self.solver = newton.solvers.MuJoCoSolver(self.model)
+        # self.solver = newton.solvers.SemiImplicitSolver(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
+        # self.solver = newton.solvers.FeatherstoneSolver(self.model)
 
+        self.renderer = None
         if stage_path:
-            self.viewer = newton.viewer.ViewerGL(model=self.model)
+            self.renderer = newton.utils.SimRendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.core.articulation.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
 
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
+        self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
-        self.run_time = 0.0
-
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.model, self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", synchronize=True, print=False) as timer:
+        with wp.ScopedTimer("step"):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-
-        self.run_time += timer.elapsed
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render", synchronize=True, print=False):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_model(self.state_0)
-            self.viewer.end_frame()
+        with wp.ScopedTimer("render"):
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state_0)
+            self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -120,21 +118,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--stage-path",
+        "--stage_path",
         type=lambda x: None if x == "None" else str(x),
         default="example_cartpole.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--num_frames", type=int, default=1200, help="Total number of frames.")
+    parser.add_argument("--num_envs", type=int, default=100, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
-    example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+    with wp.ScopedDevice(args.device):
+        example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-    while example.viewer.is_running():
-        example.step()
-        example.render()
+        for _ in range(args.num_frames):
+            example.step()
+            example.render()
 
-    example.viewer.close()
+        if example.renderer:
+            example.renderer.save()
