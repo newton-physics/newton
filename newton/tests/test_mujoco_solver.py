@@ -1205,7 +1205,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Run forward kinematics using mujoco_warp directly
         # This should properly compose the joint transforms
         try:
-            import mujoco_warp
+            import mujoco_warp # noqa: PLC0415
 
             mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         except ImportError as e:
