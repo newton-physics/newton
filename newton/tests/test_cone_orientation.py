@@ -6,7 +6,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import kernels
+from newton._src.geometry import kernels
 
 
 class TestConeOrientation(unittest.TestCase):
