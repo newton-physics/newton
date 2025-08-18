@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,21 +29,22 @@
 # wp.matmul(), which will be deprecated in a future version.
 #
 ###########################################################################
-
+# TODO: Investigate performance of this example.
 import math
 import os
 
 import numpy as np
-from pxr import Gf, Usd, UsdGeom
-
 import warp as wp
-import warp.examples
 import warp.optim
-import warp.sim
-import warp.sim.render
+from pxr import Usd, UsdGeom
+
+import newton
+import newton.examples
+import newton.solvers
+import newton.viewer
 
 PHASE_COUNT = 8
-PHASE_STEP = wp.constant((2.0 * math.pi) / PHASE_COUNT)
+PHASE_STEP = wp.constant((2.0 * wp.pi) / PHASE_COUNT)
 PHASE_FREQ = wp.constant(5.0)
 ACTIVATION_STRENGTH = wp.constant(0.3)
 
@@ -57,7 +58,7 @@ def loss_kernel(com: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
     vx = com[tid][0]
     vy = com[tid][1]
     vz = com[tid][2]
-    delta = wp.sqrt(vx * vx) + wp.sqrt(vy * vy) - vz
+    delta = wp.sqrt(vy * vy) + wp.sqrt(vz * vz) - vx
 
     wp.atomic_add(loss, 0, delta)
 
@@ -118,22 +119,26 @@ class Example:
         self.render_time = 0.0
 
         # bear
-        asset_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bear.usd"))
+        asset_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "bear.usd"))
 
         geom = UsdGeom.Mesh(asset_stage.GetPrimAtPath("/root/bear"))
         points = geom.GetPointsAttr().Get()
 
-        xform = Gf.Matrix4f(geom.ComputeLocalToWorldTransform(0.0))
-        for i in range(len(points)):
-            points[i] = xform.Transform(points[i])
+        # xform = Gf.Matrix4f(geom.ComputeLocalToWorldTransform(0.0))
+        # for i in range(len(points)):
+        #     points[i] = xform.Transform(points[i])
 
-        self.points = [wp.vec3(point) for point in points]
+        quat0 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.HALF_PI)
+        quat1 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.HALF_PI)
+        xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), quat0 * quat1)
+
+        self.points = [wp.transform_point(xform, wp.vec3(point)) for point in points]
         self.tet_indices = geom.GetPrim().GetAttribute("tetraIndices").Get()
 
         # sim model
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder()
         builder.add_soft_mesh(
-            pos=wp.vec3(0.0, 0.5, 0.0),
+            pos=wp.vec3(0.0, 0.0, 0.5),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
@@ -150,19 +155,26 @@ class Example:
             tri_lift=0.0,
         )
 
+        # Add ground
+        ke = 2.0e3
+        kd = 0.1
+        kf = 10.0
+        mu = 0.7
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
         # finalize model
         self.model = builder.finalize(requires_grad=True)
         self.control = self.model.control()
 
-        self.model.soft_contact_ke = 2.0e3
-        self.model.soft_contact_kd = 0.1
-        self.model.soft_contact_kf = 10.0
-        self.model.soft_contact_mu = 0.7
+        # Set soft contact parameters
+        self.model.soft_contact_ke = ke
+        self.model.soft_contact_kd = kd
+        self.model.soft_contact_kf = kf
+        self.model.soft_contact_mu = mu
+        self.model.particle_adhesion = 0.05
 
         radii = wp.zeros(self.model.particle_count, dtype=float)
         radii.fill_(0.05)
         self.model.particle_radius = radii
-        self.model.ground = True
 
         # allocate sim states
         self.states = []
@@ -170,7 +182,9 @@ class Example:
             self.states.append(self.model.state(requires_grad=True))
 
         # initialize the integrator.
-        self.integrator = wp.sim.SemiImplicitIntegrator()
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
+
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
 
         # model input
         self.phases = []
@@ -193,11 +207,11 @@ class Example:
         self.coms = []
         for _i in range(self.num_frames):
             self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
-        self.optimizer = warp.optim.Adam([self.weights.flatten()], lr=self.train_rate)
+        self.optimizer = wp.optim.Adam([self.weights.flatten()], lr=self.train_rate)
 
         # rendering
         if stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
         else:
             self.renderer = None
 
@@ -227,16 +241,19 @@ class Example:
             )
             self.control.tet_activations = self.tet_activations[frame]
 
+        # with wp.ScopedTimer("collide", active=self.verbose):
+        #    self.contacts = self.model.collide(self.states[frame * self.sim_substeps])
+
         with wp.ScopedTimer("simulate", active=self.verbose):
             # run simulation loop
             for i in range(self.sim_substeps):
                 self.states[frame * self.sim_substeps + i].clear_forces()
-                self.integrator.simulate(
-                    self.model,
+                self.solver.step(
                     self.states[frame * self.sim_substeps + i],
                     self.states[frame * self.sim_substeps + i + 1],
-                    self.sim_dt,
                     self.control,
+                    self.contacts,
+                    self.sim_dt,
                 )
                 self.sim_time += self.sim_dt
 
