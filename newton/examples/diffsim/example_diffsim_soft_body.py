@@ -58,9 +58,8 @@ def loss_kernel(
     loss: wp.array(dtype=float),
 ):
     diff = com[0] - target
-    pos_error[0] = wp.dot(diff, diff)
-    norm = pos_error[0]
-    loss[0] = norm
+    pos_error[0] = wp.length(diff)
+    loss[0] = wp.dot(diff, diff)
 
 
 @wp.kernel
@@ -302,7 +301,7 @@ class Example:
 
         print(f"Iter: {self.iter} Loss: {self.loss.numpy()[0]}")
 
-        print(f"Pos error: {np.sqrt(self.pos_error.numpy()[0])}")
+        print(f"Pos error: {self.pos_error.numpy()[0]}")
 
         print(
             f"Max Mu: {np.max(x[:, 0])}, Min Mu: {np.min(x[:, 0])}, "
