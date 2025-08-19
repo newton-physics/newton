@@ -591,8 +591,8 @@ def parse_usd(
                     joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = JointMode.TARGET_POSITION
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
-                joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["target_ke"] = joint_desc.drive.stiffness
+                joint_params["target_kd"] = joint_desc.drive.damping
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
@@ -610,13 +610,13 @@ def parse_usd(
             else:
                 if joint_desc.drive.enabled:
                     joint_params["target"] *= DegreesToRadian
-                    # joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    # joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                # joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                # joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 # Add solver parameters if available
                 if limit_solref is not None:

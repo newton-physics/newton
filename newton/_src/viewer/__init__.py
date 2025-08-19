@@ -13,18 +13,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._src.utils.gizmo import GizmoSystem
-from ._src.utils.recorder_gui import RecorderImGuiManager
-from ._src.utils.render import RendererOpenGL, RendererUsd
+"""
+Viewer interface for Newton physics simulations.
 
-# Import all viewer classes (they handle missing dependencies at instantiation time)
-from ._src.viewer import ViewerGL, ViewerRerun, ViewerUSD
+This module provides a high-level, renderer-agnostic interface for interactive
+visualization of Newton models and simulation states.
+
+Example usage:
+    ```python
+    import newton
+    from newton.viewer import ViewerGL
+
+    # Create viewer with OpenGL backend
+    viewer = ViewerGL(model)
+
+    # Render simulation
+    while viewer.is_running():
+        viewer.begin_frame(time)
+        viewer.log_state(state)
+        viewer.log_points(particle_positions)
+        viewer.end_frame()
+
+    viewer.close()
+    ```
+"""
+
+from .viewer_gl import ViewerGL
+from .viewer_rerun import ViewerRerun
+from .viewer_usd import ViewerUSD
 
 __all__ = [
-    "GizmoSystem",
-    "RecorderImGuiManager",
-    "RendererOpenGL",  # deprecated
-    "RendererUsd",  # deprecated
     "ViewerGL",
     "ViewerRerun",
     "ViewerUSD",
