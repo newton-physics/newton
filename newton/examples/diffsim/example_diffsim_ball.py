@@ -47,7 +47,7 @@ def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha
 
 
 class Example:
-    def __init__(self, stage_path="example_bounce.usd", verbose=False):
+    def __init__(self, viewer_type: str, stage_path="example_bounce.usd", verbose=False):
         self.verbose = verbose
 
         # seconds
@@ -109,10 +109,21 @@ class Example:
 
         self.control = self.model.control()
 
-        if stage_path:
-            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
+        if viewer_type == "usd":
+            from newton.viewer import ViewerUSD  # noqa: PLC0415
+
+            self.viewer = ViewerUSD(self.model, output_path=stage_path)
+        elif viewer_type == "rerun":
+            from newton.viewer import ViewerRerun  # noqa: PLC0415
+
+            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
         else:
-            self.renderer = None
+            from newton.viewer import ViewerGL  # noqa: PLC0415
+
+            self.viewer = ViewerGL(self.model)
+            pos = type(self.viewer.camera.pos)(-1.0, -6.0, 2.0)
+            self.viewer.camera.pos = pos
+            self.viewer.camera.yaw = 90.0
 
         # capture forward/backward passes
         self.use_cuda_graph = wp.get_device().is_cuda
@@ -161,7 +172,7 @@ class Example:
             self.iter = self.iter + 1
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
         with wp.ScopedTimer("render"):
@@ -171,28 +182,29 @@ class Example:
             for i in range(0, self.sim_steps, self.sim_substeps):
                 traj_verts.append(self.states[i].particle_q.numpy()[0].tolist())
 
-                self.renderer.begin_frame(self.render_time)
-                self.renderer.render(self.states[i])
-                self.renderer.render_box(
-                    pos=self.target,
-                    rot=wp.quat_identity(),
-                    extents=(0.1, 0.1, 0.1),
-                    name="target",
-                    color=(0.0, 0.0, 0.0),
+                self.viewer.begin_frame(self.render_time)
+                self.viewer.log_state(self.states[i])
+                self.viewer.log_shapes(
+                    "/target",
+                    newton.GeoType.BOX,
+                    (0.1, 0.1, 0.1),
+                    wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
+                    wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
                 )
-                self.renderer.render_line_strip(
-                    vertices=traj_verts,
-                    color=wp.render.bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
-                    radius=0.02,
-                    name=f"traj_{self.iter - 1}",
+                self.viewer.log_lines(
+                    f"/traj_{self.iter - 1}",
+                    wp.array(traj_verts[0:-1], dtype=wp.vec3),
+                    wp.array(traj_verts[1:], dtype=wp.vec3),
+                    wp.render.bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
                 )
-                self.renderer.end_frame()
+                self.viewer.end_frame()
 
-                from pxr import Gf, UsdGeom  # noqa: PLC0415
+                # if isinstance(self.viewer, newton.viewer.ViewerUSD):
+                #     from pxr import Gf, UsdGeom
 
-                particles_prim = self.renderer.stage.GetPrimAtPath("/root/particles")
-                particles = UsdGeom.Points.Get(self.renderer.stage, particles_prim.GetPath())
-                particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.renderer.time)
+                #     particles_prim = self.viewer.stage.GetPrimAtPath("/root/particles")
+                #     particles = UsdGeom.Points.Get(self.viewer.stage, particles_prim.GetPath())
+                #     particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.viewer.time)
 
                 self.render_time += self.frame_dt
 
@@ -246,6 +258,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage_path",
@@ -259,7 +272,7 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, verbose=args.verbose)
+        example = Example(viewer_type=args.viewer, stage_path=args.stage_path, verbose=args.verbose)
 
         example.check_grad()
 
@@ -269,5 +282,5 @@ if __name__ == "__main__":
             if i % 16 == 0:
                 example.render()
 
-        if example.renderer:
-            example.renderer.save()
+        if example.viewer:
+            example.viewer.close()
