@@ -617,7 +617,7 @@ class ViewerBase:
     def _log_triangles(self, state):
         if self.model.tri_count:
             self.log_mesh(
-                "model/triangles",
+                "/model/triangles",
                 state.particle_q,
                 self.model.tri_indices.flatten(),
                 hidden=False,
