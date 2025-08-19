@@ -49,7 +49,7 @@ def apply_gradient_kernel(
 
 
 class Example:
-    def __init__(self, stage_path="example_spring_cage.usd", num_frames=30, train_iters=25):
+    def __init__(self, viewer_type: str, stage_path="example_spring_cage.usd", num_frames=30, train_iters=25):
         # Number of frames per second.
         self.fps = 30
 
@@ -114,17 +114,24 @@ class Example:
         # so that it can be written out by a kernel.
         self.loss = wp.zeros(1, dtype=float, requires_grad=True)
 
-        if stage_path:
-            # Helper to render the physics scene as a USD file.
-            self.renderer = newton.viewer.RendererUsd(self.model, stage_path, fps=self.fps, scaling=10.0)
+        if viewer_type == "usd":
+            from newton.viewer import ViewerUSD  # noqa: PLC0415
 
-            # Allows rendering one simulation to USD every N training iterations.
-            self.render_iteration_steps = 2
+            self.viewer = ViewerUSD(self.model, output_path=stage_path)
+        elif viewer_type == "rerun":
+            from newton.viewer import ViewerRerun  # noqa: PLC0415
 
-            # Frame number used to render the simulation iterations onto the USD file.
-            self.render_frame = 0
+            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
         else:
-            self.renderer = None
+            from newton.viewer import ViewerGL  # noqa: PLC0415
+
+            self.viewer = ViewerGL(self.model)
+
+        # Allows rendering one simulation every N training iterations.
+        self.render_iteration_steps = 2
+
+        # Frame number used to render the simulation iterations.
+        self.render_frame = 0
 
         self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
@@ -184,24 +191,25 @@ class Example:
             self.tape.zero()
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
         with wp.ScopedTimer("render"):
-            self.renderer.begin_frame(0.0)
-            self.renderer.render_box(
-                name="target",
-                pos=self.target_pos,
-                rot=wp.quat_identity(),
-                extents=(0.1, 0.1, 0.1),
-                color=(1.0, 0.0, 0.0),
+            self.viewer.begin_frame(0.0)
+            self.viewer.log_shapes(
+                "/target",
+                newton.GeoType.BOX,
+                (0.1, 0.1, 0.1),
+                wp.array([wp.transform(self.target_pos, wp.quat_identity())], dtype=wp.transform),
+                wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
             )
-            self.renderer.end_frame()
+            self.viewer.end_frame()
 
             for frame in range(self.num_frames):
-                self.renderer.begin_frame(self.render_frame / self.fps)
-                self.renderer.render(self.states[frame * self.sim_substep_count])
-                self.renderer.end_frame()
+                self.viewer.begin_frame(self.render_frame / self.fps)
+                # TODO: Make sure that log state, logs springs.
+                self.viewer.log_state(self.states[frame * self.sim_substep_count])
+                self.viewer.end_frame()
 
                 self.render_frame += 1
 
@@ -210,6 +218,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage_path",
@@ -224,7 +233,12 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames, train_iters=args.train_iters)
+        example = Example(
+            viewer_type=args.viewer,
+            stage_path=args.stage_path,
+            num_frames=args.num_frames,
+            train_iters=args.train_iters,
+        )
 
         for iteration in range(args.train_iters):
             example.step()
@@ -234,10 +248,9 @@ if __name__ == "__main__":
             if args.verbose:
                 print(f"[{iteration:3d}] loss={loss:.8f}")
 
-            if example.renderer and (
-                iteration == example.train_iters - 1 or iteration % example.render_iteration_steps == 0
-            ):
+            render_iteration = iteration == example.train_iters - 1 or iteration % example.render_iteration_steps == 0
+            if example.viewer and render_iteration:
                 example.render()
 
-        if example.renderer:
-            example.renderer.save()
+        if example.viewer:
+            example.viewer.close()
