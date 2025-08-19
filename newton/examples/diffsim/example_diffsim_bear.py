@@ -29,7 +29,6 @@
 # wp.matmul(), which will be deprecated in a future version.
 #
 ###########################################################################
-# TODO: Investigate performance of this example.
 import math
 import os
 
@@ -100,7 +99,7 @@ def network(
 
 
 class Example:
-    def __init__(self, stage_path="example_tile_walker.usd", verbose=False, num_frames=300):
+    def __init__(self, viewer_type: str, stage_path="example_tile_walker.usd", verbose=False, num_frames=300):
         self.verbose = verbose
 
         fps = 60
@@ -209,10 +208,18 @@ class Example:
         self.optimizer = wp.optim.Adam([self.weights.flatten()], lr=self.train_rate)
 
         # rendering
-        if stage_path:
-            self.renderer = newton.viewer.RendererUsd(self.model, stage_path)
+        if viewer_type == "usd":
+            from newton.viewer import ViewerUSD  # noqa: PLC0415
+
+            self.viewer = ViewerUSD(self.model, output_path=stage_path)
+        elif viewer_type == "rerun":
+            from newton.viewer import ViewerRerun  # noqa: PLC0415
+
+            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
         else:
-            self.renderer = None
+            from newton.viewer import ViewerGL  # noqa: PLC0415
+
+            self.viewer = ViewerGL(self.model)
 
         # capture forward/backward passes
         self.use_cuda_graph = wp.get_device().is_cuda
@@ -300,14 +307,14 @@ class Example:
         self.iter += 1
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
         with wp.ScopedTimer("render"):
             for i in range(self.num_frames + 1):
-                self.renderer.begin_frame(self.render_time)
-                self.renderer.render(self.states[i * self.sim_substeps])
-                self.renderer.end_frame()
+                self.viewer.begin_frame(self.render_time)
+                self.viewer.log_state(self.states[i * self.sim_substeps])
+                self.viewer.end_frame()
 
                 self.render_time += self.frame_dt
 
@@ -316,6 +323,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage_path",
@@ -330,7 +338,12 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, verbose=args.verbose, num_frames=args.num_frames)
+        example = Example(
+            viewer_type=args.viewer,
+            stage_path=args.stage_path,
+            verbose=args.verbose,
+            num_frames=args.num_frames,
+        )
 
         for _ in range(args.train_iters):
             example.step()
