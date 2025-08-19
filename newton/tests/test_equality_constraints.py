@@ -42,7 +42,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco=True,
+            use_mujoco_cpu=True,
             solver="newton",
             integrator="euler",
             iterations=100,
