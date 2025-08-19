@@ -107,6 +107,12 @@ class ViewerBase:
             contacts (newton.Contacts): The contacts to render.
             state: Current simulation state
         """
+
+        if not self.options["show_contacts"]:
+            # Pass None to hide joints - renderer will handle creating empty arrays
+            self.log_lines("/contacts", None, None, None)
+            return
+
         # Get contact count (handle case where it might be zero)
         num_contacts = contacts.rigid_contact_count.numpy()[0]
         max_contacts = contacts.rigid_contact_max
@@ -142,7 +148,7 @@ class ViewerBase:
             )
 
         # Always call log_lines to update the renderer (handles zero contacts gracefully)
-        if num_contacts > 0 and self.options["show_contacts"]:
+        if num_contacts > 0:
             # Slice arrays to only include active contacts
             line_begins = self._contact_points0[:num_contacts]
             line_ends = self._contact_points1[:num_contacts]
@@ -569,7 +575,7 @@ class ViewerBase:
         """
         if not self.options["show_joints"]:
             # Pass None to hide joints - renderer will handle creating empty arrays
-            self.log_lines("/joints", None, None, None)
+            self.log_lines("/model/joints", None, None, None)
             return
 
         # Get the number of joints
@@ -612,7 +618,7 @@ class ViewerBase:
         )
 
         # Log all joint lines in a single call
-        self.log_lines("/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+        self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
 
     def _log_triangles(self, state):
         if self.model.tri_count:

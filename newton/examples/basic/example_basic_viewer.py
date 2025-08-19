@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import time
 
 import warp as wp
 
@@ -83,17 +82,14 @@ class Example:
         if viewer == "gl":
             print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
 
-        self.start = time.time()
-        self.frame = 0
+        self.time = 0.0
 
     def step(self):
         pass
 
     def render(self):
-        t = time.time() - self.start
-
         # Begin frame with time
-        self.viewer.begin_frame(t)
+        self.viewer.begin_frame(self.time)
 
         # Clean layout: arrange objects in a line along X-axis
         # All objects at same height to avoid ground intersection
@@ -102,12 +98,12 @@ class Example:
         spacing = 2.0
 
         # Simple rotation animations
-        qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * t)
-        qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * t)
-        qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * t)
+        qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * self.time)
+        qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * self.time)
+        qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * self.time)
 
         # Sphere: gentle bounce at x = -6
-        sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * t)))
+        sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * self.time)))
         x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
 
         base_left += spacing
@@ -125,7 +121,7 @@ class Example:
         base_left += spacing
 
         # Capsule: gentle sway at x = 6
-        capsule_pos = wp.vec3(0.3 * math.sin(0.8 * t), base_left, base_height)
+        capsule_pos = wp.vec3(0.3 * math.sin(0.8 * self.time), base_left, base_height)
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
         base_left += spacing
 
@@ -185,7 +181,10 @@ class Example:
         # End frame (process events, render, present)
         self.viewer.end_frame()
 
-        self.frame += 1
+        self.time += 1.0 / 60.0
+
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":

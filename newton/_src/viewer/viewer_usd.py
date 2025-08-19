@@ -264,6 +264,7 @@ class ViewerUSD(ViewerBase):
     def close(self):
         """Finalize and save the USD stage."""
         self.stage.GetRootLayer().Save()
+        self.stage = None
 
     # Abstract methods that need basic implementations
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
