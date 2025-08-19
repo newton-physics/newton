@@ -1790,6 +1790,8 @@ class ModelBuilder:
                         "limit_upper": self.joint_limit_upper[j],
                         "act": self.joint_target[j],
                         "effort_limit": self.joint_effort_limit[j],
+                        "limit_solref": self.joint_limit_solref[j],
+                        "limit_solimp": self.joint_limit_solimp[j],
                     }
                 )
 
@@ -1974,9 +1976,12 @@ class ModelBuilder:
         self.joint_limit_ke.clear()
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
+        self.joint_limit_solref.clear()
+        self.joint_limit_solimp.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
         self.joint_group.clear()  # Clear joint groups
+
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -2008,6 +2013,25 @@ class ModelBuilder:
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_target.append(axis["act"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+                self.joint_limit_solref.append(axis["limit_solref"])
+                self.joint_limit_solimp.append(axis["limit_solimp"])
+
+            # Handle implicit DOFs (for JOINT_FREE, JOINT_BALL, etc.)
+            # These joints have more DOFs than explicit axes
+            num_explicit_axes = len(joint["axes"])
+            joint_type = joint["type"]
+            dof_count, _ = get_joint_dof_count(joint_type, num_explicit_axes)
+
+            for _ in range(dof_count - num_explicit_axes):
+                # Add default values for implicit DOFs
+                self.joint_limit_solref.append((0.02, 1.0))  # MuJoCo defaults
+                self.joint_limit_solimp.append((0.9, 0.95, 0.001, 0.5, 2.0))  # MuJoCo defaults
+
+        # joint_count will update automatically as it's a property based on len(self.joint_type)
+
+        # Recalculate DOF and coordinate counts after rebuilding
+        self.joint_dof_count = len(self.joint_qd)
+        self.joint_coord_count = len(self.joint_q)
 
         return {
             "body_remap": body_remap,
@@ -4007,23 +4031,20 @@ class ModelBuilder:
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
 
             # Joint limit solver parameters
-            if len(self.joint_limit_solref) > 0:
-                m.joint_limit_solref = wp.array(
-                    self.joint_limit_solref, dtype=wp.vec2f, device=device, requires_grad=requires_grad
-                )
-            else:
-                # Create default array
-                m.joint_limit_solref = wp.full(m.joint_dof_count, (0.02, 1.0), dtype=wp.vec2f, device=device)
+            # These arrays must have exactly joint_dof_count entries
+            assert len(self.joint_limit_solref) == self.joint_dof_count, (
+                f"joint_limit_solref size mismatch: {len(self.joint_limit_solref)} != {self.joint_dof_count}"
+            )
+            assert len(self.joint_limit_solimp) == self.joint_dof_count, (
+                f"joint_limit_solimp size mismatch: {len(self.joint_limit_solimp)} != {self.joint_dof_count}"
+            )
 
-            if len(self.joint_limit_solimp) > 0:
-                m.joint_limit_solimp = wp.array(
-                    self.joint_limit_solimp, dtype=Vec5, device=device, requires_grad=requires_grad
-                )
-            else:
-                # Create default array
-                m.joint_limit_solimp = wp.full(
-                    m.joint_dof_count, (0.9, 0.95, 0.001, 0.5, 2.0), dtype=Vec5, device=device
-                )
+            m.joint_limit_solref = wp.array(
+                self.joint_limit_solref, dtype=wp.vec2, device=device, requires_grad=requires_grad
+            )
+            m.joint_limit_solimp = wp.array(
+                self.joint_limit_solimp, dtype=Vec5, device=device, requires_grad=requires_grad
+            )
 
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
 

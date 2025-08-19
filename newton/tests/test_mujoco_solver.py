@@ -652,7 +652,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         builder = newton.ModelBuilder()
 
         # Add proper inertia for the bodies (diagonal inertia matrix for a sphere)
-        I_sphere = [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]]  # Simple diagonal inertia
+        I_sphere = (0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
         body = builder.add_body(mass=1.0, I_m=I_sphere, xform=wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()))
 
         # Add joint with custom solver params - very soft limits
@@ -679,19 +679,22 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         )
 
         model = builder.finalize()
-        solver = MuJoCoSolver(model)
+        solver = SolverMuJoCo(model)
 
         # Set both joints at positive position with negative velocity toward lower limit
-        state = model.state()
-        state.joint_q.assign([0.5, 0.5])  # Start at positive position
-        state.joint_qd.assign([-3.0, -3.0])  # Strong velocity toward lower limit (0)
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        state_in.joint_q.assign([0.5, 0.5])  # Start at positive position
+        state_in.joint_qd.assign([-3.0, -3.0])  # Strong velocity toward lower limit (0)
 
         # Simulate
         dt = 0.01
         positions = []
         for _ in range(200):  # More steps to see behavior
-            solver.step(state, state, model.control(), None, dt)
-            positions.append(state.joint_q.numpy().copy())
+            solver.step(state_in, state_out, control, None, dt)
+            state_in, state_out = state_out, state_in
+            positions.append(state_in.joint_q.numpy().copy())
 
         positions = np.array(positions)
 
