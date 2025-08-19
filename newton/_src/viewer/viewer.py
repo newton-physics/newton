@@ -354,6 +354,10 @@ class ViewerBase:
         pass
 
     @abstractmethod
+    def apply_forces(self, state):
+        pass
+
+    @abstractmethod
     def end_frame(self):
         pass
 

@@ -202,6 +202,41 @@ class ViewerGL(ViewerBase):
         # Call parent implementation
         super().log_model(state)
 
+        self._render_picking_line(state)
+
+    def _render_picking_line(self, state):
+        """Render a line from the mouse cursor to the COM of the picked body."""
+        if not self.picking.is_picking():
+            # Clear the picking line if not picking
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        # Get the picked body index
+        pick_body_idx = self.picking.pick_body.numpy()[0]
+        if pick_body_idx < 0:
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        # Get the pick target
+        pick_state = self.picking.pick_state.numpy()
+        pick_target = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
+
+        # Get the body's COM position
+        body_transforms = state.body_q.numpy()
+        if pick_body_idx >= len(body_transforms):
+            self.log_lines("picking_line", None, None, None)
+            return
+        body_transform = body_transforms[pick_body_idx]
+        com_position = wp.vec3(body_transform[0], body_transform[1], body_transform[2])
+
+        # Create line data
+        line_begins = wp.array([com_position], dtype=wp.vec3, device=self.device)
+        line_ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        line_colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
+
+        # Render the line
+        self.log_lines("picking_line", line_begins, line_ends, line_colors, hidden=False)
+
     def begin_frame(self, time):
         pass
 
@@ -220,6 +255,10 @@ class ViewerGL(ViewerBase):
         # continue running the viewer update while the simulation is paused
         while self.is_paused():
             self._update()
+
+    def apply_forces(self, state):
+        """Apply viewer-driven forces to the model."""
+        self.picking._apply_picking_force(state)
 
     def _update(self):
         # Process events and update the internal state
