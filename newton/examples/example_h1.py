@@ -16,7 +16,7 @@
 ###########################################################################
 # Example H1
 #
-# Shows how to set up a simulation of a rigid-body humanoid articulation
+# Shows how to set up a simulation of a H1 articulation
 # from a USD file using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
 #
