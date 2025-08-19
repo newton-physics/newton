@@ -511,13 +511,21 @@ def parse_usd(
         parent_path = str(joint_desc.body0)
         child_path = str(joint_desc.body1)
         parent_id = path_body_map.get(parent_path, -1)
-        # if parent_id == -1:
-        #     print("joint connected to world")
         child_id = path_body_map.get(child_path, -1)
         parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
+        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            if parent_id == -1:
+                if verbose:
+                    print(f"Skipping joint {joint_path}: both bodies unresolved")
+                return
+            parent_id, child_id = child_id, parent_id
+            parent_tf, child_tf = child_tf, parent_tf
+            if verbose:
+                print(f"Joint {joint_path} connects {parent_path} to world")
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
-        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
 
         joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
         joint_params = {
@@ -553,8 +561,9 @@ def parse_usd(
                     joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = JointMode.TARGET_POSITION
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
-                joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["target_ke"] = joint_desc.drive.stiffness
+                joint_params["target_kd"] = joint_desc.drive.damping
+                joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
@@ -566,13 +575,13 @@ def parse_usd(
             else:
                 if joint_desc.drive.enabled:
                     joint_params["target"] *= DegreesToRadian
-                    # joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    # joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                # joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                # joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -608,6 +617,7 @@ def parse_usd(
                     mode = JointMode.NONE
                     target_ke = 0.0
                     target_kd = 0.0
+                    effort_limit = np.inf
                     for drive in joint_desc.jointDrives:
                         if drive.first != dof:
                             continue
@@ -620,9 +630,10 @@ def parse_usd(
                                 mode = JointMode.TARGET_POSITION
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
-                    return target, mode, target_ke, target_kd
+                            effort_limit = drive.second.forceLimit
+                    return target, mode, target_ke, target_kd, effort_limit
 
-                target, mode, target_ke, target_kd = define_joint_mode(dof, joint_desc)
+                target, mode, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -652,6 +663,7 @@ def parse_usd(
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -667,6 +679,7 @@ def parse_usd(
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                     joint_prim.CreateAttribute(
