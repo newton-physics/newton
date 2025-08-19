@@ -256,10 +256,12 @@ class MeshGL:
         # only update indices the first time (no topology changes)
         if self.indices is None:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
+            self.num_indices = int(len(self.indices))
 
+            host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
             gl.glBufferData(
-                gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo_size, self.indices.numpy().ctypes.data, gl.GL_STATIC_DRAW
+                gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
             )
 
         # if points are changing but not the normals
