@@ -120,45 +120,6 @@ def update_pick_target_kernel(
     pick_state[5] = new_target[2]
 
 
-@wp.kernel
-def compute_contact_points(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    # outputs
-    contact_pos0: wp.array(dtype=wp.vec3),
-    contact_pos1: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    count = contact_count[0]
-    if tid >= count:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-    shape_a = contact_shape0[tid]
-    shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
-        contact_pos0[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        contact_pos1[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        return
-
-    body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
-    X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
-    if body_a >= 0:
-        X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
-
-    contact_pos0[tid] = wp.transform_point(X_wb_a, contact_point0[tid])
-    contact_pos1[tid] = wp.transform_point(X_wb_b, contact_point1[tid])
-
-
 def CreateSimRenderer(renderer):
     """A factory function to create a simulation renderer class."""
 
