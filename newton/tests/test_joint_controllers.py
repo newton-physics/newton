@@ -15,7 +15,7 @@
 
 # TODO:
 # - Fix Featherstone solver for floating body
-# - Fix linear force application to floating body for MuJoCoSolver
+# - Fix linear force application to floating body for SolverMuJoCo
 
 import unittest
 
@@ -60,10 +60,10 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
     model.ground = False
 
     solver = solver_fn(model)
-    # renderer = newton.utils.SimRendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
+    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
 
     state_0, state_1 = model.state(), model.state()
-    newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
     control.joint_target = wp.array([target_value], dtype=wp.float32, device=device)
@@ -81,28 +81,30 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
 
     # renderer.save()
 
-    if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
-        newton.sim.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
+    if not isinstance(solver, (newton.solvers.SolverMuJoCo, newton.solvers.SolverFeatherstone)):
+        newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
     joint_q = state_0.joint_q.numpy()
     joint_qd = state_0.joint_qd.numpy()
-    if joint_mode == newton.JOINT_MODE_TARGET_POSITION:
+    if joint_mode == newton.JointMode.TARGET_POSITION:
         test.assertAlmostEqual(joint_q[0], target_value, delta=1e-2)
         test.assertAlmostEqual(joint_qd[0], 0.0, delta=1e-2)
-    elif joint_mode == newton.JOINT_MODE_TARGET_VELOCITY:
+    elif joint_mode == newton.JointMode.TARGET_VELOCITY:
         test.assertAlmostEqual(joint_qd[0], target_value, delta=1e-2)
 
 
 devices = get_test_devices()
 solvers = {
-    # "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
-    "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=True, disable_contacts=True),
-    "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(model, use_mujoco=False, disable_contacts=True),
-    "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0, iterations=5),
-    # "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
+    # "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
+    # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
         # add_function_test(TestJointController, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
             TestJointController,
@@ -110,18 +112,18 @@ for device in devices:
             test_revolute_controller,
             devices=[device],
             solver_fn=solver_fn,
-            joint_mode=newton.JOINT_MODE_TARGET_POSITION,
+            joint_mode=newton.JointMode.TARGET_POSITION,
             target_value=wp.pi / 2.0,
         )
         # TODO: XPBD velocity control is not working correctly
-        if solver_name == "mujoco_warp" or solver_name == "mujoco_c":
+        if solver_name == "mujoco_warp" or solver_name == "mujoco_cpu":
             add_function_test(
                 TestJointController,
                 f"test_revolute_joint_controller_velocity_target_{solver_name}",
                 test_revolute_controller,
                 devices=[device],
                 solver_fn=solver_fn,
-                joint_mode=newton.JOINT_MODE_TARGET_VELOCITY,
+                joint_mode=newton.JointMode.TARGET_VELOCITY,
                 target_value=wp.pi / 2.0,
             )
 

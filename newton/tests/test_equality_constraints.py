@@ -40,9 +40,9 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.MuJoCoSolver(
+        self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco=True,
+            use_mujoco_cpu=True,
             solver="newton",
             integrator="euler",
             iterations=100,
@@ -53,7 +53,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.control = self.model.control()
         self.state_0, self.state_1 = self.model.state(), self.model.state()
-        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         for _ in range(1000):
             for _ in range(10):

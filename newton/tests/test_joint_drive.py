@@ -18,7 +18,7 @@ import unittest
 import warp as wp
 
 import newton
-from newton.solvers import MuJoCoSolver
+from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 
 class TestJointDrive(unittest.TestCase):
@@ -47,17 +47,17 @@ class TestJointDrive(unittest.TestCase):
         inertia = inertias[env_id]
 
         M = 0.0
-        if joint_type == newton.JOINT_PRISMATIC:
+        if joint_type == newton.JointType.PRISMATIC:
             M = mass
-        elif joint_type == newton.JOINT_REVOLUTE:
+        elif joint_type == newton.JointType.REVOLUTE:
             M = inertia[free_axis][free_axis]
         else:
             print("unsupported joint type")
 
         F = 0
-        if drive_mode == newton.sim.JOINT_MODE_TARGET_POSITION:
+        if drive_mode == newton.JointMode.TARGET_POSITION:
             F = ke * (target - q) - (kd * qd)
-        elif drive_mode == newton.sim.JOINT_MODE_TARGET_VELOCITY:
+        elif drive_mode == newton.JointMode.TARGET_VELOCITY:
             F = kd * (target - qd)
 
         F += M * g
@@ -72,11 +72,11 @@ class TestJointDrive(unittest.TestCase):
 
         dt = 0.01
 
-        joint_type = newton.JOINT_PRISMATIC
+        joint_type = newton.JointType.PRISMATIC
         if is_prismatic:
-            joint_type = newton.JOINT_PRISMATIC
+            joint_type = newton.JointType.PRISMATIC
         else:
-            joint_type = newton.JOINT_REVOLUTE
+            joint_type = newton.JointType.REVOLUTE
 
         nb_envs = 2
         body_masses = [10.0, 20.0]
@@ -111,7 +111,7 @@ class TestJointDrive(unittest.TestCase):
             )
             if is_prismatic:
                 environment_builder.add_joint_prismatic(
-                    mode=newton.sim.JOINT_MODE_TARGET_POSITION,
+                    mode=newton.JointMode.TARGET_POSITION,
                     axis=joint_motion_axis,
                     parent=-1,
                     child=bodyIndex,
@@ -125,7 +125,7 @@ class TestJointDrive(unittest.TestCase):
                 )
             else:
                 environment_builder.add_joint_revolute(
-                    mode=newton.sim.JOINT_MODE_TARGET_POSITION,
+                    mode=newton.JointMode.TARGET_POSITION,
                     axis=joint_motion_axis,
                     parent=-1,
                     child=bodyIndex,
@@ -150,8 +150,8 @@ class TestJointDrive(unittest.TestCase):
         state_out = model.state()
         control = model.control()
         contacts = model.collide(state_in)
-        newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-        solver = MuJoCoSolver(model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco=False)
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco_cpu=False)
 
         # Compute the expected velocity outcome after a single sim step.
         vNew = [0.0] * nb_envs
@@ -162,7 +162,7 @@ class TestJointDrive(unittest.TestCase):
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                drive_mode=newton.sim.JOINT_MODE_TARGET_POSITION,
+                drive_mode=newton.JointMode.TARGET_POSITION,
                 targets=joint_drive_targets,
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
@@ -189,7 +189,7 @@ class TestJointDrive(unittest.TestCase):
         model.joint_target_kd.assign(joint_drive_dampings)
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
-        newton.sim.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
         for i in range(0, nb_envs):
@@ -199,7 +199,7 @@ class TestJointDrive(unittest.TestCase):
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                drive_mode=newton.sim.JOINT_MODE_TARGET_POSITION,
+                drive_mode=newton.JointMode.TARGET_POSITION,
                 targets=joint_drive_targets,
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
@@ -210,7 +210,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new values of ke and kd
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -225,14 +225,14 @@ class TestJointDrive(unittest.TestCase):
         joint_drive_dampings = [10.0, 20.0]
         joint_start_positions = [0.0, 0.0]
         joint_start_velocities = [0.0, 0.0]
-        joint_dof_modes = [newton.sim.JOINT_MODE_TARGET_VELOCITY, newton.sim.JOINT_MODE_TARGET_VELOCITY]
+        joint_dof_modes = [newton.JointMode.TARGET_VELOCITY, newton.JointMode.TARGET_VELOCITY]
         model.joint_dof_mode.assign(joint_dof_modes)
         model.joint_target_ke.assign(joint_drive_stiffnesses)
         model.joint_target_kd.assign(joint_drive_dampings)
         control.joint_target.assign(joint_drive_targets)
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
-        newton.sim.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
         for i in range(0, nb_envs):
@@ -253,7 +253,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -261,13 +261,13 @@ class TestJointDrive(unittest.TestCase):
 
         ################################
 
-        # Now run again with JOINT_MODE_NONE and reset back to the start state.
+        # Now run again with JointMode.NONE and reset back to the start state.
 
-        joint_dof_modes = [newton.sim.JOINT_MODE_NONE, newton.sim.JOINT_MODE_NONE]
+        joint_dof_modes = [newton.JointMode.NONE, newton.JointMode.NONE]
         model.joint_dof_mode.assign(joint_dof_modes)
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
-        newton.sim.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
         for i in range(0, nb_envs):
@@ -288,7 +288,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(newton.sim.NOTIFY_FLAG_JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)

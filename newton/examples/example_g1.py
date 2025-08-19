@@ -68,9 +68,9 @@ class Example:
         self.control = self.model.control()
         if self.use_mujoco:
             self.sim_substeps = 4
-            self.solver = newton.solvers.MuJoCoSolver(
+            self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
-                use_mujoco=False,
+                use_mujoco_cpu=False,
                 solver="newton",
                 integrator="euler",
                 iterations=5,
@@ -80,7 +80,7 @@ class Example:
             )
         else:
             self.sim_substeps = 10
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 self.model,
                 iterations=20,
                 angular_damping=0.01,
@@ -92,7 +92,7 @@ class Example:
         self.renderer = None
 
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=1.0,
@@ -103,12 +103,12 @@ class Example:
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
-        newton.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.contacts = None
         if not self.use_mujoco:
             self.contacts = self.model.collide(self.state_0)
         self.use_cuda_graph = (
-            not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda and use_cuda_graph
+            not getattr(self.solver, "use_mujoco_cpu", False) and wp.get_device().is_cuda and use_cuda_graph
         )
 
         if self.use_cuda_graph:
@@ -161,7 +161,7 @@ if __name__ == "__main__":
         "--show-mujoco-viewer",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="Toggle MuJoCo viewer next to Newton renderer when MuJoCoSolver is active.",
+        help="Toggle MuJoCo viewer next to Newton renderer when SolverMuJoCo is active.",
     )
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
@@ -185,7 +185,7 @@ if __name__ == "__main__":
             example.render()
 
             if show_mujoco_viewer:
-                if not example.solver.use_mujoco:
+                if not example.solver.use_mujoco_cpu:
                     mujoco_warp.get_data_into(mjd, mjm, d)
                 viewer.sync()
 

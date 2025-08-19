@@ -28,7 +28,6 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.utils
 
 
 class SolverType(Enum):
@@ -147,26 +146,26 @@ class Example:
         self.model.soft_contact_mu = 1.0
 
         if self.solver_type == SolverType.EULER:
-            self.solver = newton.solvers.SemiImplicitSolver(model=self.model)
+            self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
         elif self.solver_type == SolverType.STYLE3D:
-            self.solver = newton.solvers.Style3DSolver(
+            self.solver = newton.solvers.SolverStyle3D(
                 model=self.model,
                 iterations=self.iterations,
             )
             self.solver.precompute(builder)
         elif self.solver_type == SolverType.XPBD:
-            self.solver = newton.solvers.XPBDSolver(
+            self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
             )
         else:  # self.solver_type == SolverType.VBD
-            self.solver = newton.solvers.VBDSolver(model=self.model, iterations=self.iterations)
+            self.solver = newton.solvers.SolverVBD(model=self.model, iterations=self.iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         if stage_path is not None:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path,
                 model=self.model,
                 scaling=self.renderer_scale_factor,

@@ -32,7 +32,7 @@ class Example:
     def __init__(self, stage_path="example_humanoid.usd", num_envs=8, use_cuda_graph=True):
         self.num_envs = num_envs
 
-        use_mujoco = False
+        use_mujoco_cpu = False
 
         # set numpy random seed
         self.seed = 123
@@ -78,9 +78,9 @@ class Example:
 
         self.control = self.model.control()
 
-        self.solver = newton.solvers.MuJoCoSolver(
+        self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco=use_mujoco,
+            use_mujoco_cpu=use_mujoco_cpu,
             solver="newton",
             integrator="euler",
             iterations=10,
@@ -89,14 +89,14 @@ class Example:
 
         self.renderer = None
         if stage_path:
-            self.renderer = newton.utils.SimRendererOpenGL(
+            self.renderer = newton.viewer.RendererOpenGL(
                 path=stage_path, model=self.model, scaling=1.0, show_joints=True
             )
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
         self.use_cuda_graph = (
-            not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda and use_cuda_graph
+            not getattr(self.solver, "use_mujoco_cpu", False) and wp.get_device().is_cuda and use_cuda_graph
         )
 
         if self.use_cuda_graph:

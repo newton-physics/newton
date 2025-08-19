@@ -15,7 +15,7 @@
 
 # TODO:
 # - Fix Featherstone solver for floating body
-# - Fix linear force application to floating body for MuJoCoSolver
+# - Fix linear force application to floating body for SolverMuJoCo
 
 import unittest
 
@@ -47,7 +47,7 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
 
     state_0, state_1 = model.state(), model.state()
 
-    newton.sim.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
     if test_angular:
@@ -111,9 +111,9 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
             solver.step(state_0, state_1, control, None, sim_dt)
             state_0, state_1 = state_1, state_0
 
-        if not isinstance(solver, (newton.solvers.MuJoCoSolver, newton.solvers.FeatherstoneSolver)):
+        if not isinstance(solver, (newton.solvers.SolverMuJoCo, newton.solvers.SolverFeatherstone)):
             # need to compute joint_qd from body_qd
-            newton.sim.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
+            newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
         qd = state_0.joint_qd.numpy()
         test.assertGreater(qd[control_dim], 0.009)
@@ -126,18 +126,20 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
 
 devices = get_test_devices()
 solvers = {
-    # "featherstone": lambda model: newton.solvers.FeatherstoneSolver(model, angular_damping=0.0),
-    "mujoco_c": lambda model: newton.solvers.MuJoCoSolver(
-        model, use_mujoco=True, update_data_interval=0, disable_contacts=True
+    # "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
     ),
-    "mujoco_warp": lambda model: newton.solvers.MuJoCoSolver(
-        model, use_mujoco=False, update_data_interval=0, disable_contacts=True
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
     ),
-    "xpbd": lambda model: newton.solvers.XPBDSolver(model, angular_damping=0.0),
-    "semi_implicit": lambda model: newton.solvers.SemiImplicitSolver(model, angular_damping=0.0),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
+    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
         # add_function_test(TestControlForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
             TestControlForce,
