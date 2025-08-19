@@ -49,7 +49,8 @@ class Example:
         newton.utils.parse_usd(
             asset_file,
             builder,
-            collapse_fixed_joints=True,
+            ignore_paths=["/GroundPlane"],
+            collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
         )
@@ -66,8 +67,6 @@ class Example:
 
         for i in range(len(builder.joint_dof_mode)):
             builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-
-        for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
