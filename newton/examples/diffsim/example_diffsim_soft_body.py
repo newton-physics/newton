@@ -109,12 +109,12 @@ class Example:
         self.cell_dim = 2
         self.cell_size = 0.1
         center = self.cell_size * self.cell_dim * 0.5
-        self.grid_origin = wp.vec3(-0.5, -center, 1.0)
+        self.grid_origin = wp.vec3(-center, -0.5, 1.0)
         self.create_model()
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.target = wp.vec3(-1.0, 0.0, 1.5)
+        self.target = wp.vec3(0.0, -1.0, 1.5)
         # Initialize material parameters
         if self.material_behavior == "anisotropic":
             # Different Lame parameters for each tet
@@ -184,7 +184,7 @@ class Example:
         builder.add_soft_grid(
             pos=self.grid_origin,
             rot=wp.quat_identity(),
-            vel=wp.vec3(5.0, 0.0, -5.0),
+            vel=wp.vec3(0.0, 6.0, -6.0),
             dim_x=self.cell_dim,
             dim_y=self.cell_dim,
             dim_z=self.cell_dim,
@@ -209,9 +209,9 @@ class Example:
         mu = 0.2
         builder.add_shape_box(
             body=-1,
-            xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()),
-            hx=0.25,
-            hy=1.0,
+            xform=wp.transform(wp.vec3(0.0, 2.0, 1.0), wp.quat_identity()),
+            hx=1.0,
+            hy=0.25,
             hz=1.0,
             cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
         )
