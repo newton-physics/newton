@@ -74,12 +74,12 @@ class Example:
         mu = 0.2
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.add_particle(pos=wp.vec3(-0.5, 0.0, 1.0), vel=wp.vec3(5.0, 0.0, -5.0), mass=1.0)
+        builder.add_particle(pos=wp.vec3(0.0, -0.5, 1.0), vel=wp.vec3(0.0, 5.0, -5.0), mass=1.0)
         builder.add_shape_box(
             body=-1,
-            xform=wp.transform(wp.vec3(2.0, 0.0, 1.0), wp.quat_identity()),
-            hx=0.25,
-            hy=1.0,
+            xform=wp.transform(wp.vec3(0.0, 2.0, 1.0), wp.quat_identity()),
+            hx=1.0,
+            hy=0.25,
             hz=1.0,
             cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
         )
@@ -96,7 +96,7 @@ class Example:
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.target = (-2.0, 0.0, 1.5)
+        self.target = (0.0, -2.0, 1.5)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
 
         # allocate sim states for trajectory
@@ -121,9 +121,6 @@ class Example:
             from newton.viewer import ViewerGL  # noqa: PLC0415
 
             self.viewer = ViewerGL(self.model)
-            pos = type(self.viewer.camera.pos)(-1.0, -6.0, 2.0)
-            self.viewer.camera.pos = pos
-            self.viewer.camera.yaw = 90.0
 
         # capture forward/backward passes
         self.use_cuda_graph = wp.get_device().is_cuda
@@ -196,6 +193,14 @@ class Example:
                     wp.array(traj_verts[0:-1], dtype=wp.vec3),
                     wp.array(traj_verts[1:], dtype=wp.vec3),
                     wp.render.bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
+                )
+
+                self.viewer.log_shapes(
+                    "/particle",
+                    newton.GeoType.SPHERE,
+                    0.1,
+                    wp.array([wp.transform(wp.vec3(traj_verts[-1]), wp.quat_identity())], dtype=wp.transform),
+                    wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3),
                 )
                 self.viewer.end_frame()
 
