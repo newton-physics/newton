@@ -2239,7 +2239,7 @@ class SolverMuJoCo(SolverBase):
                 # The local index is consistent for a given part of the model across all environments.
                 if template_shape_idx >= shapes_per_env * model.num_envs:
                     # not an actual template, but a static shape
-                    global_shape_indices = dict.fromkeys(range(model.num_envs), template_shape_idx)
+                    global_shape_indices = {0: template_shape_idx}
                     global_shapes.append(template_shape_idx)
                 else:
                     local_shape_idx = template_shape_idx % shapes_per_env
