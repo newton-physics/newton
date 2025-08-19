@@ -453,6 +453,7 @@ class Drone:
 class Example:
     def __init__(
         self,
+        viewer_type: str,
         stage_path="example_drone.usd",
         verbose=False,
         render_rollouts=False,
@@ -547,44 +548,48 @@ class Example:
 
         self.tape = None
 
-        if stage_path:
-            if not headless:
-                self.renderer = newton.viewer.RendererOpenGL(self.drone.model, stage_path, fps=self.fps)
-            else:
-                # Helper to render the physics scene as a USD file.
-                self.renderer = newton.viewer.RendererUsd(self.drone.model, stage_path, fps=self.fps)
+        if viewer_type == "usd":
+            from newton.viewer import ViewerUSD  # noqa: PLC0415
 
-            if isinstance(self.renderer, newton.viewer.RendererUsd):
-                from pxr import UsdGeom  # noqa: PLC0415
+            self.viewer = ViewerUSD(self.drone.model, output_path=stage_path, fps=self.fps)
+        elif viewer_type == "rerun":
+            from newton.viewer import ViewerRerun  # noqa: PLC0415
 
-                # Remove the default drone geometries.
-                drone_root_prim = self.renderer.stage.GetPrimAtPath("/root/body_0_drone_0")
-                for prim in drone_root_prim.GetChildren():
-                    self.renderer.stage.RemovePrim(prim.GetPath())
-
-                # Add a reference to the drone geometry.
-                drone_prim = self.renderer.stage.OverridePrim(f"{drone_root_prim.GetPath()}/crazyflie")
-                drone_prim.GetReferences().AddReference(drone_path)
-                drone_xform = UsdGeom.Xform(drone_prim)
-                drone_xform.AddTranslateOp().Set((0.0, 0.0, -0.05))
-                drone_xform.AddRotateXOp().Set(90.0)
-                drone_xform.AddRotateYOp().Set(135.0)
-                drone_xform.AddScaleOp().Set((drone_size * 20.0,) * 3)
-
-                # Get the propellers to spin
-                for turning_direction in ("cw", "ccw"):
-                    spin = 100.0 * 360.0 * self.num_frames / self.fps
-                    spin = spin if turning_direction == "ccw" else -spin
-                    for side in ("back", "front"):
-                        prop_prim = self.renderer.stage.OverridePrim(
-                            f"{drone_prim.GetPath()}/propeller_{turning_direction}_{side}"
-                        )
-                        prop_xform = UsdGeom.Xform(prop_prim)
-                        rot = prop_xform.AddRotateYOp()
-                        rot.Set(0.0, 0.0)
-                        rot.Set(spin, self.num_frames)
+            self.viewer = ViewerRerun(self.drone.model, server=True, launch_viewer=True)
         else:
-            self.renderer = None
+            from newton.viewer import ViewerGL  # noqa: PLC0415
+
+            self.viewer = ViewerGL(self.drone.model)
+
+        if isinstance(self.viewer, newton.viewer.ViewerUSD):
+            from pxr import UsdGeom  # noqa: PLC0415
+
+            # Remove the default drone geometries.
+            drone_root_prim = self.viewer.stage.GetPrimAtPath("/root/body_0_drone_0")
+            for prim in drone_root_prim.GetChildren():
+                self.viewer.stage.RemovePrim(prim.GetPath())
+
+            # Add a reference to the drone geometry.
+            drone_prim = self.viewer.stage.OverridePrim(f"{drone_root_prim.GetPath()}/crazyflie")
+            drone_prim.GetReferences().AddReference(drone_path)
+            drone_xform = UsdGeom.Xform(drone_prim)
+            drone_xform.AddTranslateOp().Set((0.0, 0.0, -0.05))
+            drone_xform.AddRotateXOp().Set(90.0)
+            drone_xform.AddRotateYOp().Set(135.0)
+            drone_xform.AddScaleOp().Set((drone_size * 20.0,) * 3)
+
+            # Get the propellers to spin
+            for turning_direction in ("cw", "ccw"):
+                spin = 100.0 * 360.0 * self.num_frames / self.fps
+                spin = spin if turning_direction == "ccw" else -spin
+                for side in ("back", "front"):
+                    prop_prim = self.viewer.stage.OverridePrim(
+                        f"{drone_prim.GetPath()}/propeller_{turning_direction}_{side}"
+                    )
+                    prop_xform = UsdGeom.Xform(prop_prim)
+                    rot = prop_xform.AddRotateYOp()
+                    rot.Set(0.0, 0.0)
+                    rot.Set(spin, self.num_frames)
 
         self.use_cuda_graph = wp.get_device().is_cuda
         self.optim_graph = None
@@ -787,19 +792,19 @@ class Example:
             (self.drone.states[0], self.drone.states[1]) = (self.drone.states[1], self.drone.states[0])
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
-        self.renderer.begin_frame(self.frame / self.fps)
-        self.renderer.render(self.drone.state)
+        self.viewer.begin_frame(self.frame / self.fps)
+        self.viewer.log_state(self.drone.state)
 
         # Render a sphere as the current target.
-        self.renderer.render_sphere(
-            "target",
-            self.targets[self.target_idx],
-            wp.quat_identity(),
-            0.05,
-            color=(1.0, 0.0, 0.0),
+        self.viewer.log_shapes(
+            "/target",
+            newton.GeoType.SPHERE,
+            (0.05,),
+            wp.array([wp.transform(self.targets[self.target_idx], wp.quat_identity())], dtype=wp.transform),
+            wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
         )
 
         # Render the rollout trajectories.
@@ -813,20 +818,21 @@ class Example:
             for i in range(self.rollout_count):
                 # Flip colors, so red means best trajectory, blue worst.
                 color = wp.render.bourke_color_map(-max_cost, -min_cost, -costs[i])
-                self.renderer.render_line_strip(
-                    name=f"rollout_{i}",
-                    vertices=positions[:, i],
-                    color=color,
-                    radius=0.001,
+                self.viewer.log_lines(
+                    f"/rollout_{i}",
+                    wp.array(positions[:, i], dtype=wp.vec3),
+                    wp.array(positions[:, i], dtype=wp.vec3),
+                    wp.array([color], dtype=wp.vec3),
                 )
 
-        self.renderer.end_frame()
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage_path",
@@ -842,7 +848,12 @@ if __name__ == "__main__":
         default=os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd"),
         help="Path to the USD file to use as the reference for the drone prim in the output stage.",
     )
-    parser.add_argument("--render_rollouts", action="store_true", help="Add rollout trajectories to the output stage.")
+    parser.add_argument(
+        "--render_rollouts",
+        default=False,
+        action="store_true",
+        help="Add rollout trajectories to the output stage.",
+    )
     parser.add_argument(
         "--headless",
         default=True,
@@ -855,6 +866,7 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(
+            viewer_type=args.viewer,
             stage_path=args.stage_path,
             verbose=args.verbose,
             render_rollouts=args.render_rollouts,
@@ -871,5 +883,5 @@ if __name__ == "__main__":
             loss = np.min(example.rollout_costs.numpy())
             print(f"[{example.frame:3d}/{example.num_frames}] loss={loss:.8f}")
 
-        if example.renderer is not None:
-            example.renderer.save()
+        if example.viewer is not None:
+            example.viewer.close()
