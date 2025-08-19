@@ -130,6 +130,10 @@ class Example:
                 requires_grad=True,
             )
 
+            # Scale learning rate
+            scale = self.material_params.size / float(self.model.tet_count)
+            self.train_rate = self.train_rate * scale
+
         self.optimizer = warp.optim.SGD(
             [self.material_params],
             lr=self.train_rate,
