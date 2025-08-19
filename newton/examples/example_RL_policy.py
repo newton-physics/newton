@@ -30,7 +30,7 @@ import yaml
 import newton
 import newton.examples
 import newton.utils
-from newton.sim import State
+from newton import State
 
 wp.config.enable_backward = False
 
@@ -317,7 +317,7 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         newton.utils.parse_usd(
-            newton.examples.get_asset(asset_directory + config["asset_path"]),
+            newton.examples.get_asset(asset_directory + "/" + config["asset_path"]),
             builder,
             joint_drive_gains_scaling=1.0,
             collapse_fixed_joints=False,
@@ -343,7 +343,7 @@ class Example:
         builder.joint_q[7:] = config["mjw_joint_pos"]
 
         for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
         for i in range(len(config["mjw_joint_stiffness"])):
             builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
@@ -351,21 +351,20 @@ class Example:
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.MuJoCoSolver(
+        self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco=self.use_mujoco,
+            use_mujoco_cpu=self.use_mujoco,
             solver="newton",
             ncon_per_env=30,
-            contact_stiffness_time_const=0.01,
         )
 
-        self.renderer = newton.utils.SimRendererOpenGL(self.model, "RL Policy Example")
+        self.renderer = newton.viewer.RendererOpenGL(self.model, "RL Policy Example")
         self.state_temp = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         # Store initial joint state for fast reset.
         self._initial_joint_q = wp.clone(self.state_0.joint_q)
         self._initial_joint_qd = wp.clone(self.state_0.joint_qd)
@@ -414,8 +413,8 @@ class Example:
         wp.copy(self.state_1.joint_q, self._initial_joint_q)
         wp.copy(self.state_1.joint_qd, self._initial_joint_qd)
         # Recompute forward kinematics to refresh derived state.
-        newton.sim.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        newton.sim.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
 
     def step(self):
         with wp.ScopedTimer("step"):
@@ -463,29 +462,31 @@ if __name__ == "__main__":
     parser.add_argument("--physx", action=argparse.BooleanOptionalAction, help="Run physX policy instead of MJWarp.")
 
     args = parser.parse_known_args()[0]
+    policy_directory = newton.utils.download_asset("rl_policies")
 
     # Load robot configuration from YAML file
+    yaml_path = str(policy_directory) + "/" + args.robot
     try:
-        with open(args.robot, encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"[ERROR] Robot configuration file not found: {args.robot}")
-        print("Available YAML files:")
-        import glob
+        print(f"[ERROR] Robot config file not found: {yaml_path}")
+        print("[INFO] Available robot configurations:")
+        import os
 
-        for yaml_file in glob.glob("*.yaml"):
-            print(f"  - {yaml_file}")
+        try:
+            for file in sorted(os.listdir(policy_directory)):
+                if file.endswith(".yaml"):
+                    print(f"  - {file}")
+        except OSError:
+            print(f"  Could not list files in: {policy_directory}")
         exit(1)
     except yaml.YAMLError as e:
         print(f"[ERROR] Error parsing YAML file: {e}")
         exit(1)
 
-    # policy_directory = newton.utils.download_asset("rl_policies")
-    # asset_directory = newton.utils.download_asset(config["asset_path"])
-
-    policy_directory = newton.utils.download_asset("rl_policies")
-    asset_directory = newton.utils.download_asset(config["asset_path"])
-    print("[INFO] Selected robot config:", args.robot)
+    asset_directory = str(newton.utils.download_asset(config["asset_dir"]))
+    print("[INFO] Selected robot config:", config)
     mjc_to_physx = list(range(config["num_dofs"]))
     physx_to_mjc = list(range(config["num_dofs"]))
 
@@ -493,14 +494,14 @@ if __name__ == "__main__":
         if args.physx:
             if "physx" not in config["policy_path"] or "physx_joint_names" not in config:
                 raise ValueError(f"PhysX policy/joint mapping not available in config file '{args.robot}'.")
-            policy_path = policy_directory + config["policy_path"]["physx"]
+            policy_path = str(policy_directory) + "/" + config["policy_path"]["physx"]
             mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(
                 config["mjw_joint_names"], config["physx_joint_names"]
             )
         else:
-            policy_path = policy_directory + config["policy_path"]["mjw"]
+            policy_path = str(policy_directory) + "/" + config["policy_path"]["mjw"]
 
-        example = Example(config, asset_directory, mjc_to_physx, physx_to_mjc)
+        example = Example(config, str(asset_directory), mjc_to_physx, physx_to_mjc)
 
         # Use utility function to load policy and setup tensors
         load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
