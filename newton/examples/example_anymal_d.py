@@ -19,7 +19,7 @@
 # Shows how to control Anymal D with multiple environments.
 #
 # Example usage:
-# uv run  newton/examples/example_anymal_d.py --num-envs 4
+# uv run newton/examples/example_anymal_d.py --num-envs 4
 #
 ###########################################################################
 
@@ -33,7 +33,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path=None, headless=False, num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path="example_anymal_d.usd", headless=False, num_envs=8, use_cuda_graph=True):
         self.device = wp.get_device()
         self.num_envs = num_envs
 
@@ -46,11 +46,10 @@ class Example:
         articulation_builder.default_shape_cfg.kf = 1.0e3
         articulation_builder.default_shape_cfg.mu = 0.75
 
-        if stage_path is None:
-            asset_path = newton.utils.download_asset("anymal_usd")
-            stage_path = str(asset_path / "anymal_d.usda")
+        asset_path = newton.utils.download_asset("anymal_usd")
+        asset_file = str(asset_path / "anymal_d.usda")
         newton.utils.parse_usd(
-            stage_path,
+            asset_file,
             articulation_builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -91,7 +90,9 @@ class Example:
             self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
         )
 
-        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
+        self.renderer = None
+        if not headless and stage_path:
+            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -139,7 +140,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        help="Path to the output URDF file.",
+        default="example_anymal_d.usd",
+        help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
     parser.add_argument("--num-envs", type=int, default=8, help="Total number of simulated environments.")

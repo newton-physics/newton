@@ -34,7 +34,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path=None, headless=False):
+    def __init__(self, stage_path="example_h1.usd", headless=False):
         self.device = wp.get_device()
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -44,11 +44,10 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        if stage_path is None:
-            asset_path = newton.utils.download_asset("h1_description")
-            stage_path = str(asset_path / "usd" / "h1_minimal.usd")
+        asset_path = newton.utils.download_asset("h1_description")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
         newton.utils.parse_usd(
-            stage_path,
+            asset_file,
             builder,
             collapse_fixed_joints=True,
             enable_self_collisions=False,
@@ -75,7 +74,9 @@ class Example:
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
 
-        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
+        self.renderer = None
+        if not headless and stage_path:
+            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -124,7 +125,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        help="Path to the USD file.",
+        default="example_h1.usd",
+        help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
