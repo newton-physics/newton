@@ -238,7 +238,7 @@ class ViewerGL(ViewerBase):
         self.log_lines("picking_line", line_begins, line_ends, line_colors, hidden=False)
 
     def begin_frame(self, time):
-        pass
+        super().begin_frame(time)
 
     def end_frame(self):
         """Finish rendering the current frame.
@@ -379,8 +379,8 @@ class ViewerGL(ViewerBase):
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT:
             ray_start, ray_dir = self.camera.get_world_ray(x, y)
-            print(f"ray: start {ray_start}, dir {ray_dir}")
-            self.picking.pick(self._last_state, ray_start, ray_dir)
+            if self._last_state is not None:
+                self.picking.pick(self._last_state, ray_start, ray_dir)
 
     def on_mouse_release(self, x, y, button, modifiers):
         """Handle mouse release events to stop dragging."""
