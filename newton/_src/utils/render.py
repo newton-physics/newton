@@ -20,7 +20,7 @@ from collections import defaultdict
 import numpy as np
 import warp as wp
 from warp.render import OpenGLRenderer, UsdRenderer
-from warp.render.utils import solidify_mesh, tab10_color_map
+from warp.render.utils import compute_contact_points, solidify_mesh, tab10_color_map
 
 from ..core import Axis, AxisType
 from ..geometry import GeoType, ShapeFlags, raycast
