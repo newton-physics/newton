@@ -299,3 +299,113 @@ apply the appropriate rotation transforms:
    # Gravity vector will automatically align with the chosen up axis:
    # - Y-up: gravity = (0, -9.81, 0)
    # - Z-up: gravity = (0, 0, -9.81)
+
+Collision Primitive Conventions
+-------------------------------
+
+Different physics engines use varying conventions for collision primitives. Newton's importers handle these conversions automatically, but understanding the conventions helps when:
+
+* Debugging unexpected collision behavior
+* Creating shapes programmatically with ModelBuilder
+* Understanding center of mass calculations
+
+Newton Primitive Conventions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Newton uses the following conventions for collision primitives:
+
+.. list-table:: Newton Collision Primitive Conventions
+   :header-rows: 1
+   :widths: 15 25 30 30
+
+   * - **Shape**
+     - **Origin**
+     - **Parameters**
+     - **Center of Mass**
+   * - **Box**
+     - Geometric center
+     - hx, hy, hz (half-extents)
+     - At origin
+   * - **Sphere**
+     - Center of sphere
+     - radius
+     - At origin
+   * - **Cylinder**
+     - Geometric center
+     - radius, half_height
+     - At origin
+   * - **Capsule**
+     - Geometric center
+     - radius, half_height (excludes caps)
+     - At origin
+   * - **Cone**
+     - Geometric center
+     - radius (base), half_height
+     - Offset at (0, 0, -half_height/2)
+   * - **Plane**
+     - Point on plane
+     - scale (0,0 for infinite)
+     - N/A
+
+**Important Notes:**
+
+* **Cone**: Extends along the Z-axis with base at -half_height and apex at +half_height. The center of mass is located 1/4 of the total height from the base.
+* **Capsule**: Extends along the Z-axis. The half_height parameter excludes the hemispherical caps. Total length = 2 * (radius + half_height).
+* **Cylinder**: Extends along the Z-axis.
+* **Plane**: Uses scale=(0,0) for infinite planes, or (width, height) for bounded planes.
+
+Automatic Import Handling
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Newton's importers automatically handle convention differences:
+
+* **USD Importer**: Converts between USD's conventions and Newton's
+* **URDF Importer**: Maps URDF primitives to Newton equivalents
+* **MJCF Importer**: Handles MuJoCo's specific conventions
+
+Users do not need to manually convert between conventions when using importers.
+
+Engine Convention Comparison
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table:: Key Convention Differences
+   :header-rows: 1
+   :widths: 20 20 20 20 20
+
+   * - **Shape**
+     - **Newton**
+     - **USD (Physics)**
+     - **USD (Visual)**
+     - **MuJoCo**
+   * - **Box**
+     - half-extents
+     - half-extents
+     - full size
+     - half-extents
+   * - **Cone**
+     - half_height
+     - halfHeight
+     - height (full)
+     - Not supported
+   * - **Capsule Height**
+     - Excludes caps
+     - Excludes caps
+     - Excludes caps
+     - Includes caps (fromto)
+
+Special Considerations
+~~~~~~~~~~~~~~~~~~~~~~
+
+**Cone Dynamics**
+The cone's offset center of mass affects its rotational behavior. When the cone tips, it will naturally tend to fall on its side due to the COM being closer to the base.
+
+**USD Inconsistency**
+USD uses different parameter names for visual vs physics shapes:
+
+* Visual shapes: ``height`` parameter (full height)
+* Physics shapes: ``halfHeight`` parameter
+
+Newton's USD importer handles both cases automatically by checking the shape type.
+
+**MuJoCo Capsule Convention**
+MuJoCo defines capsules using ``fromto`` endpoints which include the hemispherical caps in the total length. Newton's importer automatically adjusts for this difference.
