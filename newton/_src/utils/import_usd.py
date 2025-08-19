@@ -376,12 +376,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Capsule extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -390,12 +392,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Cylinder extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -404,12 +408,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Cone extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -1034,25 +1040,37 @@ def parse_usd(
                         radius=shape_spec.radius * scale[0],
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
