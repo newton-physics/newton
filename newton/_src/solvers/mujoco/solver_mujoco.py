@@ -2232,14 +2232,22 @@ class SolverMuJoCo(SolverBase):
                 )
 
             full_shape_mapping = {}
+            global_shapes = []
             # geom_to_shape_idx is a mapping from MuJoCo template geom index to Newton shape indices of the last environemnt
             # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
             for geom_idx, template_shape_idx in geom_to_shape_idx.items():
                 # The local index is consistent for a given part of the model across all environments.
-                local_shape_idx = template_shape_idx % shapes_per_env
-                for env_idx in range(model.num_envs):
-                    # Calculate the global Newton shape index for the current environment.
-                    global_shape_idx = env_idx * shapes_per_env + local_shape_idx
+                if template_shape_idx >= shapes_per_env * model.num_envs:
+                    # not an actual template, but a static shape
+                    global_shape_indices = dict.fromkeys(range(model.num_envs), template_shape_idx)
+                    global_shapes.append(template_shape_idx)
+                else:
+                    local_shape_idx = template_shape_idx % shapes_per_env
+                    global_shape_indices = {
+                        env_idx: env_idx * shapes_per_env + local_shape_idx for env_idx in range(model.num_envs)
+                    }
+
+                for env_idx, global_shape_idx in global_shape_indices.items():
                     # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
                     if geom_idx >= 0:
@@ -2300,6 +2308,10 @@ class SolverMuJoCo(SolverBase):
             to_newton_shape_array = np.full((model.num_envs, self.mj_model.ngeom), -1, dtype=np.int32)
             if num_shapes > 0:
                 reverse_shape_mapping = {v: k for k, v in full_shape_mapping.items()}
+                for shape in global_shapes:
+                    geom_idx = full_shape_mapping[shape][1]
+                    for env_idx in range(model.num_envs):
+                        reverse_shape_mapping[(env_idx, geom_idx)] = shape
                 for mjc_indices, shape_idx in reverse_shape_mapping.items():
                     to_newton_shape_array[mjc_indices[0], mjc_indices[1]] = shape_idx
             model.to_newton_shape_index = wp.array2d(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
