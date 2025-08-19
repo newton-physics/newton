@@ -170,7 +170,6 @@ class Example:
         self.model.soft_contact_kd = kd
         self.model.soft_contact_kf = kf
         self.model.soft_contact_mu = mu
-        self.model.particle_adhesion = 0.05
 
         radii = wp.zeros(self.model.particle_count, dtype=float)
         radii.fill_(0.05)
@@ -184,7 +183,7 @@ class Example:
         # initialize the integrator.
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=40.0)
 
         # model input
         self.phases = []
@@ -240,9 +239,6 @@ class Example:
                 block_dim=TILE_THREADS,
             )
             self.control.tet_activations = self.tet_activations[frame]
-
-        # with wp.ScopedTimer("collide", active=self.verbose):
-        #    self.contacts = self.model.collide(self.states[frame * self.sim_substeps])
 
         with wp.ScopedTimer("simulate", active=self.verbose):
             # run simulation loop
