@@ -31,7 +31,6 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.viewer
 
 
 class Example:
@@ -55,7 +54,7 @@ class Example:
         mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
 
         self.input_scale_factor = 1.0
-        self.viewer_scale_factor = 1.0
+        self.renderer_scale_factor = 1.0
         vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
 
@@ -94,9 +93,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.viewer = None
-        if stage_path:
-            self.viewer = newton.viewer.ViewerGL(model=self.model)
+        if stage_path is not None:
+            self.renderer = newton.viewer.RendererOpenGL(
+                path=stage_path,
+                model=self.model,
+                scaling=self.renderer_scale_factor,
+                enable_backface_culling=False,
+            )
+        else:
+            self.renderer = None
 
         self.cuda_graph = None
         if self.use_cuda_graph:
@@ -119,13 +124,19 @@ class Example:
                 self.simulate_substeps()
             self.sim_time += self.frame_dt
 
+    def run(self):
+        for i in range(self.num_frames):
+            self.step()
+            self.render()
+            print(f"[{i:4d}/{self.num_frames}]")
+
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_model(self.state_0)
-        self.viewer.end_frame()
+        self.renderer.begin_frame(self.sim_time)
+        self.renderer.render(self.state_0)
+        self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -145,12 +156,10 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        while example.viewer.is_running():
-            example.step()
-            example.render()
+        example.run()
 
         frame_times = example.profiler["step"]
         print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
 
-    example.viewer.close()
+        if example.renderer:
+            example.renderer.save()

@@ -27,7 +27,7 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.viewer
+import newton.utils
 
 
 class Example:
@@ -71,8 +71,9 @@ class Example:
         # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.SolverFeatherstone(self.model)
 
+        self.renderer = None
         if stage_path:
-            self.viewer = newton.viewer.ViewerGL(model=self.model)
+            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -105,13 +106,13 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
         with wp.ScopedTimer("render", synchronize=True, print=False):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_model(self.state_0)
-            self.viewer.end_frame()
+            self.renderer.begin_frame(self.sim_time)
+            self.renderer.render(self.state_0)
+            self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -131,10 +132,16 @@ if __name__ == "__main__":
 
     args = parser.parse_known_args()[0]
 
-    example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+    with wp.ScopedDevice(args.device):
+        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
-    while example.viewer.is_running():
-        example.step()
-        example.render()
+        for _ in range(args.num_frames):
+            example.step()
+            example.render()
 
-    example.viewer.close()
+        steps = args.num_frames * example.sim_substeps * args.num_envs
+        print(f"Simulation time: {example.run_time:.3f} ms")
+        print(f"Steps per second:  {steps / (example.run_time / 1000):,.0f}")
+
+        if example.renderer:
+            example.renderer.save()

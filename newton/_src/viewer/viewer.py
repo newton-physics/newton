@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from abc import abstractmethod
 
 import numpy as np
@@ -277,16 +292,16 @@ class ViewerBase:
             vertices, indices = create_sphere_mesh(radius)
 
         elif geo_type == newton.GeoType.CAPSULE:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_capsule_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_capsule_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.CYLINDER:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_cylinder_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_cylinder_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.CONE:
-            radius, height = geo_scale[:2]
-            vertices, indices = create_cone_mesh(radius, height, up_axis=2)
+            radius, half_height = geo_scale[:2]
+            vertices, indices = create_cone_mesh(radius, half_height, up_axis=2)
 
         elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:
@@ -336,6 +351,10 @@ class ViewerBase:
 
     @abstractmethod
     def log_scalar(self, name, value):
+        pass
+
+    @abstractmethod
+    def apply_forces(self, state):
         pass
 
     @abstractmethod

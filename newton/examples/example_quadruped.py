@@ -32,7 +32,8 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-import newton.viewer
+from newton.utils import BasicRecorder
+from newton.viewer import RecorderImGuiManager
 
 
 class Example:
@@ -84,7 +85,14 @@ class Example:
         # self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         if stage_path:
-            self.viewer = newton.viewer.ViewerGL(self.model)
+            self.renderer = newton.viewer.RendererOpenGL(self.model, path=stage_path)
+            self.recorder = BasicRecorder()
+            self.gui = RecorderImGuiManager(self.renderer, self.recorder, self)
+            self.renderer.render_2d_callbacks.append(self.gui.render_frame)
+        else:
+            self.renderer = None
+            self.recorder = None
+            self.gui = None
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -102,17 +110,34 @@ class Example:
         else:
             self.graph = None
 
+    @property
+    def paused(self):
+        if self.renderer:
+            return self.renderer.paused
+        return False
+
+    @paused.setter
+    def paused(self, value):
+        if self.renderer:
+            if self.renderer.paused == value:
+                return
+            self.renderer.paused = value
+            if self.gui:
+                self.gui._clear_contact_points()
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-
-            self.viewer.picking._apply_picking_force(self.state_0)
-
+            if self.renderer and hasattr(self.renderer, "apply_picking_force"):
+                self.renderer.apply_picking_force(self.state_0)
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        if self.paused:
+            return
+
         with wp.ScopedTimer("step"):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
@@ -120,15 +145,27 @@ class Example:
                 self.simulate()
         self.sim_time += self.frame_dt
 
+        if self.recorder:
+            if self.renderer:
+                self.renderer.compute_contact_rendering_points(self.state_0.body_q, self.contacts)
+                contact_points = [self.renderer.contact_points0, self.renderer.contact_points1]
+                self.recorder.record(self.state_0.body_q, contact_points)
+            else:
+                self.recorder.record(self.state_0.body_q)
+
     def render(self):
-        if self.viewer is None:
+        if self.renderer is None:
             return
 
         with wp.ScopedTimer("render"):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_model(self.state_0)
-            self.viewer.log_contacts(self.contacts, self.state_0)
-            self.viewer.end_frame()
+            self.renderer.begin_frame(self.sim_time)
+            if not self.paused:
+                self.renderer.render(self.state_0)
+                self.renderer.render_computed_contacts(contact_point_radius=1e-2)
+            else:
+                # in paused mode, the GUI will handle rendering from the recorder
+                pass
+            self.renderer.end_frame()
 
 
 if __name__ == "__main__":
@@ -150,8 +187,8 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
-        if example.viewer:
-            while example.viewer.is_running():
+        if example.renderer:
+            while example.renderer.is_running():
                 example.step()
                 example.render()
         else:
@@ -159,5 +196,5 @@ if __name__ == "__main__":
                 example.step()
                 example.render()
 
-    if example.viewer:
-        example.viewer.close()
+        # if example.renderer:
+        #     example.renderer.save()
