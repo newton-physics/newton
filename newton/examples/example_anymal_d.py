@@ -98,6 +98,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = None
+        self.zero_targets = wp.zeros(self.model.joint_dof_count, dtype=float)
+        
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and use_cuda_graph
@@ -115,6 +117,8 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        wp.copy(self.control.joint_target, self.zero_targets)
+        
         with wp.ScopedTimer("step", active=False):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
