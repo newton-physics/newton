@@ -57,7 +57,7 @@ class ViewerBase:
     def begin_frame(self, time):
         self.time = time
 
-    def log_model(self, state):
+    def log_state(self, state):
         """Render the Newton model."""
 
         if self.model is None:

@@ -195,12 +195,12 @@ class ViewerGL(ViewerBase):
     def log_scalar(self, name, value):
         pass
 
-    def log_model(self, state):
-        """Override log_model to cache the state for the selection panel."""
+    def log_state(self, state):
+        """Override log_state to cache the state for the selection panel."""
         # Cache the state for selection panel use
         self._last_state = state
         # Call parent implementation
-        super().log_model(state)
+        super().log_state(state)
 
     def begin_frame(self, time):
         pass
@@ -373,6 +373,9 @@ class ViewerGL(ViewerBase):
         pass
 
     def on_key_press(self, symbol, modifiers):
+        if self.ui.is_capturing():
+            return
+
         try:
             import pyglet  # noqa: PLC0415
         except Exception:
@@ -490,10 +493,7 @@ class ViewerGL(ViewerBase):
             imgui.separator()
 
             # Collapsing headers default-open handling (first frame only)
-            try:
-                header_flags = 0  # don't force open via flags each frame
-            except Exception:
-                header_flags = 0
+            header_flags = 0
 
             cond = getattr(imgui, "COND_APPEARING", getattr(imgui, "COND_FIRST_USE_EVER", 0))
 

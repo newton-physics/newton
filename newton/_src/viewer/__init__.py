@@ -20,7 +20,7 @@ Example usage:
     # Render simulation
     while viewer.is_running():
         viewer.begin_frame(time)
-        viewer.log_model(state)
+        viewer.log_state(state)
         viewer.log_points(particle_positions)
         viewer.end_frame()
 

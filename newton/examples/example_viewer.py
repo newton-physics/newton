@@ -74,7 +74,7 @@ def main():
             viewer.begin_frame(t)
 
             # Render model-driven content (ground plane)
-            viewer.log_model(model.state())
+            viewer.log_state(model.state())
 
             # Clean layout: arrange objects in a line along X-axis
             # All objects at same height to avoid ground intersection
