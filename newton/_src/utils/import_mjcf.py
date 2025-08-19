@@ -359,7 +359,13 @@ def parse_mjcf(
                     for m_geom in m.geometry.values():
                         m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
+                        m_mesh = Mesh(
+                            m_vertices,
+                            m_faces,
+                            m.vertex_normals,
+                            color=np.array(m.visual.main_color) / 255.0,
+                            maxhullvert=maxhullvert,
+                        )
                         s = builder.add_shape_mesh(
                             xform=tf,
                             mesh=m_mesh,
@@ -370,7 +376,13 @@ def parse_mjcf(
                     # a single mesh
                     m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_mesh = Mesh(m_vertices, m_faces, maxhullvert=maxhullvert)
+                    m_mesh = Mesh(
+                        m_vertices,
+                        m_faces,
+                        m.vertex_normals,
+                        color=np.array(m.visual.main_color) / 255.0,
+                        maxhullvert=maxhullvert,
+                    )
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
@@ -439,7 +451,13 @@ def parse_mjcf(
 
         return shapes
 
-    def parse_body(body, parent, incoming_defaults: dict, childclass: str | None = None):
+    def parse_body(
+        body,
+        parent,
+        incoming_defaults: dict,
+        childclass: str | None = None,
+        parent_world_xform: Transform | None = None,
+    ):
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -457,10 +475,16 @@ def parse_mjcf(
         body_name = body_name.replace("-", "_")  # ensure valid USD path
         body_pos = parse_vec(body_attrib, "pos", (0.0, 0.0, 0.0))
         body_ori = parse_orientation(body_attrib)
-        if parent == -1:
-            body_pos = wp.transform_point(xform, body_pos)
-            body_ori = xform.q * body_ori
-        body_pos *= scale
+
+        # Create local transform from parsed position and orientation
+        local_xform = wp.transform(body_pos * scale, body_ori)
+
+        # Compose with either the passed parent world transform or the import root xform
+        world_xform = (parent_world_xform or xform) * local_xform
+
+        # For joint positioning, we need the relative position/orientation scaled
+        body_pos_for_joints = body_pos * scale
+        body_ori_for_joints = body_ori
 
         joint_armature = []
         joint_name = []
@@ -520,7 +544,7 @@ def parse_mjcf(
                     linear_axes.append(ax)
 
         link = builder.add_body(
-            xform=wp.transform(body_pos, body_ori),  # will be evaluated in fk()
+            xform=world_xform,  # Use the composed world transform
             key=body_name,
         )
 
@@ -535,8 +559,8 @@ def parse_mjcf(
                 joint_type = JointType.PRISMATIC
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
-            joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
-            _xform = wp.transform(body_pos + joint_pos, body_ori)
+            joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
+            _xform = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -575,32 +599,19 @@ def parse_mjcf(
                     )
             elif floating is not None and floating:
                 builder.add_joint_free(link, key="floating_base")
-
-                # set dofs to transform
-                start = builder.joint_q_start[link]
-
-                builder.joint_q[start + 0] = _xform.p[0]
-                builder.joint_q[start + 1] = _xform.p[1]
-                builder.joint_q[start + 2] = _xform.p[2]
-
-                builder.joint_q[start + 3] = _xform.q[0]
-                builder.joint_q[start + 4] = _xform.q[1]
-                builder.joint_q[start + 5] = _xform.q[2]
-                builder.joint_q[start + 6] = _xform.q[3]
             else:
                 builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base")
 
         else:
-            joint_pos = joint_pos[0] if len(joint_pos) > 0 else (0.0, 0.0, 0.0)
+            joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
             if joint_type == JointType.FREE:
+                assert parent == -1, "Free joints must have the world body as parent"
                 builder.add_joint_free(
                     link,
                     key="_".join(joint_name),
-                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_ori),
                 )
-                builder.joint_q[-7:-4] = [*body_pos]
             else:
                 # TODO parse ref, springref values from joint_attrib
                 builder.add_joint(
@@ -610,7 +621,7 @@ def parse_mjcf(
                     linear_axes=linear_axes,
                     angular_axes=angular_axes,
                     key="_".join(joint_name),
-                    parent_xform=wp.transform(body_pos + joint_pos, body_ori),
+                    parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
                 )
 
@@ -618,8 +629,6 @@ def parse_mjcf(
         # add shapes
 
         geoms = body.findall("geom")
-        if body_name == "thigh_right":
-            print(geoms)
         visuals = []
         colliders = []
         for geo_count, geom in enumerate(geoms):
@@ -770,7 +779,7 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(child, link, _incoming_defaults, childclass=_childclass)
+            parse_body(child, link, _incoming_defaults, childclass=_childclass, parent_world_xform=world_xform)
 
     def parse_equality_constraints(equality):
         def parse_common_attributes(element):
@@ -891,7 +900,7 @@ def parse_mjcf(
     # add bodies
 
     for body in world.findall("body"):
-        parse_body(body, -1, world_defaults)
+        parse_body(body, -1, world_defaults, parent_world_xform=xform)
 
     # -----------------
     # add static geoms
