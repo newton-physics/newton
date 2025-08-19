@@ -28,7 +28,6 @@
 import warp as wp
 
 wp.config.enable_backward = False
-import mujoco
 
 import newton
 import newton.utils
@@ -74,16 +73,14 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
-        )
+        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
 
         self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
+        self.contacts = None
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
@@ -95,7 +92,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
+        self.contacts = None
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
