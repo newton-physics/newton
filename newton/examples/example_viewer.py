@@ -118,7 +118,7 @@ class Example:
         self.viewer.begin_frame(t)
 
         # Render model-driven content (ground plane)
-        self.viewer.log_model(self.model.state())
+        self.viewer.log_state(self.model.state())
 
         # Clean layout: arrange objects in a line along X-axis
         # All objects at same height to avoid ground intersection
