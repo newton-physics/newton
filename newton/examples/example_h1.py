@@ -56,6 +56,7 @@ class Example:
         )
 
         builder.add_ground_plane()
+        builder.approximate_meshes("bounding_box")
 
         self.sim_time = 0.0
         self.sim_step = 0
