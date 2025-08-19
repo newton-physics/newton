@@ -80,6 +80,7 @@ class SolverSemiImplicit(SolverBase):
         self.friction_smoothing = friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
+        self.enable_tri_contact = True
 
     @override
     def step(
@@ -112,7 +113,8 @@ class SolverSemiImplicit(SolverBase):
             eval_triangle_forces(model, state_in, control, particle_f)
 
             # triangle/triangle contacts
-            eval_triangle_contact_forces(model, state_in, particle_f)
+            if self.enable_tri_contact:
+                eval_triangle_contact_forces(model, state_in, particle_f)
 
             # triangle bending
             eval_bending_forces(model, state_in, particle_f)
