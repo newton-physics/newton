@@ -1139,6 +1139,8 @@ class SolverMuJoCo(SolverBase):
         contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
+        joint_solref_limit: tuple[float, float] | None = None,
+        joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
     ):
         """
         Args:
@@ -1164,10 +1166,14 @@ class SolverMuJoCo(SolverBase):
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            joint_solref_limit (tuple[float, float] | None): Global solver reference parameters for all joint limits. If provided, applies these solref values to all joints created. Defaults to None (uses MuJoCo defaults).
+            joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
         """
         super().__init__(model)
         self.mujoco, self.mujoco_warp = import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
+        self.joint_solref_limit = joint_solref_limit
+        self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco and not use_mujoco_contacts:
             print("Setting use_mujoco_contacts to False has no effect when use_mujoco is True")
@@ -2050,6 +2056,11 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (lower, upper)
+                        # Add global solver parameters if provided
+                        if self.joint_solref_limit is not None:
+                            joint_params["solref_limit"] = self.joint_solref_limit
+                        if self.joint_solimp_limit is not None:
+                            joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -2111,6 +2122,11 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                        # Add global solver parameters if provided
+                        if self.joint_solref_limit is not None:
+                            joint_params["solref_limit"] = self.joint_solref_limit
+                        if self.joint_solimp_limit is not None:
+                            joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_ang"
