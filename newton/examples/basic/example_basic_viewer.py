@@ -17,7 +17,7 @@
 # Example Viewer
 #
 # Shows how to use the Newton Viewer class to visualize various shapes
-# and line instances.
+# and line instances without a Newton model.
 #
 ###########################################################################
 
@@ -31,46 +31,24 @@ import time
 import warp as wp
 
 import newton
-
-
-def create_model() -> newton.Model:
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    return builder.finalize()
+import newton.examples
 
 
 class Example:
-    def __init__(self, viewer_type: str):
-        # Create a minimal model and viewer
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-
-        self.model = builder.finalize()
-
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
-
-            self.viewer = ViewerUSD(self.model, output_path="example_viewer.usd", num_frames=600)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.model)
-
-        # No explicit mesh creation; we'll use viewer.log_shapes() below
+    def __init__(self, viewer):
+        self.viewer = viewer
 
         # self.colors and materials per instance
-        self.col_sphere = wp.array([wp.vec3(1.0, 0.1, 0.1)], dtype=wp.vec3)
-        self.col_box = wp.array([wp.vec3(0.1, 1.0, 0.1)], dtype=wp.vec3)
-        self.col_cone = wp.array([wp.vec3(0.1, 0.4, 1.0)], dtype=wp.vec3)
-        self.col_capsule = wp.array([wp.vec3(1.0, 1.0, 0.1)], dtype=wp.vec3)
+        self.col_sphere = wp.array([wp.vec3(0.9, 0.1, 0.1)], dtype=wp.vec3)
+        self.col_box = wp.array([wp.vec3(0.1, 0.9, 0.1)], dtype=wp.vec3)
+        self.col_cone = wp.array([wp.vec3(0.1, 0.4, 0.9)], dtype=wp.vec3)
+        self.col_capsule = wp.array([wp.vec3(0.9, 0.9, 0.1)], dtype=wp.vec3)
         self.col_cylinder = wp.array([wp.vec3(0.8, 0.5, 0.2)], dtype=wp.vec3)
+        self.col_plane = wp.array([wp.vec3(0.125, 0.125, 0.15)], dtype=wp.vec3)
 
         # material = (metallic, roughness, checker, unused)
         self.mat_default = wp.array([wp.vec4(0.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
+        self.mat_plane = wp.array([wp.vec4(0.5, 0.5, 1.0, 0.0)], dtype=wp.vec4)
 
         # Demonstrate log_lines() with animated debug/visualization lines
         axis_eps = 0.01
@@ -102,7 +80,7 @@ class Example:
             dtype=wp.vec3,
         )
 
-        if viewer_type == "gl":
+        if viewer == "gl":
             print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
 
         self.start = time.time()
@@ -116,9 +94,6 @@ class Example:
 
         # Begin frame with time
         self.viewer.begin_frame(t)
-
-        # Render model-driven content (ground plane)
-        self.viewer.log_state(self.model.state())
 
         # Clean layout: arrange objects in a line along X-axis
         # All objects at same height to avoid ground intersection
@@ -196,6 +171,15 @@ class Example:
             self.mat_default,
         )
 
+        self.viewer.log_shapes(
+            "/plane_instance",
+            newton.GeoType.PLANE,
+            (0.0, 0.0, 1.0, 0.0),
+            wp.array([wp.transform_identity()], dtype=wp.transform),
+            self.col_plane,
+            self.mat_plane,
+        )
+
         self.viewer.log_lines("coordinate_self.axes", self.axes_begins, self.axes_ends, self.axes_colors)
 
         # End frame (process events, render, present)
@@ -209,10 +193,18 @@ if __name__ == "__main__":
     parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
     args = parser.parse_args()
 
-    example = Example(args.viewer)
+    if args.viewer == "usd":
+        from newton.viewer import ViewerUSD
 
-    while example.viewer.is_running():
-        example.step()
-        example.render()
+        viewer = ViewerUSD(output_path="example_viewer.usd", num_frames=600)
+    elif args.viewer == "rerun":
+        from newton.viewer import ViewerRerun
 
-    example.viewer.close()
+        viewer = ViewerRerun(server=True, launch_viewer=True)
+    else:
+        from newton.viewer import ViewerGL
+
+        viewer = ViewerGL()
+
+    example = Example(viewer)
+    newton.examples.run(viewer, example)

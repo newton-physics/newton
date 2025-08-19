@@ -31,13 +31,13 @@ from .viewer import ViewerBase
 
 
 class ViewerGL(ViewerBase):
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
+        super().__init__()
 
         # map from path to any object type
         self.objects = {}
         self.lines = {}
-        self.renderer = RendererGL()
+        self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
         self._paused = False
@@ -61,8 +61,6 @@ class ViewerGL(ViewerBase):
             "error_message": "",
         }
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
-
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
         self.renderer.register_mouse_press(self.on_mouse_press)
@@ -77,11 +75,6 @@ class ViewerGL(ViewerBase):
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
 
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
-        self.camera = Camera(up_axis=model.up_axis, width=fb_w, height=fb_h)
-
-        self._populate(model)
-
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
@@ -95,6 +88,16 @@ class ViewerGL(ViewerBase):
 
         # UI visibility toggle
         self.show_ui = True
+
+        self.set_model(None)
+
+    def set_model(self, model):
+        super().set_model(model)
+
+        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(width=fb_w, height=fb_h)
 
     def log_mesh(
         self,
@@ -534,62 +537,58 @@ class ViewerGL(ViewerBase):
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
 
-            cond = getattr(imgui, "COND_APPEARING", getattr(imgui, "COND_FIRST_USE_EVER", 0))
-
             # Model Information section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
-            _open = imgui.collapsing_header("Model Information", flags=header_flags)
-            if isinstance(_open, tuple):
-                _open = _open[0]
-            if _open:
-                imgui.separator()
-                imgui.text(f"Environments: {self.model.num_envs}")
-                axis_names = ["X", "Y", "Z"]
-                imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
-                gravity = self.model.gravity
-                gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
-                imgui.text(gravity_text)
+            if self.model is not None:
+                imgui.set_next_item_open(True, imgui.APPEARING)
+                _open = imgui.collapsing_header("Model Information", flags=header_flags)
+                if isinstance(_open, tuple):
+                    _open = _open[0]
+                if _open:
+                    imgui.separator()
+                    imgui.text(f"Environments: {self.model.num_envs}")
+                    axis_names = ["X", "Y", "Z"]
+                    imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
+                    gravity = self.model.gravity
+                    gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
+                    imgui.text(gravity_text)
 
-                # Pause simulation checkbox
-                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                    # Pause simulation checkbox
+                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
-            # Visualization Controls section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
-            _open = imgui.collapsing_header("Visualization", flags=header_flags)
-            if isinstance(_open, tuple):
-                _open = _open[0]
-            if _open:
-                imgui.separator()
+                # Visualization Controls section
+                imgui.set_next_item_open(True, imgui.APPEARING)
+                _open = imgui.collapsing_header("Visualization", flags=header_flags)
+                if isinstance(_open, tuple):
+                    _open = _open[0]
+                if _open:
+                    imgui.separator()
 
-                # Joint visualization
-                show_joints = self.options["show_joints"]
-                changed, self.options["show_joints"] = imgui.checkbox("Show Joints", show_joints)
+                    # Joint visualization
+                    show_joints = self.options["show_joints"]
+                    changed, self.options["show_joints"] = imgui.checkbox("Show Joints", show_joints)
 
-                # Contact visualization
-                show_contacts = self.options["show_contacts"]
-                changed, self.options["show_contacts"] = imgui.checkbox("Show Contacts", show_contacts)
+                    # Contact visualization
+                    show_contacts = self.options["show_contacts"]
+                    changed, self.options["show_contacts"] = imgui.checkbox("Show Contacts", show_contacts)
 
-                # Particle visualization
-                show_particles = self.options["show_particles"]
-                changed, self.options["show_particles"] = imgui.checkbox("Show Particles", show_particles)
+                    # Particle visualization
+                    show_particles = self.options["show_particles"]
+                    changed, self.options["show_particles"] = imgui.checkbox("Show Particles", show_particles)
 
-                # Spring visualization
-                show_springs = self.options["show_springs"]
-                changed, self.options["show_springs"] = imgui.checkbox("Show Springs", show_springs)
+                    # Spring visualization
+                    show_springs = self.options["show_springs"]
+                    changed, self.options["show_springs"] = imgui.checkbox("Show Springs", show_springs)
 
-                # Center of mass visualization
-                show_com = self.options["show_com"]
-                changed, self.options["show_com"] = imgui.checkbox("Show Center of Mass", show_com)
+                    # Center of mass visualization
+                    show_com = self.options["show_com"]
+                    changed, self.options["show_com"] = imgui.checkbox("Show Center of Mass", show_com)
 
-                # Triangle mesh visualization
-                show_triangles = self.options["show_triangles"]
-                changed, self.options["show_triangles"] = imgui.checkbox("Show Triangles", show_triangles)
+                    # Triangle mesh visualization
+                    show_triangles = self.options["show_triangles"]
+                    changed, self.options["show_triangles"] = imgui.checkbox("Show Triangles", show_triangles)
 
             # Rendering Options section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
+            imgui.set_next_item_open(True, imgui.APPEARING)
             _open = imgui.collapsing_header("Rendering Options")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -613,8 +612,7 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
 
             # Camera Information section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
+            imgui.set_next_item_open(True, imgui.APPEARING)
             _open = imgui.collapsing_header("Camera")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -641,10 +639,6 @@ class ViewerGL(ViewerBase):
             self._render_selection_panel()
 
         imgui.end()
-
-        # Mark headers as initialized so user can collapse in subsequent frames
-        if not getattr(self, "_ui_headers_init", False):
-            self._ui_headers_init = True
 
     def _render_stats_overlay(self):
         """Render performance stats overlay in the top-right corner."""
@@ -695,15 +689,16 @@ class ViewerGL(ViewerBase):
             imgui.pop_style_color()
 
             # Model stats
-            imgui.separator()
-            imgui.text(f"Bodies: {self.model.body_count}")
-            imgui.text(f"Shapes: {self.model.shape_count}")
-            imgui.text(f"Joints: {self.model.joint_count}")
-            imgui.text(f"Particles: {self.model.particle_count}")
-            imgui.text(f"Springs: {self.model.spring_count}")
-            imgui.text(f"Triangles: {self.model.tri_count}")
-            imgui.text(f"Edges: {self.model.edge_count}")
-            imgui.text(f"Tetrahedra: {self.model.tet_count}")
+            if self.model is not None:
+                imgui.separator()
+                imgui.text(f"Bodies: {self.model.body_count}")
+                imgui.text(f"Shapes: {self.model.shape_count}")
+                imgui.text(f"Joints: {self.model.joint_count}")
+                imgui.text(f"Particles: {self.model.particle_count}")
+                imgui.text(f"Springs: {self.model.spring_count}")
+                imgui.text(f"Triangles: {self.model.tri_count}")
+                imgui.text(f"Edges: {self.model.edge_count}")
+                imgui.text(f"Tetrahedra: {self.model.tet_count}")
 
             # Rendered objects count
             imgui.separator()
@@ -721,9 +716,7 @@ class ViewerGL(ViewerBase):
 
         # Selection Panel section
         header_flags = 0
-        cond = getattr(imgui, "COND_APPEARING", getattr(imgui, "COND_FIRST_USE_EVER", 0))
-        if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-            imgui.set_next_item_open(False, cond)  # Default to closed
+        imgui.set_next_item_open(False, imgui.APPEARING)  # Default to closed
         _open = imgui.collapsing_header("Selection API", flags=header_flags)
         if isinstance(_open, tuple):
             _open = _open[0]

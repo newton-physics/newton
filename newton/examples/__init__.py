@@ -16,6 +16,7 @@
 import os
 
 import numpy as np
+import warp as wp
 
 import newton
 
@@ -32,9 +33,28 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def run(viewer, example):
+    while viewer.is_running():
+        with wp.ScopedTimer("step"):
+            example.step()
+
+        with wp.ScopedTimer("render"):
+            example.render()
+
+    viewer.close()
+
+
 def compute_env_offsets(
     num_envs: int, env_offset: tuple[float, float, float] = (5.0, 5.0, 0.0), up_axis: newton.AxisType = newton.Axis.Z
 ):
+    # raise deprecation warning
+    import warnings  # noqa: PLC0415
+
+    warnings.warn(
+        "compute_env_offsets is deprecated and will be removed in a future version. Use the builder.replicate() function instead.",
+        stacklevel=2,
+    )
+
     # compute positional offsets per environment
     env_offset = np.array(env_offset)
     nonzeros = np.nonzero(env_offset)[0]

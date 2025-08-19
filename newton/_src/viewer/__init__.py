@@ -39,11 +39,13 @@ Example usage:
 """
 
 from .viewer_gl import ViewerGL
+from .viewer_null import ViewerNull
 from .viewer_rerun import ViewerRerun
 from .viewer_usd import ViewerUSD
 
 __all__ = [
     "ViewerGL",
+    "ViewerNull",
     "ViewerRerun",
     "ViewerUSD",
 ]

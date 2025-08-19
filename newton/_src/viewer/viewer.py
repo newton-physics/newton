@@ -31,13 +31,12 @@ from .mesh import (
 
 
 class ViewerBase:
-    def __init__(self, model):
+    def __init__(self):
         self.time = 0.0
 
-        self.model = model
+        self.device = None
+        self.model = None
         self.model_changed = True
-
-        self.device = model.device
 
         # map from shape hash -> Instances
         self.shape_instances = {}
@@ -64,10 +63,15 @@ class ViewerBase:
             "show_triangles": False,
         }
 
-    def _populate(self, model):
-        self._populate_shapes()
+    def set_model(self, model):
+        if self.model is not None:
+            raise RuntimeError("Viewer set_model() can be called only once.")
 
-        # self._populate_joints()
+        self.model = model
+
+        if model is not None:
+            self.device = model.device
+            self._populate_shapes()
 
     def begin_frame(self, time):
         self.time = time
@@ -109,8 +113,8 @@ class ViewerBase:
 
         # Ensure we have buffers for line endpoints
         if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
-            self._contact_points0 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.model.device)
-            self._contact_points1 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.model.device)
+            self._contact_points0 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.device)
+            self._contact_points1 = wp.array(np.zeros((max_contacts, 3)), dtype=wp.vec3, device=self.device)
 
         # Always run the kernel to ensure buffers are properly cleared/updated
         if max_contacts > 0:
@@ -134,18 +138,18 @@ class ViewerBase:
                     self._contact_points0,  # line start points
                     self._contact_points1,  # line end points
                 ],
-                device=self.model.device,
+                device=self.device,
             )
 
         # Always call log_lines to update the renderer (handles zero contacts gracefully)
-        if num_contacts > 0:
+        if num_contacts > 0 and self.options["show_contacts"]:
             # Slice arrays to only include active contacts
             line_begins = self._contact_points0[:num_contacts]
             line_ends = self._contact_points1[:num_contacts]
         else:
             # Create empty arrays for zero contacts case
-            line_begins = wp.array([], dtype=wp.vec3, device=self.model.device)
-            line_ends = wp.array([], dtype=wp.vec3, device=self.model.device)
+            line_begins = wp.array([], dtype=wp.vec3, device=self.device)
+            line_ends = wp.array([], dtype=wp.vec3, device=self.device)
 
         # Use orange-red color for contact normals
         line_colors = (0.0, 1.0, 0.0)
@@ -529,7 +533,7 @@ class ViewerBase:
 
                 # add instances
                 shape_name = f"/model/shapes/shape_{len(self.shape_instances)}"
-                batch = ViewerBase.Instances(shape_name, mesh_name, self.model.device)
+                batch = ViewerBase.Instances(shape_name, mesh_name, self.device)
 
                 self.shape_instances[geo_hash] = batch
 
@@ -578,9 +582,9 @@ class ViewerBase:
 
         # Ensure we have buffers for joint line endpoints
         if self._joint_points0 is None or len(self._joint_points0) < max_lines:
-            self._joint_points0 = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
-            self._joint_points1 = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
-            self._joint_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.model.device)
+            self._joint_points0 = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._joint_points1 = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._joint_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
 
         # Run the kernel to compute joint basis lines
         # Launch with 3 * num_joints threads (3 lines per joint)
@@ -604,7 +608,7 @@ class ViewerBase:
                 self._joint_points1,
                 self._joint_colors,
             ],
-            device=self.model.device,
+            device=self.device,
         )
 
         # Log all joint lines in a single call
