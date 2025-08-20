@@ -61,6 +61,39 @@ get started.
   </tr>
 </table>
 
+## Cloth Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/cloth/example_cloth_bending.py">
+        <img src="docs/images/examples/example_cloth_bending.jpg" alt="Cloth Bending">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/cloth/example_cloth_hanging.py">
+        <img src="docs/images/examples/example_cloth_hanging.jpg" alt="Cloth Hanging">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/cloth/example_cloth_style3d.py">
+        <img src="docs/images/examples/example_cloth_style3d.jpg" alt="Cloth Style3D">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples cloth_bending</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples cloth_hanging</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples cloth_style3d</code>
+    </td>
+  </tr>
+</table>
+
 ## Example Options
 
 The examples support the following common line arguments:
