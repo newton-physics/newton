@@ -22,6 +22,8 @@
 #
 # Users can pick bodies by right-clicking and dragging with the mouse.
 #
+# Command: python -m newton.examples basic_urdf
+#
 ###########################################################################
 
 import warp as wp
