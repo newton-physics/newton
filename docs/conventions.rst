@@ -303,109 +303,254 @@ apply the appropriate rotation transforms:
 Collision Primitive Conventions
 -------------------------------
 
-Different physics engines use varying conventions for collision primitives. Newton's importers handle these conversions automatically, but understanding the conventions helps when:
+This section documents the conventions used for collision primitive shapes in Newton and compares them with other physics engines and formats. Understanding these conventions is essential when:
 
-* Debugging unexpected collision behavior
-* Creating shapes programmatically with ModelBuilder
-* Understanding center of mass calculations
+* Creating collision geometry programmatically with ModelBuilder
+* Debugging unexpected collision behavior after asset import
+* Understanding center of mass calculations for asymmetric shapes
 
-Newton Primitive Conventions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Newton Collision Primitives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Newton uses the following conventions for collision primitives:
+Newton defines collision primitives with consistent conventions across all shape types. The following table summarizes the key parameters and properties for each primitive:
 
-.. list-table:: Newton Collision Primitive Conventions
+.. list-table:: Newton Collision Primitive Specifications
    :header-rows: 1
-   :widths: 15 25 30 30
+   :widths: 15 20 35 30
 
    * - **Shape**
      - **Origin**
      - **Parameters**
-     - **Center of Mass**
+     - **Notes**
    * - **Box**
      - Geometric center
-     - hx, hy, hz (half-extents)
-     - At origin
+     - ``hx``, ``hy``, ``hz`` (half-extents)
+     - Edges aligned with local axes
    * - **Sphere**
-     - Center of sphere
-     - radius
-     - At origin
-   * - **Cylinder**
-     - Geometric center
-     - radius, half_height
-     - At origin
+     - Center
+     - ``radius``
+     - Uniform in all directions
    * - **Capsule**
      - Geometric center
-     - radius, half_height (excludes caps)
-     - At origin
+     - ``radius``, ``half_height``
+     - Extends along Z-axis; half_height excludes hemispherical caps
+   * - **Cylinder**
+     - Geometric center
+     - ``radius``, ``half_height``
+     - Extends along Z-axis
    * - **Cone**
      - Geometric center
-     - radius (base), half_height
-     - Offset at (0, 0, -half_height/2)
+     - ``radius`` (base), ``half_height``
+     - Extends along Z-axis; base at -half_height, apex at +half_height
    * - **Plane**
-     - Origin of shape frame (plane passes through this point)
-     - scale (0,0 for infinite, or width,height for bounded)
-     - N/A
+     - Shape frame origin
+     - ``width``, ``length`` (or 0,0 for infinite)
+     - Normal along +Z of shape frame
+   * - **Mesh**
+     - User-defined
+     - Vertex and triangle arrays
+     - General triangle mesh (can be non-convex)
 
-**Important Notes:**
+**Shape Orientation and Alignment**
 
-* **Cone**: Extends along the Z-axis with base at -half_height and apex at +half_height. The center of mass is located 1/4 of the total height from the base.
-* **Capsule**: Extends along the Z-axis. The half_height parameter excludes the hemispherical caps. Total length = 2 * (radius + half_height).
-* **Cylinder**: Extends along the Z-axis.
-* **Plane**: The plane's normal points along the +Z axis of the shape's local coordinate frame. The plane passes through the shape frame's origin. Uses scale=(0,0) for infinite planes, or (width, height) for bounded planes.
+All Newton primitives that have a primary axis (capsule, cylinder, cone) are aligned along the Z-axis in their local coordinate frame. The shape's transform determines its final position and orientation in the world or parent body frame.
 
-Automatic Import Handling
-~~~~~~~~~~~~~~~~~~~~~~~~~
+**Center of Mass Considerations**
 
-Newton's importers automatically handle convention differences:
+For most primitives, the center of mass coincides with the geometric origin. The cone is a notable exception:
 
-* **USD Importer**: Converts between USD's conventions and Newton's
-* **URDF Importer**: Maps URDF primitives to Newton equivalents
-* **MJCF Importer**: Handles MuJoCo's specific conventions
+* **Cone COM**: Located at ``(0, 0, -half_height/2)`` in the shape's local frame, which is 1/4 of the total height from the base toward the apex.
 
-Users do not need to manually convert between conventions when using importers.
+Collision Primitive Conventions Across Engines
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Engine Convention Comparison
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The following tables compare how different engines and formats define common collision primitives:
 
-.. list-table:: Key Convention Differences
+**Sphere Primitives**
+
+.. list-table::
    :header-rows: 1
-   :widths: 20 20 20 20 20
+   :widths: 25 35 40
 
-   * - **Shape**
-     - **Newton**
-     - **USD (Physics)**
-     - **USD (Visual)**
-     - **MuJoCo**
-   * - **Box**
-     - half-extents
-     - half-extents
-     - full size
-     - half-extents
-   * - **Cone**
-     - half_height
-     - halfHeight
-     - height (full)
+   * - **System**
+     - **Parameter Convention**
+     - **Notes**
+   * - **Newton**
+     - ``radius``
+     - Origin at center
+   * - **MuJoCo**
+     - ``size[0]`` = radius
+     - Origin at center
+   * - **USD (UsdGeomSphere)**
+     - ``radius`` attribute
+     - Origin at center
+   * - **USD Physics**
+     - ``radius`` attribute
+     - Origin at center
+
+**Box Primitives**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - **System**
+     - **Parameter Convention**
+     - **Notes**
+   * - **Newton**
+     - Half-extents (``hx``, ``hy``, ``hz``)
+     - Distance from center to face
+   * - **MuJoCo**
+     - Half-sizes in ``size`` attribute
+     - Can use ``fromto`` (Newton importer doesn't support)
+   * - **USD (UsdGeomCube)**
+     - ``size`` attribute (full dimensions)
+     - Edge length, not half-extent
+   * - **USD Physics**
+     - ``halfExtents`` attribute
+     - Matches Newton convention
+
+**Capsule Primitives**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - **System**
+     - **Parameter Convention**
+     - **Notes**
+   * - **Newton**
+     - ``radius``, ``half_height`` (excludes caps)
+     - Total length = 2*(radius + half_height)
+   * - **MuJoCo**
+     - ``size[0]`` = radius, ``size[1]`` = half-length (excludes caps)
+     - Can also use ``fromto`` for endpoints
+   * - **USD (UsdGeomCapsule)**
+     - ``radius``, ``height`` (excludes caps)
+     - Full height of cylindrical portion
+   * - **USD Physics**
+     - ``radius``, ``halfHeight`` (excludes caps)
+     - Similar to Newton
+
+**Cylinder Primitives**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - **System**
+     - **Parameter Convention**
+     - **Notes**
+   * - **Newton**
+     - ``radius``, ``half_height``
+     - Extends along Z-axis
+   * - **MuJoCo**
+     - ``size[0]`` = radius, ``size[1]`` = half-length
+     - Can use ``fromto``; Newton's MJCF importer maps to capsule
+   * - **USD (UsdGeomCylinder)**
+     - ``radius``, ``height`` (full height)
+     - Visual shape
+   * - **USD Physics**
+     - ``radius``, ``halfHeight``
+     - Newton's USD importer creates actual cylinders
+
+**Cone Primitives**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - **System**
+     - **Parameter Convention**
+     - **Notes**
+   * - **Newton**
+     - ``radius`` (base), ``half_height``
+     - COM offset at -half_height/2
+   * - **MuJoCo**
      - Not supported
-   * - **Capsule Height**
-     - Excludes caps
-     - Excludes caps
-     - Excludes caps
-     - Includes caps (fromto)
+     - N/A
+   * - **USD (UsdGeomCone)**
+     - ``radius``, ``height`` (full height)
+     - Visual representation
+   * - **USD Physics**
+     - ``radius``, ``halfHeight``
+     - Physics representation
 
-Special Considerations
-~~~~~~~~~~~~~~~~~~~~~~
+**Plane Primitives**
 
-**Cone Dynamics**
-The cone's offset center of mass affects its rotational behavior. When the cone tips, it will naturally tend to fall on its side due to the COM being closer to the base.
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
 
-**USD Inconsistency**
-USD uses different parameter names for visual vs physics shapes:
+   * - **System**
+     - **Definition Method**
+     - **Normal Direction**
+   * - **Newton**
+     - Transform-based or plane equation
+     - +Z of shape frame
+   * - **MuJoCo**
+     - Size and orientation in body frame
+     - +Z of geom frame
+   * - **USD**
+     - No standard plane primitive
+     - Implementation-specific
 
-* Visual shapes: ``height`` parameter (full height)
-* Physics shapes: ``halfHeight`` parameter
+**Mesh Primitives**
 
-Newton's USD importer handles both cases automatically by checking the shape type.
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
 
-**MuJoCo Capsule Convention**
-MuJoCo defines capsules using ``fromto`` endpoints which include the hemispherical caps in the total length. Newton's importer automatically adjusts for this difference.
+   * - **System**
+     - **Mesh Type**
+     - **Notes**
+   * - **Newton**
+     - General triangle mesh
+     - Can be non-convex
+   * - **MuJoCo**
+     - Convex hull only for collision
+     - Visual mesh can be non-convex
+   * - **USD (UsdGeomMesh)**
+     - General polygon mesh
+     - Visual representation
+   * - **USD Physics**
+     - Implementation-dependent
+     - May use convex approximation
+
+Import Handling
+~~~~~~~~~~~~~~~
+
+Newton's importers automatically handle convention differences when loading assets. No manual conversion is required when using these importers—they automatically transform shapes to Newton's conventions.
+
+Practical Considerations
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Creating Shapes Programmatically**
+
+When using ModelBuilder to create shapes:
+
+.. code-block:: python
+
+   # Sphere - simple radius parameter
+   builder.add_shape_sphere(body=0, radius=1.0)
+   
+   # Box uses half-extents
+   builder.add_shape_box(body=0, hx=1.0, hy=0.5, hz=0.25)
+   
+   # Capsule half_height excludes caps
+   # Total length = 2 * (radius + half_height) = 2 * (0.5 + 1.0) = 3.0
+   builder.add_shape_capsule(body=0, radius=0.5, half_height=1.0)
+   
+   # Cylinder extends along Z-axis
+   builder.add_shape_cylinder(body=0, radius=0.5, half_height=1.0)
+   
+   # Cone - note the COM offset affects dynamics
+   # Base at z=-1.0, apex at z=+1.0, COM at z=-0.5
+   builder.add_shape_cone(body=0, radius=0.5, half_height=1.0)
+   
+   # Plane normal points along +Z of shape frame
+   builder.add_shape_plane(width=10.0, length=10.0)  # Bounded plane
+   builder.add_shape_plane(width=0.0, length=0.0)    # Infinite plane
+   
+   # Mesh - general triangle mesh (can be non-convex)
+   builder.add_shape_mesh(body=0, mesh=my_mesh)
