@@ -237,7 +237,7 @@ add_example_test(
     TestBasicRobotExamples,
     name="example_g1",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 500, "headless": True},
+    test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
