@@ -31,11 +31,11 @@ get started.
 ## Basic Examples
 
 
-| Example                                                    | Run Command                                  | Thumbnail |
-|------------------------------------------------------------|----------------------------------------------|-----------|
-| [example_basic_pendulum.py](newton/examples/basic/example_basic_pendulum.py) | `python -m newton.examples basic_pendulum` | ![Pendulum](docs/images/examples/example_basic_pendulum.jpg) |
-| [example_basic_urdf.py](newton/examples/basic/example_basic_urdf.py) | `python -m newton.examples basic_urdf` | ![URDF](docs/images/examples/example_basic_urdf.jpg) |
-| [example_basic_viewer.py](newton/examples/basic/example_basic_viewer.py) | `python -m newton.examples basic_viewer` | ![Viewer](docs/images/examples/example_basic_viewer.jpg) |
+| Example | Thumbnail |
+|---------|-----------|
+| [example_basic_pendulum.py](newton/examples/basic/example_basic_pendulum.py)<br>`python -m newton.examples basic_pendulum` | ![Pendulum](docs/images/examples/example_basic_pendulum.jpg) |
+| [example_basic_urdf.py](newton/examples/basic/example_basic_urdf.py)<br>`python -m newton.examples basic_urdf` | ![URDF](docs/images/examples/example_basic_urdf.jpg) |
+| [example_basic_viewer.py](newton/examples/basic/example_basic_viewer.py)<br>`python -m newton.examples basic_viewer` | ![Viewer](docs/images/examples/example_basic_viewer.jpg) |
 
 ## Example Options
 
