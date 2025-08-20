@@ -161,4 +161,43 @@ def init(parser=None):
     return viewer, args
 
 
+def main():
+    """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
+    import runpy  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    # Map short names to full module paths
+    example_map = {
+        "basic_pendulum": "newton.examples.basic.example_basic_pendulum",
+        "basic_urdf": "newton.examples.basic.example_basic_urdf",
+        "basic_viewer": "newton.examples.basic.example_basic_viewer",
+    }
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m newton.examples <example_name>")
+        print("\nAvailable examples:")
+        for name in example_map.keys():
+            print(f"  {name}")
+        sys.exit(1)
+
+    example_name = sys.argv[1]
+
+    if example_name not in example_map:
+        print(f"Error: Unknown example '{example_name}'")
+        print("\nAvailable examples:")
+        for name in example_map.keys():
+            print(f"  {name}")
+        sys.exit(1)
+
+    # Remove the example name from sys.argv so the target script gets clean args
+    sys.argv = [sys.argv[0]], *sys.argv[2:]
+
+    # Run the target example module
+    runpy.run_module(example_map[example_name], run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()
+
+
 __all__ = ["create_parser", "init", "run"]
