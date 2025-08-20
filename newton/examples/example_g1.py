@@ -27,17 +27,24 @@
 import warp as wp
 
 wp.config.enable_backward = False
+import mujoco
 
 import newton
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_g1.usd", num_envs=8, use_cuda_graph=True):
+    def __init__(self, num_envs=8, use_cuda_graph=True):
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+        self.sim_time = 0.0
         self.num_envs = num_envs
-        self.use_mujoco = True
-        articulation_builder = newton.ModelBuilder()
 
+        self.device = wp.get_device()
+
+        # build model
+        articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         asset_path = newton.utils.download_asset("g1_usd")
 
         newton.utils.parse_usd(
@@ -48,8 +55,7 @@ class Example:
             enable_self_collisions=False,
         )
         articulation_builder.approximate_meshes()
-
-        spacing = 3.0
+        spacing = 2.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
         builder = newton.ModelBuilder()
@@ -58,55 +64,39 @@ class Example:
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
-        self.sim_time = 0.0
-        fps = 600
-        self.frame_dt = 1.0 / fps
 
         # finalize model
         self.model = builder.finalize()
 
-        self.control = self.model.control()
-        if self.use_mujoco:
-            self.sim_substeps = 4
-            self.solver = newton.solvers.SolverMuJoCo(
-                self.model,
-                use_mujoco_cpu=False,
-                solver="newton",
-                integrator="euler",
-                iterations=5,
-                ls_iterations=5,
-                nefc_per_env=300,
-                ncon_per_env=150,
-            )
-        else:
-            self.sim_substeps = 10
-            self.solver = newton.solvers.SolverXPBD(
-                self.model,
-                iterations=20,
-                angular_damping=0.01,
-                joint_angular_compliance=1e-3,
-            )
+        self.sim_substeps = 6
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            use_mujoco_cpu=False,
+            solver="newton",
+            integrator="euler",
+            nefc_per_env=300,
+            ncon_per_env=150,
+            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            impratio=100,
+            iterations=100,
+            ls_iterations=50
+        )
 
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.renderer = None
-
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=stage_path,
-                model=self.model,
-                scaling=1.0,
-                screen_width=1280,
-                screen_height=720,
-                camera_pos=(0, 1, 4),
-            )
+        self.renderer = newton.viewer.RendererOpenGL(
+            model=self.model,
+            scaling=1.0,
+            screen_width=1280,
+            screen_height=720,
+            camera_pos=(0, 1, 4),
+        )
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
+        self.control = self.model.control()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.contacts = None
-        if not self.use_mujoco:
-            self.contacts = self.model.collide(self.state_0)
         self.use_cuda_graph = (
             not getattr(self.solver, "use_mujoco_cpu", False) and wp.get_device().is_cuda and use_cuda_graph
         )
@@ -117,8 +107,6 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        if not self.use_mujoco:
-            self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             if self.renderer and hasattr(self.renderer, "apply_picking_force"):
@@ -149,12 +137,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_g1.usd",
-        help="Path to the output USD file.",
-    )
     parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
     parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument(
@@ -168,7 +150,7 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+        example = Example(num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
 
         show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
         if show_mujoco_viewer:
