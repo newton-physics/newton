@@ -70,7 +70,7 @@ class Example:
             self.sim_substeps = 4
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
-                use_mujoco=False,
+                use_mujoco_cpu=False,
                 solver="newton",
                 integrator="euler",
                 iterations=5,
@@ -108,7 +108,7 @@ class Example:
         if not self.use_mujoco:
             self.contacts = self.model.collide(self.state_0)
         self.use_cuda_graph = (
-            not getattr(self.solver, "use_mujoco", False) and wp.get_device().is_cuda and use_cuda_graph
+            not getattr(self.solver, "use_mujoco_cpu", False) and wp.get_device().is_cuda and use_cuda_graph
         )
 
         if self.use_cuda_graph:
@@ -185,7 +185,7 @@ if __name__ == "__main__":
             example.render()
 
             if show_mujoco_viewer:
-                if not example.solver.use_mujoco:
+                if not example.solver.use_mujoco_cpu:
                     mujoco_warp.get_data_into(mjd, mjm, d)
                 viewer.sync()
 
