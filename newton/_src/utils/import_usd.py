@@ -850,9 +850,9 @@ def parse_usd(
                 else:
                     usd_prim = stage.GetPrimAtPath(Sdf.Path(key))
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                        usd_prim.CreateAttribute("physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True).Set(
-                            articulation_id
-                        )
+                        usd_prim.CreateAttribute(
+                            "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
+                        ).Set(articulation_id)
                         articulation_roots.append(key)
 
                 if key in body_specs:
