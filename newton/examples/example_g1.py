@@ -26,20 +26,20 @@
 import warp as wp
 
 wp.config.enable_backward = False
-import mujoco
 
 import newton
 import newton.utils
 
 
 class Example:
-    def __init__(self, num_envs=8, use_cuda_graph=True):
+    def __init__(self, num_envs=8, use_cuda_graph=True, headless=False):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.num_envs = num_envs
 
         self.device = wp.get_device()
+        self.headless = headless
 
         # build model
         articulation_builder = newton.ModelBuilder()
@@ -76,7 +76,7 @@ class Example:
             integrator="euler",
             nefc_per_env=300,
             ncon_per_env=150,
-            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            cone="elliptic",
             impratio=100,
             iterations=100,
             ls_iterations=50,
@@ -84,13 +84,16 @@ class Example:
 
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.renderer = newton.viewer.RendererOpenGL(
-            model=self.model,
-            scaling=1.0,
-            screen_width=1280,
-            screen_height=720,
-            camera_pos=(0, 1, 4),
-        )
+        if not self.headless:
+            self.renderer = newton.viewer.RendererOpenGL(
+                model=self.model,
+                scaling=1.0,
+                screen_width=1280,
+                screen_height=720,
+                camera_pos=(0, 1, 4),
+            )
+        else:
+            self.renderer = None
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         self.control = self.model.control()
@@ -137,7 +140,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
+    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
     parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
     parser.add_argument(
         "--show-mujoco-viewer",
@@ -146,30 +149,16 @@ if __name__ == "__main__":
         help="Toggle MuJoCo viewer next to Newton renderer when SolverMuJoCo is active.",
     )
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
-
-        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco
-        if show_mujoco_viewer:
-            import mujoco
-            import mujoco.viewer
-            import mujoco_warp
-
-            mjm, mjd = example.solver.mj_model, example.solver.mj_data
-            m, d = example.solver.mjw_model, example.solver.mjw_data
-            viewer = mujoco.viewer.launch_passive(mjm, mjd)
+        example = Example(num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph, headless=args.headless)
 
         for _ in range(args.num_frames):
             example.step()
             example.render()
-
-            if show_mujoco_viewer:
-                if not example.solver.use_mujoco_cpu:
-                    mujoco_warp.get_data_into(mjd, mjm, d)
-                viewer.sync()
 
         if example.renderer:
             example.renderer.save()
