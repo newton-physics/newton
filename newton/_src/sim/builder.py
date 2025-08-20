@@ -574,7 +574,12 @@ class ModelBuilder:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
-            self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
+            if b == -1:
+                if -1 not in self.body_shapes:
+                    self.body_shapes[-1] = []
+                self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
+            else:
+                self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
             joint_X_p = copy.deepcopy(builder.joint_X_p)
