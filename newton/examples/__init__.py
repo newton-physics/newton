@@ -109,7 +109,11 @@ def create_parser():
     parser = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
-        "--viewer", type=str, default="gl", choices=["gl", "usd", "null"], help="Viewer to use (gl, usd, or null)."
+        "--viewer",
+        type=str,
+        default="gl",
+        choices=["gl", "usd", "rerun", "null"],
+        help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
         "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
@@ -153,6 +157,8 @@ def init(parser=None):
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+    elif args.viewer == "rerun":
+        viewer = newton.viewer.ViewerRerun()
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull()
     else:

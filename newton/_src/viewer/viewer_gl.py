@@ -28,6 +28,7 @@ from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
+from .wind import Wind
 
 
 class ViewerGL(ViewerBase):
@@ -40,7 +41,7 @@ class ViewerGL(ViewerBase):
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = False
+        self._paused = True
 
         # State caching for selection panel
         self._last_state = None
@@ -95,6 +96,7 @@ class ViewerGL(ViewerBase):
         super().set_model(model)
 
         self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+        self.wind = Wind(model)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h)
@@ -263,6 +265,9 @@ class ViewerGL(ViewerBase):
         """Apply viewer-driven forces to the model."""
         self.picking._apply_picking_force(state)
 
+        # Apply wind forces
+        self.wind._apply_wind_force(state)
+
     def _update(self):
         # Process events and update the internal state
         self.renderer.update()
@@ -272,6 +277,8 @@ class ViewerGL(ViewerBase):
         dt = max(0.0, min(0.1, now - self._last_time))
         self._last_time = now
         self._update_camera(dt)
+
+        self.wind.update(dt)
 
         # If the window was closed during event processing, skip rendering
         if self.renderer.has_exit():
@@ -625,6 +632,35 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", *self.renderer.sky_upper)
                 # Ground color
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
+
+            # Wind Effects section
+            imgui.set_next_item_open(False, imgui.ONCE)
+            _open = imgui.collapsing_header("Wind")
+            if isinstance(_open, tuple):
+                _open = _open[0]
+            if _open:
+                imgui.separator()
+
+                # Wind amplitude slider
+                changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
+                if changed:
+                    self.wind.amplitude = amplitude
+
+                # Wind period slider
+                changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
+                if changed:
+                    self.wind.period = period
+
+                # Wind frequency slider
+                changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
+                if changed:
+                    self.wind.frequency = frequency
+
+                # Wind direction sliders
+                direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
+                changed, direction = imgui.slider_float3("Wind Direction", *direction, -1.0, 1.0, "%.2f")
+                if changed:
+                    self.wind.direction = direction
 
             # Camera Information section
             imgui.set_next_item_open(True, imgui.APPEARING)

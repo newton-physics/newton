@@ -225,10 +225,11 @@ class TestClothExamples(unittest.TestCase):
 
 add_example_test(
     TestClothExamples,
-    name="example_cloth_bending",
+    name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None"},
+    test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 100},
+    use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
@@ -240,18 +241,20 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
-    name="example_cloth_hanging",
+    name="cloth.example_cloth_hanging",
     devices=test_devices,
-    test_options={"stage_path": "None"},
+    test_options={},
     test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
+    use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
-    name="example_cloth_style3d",
+    name="cloth.example_cloth_style3d",
     devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None"},
-    test_options_cuda={"num_frames": 500},
+    test_options={},
+    test_options_cuda={"num_frames": 32},
     test_options_cpu={"num_frames": 2},
+    use_viewer=True,
 )
 
 
