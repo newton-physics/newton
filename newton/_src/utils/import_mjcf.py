@@ -407,12 +407,14 @@ def parse_mjcf(
                     geom_height = geom_size[1]
                     geom_up_axis = up_axis
 
+                # Apply axis rotation to transform
+                tf = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, geom_up_axis))
+
                 if geom_type == "cylinder":
                     s = builder.add_shape_capsule(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        axis=geom_up_axis,
                         **shape_kwargs,
                     )
                     shapes.append(s)
@@ -421,7 +423,6 @@ def parse_mjcf(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
-                        axis=geom_up_axis,
                         **shape_kwargs,
                     )
                     shapes.append(s)
