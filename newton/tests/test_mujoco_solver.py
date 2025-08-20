@@ -1149,6 +1149,215 @@ class TestMuJoCoConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
 
+    def test_joint_transform_composition(self):
+        """
+        Test that the MuJoCo solver correctly handles joint transform composition,
+        including a non-zero joint angle (joint_q) and nonzero joint translations.
+        """
+        builder = newton.ModelBuilder()
+
+        # Add parent body (root) with identity transform and inertia
+        parent_body = builder.add_body(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        )
+        builder.add_joint_free(parent_body)  # Make parent the root
+
+        # Add child body with identity transform and inertia
+        child_body = builder.add_body(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        )
+
+        # Define translations for the joint frames in parent and child
+        parent_joint_translation = wp.vec3(0.5, -0.2, 0.3)
+        child_joint_translation = wp.vec3(-0.1, 0.4, 0.2)
+
+        # Define orientations for the joint frames
+        parent_xform = wp.transform(
+            parent_joint_translation,
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 3),  # 60 deg about Y
+        )
+        child_xform = wp.transform(
+            child_joint_translation,
+            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 4),  # 45 deg about X
+        )
+
+        # Add revolute joint between parent and child with specified transforms and axis
+        builder.add_joint_revolute(
+            parent=parent_body,
+            child=child_body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=(0.0, 0.0, 1.0),  # Revolute about Z
+        )
+
+        # Add simple box shapes for both bodies (not strictly needed for kinematics)
+        builder.add_shape_box(body=parent_body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=child_body, hx=0.1, hy=0.1, hz=0.1)
+
+        # Set the joint angle (joint_q) for the revolute joint
+        joint_angle = 0.5 * wp.pi  # 90 degrees
+        builder.joint_q[7] = joint_angle  # Index 7: first dof after 7 root dofs
+
+        model = builder.finalize()
+
+        # Try to create the MuJoCo solver (skip if not available)
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+            return
+
+        # Run forward kinematics using mujoco_warp (skip if not available)
+        try:
+            import mujoco_warp  # noqa: PLC0415
+
+            mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        except ImportError as e:
+            self.skipTest(f"mujoco_warp not installed. Skipping test: {e}")
+            return
+
+        # Extract computed positions and orientations from MuJoCo data
+        parent_pos = solver.mjw_data.xpos.numpy()[0, 1]
+        parent_quat = solver.mjw_data.xquat.numpy()[0, 1]
+        child_pos = solver.mjw_data.xpos.numpy()[0, 2]
+        child_quat = solver.mjw_data.xquat.numpy()[0, 2]
+
+        # Expected parent: at origin, identity orientation
+        expected_parent_pos = np.array([0.0, 0.0, 0.0])
+        expected_parent_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+        # Compose expected child transform:
+        #   - parent_xform: parent joint frame in parent
+        #   - joint_rot: rotation from joint_q about joint axis
+        #   - child_xform: child joint frame in child (inverse)
+        joint_rot = wp.transform(
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), joint_angle),
+        )
+        t0 = wp.transform_multiply(wp.transform_identity(), parent_xform)  # parent to joint frame
+        t1 = wp.transform_multiply(t0, joint_rot)  # apply joint rotation
+        t2 = wp.transform_multiply(t1, wp.transform_inverse(child_xform))  # to child frame
+        expected_child_xform = t2
+        expected_child_pos = expected_child_xform.p
+        expected_child_quat = expected_child_xform.q
+        # Convert to MuJoCo quaternion order (w, x, y, z)
+        expected_child_quat_mjc = np.array(
+            [expected_child_quat.w, expected_child_quat.x, expected_child_quat.y, expected_child_quat.z]
+        )
+
+        # Check parent body pose
+        np.testing.assert_allclose(
+            parent_pos, expected_parent_pos, atol=1e-6, err_msg="Parent body position should be at origin"
+        )
+        np.testing.assert_allclose(
+            parent_quat, expected_parent_quat, atol=1e-6, err_msg="Parent body quaternion should be identity"
+        )
+
+        # Check child body pose matches expected transform composition
+        np.testing.assert_allclose(
+            child_pos,
+            expected_child_pos,
+            atol=1e-6,
+            err_msg="Child body position should match composed joint transforms (with joint_q and translations)",
+        )
+        np.testing.assert_allclose(
+            child_quat,
+            expected_child_quat_mjc,
+            atol=1e-6,
+            err_msg="Child body quaternion should match composed joint transforms (with joint_q and translations)",
+        )
+
+    def test_global_joint_solver_params(self):
+        """Test that global joint solver parameters affect joint limit behavior."""
+        # Create a simple pendulum model
+        builder = newton.ModelBuilder()
+
+        # Add pendulum body
+        mass = 1.0
+        length = 1.0
+        I_sphere = wp.diag([2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2])
+
+        pendulum = builder.add_body(
+            mass=mass,
+            I_m=I_sphere,
+        )
+
+        # Add joint with limits - attach to world (-1)
+        builder.add_joint_revolute(
+            parent=-1,  # World/ground
+            child=pendulum,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, length), wp.quat_identity()),
+            axis=newton.Axis.Y,
+            limit_lower=0.0,  # Lower limit at 0 degrees
+            limit_upper=np.pi / 2,  # Upper limit at 90 degrees
+        )
+
+        model = builder.finalize(requires_grad=False)
+        state = model.state()
+
+        # Initialize joint near lower limit with strong negative velocity
+        state.joint_q.assign([0.1])  # Start above lower limit
+        state.joint_qd.assign([-10.0])  # Very strong velocity towards lower limit
+
+        # Create two solvers with different global solver parameters
+        # Soft solver - more compliant, should allow more penetration
+        solver_soft = newton.solvers.SolverMuJoCo(
+            model,
+            joint_solref_limit=(0.5, 10.0),  # Much softer response
+            joint_solimp_limit=(0.1, 0.2, 0.01, 0.5, 2.0),  # Much lower stiffness
+        )
+
+        # Stiff solver - less compliant, should allow less penetration
+        solver_stiff = newton.solvers.SolverMuJoCo(
+            model,
+            joint_solref_limit=(0.002, 0.1),  # Very stiff response
+            joint_solimp_limit=(0.99, 0.999, 0.00001, 0.5, 2.0),  # Very high stiffness
+        )
+
+        dt = 0.005
+        num_steps = 50
+
+        # Simulate both systems
+        state_soft_in = model.state()
+        state_soft_out = model.state()
+        state_stiff_in = model.state()
+        state_stiff_out = model.state()
+
+        # Copy initial state
+        state_soft_in.joint_q.assign(state.joint_q.numpy())
+        state_soft_in.joint_qd.assign(state.joint_qd.numpy())
+        state_stiff_in.joint_q.assign(state.joint_q.numpy())
+        state_stiff_in.joint_qd.assign(state.joint_qd.numpy())
+
+        control = model.control()
+        contacts = model.collide(state_soft_in)
+
+        # Track minimum positions during simulation
+        min_q_soft = float("inf")
+        min_q_stiff = float("inf")
+
+        # Run simulations
+        for _ in range(num_steps):
+            solver_soft.step(state_soft_in, state_soft_out, control, contacts, dt)
+            min_q_soft = min(min_q_soft, state_soft_out.joint_q.numpy()[0])
+            state_soft_in, state_soft_out = state_soft_out, state_soft_in
+
+            solver_stiff.step(state_stiff_in, state_stiff_out, control, contacts, dt)
+            min_q_stiff = min(min_q_stiff, state_stiff_out.joint_q.numpy()[0])
+            state_stiff_in, state_stiff_out = state_stiff_out, state_stiff_in
+
+        # The soft joint should penetrate more (have a lower minimum) than the stiff joint
+        self.assertLess(
+            min_q_soft,
+            min_q_stiff,
+            f"Soft joint min ({min_q_soft}) should be lower than stiff joint min ({min_q_stiff})",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

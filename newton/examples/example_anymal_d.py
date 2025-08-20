@@ -14,90 +14,92 @@
 # limitations under the License.
 
 ###########################################################################
-# Loads a MuJoCo model from MJCF into Newton and simulates it using the
-# MuJoCo solver.
+# Example Anymal D walk
+#
+# Shows how to control Anymal D with multiple environments.
+#
+# Example usage:
+# uv run newton/examples/example_anymal_d.py --num-envs 4
+#
 ###########################################################################
 
-import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
+import mujoco
 
 import newton
-import newton.examples
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_humanoid.usd", num_envs=8, use_cuda_graph=True):
+    def __init__(self, stage_path="example_anymal_d.usd", headless=False, num_envs=8, use_cuda_graph=True):
+        self.device = wp.get_device()
         self.num_envs = num_envs
 
-        use_mujoco_cpu = False
+        articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+        )
+        articulation_builder.default_shape_cfg.ke = 5.0e4
+        articulation_builder.default_shape_cfg.kd = 5.0e2
+        articulation_builder.default_shape_cfg.kf = 1.0e3
+        articulation_builder.default_shape_cfg.mu = 0.75
 
-        # set numpy random seed
-        self.seed = 123
-        self.rng = np.random.default_rng(self.seed)
-
-        start_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(*self.rng.uniform(-1.0, 1.0, size=3))), -wp.pi * 0.5)
-
-        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
-
-        articulation_builder = newton.ModelBuilder()
-
-        newton.utils.parse_mjcf(
-            mjcf_filename,
+        asset_path = newton.utils.download_asset("anymal_usd")
+        asset_file = str(asset_path / "anymal_d.usda")
+        newton.utils.parse_usd(
+            asset_file,
             articulation_builder,
-            ignore_names=["floor", "ground"],
-            up_axis="Z",
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
         )
 
-        # joint initial positions
-        articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
+        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        if len(articulation_builder.joint_q) > 6:
+            articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
+
+        for i in range(len(articulation_builder.joint_dof_mode)):
+            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+            articulation_builder.joint_target_ke[i] = 150
+            articulation_builder.joint_target_kd[i] = 5
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0.0)
-            articulation_builder.joint_q[7:] = self.rng.uniform(
-                -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
-            ).tolist()
+            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+
         builder.add_ground_plane()
 
         self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
+        self.sim_step = 0
+        fps = 50
+        self.frame_dt = 1.0e0 / fps
 
-        self.sim_substeps = 10
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # finalize model
         self.model = builder.finalize()
-
-        self.control = self.model.control()
-
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            use_mujoco_cpu=use_mujoco_cpu,
-            solver="newton",
-            integrator="euler",
-            iterations=10,
-            ls_iterations=5,
+            self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
         )
 
         self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=stage_path, model=self.model, scaling=1.0, show_joints=True
-            )
+        if not headless and stage_path:
+            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
 
-        self.state_0, self.state_1 = self.model.state(), self.model.state()
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+        self.control = self.model.control()
+        self.contacts = None
 
-        self.use_cuda_graph = (
-            not getattr(self.solver, "use_mujoco_cpu", False) and wp.get_device().is_cuda and use_cuda_graph
-        )
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and use_cuda_graph
 
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
@@ -105,8 +107,10 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
+        self.contacts = None
         for _ in range(self.sim_substeps):
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.state_0.clear_forces()
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -135,17 +139,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_humanoid.usd",
+        default="example_anymal_d.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=9, help="Total number of simulated environments.")
+    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
+    parser.add_argument("--num-envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+        example = Example(
+            stage_path=args.stage_path,
+            headless=args.headless,
+            num_envs=args.num_envs,
+            use_cuda_graph=args.use_cuda_graph,
+        )
 
         for frame_idx in range(args.num_frames):
             example.step()

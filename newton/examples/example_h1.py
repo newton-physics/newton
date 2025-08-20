@@ -14,10 +14,14 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Cartpole
+# Example H1
 #
-# Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder().
+# Shows how to set up a simulation of a H1 articulation
+# from a USD file using the newton.ModelBuilder().
+# Note this example does not include a trained policy.
+#
+# Example usage:
+# uv run newton/examples/example_h1.py
 #
 ###########################################################################
 
@@ -26,89 +30,88 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_cartpole.usd", num_envs=8, use_cuda_graph=True):
-        self.num_envs = num_envs
+    def __init__(self, stage_path="example_h1.usd", headless=False):
+        self.device = wp.get_device()
 
-        articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_shape_cfg.density = 100.0
-        articulation_builder.default_joint_cfg.armature = 0.1
-        articulation_builder.default_body_armature = 0.1
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        builder.default_shape_cfg.ke = 5.0e4
+        builder.default_shape_cfg.kd = 5.0e2
+        builder.default_shape_cfg.kf = 1.0e3
+        builder.default_shape_cfg.mu = 0.75
 
+        asset_path = newton.utils.download_asset("h1_description")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
         newton.utils.parse_usd(
-            newton.examples.get_asset("cartpole.usda"),
-            articulation_builder,
+            asset_file,
+            builder,
+            ignore_paths=["/GroundPlane"],
+            collapse_fixed_joints=False,
             enable_self_collisions=False,
-            collapse_fixed_joints=True,
+            load_non_physics_prims=False,
         )
 
-        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.approximate_meshes("bounding_box")
 
         self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
+        self.sim_step = 0
+        fps = 50
+        self.frame_dt = 1.0e0 / fps
 
-        self.sim_substeps = 10
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
+        for i in range(len(builder.joint_dof_mode)):
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+            builder.joint_target_ke[i] = 150
+            builder.joint_target_kd[i] = 5
 
-        for i in range(self.num_envs):
-            builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
-
-            # joint initial positions
-            builder.joint_q[-3:] = [0.0, 0.3, 0.0]
-
-        # finalize model
         self.model = builder.finalize()
-
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
-        # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
-        # self.solver = newton.solvers.SolverFeatherstone(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
 
         self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
+        if not headless and stage_path:
+            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.contacts = None
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
+        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-
-        self.run_time = 0.0
+        else:
+            self.graph = None
 
     def simulate(self):
+        self.contacts = None
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", synchronize=True, print=False) as timer:
+        with wp.ScopedTimer("step"):
             if self.use_cuda_graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-
-        self.run_time += timer.elapsed
         self.sim_time += self.frame_dt
 
     def render(self):
         if self.renderer is None:
             return
 
-        with wp.ScopedTimer("render", synchronize=True, print=False):
+        with wp.ScopedTimer("render"):
             self.renderer.begin_frame(self.sim_time)
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
@@ -122,25 +125,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stage-path",
         type=lambda x: None if x == "None" else str(x),
-        default="example_cartpole.usd",
+        default="example_h1.usd",
         help="Path to the output USD file.",
     )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
     with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+        example = Example(stage_path=args.stage_path, headless=args.headless)
 
         for _ in range(args.num_frames):
             example.step()
             example.render()
-
-        steps = args.num_frames * example.sim_substeps * args.num_envs
-        print(f"Simulation time: {example.run_time:.3f} ms")
-        print(f"Steps per second:  {steps / (example.run_time / 1000):,.0f}")
 
         if example.renderer:
             example.renderer.save()
