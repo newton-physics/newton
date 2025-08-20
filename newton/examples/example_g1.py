@@ -44,7 +44,9 @@ class Example:
 
         # build model
         articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+        )
         asset_path = newton.utils.download_asset("g1_usd")
 
         newton.utils.parse_usd(
@@ -64,7 +66,6 @@ class Example:
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
-
         # finalize model
         self.model = builder.finalize()
 
@@ -79,7 +80,7 @@ class Example:
             cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
             impratio=100,
             iterations=100,
-            ls_iterations=50
+            ls_iterations=50,
         )
 
         self.sim_dt = self.frame_dt / self.sim_substeps
