@@ -258,7 +258,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
     def test_randomize_body_mass(self):
         """
-        Tests if the body mass is randomized correctly and updates properly after simulation steps.
+        Tests if the body mass is randomized correctly and updated properly after simulation steps.
         """
         # Randomize masses for all bodies in all environments
         new_masses = self.rng.uniform(1.0, 10.0, size=self.model.body_count)
@@ -843,7 +843,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # 1. Update friction
         new_mu = np.zeros(shape_count)
         for i in range(shape_count):
-            new_mu[i] = 0.1 + i * 0.05  # Pattern: 0.1, 0.15, 0.2, ...
+            new_mu[i] = 1.0 + (i + 1) * 0.05  # Pattern: 1.05, 1.10, ...
         self.model.shape_material_mu.assign(new_mu)
 
         # 2. Update contact stiffness/damping
