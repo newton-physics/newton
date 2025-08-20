@@ -1000,7 +1000,6 @@ def update_geom_properties_kernel(
     shape_transform: wp.array(dtype=wp.transform),
     shape_type: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array2d(dtype=wp.int32),
-    shape_incoming_xform: wp.array(dtype=wp.transform),
     torsional_friction: float,
     rolling_friction: float,
     contact_stiffness_time_const: float,
@@ -1048,8 +1047,6 @@ def update_geom_properties_kernel(
 
     # update position and orientation
     tf = shape_transform[shape_idx]
-    incoming_xform = shape_incoming_xform[shape_idx]
-    tf = incoming_xform * tf
     pos = tf.p
     quat = tf.q
     geom_pos[worldid, geom_idx] = pos
@@ -1827,11 +1824,6 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
         shape_mapping = {}
-        # mapping from Newton shape id to a corrective transform
-        # that maps from Newton's shape frame to MuJoCo's internal geom frame
-        # (this includes the shape transform due to the joint child transform
-        # and the transform MuJoCo does on mesh geoms)
-        shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
         body_name_counts = {}
@@ -2242,24 +2234,8 @@ class SolverMuJoCo(SolverBase):
                     global_shape_idx = env_idx * shapes_per_env + local_shape_idx
                     # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
-                    if geom_idx >= 0:
-                        # compute the difference between the original shape transform
-                        # and the transform after applying the joint child transform
-                        # and the transform MuJoCo does on mesh geoms
-                        original_tf = wp.transform(*shape_transform[global_shape_idx])
-                        mjc_p = self.mj_model.geom_pos[geom_idx]
-                        mjc_q = self.mj_model.geom_quat[geom_idx]
-                        mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
-                        shape_incoming_xform[global_shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
-            for shape_idx, geom_idx in shape_mapping.items():
-                if geom_idx >= 0:
-                    original_tf = wp.transform(*shape_transform[shape_idx])
-                    mjc_p = self.mj_model.geom_pos[geom_idx]
-                    mjc_q = self.mj_model.geom_quat[geom_idx]
-                    mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
-                    shape_incoming_xform[shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
@@ -2303,7 +2279,6 @@ class SolverMuJoCo(SolverBase):
                 for mjc_indices, shape_idx in reverse_shape_mapping.items():
                     to_newton_shape_array[mjc_indices[0], mjc_indices[1]] = shape_idx
             model.to_newton_shape_index = wp.array2d(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
-            model.shape_incoming_xform = wp.array(shape_incoming_xform, dtype=wp.transform)  # pyright: ignore[reportAttributeAccessIssue]
 
             # create mapping from Newton shape index to MuJoCo geom index (for all envs)
             to_mjc_geom_array = np.full(num_shapes, -1, dtype=np.int32)
@@ -2542,7 +2517,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_transform,
                 self.model.shape_type,
                 self.model.to_newton_shape_index,
-                self.model.shape_incoming_xform,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
                 self.contact_stiffness_time_const,
