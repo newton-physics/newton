@@ -69,7 +69,7 @@ def Xform "cartPole" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
     )
     {
-        float3 xformOp:translate = (0, 0, 0.0)
+        float3 xformOp:translate = (0.11, 0, 0.5)
         float3 xformOp:scale = (0.04, 0.06, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
@@ -92,7 +92,7 @@ def Xform "cartPole" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
     )
     {
-        float3 xformOp:translate = (0, 0, 0.0)
+        float3 xformOp:translate = (0.11, 0, 1.5)
         float3 xformOp:scale = (0.04, 0.06, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
