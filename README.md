@@ -30,12 +30,33 @@ get started.
 
 ## Basic Examples
 
-
-| Example | Thumbnail |
-|---------|-----------|
-| [example_basic_pendulum.py](newton/examples/basic/example_basic_pendulum.py)<br>`python -m newton.examples basic_pendulum` | ![Pendulum](docs/images/examples/example_basic_pendulum.jpg) |
-| [example_basic_urdf.py](newton/examples/basic/example_basic_urdf.py)<br>`python -m newton.examples basic_urdf` | ![URDF](docs/images/examples/example_basic_urdf.jpg) |
-| [example_basic_viewer.py](newton/examples/basic/example_basic_viewer.py)<br>`python -m newton.examples basic_viewer` | ![Viewer](docs/images/examples/example_basic_viewer.jpg) |
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/images/examples/example_basic_pendulum.jpg" alt="Pendulum" width="150" height="150" style="object-fit: cover;"><br>
+      <strong><a href="newton/examples/basic/example_basic_pendulum.py">example_basic_pendulum.py</a></strong>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/examples/example_basic_urdf.jpg" alt="URDF" width="150" height="150" style="object-fit: cover;"><br>
+      <strong><a href="newton/examples/basic/example_basic_urdf.py">example_basic_urdf.py</a></strong>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer" width="150" height="150" style="object-fit: cover;"><br>
+      <strong><a href="newton/examples/basic/example_basic_viewer.py">example_basic_viewer.py</a></strong>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples basic_pendulum</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples basic_urdf</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples basic_viewer</code>
+    </td>
+  </tr>
+</table>
 
 ## Example Options
 
