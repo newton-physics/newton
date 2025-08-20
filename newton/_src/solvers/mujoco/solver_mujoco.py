@@ -1827,11 +1827,6 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
         shape_mapping = {}
-        # mapping from Newton shape id to a corrective transform
-        # that maps from Newton's shape frame to MuJoCo's internal geom frame
-        # (this includes the shape transform due to the joint child transform
-        # and the transform MuJoCo does on mesh geoms)
-        shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
 
         # ensure unique names
         body_name_counts = {}
@@ -1839,6 +1834,15 @@ class SolverMuJoCo(SolverBase):
 
         # only generate the first environment, replicate state of multiple worlds in MjData
         selected_joints = np.arange(model.joint_count)
+
+        # start index where the shapes from the environments repeat
+        # i.e. the number of shapes with collision group -1 added to the builder before
+        # builder.add_builder() was called
+        shape_range_start = 0
+
+        # number of shapes which are replicated per env (exludes global static shapes)
+        shape_range_len = 0
+
         if separate_envs_to_worlds:
             # determine which shapes, bodies and joints belong to the first environment
             # based on the collision group: we pick shapes from the first collision group and groups
@@ -1847,8 +1851,12 @@ class SolverMuJoCo(SolverBase):
             non_negatives = shape_collision_group[shape_collision_group >= 0]
             if len(non_negatives) > 0:
                 first_collision_group = np.min(non_negatives)
+                first_group = np.where(shape_collision_group == first_collision_group)[0]
+                shape_range_start = first_group[0]
+                shape_range_len = len(first_group)
             else:
                 first_collision_group = -1
+                shape_range_len = model.shape_count
             selected_shapes = np.where((shape_collision_group == first_collision_group) | (shape_collision_group < 0))[
                 0
             ]
@@ -1879,11 +1887,6 @@ class SolverMuJoCo(SolverBase):
             selected_shapes = np.where(shape_flags & ShapeFlags.COLLIDE_SHAPES)[0]
             selected_bodies = np.arange(model.body_count)
 
-        # store selected shapes, bodies, joints for later use in update_geom_properties
-        self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
-        self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
-        self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
-
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
         joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints]))
@@ -1903,9 +1906,23 @@ class SolverMuJoCo(SolverBase):
         colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
-        def add_geoms(warp_body_id: int, incoming_xform: wp.transform | None = None):
-            body = mj_bodies[body_mapping[warp_body_id]]
-            shapes = model.body_shapes.get(warp_body_id)
+        # number of shapes we are instantiating in MuJoCo (which will be replicated for the number of envs)
+        colliding_shapes_per_env = len(colliding_shapes)
+
+        # mapping from Newton shape id to a corrective transform
+        # that maps from Newton's shape frame to MuJoCo's internal geom frame
+        # (this includes the shape transform due to the joint child transform
+        # and the transform MuJoCo does on mesh geoms)
+        shape_incoming_xform = np.tile(np.array(wp.transform_identity()), (model.shape_count, 1))
+
+        # store selected shapes, bodies, joints for later use in update_geom_properties
+        self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
+        self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
+        self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
+
+        def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
+            body = mj_bodies[body_mapping[newton_body_id]]
+            shapes = model.body_shapes.get(newton_body_id)
             if not shapes:
                 return
             for shape in shapes:
@@ -1913,7 +1930,7 @@ class SolverMuJoCo(SolverBase):
                     continue
                 stype = shape_type[shape]
                 name = f"{geom_type_name[stype]}_{shape}"
-                if stype == GeoType.PLANE and warp_body_id != -1:
+                if stype == GeoType.PLANE and newton_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
                 geom_params = {
                     "type": geom_type_mapping[stype],
@@ -2204,7 +2221,10 @@ class SolverMuJoCo(SolverBase):
                 eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
                 eq.data[10] = eq_constraint_torquescale[i]
 
+        assert colliding_shapes_per_env == len(spec.geoms)
+
         self.mj_model = spec.compile()
+
         mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
 
         self.shape_map = {}  # Maps newton shape ids to mujoco shapes
@@ -2248,26 +2268,26 @@ class SolverMuJoCo(SolverBase):
         # The current `shape_mapping` only contains the template shapes.
         # We expand it to cover all shapes in all environments.
         if separate_envs_to_worlds and model.num_envs > 1:
-            shapes_per_env = model.shape_count // model.num_envs
-            if model.shape_count % model.num_envs != 0:
-                warnings.warn(
-                    f"Total shape count {model.shape_count} is not divisible by number of environments {model.num_envs}. "
-                    "Shape mapping to MuJoCo geoms may be incorrect.",
-                    stacklevel=2,
-                )
-
             full_shape_mapping = {}
-            # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
-            for geom_idx, template_shape_idx in geom_to_shape_idx.items():
-                # The local index is consistent for a given part of the model across all environments.
-                local_shape_idx = template_shape_idx % shapes_per_env
-                for env_idx in range(model.num_envs):
-                    # Calculate the global Newton shape index for the current environment.
-                    global_shape_idx = env_idx * shapes_per_env + local_shape_idx
-                    # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
+            reverse_shape_mapping = {}
+            for env_idx in range(model.num_envs):
+                # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
+                for geom_idx, template_shape_idx in geom_to_shape_idx.items():
+                    # Compute the Newton shape index for the given geom index in the current environment.
+                    # If the shape is a template shape, it will be used in all environments.
+                    # If the shape is not a template shape, it will be used only in the current environment.
+                    if shape_collision_group[template_shape_idx] < 0:
+                        global_shape_idx = template_shape_idx
+                    else:
+                        global_shape_idx = env_idx * shape_range_len + shape_range_start + template_shape_idx
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
+                    reverse_shape_mapping[(env_idx, geom_idx)] = global_shape_idx
+                    # Update incoming shape transforms for shapes that are not in environment 0.
+                    if env_idx > 0:
+                        shape_incoming_xform[global_shape_idx] = shape_incoming_xform[template_shape_idx]
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
+            reverse_shape_mapping = {v: k for k, v in full_shape_mapping.items()}
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
@@ -2307,7 +2327,6 @@ class SolverMuJoCo(SolverBase):
             # use the actual number of geoms from the MuJoCo model
             to_newton_shape_array = np.full((model.num_envs, self.mj_model.ngeom), -1, dtype=np.int32)
             if num_shapes > 0:
-                reverse_shape_mapping = {v: k for k, v in full_shape_mapping.items()}
                 for mjc_indices, shape_idx in reverse_shape_mapping.items():
                     to_newton_shape_array[mjc_indices[0], mjc_indices[1]] = shape_idx
             model.to_newton_shape_index = wp.array2d(to_newton_shape_array, dtype=wp.int32)  # pyright: ignore[reportAttributeAccessIssue]
