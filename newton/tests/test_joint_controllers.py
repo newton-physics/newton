@@ -96,13 +96,15 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
 devices = get_test_devices()
 solvers = {
     # "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_c": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco=True, disable_contacts=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco=False, disable_contacts=True),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
     # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
         # add_function_test(TestJointController, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
             TestJointController,
@@ -114,7 +116,7 @@ for device in devices:
             target_value=wp.pi / 2.0,
         )
         # TODO: XPBD velocity control is not working correctly
-        if solver_name == "mujoco_warp" or solver_name == "mujoco_c":
+        if solver_name == "mujoco_warp" or solver_name == "mujoco_cpu":
             add_function_test(
                 TestJointController,
                 f"test_revolute_joint_controller_velocity_target_{solver_name}",

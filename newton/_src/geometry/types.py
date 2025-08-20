@@ -19,7 +19,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, Vec3, nparray, override
+from ..core.types import Devicelike, Vec2, Vec3, nparray, override
 
 
 class GeoType(enum.IntEnum):
@@ -105,9 +105,12 @@ class Mesh:
         self,
         vertices: Sequence[Vec3] | nparray,
         indices: Sequence[int] | nparray,
+        normals: Sequence[Vec3] | nparray | None = None,
+        uvs: Sequence[Vec2] | nparray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
+        color: Vec3 | None = None,
     ):
         """Construct a Mesh object from a triangle mesh
 
@@ -118,14 +121,21 @@ class Mesh:
         Args:
             vertices: List of vertices in the mesh
             indices: List of triangle indices, 3 per-element
+            normals: Optional per-vertex normals (len == len(vertices)), shape (N, 3)
+            uvs: Optional per-vertex texture coordinates (len == len(vertices)), shape (N, 2)
             compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
             is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
             maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
+            color: Optional per-mesh base color (Vec3 in [0, 1])
         """
+
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
         self._vertices = np.array(vertices).reshape(-1, 3)
         self._indices = np.array(indices, dtype=np.int32).flatten()
+        self._normals = np.array(normals).reshape(-1, 3) if normals is not None else None
+        self._uvs = np.array(uvs).reshape(-1, 2) if uvs is not None else None
+        self._color = color
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None

@@ -1110,7 +1110,7 @@ class SolverMuJoCo(SolverBase):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
-            if not solver.use_mujoco:
+            if not solver.use_mujoco_cpu:
                 mujoco_warp.get_data_into(mjd, mjm, d)
             viewer.sync()
     """
@@ -1130,7 +1130,7 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str = "euler",
         cone: int | str = "pyramidal",
         impratio: float = 1.0,
-        use_mujoco: bool = False,
+        use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
@@ -1145,7 +1145,7 @@ class SolverMuJoCo(SolverBase):
             model (Model): the model to be simulated.
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
-            separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
+            separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             nefc_per_env (int): Number of constraints per environment (world).
             ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
             iterations (int): Number of solver iterations.
@@ -1154,7 +1154,7 @@ class SolverMuJoCo(SolverBase):
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
             impratio (float): Frictional-to-normal constraint impedance ratio.
-            use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
+            use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
@@ -1169,8 +1169,8 @@ class SolverMuJoCo(SolverBase):
         self.mujoco, self.mujoco_warp = import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
 
-        if use_mujoco and not use_mujoco_contacts:
-            print("Setting use_mujoco_contacts to False has no effect when use_mujoco is True")
+        if use_mujoco_cpu and not use_mujoco_contacts:
+            print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
 
         disableflags = 0
         if disable_contacts:
@@ -1178,11 +1178,11 @@ class SolverMuJoCo(SolverBase):
         if mjw_model is not None and mjw_data is not None:
             self.mjw_model = mjw_model
             self.mjw_data = mjw_data
-            self.use_mujoco = False
+            self.use_mujoco_cpu = False
         else:
-            self.use_mujoco = use_mujoco
+            self.use_mujoco_cpu = use_mujoco_cpu
             if separate_envs_to_worlds is None:
-                separate_envs_to_worlds = not use_mujoco
+                separate_envs_to_worlds = not use_mujoco_cpu
             self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
@@ -1210,7 +1210,7 @@ class SolverMuJoCo(SolverBase):
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        if self.use_mujoco:
+        if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
@@ -1894,16 +1894,12 @@ class SolverMuJoCo(SolverBase):
                 stacklevel=2,
             )
 
-        # maps from Newton body index to the transform to be applied to its children
-        # i.e. its inverse joint child transform
-        body_child_tf = {}
-
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
         colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
-        def add_geoms(warp_body_id: int, incoming_xform: wp.transform | None = None):
+        def add_geoms(warp_body_id: int):
             body = mj_bodies[body_mapping[warp_body_id]]
             shapes = model.body_shapes.get(warp_body_id)
             if not shapes:
@@ -1934,9 +1930,6 @@ class SolverMuJoCo(SolverBase):
                         maxhullvert=maxhullvert,
                     )
                     geom_params["meshname"] = name
-                if incoming_xform is not None:
-                    # transform to world space
-                    tf = incoming_xform * tf
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
@@ -1990,15 +1983,13 @@ class SolverMuJoCo(SolverBase):
 
             # add body
             body_mapping[child] = len(mj_bodies)
+
+            # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[ji])
+            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
+
             joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            if parent != -1:
-                incoming_xform = body_child_tf.get(parent)
-                if incoming_xform is not None:
-                    # apply the incoming transform from the parent body,
-                    # which is the inverse of the parent joint's child transform
-                    tf = incoming_xform * tf
-                    joint_pos = wp.vec3(0.0, 0.0, 0.0)
+            joint_rot = wp.quat(*joint_child_xform[ji, 3:])
 
             # ensure unique body name
             name = model.body_key[child]
@@ -2044,14 +2035,12 @@ class SolverMuJoCo(SolverBase):
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
-                    axis = wp.vec3(*joint_axis[ai])
-                    # reverse rotation of body to joint axis
-                    # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
-                    # axis = wp.quat_rotate_inv(tf_q, axis)
+
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2107,14 +2096,12 @@ class SolverMuJoCo(SolverBase):
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
                     ai = qd_start + i
-                    axis = wp.vec3(*joint_axis[ai])
-                    # reverse rotation of body to joint axis
-                    # axis = wp.quat_rotate_inv(rot_correction2 * tf_q, axis)
-                    # axis = wp.quat_rotate_inv(tf_q, axis)
+
+                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "quat": quat2mjc(joint_child_xform[ji, 3:]),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2170,11 +2157,7 @@ class SolverMuJoCo(SolverBase):
             elif j_type != JointType.FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
 
-            # add geoms
-            child_tf = wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
-            body_child_tf[child] = child_tf
-
-            add_geoms(child, incoming_xform=child_tf)
+            add_geoms(child)
 
         for i, typ in enumerate(eq_constraint_type):
             if typ == EqType.CONNECT:
@@ -2235,16 +2218,8 @@ class SolverMuJoCo(SolverBase):
             if geom_idx >= 0:
                 shape_to_geom_idx[shape] = geom_idx
                 geom_to_shape_idx[geom_idx] = shape
-                # compute the difference between the original shape transform
-                # and the transform after applying the joint child transform
-                # and the transform MuJoCo does on mesh geoms
-                original_tf = wp.transform(*shape_transform[shape])
-                mjc_p = self.mj_model.geom_pos[geom_idx]
-                mjc_q = self.mj_model.geom_quat[geom_idx]
-                mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
-                shape_incoming_xform[shape] = mjc_tf * wp.transform_inverse(original_tf)
         shape_mapping = shape_to_geom_idx  # Replace with actual indices
-
+        # shape_mapping is a mapping from Newton shape index to MuJoCo template geom index
         # The current `shape_mapping` only contains the template shapes.
         # We expand it to cover all shapes in all environments.
         if separate_envs_to_worlds and model.num_envs > 1:
@@ -2257,6 +2232,7 @@ class SolverMuJoCo(SolverBase):
                 )
 
             full_shape_mapping = {}
+            # geom_to_shape_idx is a mapping from MuJoCo template geom index to Newton shape indices of the last environemnt
             # `geom_to_shape_idx` provides the reverse mapping for the template env: {mj_geom_idx: newton_shape_idx}
             for geom_idx, template_shape_idx in geom_to_shape_idx.items():
                 # The local index is consistent for a given part of the model across all environments.
@@ -2266,8 +2242,24 @@ class SolverMuJoCo(SolverBase):
                     global_shape_idx = env_idx * shapes_per_env + local_shape_idx
                     # All corresponding shapes map to the same MuJoCo geom index (since mj_model is single-env).
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
+                    if geom_idx >= 0:
+                        # compute the difference between the original shape transform
+                        # and the transform after applying the joint child transform
+                        # and the transform MuJoCo does on mesh geoms
+                        original_tf = wp.transform(*shape_transform[global_shape_idx])
+                        mjc_p = self.mj_model.geom_pos[geom_idx]
+                        mjc_q = self.mj_model.geom_quat[geom_idx]
+                        mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                        shape_incoming_xform[global_shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
+            for shape_idx, geom_idx in shape_mapping.items():
+                if geom_idx >= 0:
+                    original_tf = wp.transform(*shape_transform[shape_idx])
+                    mjc_p = self.mj_model.geom_pos[geom_idx]
+                    mjc_q = self.mj_model.geom_quat[geom_idx]
+                    mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                    shape_incoming_xform[shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
