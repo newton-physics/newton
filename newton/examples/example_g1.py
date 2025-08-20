@@ -16,11 +16,10 @@
 ###########################################################################
 # Example G1
 #
-# Shows how to set up a simulation of a rigid-body humanoid articulation
-# from a XML using the newton.ModelBuilder().
+# Shows how to set up a simulation of a G1 articulation
+# from a USD file using the newton.ModelBuilder().
 # Note this example does not include a trained policy.
 #
-# Users can pick bodies by right-clicking and dragging with the mouse.
 #
 ###########################################################################
 
