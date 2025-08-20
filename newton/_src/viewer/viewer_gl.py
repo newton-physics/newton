@@ -306,6 +306,16 @@ class ViewerGL(ViewerBase):
         """Close the viewer and clean up resources."""
         self.renderer.close()
 
+    @property
+    def vsync(self) -> bool:
+        """Get the current vsync state."""
+        return self.renderer.get_vsync()
+
+    @vsync.setter
+    def vsync(self, enabled: bool):
+        """Set the vsync state."""
+        self.renderer.set_vsync(enabled)
+
     def is_key_down(self, key):
         """Check if a key is currently pressed.
 
@@ -594,6 +604,11 @@ class ViewerGL(ViewerBase):
                 _open = _open[0]
             if _open:
                 imgui.separator()
+
+                # VSync
+                changed, vsync = imgui.checkbox("VSync", self.vsync)
+                if changed:
+                    self.vsync = vsync
 
                 # Sky rendering
                 changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)

@@ -134,7 +134,14 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer = newton.viewer.ViewerGL()
-    example = Example(viewer, num_envs=100)
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
+    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
+
+    # Create viewer and run
+    example = Example(viewer, args.num_envs)
 
     newton.examples.run(viewer, example)

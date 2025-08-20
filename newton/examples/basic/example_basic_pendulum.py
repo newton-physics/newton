@@ -67,15 +67,15 @@ class Example:
             parent=-1,
             child=link_0,
             axis=wp.vec3(0.0, 1.0, 0.0),
-            parent_xform=wp.transformf(0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 1.0),
-            child_xform=wp.transformf(-hx, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 5.0), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
         builder.add_joint_revolute(
             parent=link_0,
             child=link_1,
             axis=wp.vec3(0.0, 1.0, 0.0),
-            parent_xform=wp.transformf(hx, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-            child_xform=wp.transformf(-hx, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            parent_xform=wp.transform(p=wp.vec3(hx, 0.0, 0.0), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
 
         # add ground plane
@@ -94,7 +94,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
-        # newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # put graph capture into it's own function
         self.capture()
@@ -139,7 +139,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer = newton.viewer.ViewerGL()
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
+
+    # Create viewer and run
     example = Example(viewer)
 
     newton.examples.run(viewer, example)

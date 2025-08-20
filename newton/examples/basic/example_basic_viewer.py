@@ -24,7 +24,6 @@
 
 from __future__ import annotations
 
-import argparse
 import math
 
 import warp as wp
@@ -188,22 +187,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    args = parser.parse_args()
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
 
-    if args.viewer == "usd":
-        from newton.viewer import ViewerUSD
-
-        viewer = ViewerUSD(output_path="example_viewer.usd", num_frames=600)
-    elif args.viewer == "rerun":
-        from newton.viewer import ViewerRerun
-
-        viewer = ViewerRerun(server=True, launch_viewer=True)
-    else:
-        from newton.viewer import ViewerGL
-
-        viewer = ViewerGL()
-
+    # Create viewer and run
     example = Example(viewer)
+
     newton.examples.run(viewer, example)

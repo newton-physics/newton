@@ -701,7 +701,6 @@ class RendererGL:
         self.draw_fps = True
         self.draw_shadows = True
         self.draw_wireframe = False
-        self.vsync = vsync
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -946,6 +945,22 @@ class RendererGL:
 
     def set_title(self, title):
         self.window.set_caption(title)
+
+    def set_vsync(self, enabled: bool):
+        """Enable or disable vertical synchronization (vsync).
+
+        Args:
+            enabled: If True, enable vsync; if False, disable vsync.
+        """
+        self.window.set_vsync(enabled)
+
+    def get_vsync(self) -> bool:
+        """Get the current vsync state.
+
+        Returns:
+            True if vsync is enabled, False otherwise.
+        """
+        return self.window.vsync
 
     def has_exit(self):
         return self.app.event_loop.has_exit

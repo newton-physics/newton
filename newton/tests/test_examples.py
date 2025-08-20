@@ -78,6 +78,7 @@ def add_example_test(
     test_options: dict[str, Any] | None = None,
     test_options_cpu: dict[str, Any] | None = None,
     test_options_cuda: dict[str, Any] | None = None,
+    use_viewer: bool = False,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
@@ -137,21 +138,31 @@ def add_example_test(
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device)])
 
-        stage_path = (
-            options.pop(
-                "stage_path",
-                os.path.join(os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"),
+        if not use_viewer:
+            stage_path = (
+                options.pop(
+                    "stage_path",
+                    os.path.join(os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"),
+                )
+                if USD_AVAILABLE
+                else "None"
             )
-            if USD_AVAILABLE
-            else "None"
-        )
 
-        if stage_path:
-            command.extend(["--stage-path", stage_path])
-            try:
-                os.remove(stage_path)
-            except OSError:
-                pass
+            if stage_path:
+                command.extend(["--stage-path", stage_path])
+                try:
+                    os.remove(stage_path)
+                except OSError:
+                    pass
+        else:
+            # new-style example, setup viewer type and output path
+            if USD_AVAILABLE:
+                stage_path = os.path.join(
+                    os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
+                )
+                command.extend(["--viewer", "usd", "--output-path", stage_path])
+            else:
+                command.extend(["--viewer", "null"])
 
         command.extend(_build_command_line_options(options))
 
@@ -164,6 +175,10 @@ def add_example_test(
             result = subprocess.run(
                 command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
             )
+
+        # print any error messages (e.g.: module not found)
+        if result.stderr != "":
+            print(result.stderr)
 
         # Check the return code (0 is standard for success)
         test.assertEqual(
@@ -184,6 +199,24 @@ def add_example_test(
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
 test_devices = get_test_devices(mode="basic")
+
+
+class TestBasicExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_urdf",
+    devices=test_devices,
+    test_options_cpu={"num_envs": 16},
+    test_options_cuda={"num_envs": 64},
+    use_viewer=True,
+)
+
+add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
 
 class TestClothExamples(unittest.TestCase):

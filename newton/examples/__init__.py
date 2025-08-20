@@ -94,8 +94,71 @@ def compute_env_offsets(
     return env_offsets
 
 
-from .basic import example_basic_pendulum as basic_pendulum
-from .basic import example_basic_urdf as basic_urdf
-from .basic import example_basic_viewer as basic_viewer
+def create_parser():
+    """Create a base argument parser with common parameters for Newton examples.
 
-__all__ = ["basic_pendulum", "basic_urdf", "basic_viewer"]
+    Individual examples can use this as a parent parser and add their own
+    specific arguments.
+
+    Returns:
+        argparse.ArgumentParser: Base parser with common arguments
+    """
+    import argparse  # noqa: PLC0415
+
+    # add_help=False since this is a parent parser
+    parser = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument(
+        "--viewer", type=str, default="gl", choices=["gl", "usd", "null"], help="Viewer to use (gl, usd, or null)."
+    )
+    parser.add_argument(
+        "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
+    )
+    parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
+
+    return parser
+
+
+def init(parser=None):
+    """Initialize Newton example components from parsed arguments.
+
+    Args:
+        parser: Parsed arguments from argparse (should include arguments from
+              create_parser())
+
+    Returns:
+        tuple: (viewer, args) where viewer is configured based on args.viewer
+
+    Raises:
+        ValueError: If invalid viewer type or missing required arguments
+    """
+    import warp as wp  # noqa: PLC0415
+
+    import newton.viewer  # noqa: PLC0415
+
+    # parse args
+    if parser is None:
+        parser = create_parser()
+
+    args = parser.parse_known_args()[0]
+
+    # Set device if specified
+    if args.device:
+        wp.set_device(args.device)
+
+    # Create viewer based on type
+    if args.viewer == "gl":
+        viewer = newton.viewer.ViewerGL()
+    elif args.viewer == "usd":
+        if args.output_path is None:
+            raise ValueError("--output-path is required when using usd viewer")
+        viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+    elif args.viewer == "null":
+        viewer = newton.viewer.ViewerNull()
+    else:
+        raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    return viewer, args
+
+
+__all__ = ["create_parser", "init", "run"]
