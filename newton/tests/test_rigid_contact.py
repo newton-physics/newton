@@ -19,6 +19,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.core import quat_between_axes
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 wp.config.quiet = True
@@ -116,11 +117,13 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
 
         b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
+        # Apply Y-axis rotation to capsule
+        xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, newton.Axis.Y))
         builder.add_shape_capsule(
             body=b,
+            xform=xform,
             radius=0.1 * scale,
             half_height=0.3 * scale,
-            axis=newton.Axis.Y,
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
