@@ -33,15 +33,15 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
-def run(viewer, example):
-    while viewer.is_running():
+def run(example):
+    while example.viewer.is_running():
         with wp.ScopedTimer("step"):
             example.step()
 
         with wp.ScopedTimer("render"):
             example.render()
 
-    viewer.close()
+    example.viewer.close()
 
 
 def compute_env_offsets(

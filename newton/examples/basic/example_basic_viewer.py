@@ -206,4 +206,4 @@ if __name__ == "__main__":
         viewer = ViewerGL()
 
     example = Example(viewer)
-    newton.examples.run(viewer, example)
+    newton.examples.run(example)

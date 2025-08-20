@@ -28,7 +28,6 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.viewer
 
 wp.config.enable_backward = False
 
@@ -137,4 +136,4 @@ if __name__ == "__main__":
     viewer = newton.viewer.ViewerGL()
     example = Example(viewer, num_envs=100)
 
-    newton.examples.run(viewer, example)
+    newton.examples.run(example)

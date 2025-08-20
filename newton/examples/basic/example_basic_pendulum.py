@@ -28,7 +28,6 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.viewer
 
 wp.config.enable_backward = False
 
@@ -38,15 +37,12 @@ class Example:
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
-
-        # group commonly prefixed parameters together
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
 
-        # use the name of the asset or just robot for the individual articulation not "articulation_builder"
         builder = newton.ModelBuilder()
 
         builder.add_articulation(key="pendulum")
@@ -94,9 +90,8 @@ class Example:
         self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
-        # newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -142,4 +137,4 @@ if __name__ == "__main__":
     viewer = newton.viewer.ViewerGL()
     example = Example(viewer)
 
-    newton.examples.run(viewer, example)
+    newton.examples.run(example)
