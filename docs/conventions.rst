@@ -343,8 +343,8 @@ Newton uses the following conventions for collision primitives:
      - radius (base), half_height
      - Offset at (0, 0, -half_height/2)
    * - **Plane**
-     - Point on plane
-     - scale (0,0 for infinite)
+     - Origin of shape frame (plane passes through this point)
+     - scale (0,0 for infinite, or width,height for bounded)
      - N/A
 
 **Important Notes:**
@@ -352,7 +352,7 @@ Newton uses the following conventions for collision primitives:
 * **Cone**: Extends along the Z-axis with base at -half_height and apex at +half_height. The center of mass is located 1/4 of the total height from the base.
 * **Capsule**: Extends along the Z-axis. The half_height parameter excludes the hemispherical caps. Total length = 2 * (radius + half_height).
 * **Cylinder**: Extends along the Z-axis.
-* **Plane**: Uses scale=(0,0) for infinite planes, or (width, height) for bounded planes.
+* **Plane**: The plane's normal points along the +Z axis of the shape's local coordinate frame. The plane passes through the shape frame's origin. Uses scale=(0,0) for infinite planes, or (width, height) for bounded planes.
 
 Automatic Import Handling
 ~~~~~~~~~~~~~~~~~~~~~~~~~
