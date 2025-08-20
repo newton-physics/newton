@@ -34,17 +34,17 @@ get started.
   <tr>
     <td align="center" width="33%">
       <a href="newton/examples/basic/example_basic_pendulum.py">
-        <img src="docs/images/examples/example_basic_pendulum.jpg" alt="Pendulum" width="200">
+        <img src="docs/images/examples/example_basic_pendulum.jpg" alt="Pendulum">
       </a>
     </td>
     <td align="center" width="33%">
       <a href="newton/examples/basic/example_basic_urdf.py">
-        <img src="docs/images/examples/example_basic_urdf.jpg" alt="URDF" width="200">
+        <img src="docs/images/examples/example_basic_urdf.jpg" alt="URDF">
       </a>
     </td>
     <td align="center" width="33%">
       <a href="newton/examples/basic/example_basic_viewer.py">
-        <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer" width="200">
+        <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
       </a>
     </td>
   </tr>
