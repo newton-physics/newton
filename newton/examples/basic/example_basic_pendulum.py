@@ -14,13 +14,10 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Basic URDF
+# Example Basic Pendulum
 #
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
-#
-# Users can pick bodies by right-clicking and dragging with the mouse.
+# Shows how to set up a simulation of a simple double pendulum using the
+# newton.ModelBuilder() class.
 #
 ###########################################################################
 
@@ -28,9 +25,6 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.viewer
-
-wp.config.enable_backward = False
 
 
 class Example:
@@ -84,7 +78,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
