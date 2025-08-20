@@ -20,6 +20,7 @@ import warp as wp
 from warp.render import OpenGLRenderer
 
 import newton
+from newton._src.core import quat_between_axes
 from newton._src.geometry.inertia import (
     compute_box_inertia,
     compute_cone_inertia,
@@ -170,7 +171,6 @@ class TestInertia(unittest.TestCase):
             body=body_z,
             radius=radius,
             half_height=half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=density),
         )
         model_z = builder_z.finalize()
@@ -183,11 +183,13 @@ class TestInertia(unittest.TestCase):
         # Y-axis capsule
         builder_y = newton.ModelBuilder()
         body_y = builder_y.add_body()
+        # Apply Y-axis rotation
+        xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, newton.Axis.Y))
         builder_y.add_shape_capsule(
             body=body_y,
+            xform=xform,
             radius=radius,
             half_height=half_height,
-            axis=newton.Axis.Y,
             cfg=newton.ModelBuilder.ShapeConfig(density=density),
         )
         model_y = builder_y.finalize()
@@ -200,11 +202,13 @@ class TestInertia(unittest.TestCase):
         # X-axis capsule
         builder_x = newton.ModelBuilder()
         body_x = builder_x.add_body()
+        # Apply X-axis rotation
+        xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, newton.Axis.X))
         builder_x.add_shape_capsule(
             body=body_x,
+            xform=xform,
             radius=radius,
             half_height=half_height,
-            axis=newton.Axis.X,
             cfg=newton.ModelBuilder.ShapeConfig(density=density),
         )
         model_x = builder_x.finalize()
@@ -221,7 +225,6 @@ class TestInertia(unittest.TestCase):
             body=body_cyl,
             radius=radius,
             half_height=half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=density),
         )
         model_cyl = builder_cyl.finalize()
@@ -239,7 +242,6 @@ class TestInertia(unittest.TestCase):
             body=body_cone,
             radius=radius,
             half_height=half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=density),
         )
         model_cone = builder_cone.finalize()
