@@ -1909,6 +1909,7 @@ class SolverMuJoCo(SolverBase):
         self.selected_shapes = wp.array(selected_shapes, dtype=wp.int32, device=model.device)
         self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
         self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
+        selected_shapes_set = set(selected_shapes)
 
         def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -1916,6 +1917,9 @@ class SolverMuJoCo(SolverBase):
             if not shapes:
                 return
             for shape in shapes:
+                if shape not in selected_shapes_set:
+                    # skip shapes that are not selected for this environment
+                    continue
                 if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     continue
                 stype = shape_type[shape]
