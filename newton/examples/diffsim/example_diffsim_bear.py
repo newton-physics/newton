@@ -39,8 +39,6 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
-import newton.solvers
-import newton.viewer
 
 PHASE_COUNT = 8
 PHASE_STEP = wp.constant((2.0 * wp.pi) / PHASE_COUNT)
@@ -102,18 +100,26 @@ class Example:
     def __init__(self, viewer_type: str, stage_path="example_tile_walker.usd", verbose=False, num_frames=300):
         self.verbose = verbose
 
-        fps = 60
-        self.frame_dt = 1.0 / fps
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
         self.num_frames = num_frames
 
         self.sim_substeps = 80
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        self.iter = 0
+        self.train_iter = 0
         self.train_rate = 0.025
+        self.loss = wp.zeros(1, dtype=float, requires_grad=True)
+        self.coms = []
+        for _i in range(self.num_frames):
+            self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
 
+        # model input (Neural network)
         self.phase_count = PHASE_COUNT
+        self.phases = []
+        for _i in range(self.num_frames):
+            self.phases.append(wp.zeros(self.phase_count, dtype=float, requires_grad=True))
 
         self.render_time = 0.0
 
@@ -136,6 +142,7 @@ class Example:
 
         # sim model
         builder = newton.ModelBuilder()
+
         builder.add_soft_mesh(
             pos=wp.vec3(0.0, 0.0, 0.5),
             rot=wp.quat_identity(),
@@ -162,7 +169,6 @@ class Example:
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
         # finalize model
         self.model = builder.finalize(requires_grad=True)
-        self.control = self.model.control()
 
         # Set soft contact parameters
         self.model.soft_contact_ke = ke
@@ -174,20 +180,16 @@ class Example:
         radii.fill_(0.05)
         self.model.particle_radius = radii
 
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
+
         # allocate sim states
         self.states = []
         for _i in range(self.num_frames * self.sim_substeps + 1):
             self.states.append(self.model.state(requires_grad=True))
 
-        # initialize the integrator.
-        self.solver = newton.solvers.SolverSemiImplicit(self.model)
+        self.control = self.model.control()
 
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=40.0)
-
-        # model input
-        self.phases = []
-        for _i in range(self.num_frames):
-            self.phases.append(wp.zeros(self.phase_count, dtype=float, requires_grad=True))
 
         # weights matrix for linear network
         rng = np.random.default_rng(42)
@@ -201,10 +203,6 @@ class Example:
             self.tet_activations.append(wp.zeros(self.model.tet_count, dtype=float, requires_grad=True))
 
         # optimization
-        self.loss = wp.zeros(1, dtype=float, requires_grad=True)
-        self.coms = []
-        for _i in range(self.num_frames):
-            self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
         self.optimizer = wp.optim.Adam([self.weights.flatten()], lr=self.train_rate)
 
         # rendering
@@ -221,16 +219,28 @@ class Example:
 
             self.viewer = ViewerGL(self.model)
 
+        if isinstance(self.viewer, ViewerGL):
+            pos = type(self.viewer.camera.pos)(0.0, -25.0, 2.0)
+            self.viewer.camera.pos = pos
+            self.viewer.camera.yaw = 90.0
+
         # capture forward/backward passes
-        self.use_cuda_graph = wp.get_device().is_cuda
-        if self.use_cuda_graph:
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
-                self.tape = wp.Tape()
-                with self.tape:
-                    for i in range(self.num_frames):
-                        self.forward(i)
-                self.tape.backward(self.loss)
+                self.forward_backward()
             self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def forward_backward(self):
+        self.tape = wp.Tape()
+        with self.tape:
+            for i in range(self.num_frames):
+                self.forward(i)
+        self.tape.backward(self.loss)
 
     def forward(self, frame):
         with wp.ScopedTimer("network", active=self.verbose):
@@ -277,14 +287,10 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step"):
-            if self.use_cuda_graph:
+            if self.graph:
                 wp.capture_launch(self.graph)
             else:
-                self.tape = wp.Tape()
-                with self.tape:
-                    for i in range(self.num_frames):
-                        self.forward(i)
-                self.tape.backward(self.loss)
+                self.forward_backward()
 
             # optimization
             x = self.weights.grad.flatten()
@@ -292,7 +298,7 @@ class Example:
 
         loss = self.loss.numpy()
         if self.verbose:
-            print(f"Iteration {self.iter}: {loss}")
+            print(f"Train iter {self.train_iter}: {loss}")
 
         # reset sim
         self.sim_time = 0.0
@@ -304,19 +310,18 @@ class Example:
         for i in range(self.num_frames):
             self.coms[i].zero_()
 
-        self.iter += 1
+        self.train_iter += 1
+
+    def test(self):
+        pass
 
     def render(self):
-        if self.viewer is None:
-            return
+        for i in range(self.num_frames + 1):
+            self.viewer.begin_frame(self.render_time)
+            self.viewer.log_state(self.states[i * self.sim_substeps])
+            self.viewer.end_frame()
 
-        with wp.ScopedTimer("render"):
-            for i in range(self.num_frames + 1):
-                self.viewer.begin_frame(self.render_time)
-                self.viewer.log_state(self.states[i * self.sim_substeps])
-                self.viewer.end_frame()
-
-                self.render_time += self.frame_dt
+            self.render_time += self.frame_dt
 
 
 if __name__ == "__main__":
@@ -349,5 +354,5 @@ if __name__ == "__main__":
             example.step()
             example.render()
 
-        if example.renderer:
-            example.renderer.save()
+        if example.viewer:
+            example.viewer.close()
