@@ -156,23 +156,25 @@ def parse_urdf(
                 shapes.append(s)
 
             for cylinder in geo.findall("cylinder"):
+                # Apply axis rotation to transform
+                xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
                 s = builder.add_shape_capsule(
                     body=link,
-                    xform=tf,
+                    xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    axis=up_axis,
                     cfg=shape_cfg,
                 )
                 shapes.append(s)
 
             for capsule in geo.findall("capsule"):
+                # Apply axis rotation to transform
+                xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
                 s = builder.add_shape_capsule(
                     body=link,
-                    xform=tf,
+                    xform=xform,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
-                    axis=up_axis,
                     cfg=shape_cfg,
                 )
                 shapes.append(s)
