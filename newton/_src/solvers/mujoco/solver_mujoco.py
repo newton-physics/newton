@@ -1110,7 +1110,7 @@ class SolverMuJoCo(SolverBase):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
-            if not solver.use_mujoco:
+            if not solver.use_mujoco_cpu:
                 mujoco_warp.get_data_into(mjd, mjm, d)
             viewer.sync()
     """
@@ -1130,7 +1130,7 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str = "euler",
         cone: int | str = "pyramidal",
         impratio: float = 1.0,
-        use_mujoco: bool = False,
+        use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
@@ -1145,7 +1145,7 @@ class SolverMuJoCo(SolverBase):
             model (Model): the model to be simulated.
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
-            separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco`.
+            separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             nefc_per_env (int): Number of constraints per environment (world).
             ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
             iterations (int): Number of solver iterations.
@@ -1154,7 +1154,7 @@ class SolverMuJoCo(SolverBase):
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
             impratio (float): Frictional-to-normal constraint impedance ratio.
-            use_mujoco (bool): If True, use the pure MuJoCo backend instead of `mujoco_warp`.
+            use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
             default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
@@ -1169,8 +1169,8 @@ class SolverMuJoCo(SolverBase):
         self.mujoco, self.mujoco_warp = import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
 
-        if use_mujoco and not use_mujoco_contacts:
-            print("Setting use_mujoco_contacts to False has no effect when use_mujoco is True")
+        if use_mujoco_cpu and not use_mujoco_contacts:
+            print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
 
         disableflags = 0
         if disable_contacts:
@@ -1178,11 +1178,11 @@ class SolverMuJoCo(SolverBase):
         if mjw_model is not None and mjw_data is not None:
             self.mjw_model = mjw_model
             self.mjw_data = mjw_data
-            self.use_mujoco = False
+            self.use_mujoco_cpu = False
         else:
-            self.use_mujoco = use_mujoco
+            self.use_mujoco_cpu = use_mujoco_cpu
             if separate_envs_to_worlds is None:
-                separate_envs_to_worlds = not use_mujoco
+                separate_envs_to_worlds = not use_mujoco_cpu
             self.convert_to_mjc(
                 model,
                 disableflags=disableflags,
@@ -1210,7 +1210,7 @@ class SolverMuJoCo(SolverBase):
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        if self.use_mujoco:
+        if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
