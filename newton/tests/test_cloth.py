@@ -1152,7 +1152,7 @@ def test_cloth_stitching(test, device, solver):
 
 
 def test_cloth_enable_tri_contact(test, device, solver):
-    # Set tri_contact_enabled to True
+    # Set enable_tri_contact to True
     example = ClothSim(device, solver)
     example.set_up_enable_tri_contact_experiment()
     example.solver.enable_tri_contact = True
@@ -1163,7 +1163,7 @@ def test_cloth_enable_tri_contact(test, device, solver):
     final_pos = example.state0.particle_q.numpy()
     test.assertTrue(final_pos[-1, 1] > 0.0)
 
-    # Set tri_contact_enabled to False
+    # Set enable_tri_contact to False
     example = ClothSim(device, solver)
     example.set_up_enable_tri_contact_experiment()
     example.solver.enable_tri_contact = False
