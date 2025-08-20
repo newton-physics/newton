@@ -39,8 +39,6 @@ class Example:
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
-
-        # group commonly prefixed parameters together
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -49,8 +47,9 @@ class Example:
 
         self.viewer = viewer
 
-        # use the name of the asset or just robot for the individual articulation not "articulation_builder"
         quadruped = newton.ModelBuilder()
+
+        # set default parameters for the quadruped
         quadruped.default_body_armature = 0.01
         quadruped.default_joint_cfg.armature = 0.01
         quadruped.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
@@ -60,6 +59,8 @@ class Example:
         quadruped.default_shape_cfg.kd = 1.0e2
         quadruped.default_shape_cfg.kf = 1.0e2
         quadruped.default_shape_cfg.mu = 1.0
+
+        # parse the URDF file
         newton.utils.parse_urdf(
             newton.examples.get_asset("quadruped.urdf"),
             quadruped,
@@ -67,6 +68,8 @@ class Example:
             floating=True,
             enable_self_collisions=False,
         )
+
+        # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
         quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
 
