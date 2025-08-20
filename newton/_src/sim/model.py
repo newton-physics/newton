@@ -272,6 +272,10 @@ class Model:
         """Joint position limit stiffness (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd = None
         """Joint position limit damping (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        self.joint_limit_solref = None
+        """Joint position limit solver reference parameters (time constants), shape [joint_dof_count, 2], float."""
+        self.joint_limit_solimp = None
+        """Joint position limit solver impedance parameters, shape [joint_dof_count, 5], float."""
         self.joint_twist_lower = None
         """Joint lower twist limit, shape [joint_count], float."""
         self.joint_twist_upper = None

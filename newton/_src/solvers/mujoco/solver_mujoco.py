@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import nparray, override
+from ...core.types import Vec5, nparray, override
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
     Contacts,
@@ -97,10 +97,6 @@ def make_frame(a: wp.vec3):
     # fmt: on
 
 
-# Define vec5 as a 5-element vector of float32, matching MuJoCo's convention
-vec5 = wp.types.vector(length=5, dtype=wp.float32)
-
-
 @wp.func
 def write_contact(
     # Data in:
@@ -111,10 +107,10 @@ def write_contact(
     margin_in: float,
     gap_in: float,
     condim_in: int,
-    friction_in: vec5,
-    solref_in: wp.vec2f,
-    solreffriction_in: wp.vec2f,
-    solimp_in: vec5,
+    friction_in: Vec5,
+    solref_in: wp.vec2,
+    solreffriction_in: wp.vec2,
+    solimp_in: Vec5,
     geoms_in: wp.vec2i,
     worldid_in: int,
     contact_id_in: int,
@@ -123,10 +119,10 @@ def write_contact(
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
     contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=vec5),
+    contact_friction_out: wp.array(dtype=Vec5),
     contact_solref_out: wp.array(dtype=wp.vec2),
     contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=vec5),
+    contact_solimp_out: wp.array(dtype=Vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
@@ -156,7 +152,7 @@ def contact_params(
     geom_priority: wp.array(dtype=int),
     geom_solmix: wp.array2d(dtype=float),
     geom_solref: wp.array2d(dtype=wp.vec2),
-    geom_solimp: wp.array2d(dtype=vec5),
+    geom_solimp: wp.array2d(dtype=Vec5),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
@@ -188,7 +184,7 @@ def contact_params(
     condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
 
     max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
-    friction = vec5(
+    friction = Vec5(
         max_geom_friction[0],
         max_geom_friction[0],
         max_geom_friction[1],
@@ -217,7 +213,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_priority: wp.array(dtype=int),
     geom_solmix: wp.array2d(dtype=float),
     geom_solref: wp.array2d(dtype=wp.vec2),
-    geom_solimp: wp.array2d(dtype=vec5),
+    geom_solimp: wp.array2d(dtype=Vec5),
     geom_friction: wp.array2d(dtype=wp.vec3),
     geom_margin: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
@@ -238,10 +234,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
     contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=vec5),
+    contact_friction_out: wp.array(dtype=Vec5),
     contact_solref_out: wp.array(dtype=wp.vec2),
     contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=vec5),
+    contact_solimp_out: wp.array(dtype=Vec5),
     contact_dim_out: wp.array(dtype=int),
     contact_geom_out: wp.array(dtype=wp.vec2i),
     contact_worldid_out: wp.array(dtype=int),
@@ -978,7 +974,7 @@ def update_dof_properties_kernel(
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
 ):
-    """Update DOF armature and friction loss values."""
+    """Update DOF armature and friction loss."""
     tid = wp.tid()
     worldid = tid // dofs_per_env
     dof_in_env = tid % dofs_per_env
@@ -991,12 +987,31 @@ def update_dof_properties_kernel(
 
 
 @wp.kernel
+def update_dof_solver_params_kernel(
+    joint_limit_solref: wp.array(dtype=wp.vec2),
+    joint_limit_solimp: wp.array(dtype=Vec5),
+    dofs_per_env: int,
+    # outputs
+    jnt_solref: wp.array2d(dtype=wp.vec2),
+    jnt_solimp: wp.array2d(dtype=Vec5),
+):
+    """Update DOF solver parameters (solref and solimp)."""
+    tid = wp.tid()
+    worldid = tid // dofs_per_env
+    dof_in_env = tid % dofs_per_env
+
+    # update solver parameters
+    jnt_solref[worldid, dof_in_env] = joint_limit_solref[tid]
+    jnt_solimp[worldid, dof_in_env] = joint_limit_solimp[tid]
+
+
+@wp.kernel
 def update_geom_properties_kernel(
     shape_collision_radius: wp.array(dtype=float),
     shape_mu: wp.array(dtype=float),
     shape_ke: wp.array(dtype=float),
     shape_kd: wp.array(dtype=float),
-    shape_size: wp.array(dtype=wp.vec3f),
+    shape_size: wp.array(dtype=wp.vec3),
     shape_transform: wp.array(dtype=wp.transform),
     shape_type: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array2d(dtype=wp.int32),
@@ -1006,11 +1021,11 @@ def update_geom_properties_kernel(
     contact_stiffness_time_const: float,
     # outputs
     geom_rbound: wp.array2d(dtype=float),
-    geom_friction: wp.array2d(dtype=wp.vec3f),
-    geom_solref: wp.array2d(dtype=wp.vec2f),
-    geom_size: wp.array2d(dtype=wp.vec3f),
-    geom_pos: wp.array2d(dtype=wp.vec3f),
-    geom_quat: wp.array2d(dtype=wp.quatf),
+    geom_friction: wp.array2d(dtype=wp.vec3),
+    geom_solref: wp.array2d(dtype=wp.vec2),
+    geom_size: wp.array2d(dtype=wp.vec3),
+    geom_pos: wp.array2d(dtype=wp.vec3),
+    geom_quat: wp.array2d(dtype=wp.quat),
 ):
     """Update geom properties from Newton shape properties."""
     worldid, geom_idx = wp.tid()
@@ -2050,6 +2065,15 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (lower, upper)
+
+                        # Set solver parameters from model if available
+                        if model.joint_limit_solref is not None:
+                            solref_data = model.joint_limit_solref.numpy()[ai]
+                            joint_params["solref_limit"] = tuple(solref_data)
+
+                        if model.joint_limit_solimp is not None:
+                            solimp_data = model.joint_limit_solimp.numpy()[ai]
+                            joint_params["solimp_limit"] = tuple(solimp_data)
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -2111,6 +2135,13 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                        # Set solver parameters from model if available
+                        if model.joint_limit_solref is not None:
+                            solref_data = model.joint_limit_solref.numpy()[ai]
+                            joint_params["solref_limit"] = tuple(solref_data)
+                        if model.joint_limit_solimp is not None:
+                            solimp_data = model.joint_limit_solimp.numpy()[ai]
+                            joint_params["solimp_limit"] = tuple(solimp_data)
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_ang"
@@ -2365,8 +2396,8 @@ class SolverMuJoCo(SolverBase):
             "body_inertia",
             # "body_invweight0",
             # "body_gravcomp",
-            # "jnt_solref",
-            # "jnt_solimp",
+            "jnt_solref",
+            "jnt_solimp",
             # "jnt_pos",
             # "jnt_axis",
             # "jnt_stiffness",
@@ -2519,9 +2550,38 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_friction,
                 dofs_per_env,
             ],
-            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            outputs=[
+                self.mjw_model.dof_armature,
+                self.mjw_model.dof_frictionloss,
+            ],
             device=self.model.device,
         )
+
+        # Update solver parameters if they exist and have the expected size
+        # MujocoWarp might create these with size based on joints with limits, not total DOFs
+        expected_shape = (self.model.num_envs, dofs_per_env)
+        if (
+            hasattr(self.mjw_model, "jnt_solref")
+            and self.mjw_model.jnt_solref is not None
+            and hasattr(self.mjw_model, "jnt_solimp")
+            and self.mjw_model.jnt_solimp is not None
+            and self.mjw_model.jnt_solref.shape == expected_shape
+            and self.mjw_model.jnt_solimp.shape == expected_shape
+        ):
+            wp.launch(
+                update_dof_solver_params_kernel,
+                dim=self.model.joint_dof_count,
+                inputs=[
+                    self.model.joint_limit_solref,
+                    self.model.joint_limit_solimp,
+                    dofs_per_env,
+                ],
+                outputs=[
+                    self.mjw_model.jnt_solref,
+                    self.mjw_model.jnt_solimp,
+                ],
+                device=self.model.device,
+            )
 
     def update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""

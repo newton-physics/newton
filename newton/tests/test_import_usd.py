@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -524,6 +525,82 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_solref_solimp_import(self):
+        """Test importing joint solver parameters from USD."""
+
+        usda_str = """#usda 1.0
+
+        def Xform "World"
+        {
+            def Xform "Link0" (
+                prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            )
+            {
+                float physics:mass = 1.0
+                bool physics:rigidBodyEnabled = 1
+
+                def PhysicsFixedJoint "FixedJoint"
+                {
+                    rel physics:body1 = </World/Link0>
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+            }
+
+            def Xform "Link1" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            )
+            {
+                float physics:mass = 1.0
+                bool physics:rigidBodyEnabled = 1
+
+                def PhysicsRevoluteJoint "Joint" (
+                    prepend apiSchemas = ["PhysicsLimitAPI", "PhysicsDriveAPI"]
+                )
+                {
+                    uniform token physics:axis = "Z"
+                    float physics:lowerLimit = -1.0
+                    float physics:upperLimit = 1.0
+                    rel physics:body0 = </World/Link0>
+                    rel physics:body1 = </World/Link1>
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+
+                    # Custom solver parameters
+                    float[] newton:joint_limit_solref = [0.05, 2.0]
+                    float[] newton:joint_limit_solimp = [0.8, 0.9, 0.002, 0.6, 3.0]
+                }
+            }
+        }
+        """
+
+        # Write to temp file since parse_usd expects a file path
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".usda", delete=False) as f:
+            f.write(usda_str)
+            temp_path = f.name
+
+        try:
+            builder = newton.ModelBuilder()
+            parse_usd(temp_path, builder)
+            model = builder.finalize()
+
+            # Verify values were imported
+            self.assertGreater(model.joint_dof_count, 0, "No joints were imported")
+
+            solref = model.joint_limit_solref.numpy()[0]
+            solimp = model.joint_limit_solimp.numpy()[0]
+
+            np.testing.assert_array_almost_equal(solref, [0.05, 2.0])
+            np.testing.assert_array_almost_equal(solimp, [0.8, 0.9, 0.002, 0.6, 3.0])
+        finally:
+            # Clean up temp file
+            os.unlink(temp_path)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,8 @@ Vec3 = list[float] | tuple[float, float, float] | wp.vec3
 """A 3D vector represented as a list or tuple of 3 floats."""
 Vec4 = list[float] | tuple[float, float, float, float] | wp.vec4
 """A 4D vector represented as a list or tuple of 4 floats."""
+Vec5 = wp.types.vector(length=5, dtype=wp.float32)
+"""A 5D vector of float32, used for MuJoCo solver impedance parameters."""
 Quat = list[float] | tuple[float, float, float, float] | wp.quat
 """A quaternion represented as a list or tuple of 4 floats (in XYZW order)."""
 Mat33 = list[float] | wp.mat33
@@ -146,5 +148,6 @@ __all__ = [
     "Vec2",
     "Vec3",
     "Vec4",
+    "Vec5",
     "flag_to_int",
 ]

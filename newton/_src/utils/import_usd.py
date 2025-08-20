@@ -549,6 +549,36 @@ def parse_usd(
             (joint_prim, physics_scene_prim), "warp:joint_limit_kd", default_joint_limit_kd
         )
 
+        # Parse joint limit solver parameters as vector attributes
+        limit_solref = None
+        limit_solimp = None
+
+        # Try to get solref from joint or scene
+        solref_attr = None
+        for prim in [joint_prim, physics_scene_prim]:
+            if prim:
+                attr = prim.GetAttribute("newton:joint_limit_solref")
+                if attr and attr.HasAuthoredValue():
+                    solref_attr = attr
+                    break
+        if solref_attr:
+            solref_val = solref_attr.Get()
+            if solref_val and len(solref_val) == 2:
+                limit_solref = tuple(solref_val)
+
+        # Try to get solimp from joint or scene
+        solimp_attr = None
+        for prim in [joint_prim, physics_scene_prim]:
+            if prim:
+                attr = prim.GetAttribute("newton:joint_limit_solimp")
+                if attr and attr.HasAuthoredValue():
+                    solimp_attr = attr
+                    break
+        if solimp_attr:
+            solimp_val = solimp_attr.Get()
+            if solimp_val and len(solimp_val) == 5:
+                limit_solimp = tuple(solimp_val)
+
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
@@ -577,6 +607,11 @@ def parse_usd(
             joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
             if key == UsdPhysics.ObjectType.PrismaticJoint:
+                # Add solver parameters if available
+                if limit_solref is not None:
+                    joint_params["limit_solref"] = limit_solref
+                if limit_solimp is not None:
+                    joint_params["limit_solimp"] = limit_solimp
                 builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
@@ -588,6 +623,12 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
                 joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+
+                # Add solver parameters if available
+                if limit_solref is not None:
+                    joint_params["limit_solref"] = limit_solref
+                if limit_solimp is not None:
+                    joint_params["limit_solimp"] = limit_solimp
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -670,6 +711,8 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            limit_solref=limit_solref,
+                            limit_solimp=limit_solimp,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -686,6 +729,8 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            limit_solref=limit_solref,
+                            limit_solimp=limit_solimp,
                         )
                     )
                     joint_prim.CreateAttribute(

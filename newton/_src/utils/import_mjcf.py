@@ -523,6 +523,16 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+                # Parse solver parameters from joint attributes
+                limit_solref = None
+                limit_solimp = None
+                if "solreflimit" in joint_attrib:
+                    solref_vals = [float(x) for x in joint_attrib["solreflimit"].split()]
+                    limit_solref = tuple(solref_vals) if len(solref_vals) == 2 else (0.02, 1.0)
+                if "solimplimit" in joint_attrib:
+                    solimp_vals = [float(x) for x in joint_attrib["solimplimit"].split()]
+                    limit_solimp = tuple(solimp_vals[:5]) if len(solimp_vals) >= 5 else (0.9, 0.95, 0.001, 0.5, 2.0)
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -530,6 +540,8 @@ def parse_mjcf(
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                     armature=joint_armature[-1],
+                    limit_solref=limit_solref,
+                    limit_solimp=limit_solimp,
                 )
                 if is_angular:
                     angular_axes.append(ax)

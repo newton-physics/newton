@@ -38,6 +38,7 @@ from ..core.types import (
     Transform,
     Vec3,
     Vec4,
+    Vec5,
     axis_to_vec3,
     flag_to_int,
     nparray,
@@ -213,6 +214,8 @@ class ModelBuilder:
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
+            limit_solref: tuple[float, float] | None = None,
+            limit_solimp: tuple[float, float, float, float, float] | None = None,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
@@ -242,6 +245,10 @@ class ModelBuilder:
             """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
             self.friction = friction
             """Friction coefficient for the joint axis. Defaults to 0.0."""
+            self.limit_solref = limit_solref or (0.02, 1.0)
+            """The solver reference parameters (time constants) for joint limits. Defaults to (0.02, 1.0)."""
+            self.limit_solimp = limit_solimp or (0.9, 0.95, 0.001, 0.5, 2.0)
+            """The solver impedance parameters for joint limits. Defaults to (0.9, 0.95, 0.001, 0.5, 2.0)."""
 
             if self.mode == JointMode.TARGET_POSITION and (
                 self.target > self.limit_upper or self.target < self.limit_lower
@@ -427,6 +434,8 @@ class ModelBuilder:
         self.joint_effort_limit = []
         self.joint_velocity_limit = []
         self.joint_friction = []
+        self.joint_limit_solref = []
+        self.joint_limit_solimp = []
 
         self.joint_twist_lower = []
         self.joint_twist_upper = []
@@ -768,6 +777,8 @@ class ModelBuilder:
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
+            "joint_limit_solref",
+            "joint_limit_solimp",
             "shape_key",
             "shape_flags",
             "shape_type",
@@ -972,6 +983,8 @@ class ModelBuilder:
             self.joint_effort_limit.append(dim.effort_limit)
             self.joint_velocity_limit.append(dim.velocity_limit)
             self.joint_friction.append(dim.friction)
+            self.joint_limit_solref.append(dim.limit_solref)
+            self.joint_limit_solimp.append(dim.limit_solimp)
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
@@ -987,6 +1000,15 @@ class ModelBuilder:
             add_axis_dim(dim)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
+
+        # For joints with implicit DOFs (JOINT_FREE, JOINT_BALL, JOINT_DISTANCE),
+        # we need to add default values for joint_limit_solref and joint_limit_solimp
+        # for any DOFs not covered by explicit axes
+        num_explicit_axes = len(linear_axes) + len(angular_axes)
+        for _ in range(dof_count - num_explicit_axes):
+            # Add default solver parameters for implicit DOFs
+            self.joint_limit_solref.append((0.02, 1.0))  # MuJoCo defaults
+            self.joint_limit_solimp.append((0.9, 0.95, 0.001, 0.5, 2.0))  # MuJoCo defaults
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
@@ -1026,6 +1048,8 @@ class ModelBuilder:
         limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
+        limit_solref: tuple[float, float] | None = None,
+        limit_solimp: tuple[float, float, float, float, float] | None = None,
         armature: float | None = None,
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
@@ -1050,6 +1074,8 @@ class ModelBuilder:
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            limit_solref: The solver reference parameters (time constants) for joint limits. If None, defaults to (0.02, 1.0).
+            limit_solimp: The solver impedance parameters for joint limits. If None, defaults to (0.9, 0.95, 0.001, 0.5, 2.0).
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
@@ -1078,6 +1104,8 @@ class ModelBuilder:
                 mode=mode if mode is not None else self.default_joint_cfg.mode,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
+                limit_solref=limit_solref,
+                limit_solimp=limit_solimp,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
@@ -1110,6 +1138,8 @@ class ModelBuilder:
         limit_upper: float | None = None,
         limit_ke: float | None = None,
         limit_kd: float | None = None,
+        limit_solref: tuple[float, float] | None = None,
+        limit_solimp: tuple[float, float, float, float, float] | None = None,
         armature: float | None = None,
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
@@ -1134,6 +1164,8 @@ class ModelBuilder:
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
             limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
+            limit_solref: The solver reference parameters (time constants) for joint limits. If None, defaults to (0.02, 1.0).
+            limit_solimp: The solver impedance parameters for joint limits. If None, defaults to (0.9, 0.95, 0.001, 0.5, 2.0).
             armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
@@ -1162,6 +1194,8 @@ class ModelBuilder:
                 mode=mode if mode is not None else self.default_joint_cfg.mode,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
+                limit_solref=limit_solref,
+                limit_solimp=limit_solimp,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
@@ -1755,6 +1789,8 @@ class ModelBuilder:
                         "limit_upper": self.joint_limit_upper[j],
                         "act": self.joint_target[j],
                         "effort_limit": self.joint_effort_limit[j],
+                        "limit_solref": self.joint_limit_solref[j],
+                        "limit_solimp": self.joint_limit_solimp[j],
                     }
                 )
 
@@ -1939,9 +1975,12 @@ class ModelBuilder:
         self.joint_limit_ke.clear()
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
+        self.joint_limit_solref.clear()
+        self.joint_limit_solimp.clear()
         self.joint_dof_dim.clear()
         self.joint_target.clear()
         self.joint_group.clear()  # Clear joint groups
+
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -1973,6 +2012,25 @@ class ModelBuilder:
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_target.append(axis["act"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+                self.joint_limit_solref.append(axis["limit_solref"])
+                self.joint_limit_solimp.append(axis["limit_solimp"])
+
+            # Handle implicit DOFs (for JOINT_FREE, JOINT_BALL, etc.)
+            # These joints have more DOFs than explicit axes
+            num_explicit_axes = len(joint["axes"])
+            joint_type = joint["type"]
+            dof_count, _ = get_joint_dof_count(joint_type, num_explicit_axes)
+
+            for _ in range(dof_count - num_explicit_axes):
+                # Add default values for implicit DOFs
+                self.joint_limit_solref.append((0.02, 1.0))  # MuJoCo defaults
+                self.joint_limit_solimp.append((0.9, 0.95, 0.001, 0.5, 2.0))  # MuJoCo defaults
+
+        # joint_count will update automatically as it's a property based on len(self.joint_type)
+
+        # Recalculate DOF and coordinate counts after rebuilding
+        self.joint_dof_count = len(self.joint_qd)
+        self.joint_coord_count = len(self.joint_q)
 
         return {
             "body_remap": body_remap,
@@ -3955,6 +4013,23 @@ class ModelBuilder:
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
+
+            # Joint limit solver parameters
+            # These arrays must have exactly joint_dof_count entries
+            assert len(self.joint_limit_solref) == self.joint_dof_count, (
+                f"joint_limit_solref size mismatch: {len(self.joint_limit_solref)} != {self.joint_dof_count}"
+            )
+            assert len(self.joint_limit_solimp) == self.joint_dof_count, (
+                f"joint_limit_solimp size mismatch: {len(self.joint_limit_solimp)} != {self.joint_dof_count}"
+            )
+
+            m.joint_limit_solref = wp.array(
+                self.joint_limit_solref, dtype=wp.vec2, device=device, requires_grad=requires_grad
+            )
+            m.joint_limit_solimp = wp.array(
+                self.joint_limit_solimp, dtype=Vec5, device=device, requires_grad=requires_grad
+            )
+
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
 
             # 'close' the start index arrays with a sentinel value

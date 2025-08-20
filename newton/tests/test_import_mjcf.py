@@ -212,6 +212,30 @@ class TestImportMjcf(unittest.TestCase):
         # Verify that the rotation was actually applied (not just identity)
         assert not np.allclose(actual_inertia, original_inertia, atol=1e-6)
 
+    def test_joint_solref_solimp_import(self):
+        """Test importing joint solver parameters from MJCF."""
+        mjcf_str = """
+        <mujoco>
+            <worldbody>
+                <body name="link1">
+                    <joint name="j1" type="hinge" limited="true" range="-1 1"
+                           solreflimit="0.05 2" solimplimit="0.8 0.9 0.002 0.6 3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        newton.utils.parse_mjcf(mjcf_str, builder)
+        model = builder.finalize()
+
+        # Check values were imported
+        solref = model.joint_limit_solref.numpy()[0]
+        solimp = model.joint_limit_solimp.numpy()[0]
+
+        np.testing.assert_array_almost_equal(solref, [0.05, 2.0])
+        np.testing.assert_array_almost_equal(solimp, [0.8, 0.9, 0.002, 0.6, 3.0])
+
     def test_single_body_transform(self):
         """Test 1: Single body with pos/quat → verify body_q matches expected world transform."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>

@@ -646,6 +646,84 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated MuJoCo DOF {dof_idx} in env {env_idx} friction should match Newton value",
                 )
 
+    def test_joint_limit_solver_params(self):
+        """Test that joint limit solver parameters affect simulation behavior."""
+        # Create simple pendulum model
+        builder = newton.ModelBuilder()
+
+        # Add proper inertia for the bodies (diagonal inertia matrix for a sphere)
+        I_sphere = (0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
+        body = builder.add_body(mass=1.0, I_m=I_sphere, xform=wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()))
+
+        # Add joint with custom solver params - very soft limits
+        builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            limit_lower=0.0,  # Set lower limit at 0
+            limit_upper=1.0,
+            limit_solref=(0.1, 2.0),  # Soft limits - larger time constant
+            limit_solimp=(0.5, 0.6, 0.01, 0.5, 2.0),  # Lower d_imp means softer
+        )
+
+        # Create another pendulum with stiff limits
+        body2 = builder.add_body(mass=1.0, I_m=I_sphere, xform=wp.transform(wp.vec3(2.0, 1.0, 0.0), wp.quat_identity()))
+        builder.add_joint_revolute(
+            parent=-1,
+            child=body2,
+            axis=newton.Axis.Z,
+            limit_lower=0.0,  # Set lower limit at 0
+            limit_upper=1.0,
+            limit_solref=(0.01, 1.0),  # Stiff limits - smaller time constant
+            limit_solimp=(0.99, 0.999, 0.0001, 0.5, 2.0),  # Higher d_imp means stiffer
+        )
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Set both joints at positive position with negative velocity toward lower limit
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        state_in.joint_q.assign([0.5, 0.5])  # Start at positive position
+        state_in.joint_qd.assign([-3.0, -3.0])  # Strong velocity toward lower limit (0)
+
+        # Simulate
+        dt = 0.01
+        positions = []
+        for _ in range(200):  # More steps to see behavior
+            solver.step(state_in, state_out, control, None, dt)
+            state_in, state_out = state_out, state_in
+            positions.append(state_in.joint_q.numpy().copy())
+
+        positions = np.array(positions)
+
+        # Find minimum positions (how far they penetrated beyond limit)
+        min_pos_soft = np.min(positions[:, 0])
+        min_pos_stiff = np.min(positions[:, 1])
+
+        # Both should violate the limit somewhat due to momentum
+        self.assertLess(min_pos_soft, 0.0, "Soft joint should penetrate beyond lower limit")
+        self.assertLess(min_pos_stiff, 0.0, "Stiff joint should penetrate beyond lower limit")
+
+        # Soft joint should penetrate MORE than stiff joint
+        self.assertLess(
+            min_pos_soft,
+            min_pos_stiff,
+            f"Soft joint (min={min_pos_soft:.4f}) should penetrate more than stiff joint (min={min_pos_stiff:.4f})",
+        )
+
+        # Calculate penetration depths
+        soft_penetration = abs(min_pos_soft)
+        stiff_penetration = abs(min_pos_stiff)
+
+        # Soft joint should penetrate significantly more
+        self.assertGreater(
+            soft_penetration,
+            stiff_penetration * 1.5,
+            f"Soft penetration ({soft_penetration:.4f}) should be at least 1.5x stiff penetration ({stiff_penetration:.4f})",
+        )
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):
