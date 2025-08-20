@@ -38,16 +38,16 @@ class Example:
         self.use_mujoco = True
         articulation_builder = newton.ModelBuilder()
 
-        asset_path = newton.utils.download_asset("g1_description")
+        asset_path = newton.utils.download_asset("g1_usd")
 
-        newton.utils.parse_mjcf(
-            str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
+        newton.utils.parse_usd(
+            str(asset_path / "g1_isaac.usd"),
             articulation_builder,
+            xform=wp.transform(wp.vec3f(0, 0, 0.8), wp.quat_identity()),
             collapse_fixed_joints=True,
-            up_axis="Z",
             enable_self_collisions=False,
         )
-        articulation_builder.approximate_meshes("bounding_box")
+        articulation_builder.approximate_meshes()
 
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
