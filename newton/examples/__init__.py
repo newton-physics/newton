@@ -189,11 +189,13 @@ def main():
             print(f"  {name}")
         sys.exit(1)
 
-    # Remove the example name from sys.argv so the target script gets clean args
-    sys.argv = [sys.argv[0]], *sys.argv[2:]
+    # Set up sys.argv for the target script
+    target_module = example_map[example_name]
+    # Keep the module name as argv[0] and pass remaining args
+    sys.argv = [target_module, *sys.argv[2:]]
 
     # Run the target example module
-    runpy.run_module(example_map[example_name], run_name="__main__")
+    runpy.run_module(target_module, run_name="__main__")
 
 
 if __name__ == "__main__":
