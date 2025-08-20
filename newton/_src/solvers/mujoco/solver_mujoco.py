@@ -1835,12 +1835,7 @@ class SolverMuJoCo(SolverBase):
         # only generate the first environment, replicate state of multiple worlds in MjData
         selected_joints = np.arange(model.joint_count)
 
-        # start index where the shapes from the environments repeat
-        # i.e. the number of shapes with collision group -1 added to the builder before
-        # builder.add_builder() was called
-        shape_range_start = 0
-
-        # number of shapes which are replicated per env (exludes global static shapes)
+        # number of shapes which are replicated per env (exludes singular static shapes from a negative group)
         shape_range_len = 0
 
         if separate_envs_to_worlds:
@@ -1852,7 +1847,6 @@ class SolverMuJoCo(SolverBase):
             if len(non_negatives) > 0:
                 first_collision_group = np.min(non_negatives)
                 first_group = np.where(shape_collision_group == first_collision_group)[0]
-                shape_range_start = first_group[0]
                 shape_range_len = len(first_group)
             else:
                 first_collision_group = -1
@@ -2254,15 +2248,33 @@ class SolverMuJoCo(SolverBase):
                     if shape_collision_group[template_shape_idx] < 0:
                         global_shape_idx = template_shape_idx
                     else:
-                        global_shape_idx = env_idx * shape_range_len + shape_range_start + template_shape_idx
+                        global_shape_idx = env_idx * shape_range_len + template_shape_idx
+                        if global_shape_idx >= model.shape_count:
+                            print()
+                        assert global_shape_idx < model.shape_count, (
+                            f"Global shape index {global_shape_idx} exceeds model.shape_count {model.shape_count}"
+                        )
                     full_shape_mapping[global_shape_idx] = (env_idx, geom_idx)
                     reverse_shape_mapping[(env_idx, geom_idx)] = global_shape_idx
-                    # Update incoming shape transforms for shapes that are not in environment 0.
-                    if env_idx > 0:
-                        shape_incoming_xform[global_shape_idx] = shape_incoming_xform[template_shape_idx]
+                    # Update incoming shape transforms
+                    # compute the difference between the original shape transform
+                    # and the transform after applying the joint child transform
+                    # and the transform MuJoCo does on mesh geoms
+                    original_tf = wp.transform(*shape_transform[global_shape_idx])
+                    mjc_p = self.mj_model.geom_pos[geom_idx]
+                    mjc_q = self.mj_model.geom_quat[geom_idx]
+                    mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                    shape_incoming_xform[global_shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
         else:
             full_shape_mapping = {k: (0, v) for k, v in shape_mapping.items()}
             reverse_shape_mapping = {v: k for k, v in full_shape_mapping.items()}
+            for shape_idx, geom_idx in shape_mapping.items():
+                if geom_idx >= 0:
+                    original_tf = wp.transform(*shape_transform[shape_idx])
+                    mjc_p = self.mj_model.geom_pos[geom_idx]
+                    mjc_q = self.mj_model.geom_quat[geom_idx]
+                    mjc_tf = wp.transform(mjc_p, quat_from_mjc(mjc_q))
+                    shape_incoming_xform[shape_idx] = mjc_tf * wp.transform_inverse(original_tf)
 
         self.mj_data = mujoco.MjData(self.mj_model)
 
