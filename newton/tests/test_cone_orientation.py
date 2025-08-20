@@ -6,6 +6,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.core import quat_between_axes
 from newton._src.geometry import kernels
 
 
@@ -26,7 +27,6 @@ class TestConeOrientation(unittest.TestCase):
             body=body_id,
             radius=self.radius,
             half_height=self.half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=self.density),
         )
 
@@ -88,11 +88,13 @@ class TestConeOrientation(unittest.TestCase):
             with self.subTest(axis=axis_name):
                 builder = newton.ModelBuilder()
                 body_id = builder.add_body()
+                # Apply axis rotation to transform
+                xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, axis_enum))
                 builder.add_shape_cone(
                     body=body_id,
+                    xform=xform,
                     radius=self.radius,
                     half_height=self.half_height,
-                    axis=axis_enum,
                     cfg=newton.ModelBuilder.ShapeConfig(density=self.density),
                 )
 
@@ -112,7 +114,6 @@ class TestConeOrientation(unittest.TestCase):
             body=body_id,
             radius=self.radius,
             half_height=self.half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=self.density),
         )
 
@@ -133,7 +134,6 @@ class TestConeOrientation(unittest.TestCase):
             body=body_id,
             radius=self.radius,
             half_height=self.half_height,
-            axis=newton.Axis.Z,
             cfg=newton.ModelBuilder.ShapeConfig(density=self.density),
         )
 

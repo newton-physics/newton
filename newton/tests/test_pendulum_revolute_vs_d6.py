@@ -81,7 +81,7 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
 
         # Simulate with SolverMuJoCo (Warp backend)
         try:
-            solver = newton.solvers.SolverMuJoCo(model, use_mujoco=False, disable_contacts=True, iterations=2)
+            solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True, iterations=2)
         except Exception as e:
             self.skipTest(f"SolverMuJoCo unavailable: {e}")
 
