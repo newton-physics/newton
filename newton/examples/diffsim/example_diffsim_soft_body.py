@@ -24,12 +24,12 @@
 # a simple gradient-descent optimization step.
 #
 ###########################################################################
-
 import numpy as np
 import warp as wp
 import warp.optim
 
 import newton
+import newton.examples
 
 
 @wp.kernel
@@ -86,8 +86,8 @@ class Example:
         sim_duration = 1.0
 
         # control frequency
-        fps = 60
-        self.frame_dt = 1.0 / fps
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
         frame_steps = int(sim_duration / self.frame_dt)
 
         # sim frequency
@@ -95,11 +95,14 @@ class Example:
         self.sim_steps = frame_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.iter = 0
         self.render_time = 0.0
 
+        self.train_iter = 0
         self.train_rate = 1e7
-
+        self.target = wp.vec3(0.0, -1.0, 1.5)
+        self.com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, requires_grad=True)
+        self.pos_error = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
         self.losses = []
 
         self.hard_lower_bound = wp.float32(500.0)
@@ -112,10 +115,7 @@ class Example:
         self.grid_origin = wp.vec3(-center, -0.5, 1.0)
         self.create_model()
 
-        self.solver = newton.solvers.SolverSemiImplicit(self.model)
-
-        self.target = wp.vec3(0.0, -1.0, 1.5)
-        # Initialize material parameters
+        # Initialize material parameters from model
         if self.material_behavior == "anisotropic":
             # Different Lame parameters for each tet
             self.material_params = wp.array(
@@ -131,28 +131,27 @@ class Example:
                 requires_grad=True,
             )
 
-            # Scale learning rate
+            # Scale learning rate for isotropic material
             scale = self.material_params.size / float(self.model.tet_count)
             self.train_rate = self.train_rate * scale
 
+        # Create optimizer
         self.optimizer = warp.optim.SGD(
             [self.material_params],
             lr=self.train_rate,
             nesterov=False,
         )
 
-        self.com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, requires_grad=True)
-        self.pos_error = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-        self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
         # allocate sim states for trajectory
         self.states = []
         for _i in range(self.sim_steps + 1):
             self.states.append(self.model.state())
 
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
-
         self.control = self.model.control()
+
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
 
         if viewer_type == "usd":
             from newton.viewer import ViewerUSD  # noqa: PLC0415
@@ -166,22 +165,13 @@ class Example:
             from newton.viewer import ViewerGL  # noqa: PLC0415
 
             self.viewer = ViewerGL(self.model)
-            # pos = type(self.viewer.camera.pos)(-1.0, -6.0, 2.0)
-            # self.viewer.camera.pos = pos
-            # self.viewer.camera.yaw = 90.0
 
         # capture forward/backward passes
-        self.use_cuda_graph = wp.get_device().is_cuda
-        if self.use_cuda_graph:
-            with wp.ScopedCapture() as capture:
-                self.tape = wp.Tape()
-                with self.tape:
-                    self.forward()
-                self.tape.backward(self.loss)
-            self.graph = capture.graph
+        self.capture()
 
     def create_model(self):
         builder = newton.ModelBuilder()
+
         builder.default_particle_radius = 0.0005
 
         total_mass = 0.2
@@ -232,6 +222,7 @@ class Example:
         )
 
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
+
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = builder.finalize(requires_grad=True)
 
@@ -240,6 +231,20 @@ class Example:
         self.model.soft_contact_kd = kd
         self.model.soft_contact_mu = mu
         self.model.soft_contact_restitution = 1.0
+
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.forward_backward()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def forward_backward(self):
+        self.tape = wp.Tape()
+        with self.tape:
+            self.forward()
+        self.tape.backward(self.loss)
 
     def forward(self):
         wp.launch(
@@ -278,13 +283,10 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step"):
-            if self.use_cuda_graph:
+            if self.graph:
                 wp.capture_launch(self.graph)
             else:
-                self.tape = wp.Tape()
-                with self.tape:
-                    self.forward()
-                self.tape.backward(loss=self.loss)
+                self.forward_backward()
 
             if self.verbose:
                 self.log_step()
@@ -309,13 +311,13 @@ class Example:
             self.com.zero_()
             self.pos_error.zero_()
 
-            self.iter = self.iter + 1
+            self.train_iter = self.train_iter + 1
 
     def log_step(self):
         x = self.material_params.numpy().reshape(-1, 2)
         x_grad = self.material_params.grad.numpy().reshape(-1, 2)
 
-        print(f"Iter: {self.iter} Loss: {self.loss.numpy()[0]}")
+        print(f"Train iter: {self.train_iter} Loss: {self.loss.numpy()[0]}")
 
         print(f"Pos error: {self.pos_error.numpy()[0]}")
 
@@ -329,41 +331,40 @@ class Example:
             f"Max Lambda Grad: {np.max(x_grad[:, 1])}, Min Lambda Grad: {np.min(x_grad[:, 1])}"
         )
 
+    def test(self):
+        pass
+
     def render(self):
-        if self.viewer is None:
-            return
+        # draw trajectory
+        traj_verts = [np.mean(self.states[0].particle_q.numpy(), axis=0).tolist()]
+        for i in range(0, self.sim_steps, self.sim_substeps):
+            traj_verts.append(np.mean(self.states[i].particle_q.numpy(), axis=0).tolist())
 
-        with wp.ScopedTimer("render"):
-            # draw trajectory
-            traj_verts = [np.mean(self.states[0].particle_q.numpy(), axis=0).tolist()]
-            for i in range(0, self.sim_steps, self.sim_substeps):
-                traj_verts.append(np.mean(self.states[i].particle_q.numpy(), axis=0).tolist())
+            self.viewer.begin_frame(self.render_time)
+            self.viewer.log_state(self.states[i])
+            self.viewer.log_shapes(
+                "/target",
+                newton.GeoType.BOX,
+                (0.1, 0.1, 0.1),
+                wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
+                wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+            )
+            self.viewer.log_lines(
+                f"/traj_{self.train_iter - 1}",
+                wp.array(traj_verts[0:-1], dtype=wp.vec3),
+                wp.array(traj_verts[1:], dtype=wp.vec3),
+                wp.render.bourke_color_map(0.0, self.losses[0], self.losses[-1]),
+            )
+            self.viewer.end_frame()
 
-                self.viewer.begin_frame(self.render_time)
-                self.viewer.log_state(self.states[i])
-                self.viewer.log_shapes(
-                    "/target",
-                    newton.GeoType.BOX,
-                    (0.1, 0.1, 0.1),
-                    wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
-                    wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
-                )
-                self.viewer.log_lines(
-                    f"/traj_{self.iter - 1}",
-                    wp.array(traj_verts[0:-1], dtype=wp.vec3),
-                    wp.array(traj_verts[1:], dtype=wp.vec3),
-                    wp.render.bourke_color_map(0.0, self.losses[0], self.losses[-1]),
-                )
-                self.viewer.end_frame()
+            # if isinstance(self.viewer, newton.viewer.ViewerUSD):
+            #     from pxr import Gf, UsdGeom
 
-                # if isinstance(self.viewer, newton.viewer.ViewerUSD):
-                #     from pxr import Gf, UsdGeom
+            #     particles_prim = self.viewer.stage.GetPrimAtPath("/root/particles")
+            #     particles = UsdGeom.Points.Get(self.viewer.stage, particles_prim.GetPath())
+            #     particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.viewer.time)
 
-                #     particles_prim = self.viewer.stage.GetPrimAtPath("/root/particles")
-                #     particles = UsdGeom.Points.Get(self.viewer.stage, particles_prim.GetPath())
-                #     particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.viewer.time)
-
-                self.render_time += self.frame_dt
+            self.render_time += self.frame_dt
 
 
 if __name__ == "__main__":
