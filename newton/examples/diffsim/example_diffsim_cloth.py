@@ -175,6 +175,9 @@ class Example:
         pass
 
     def render(self):
+        if self.render_time > 0.0 and self.train_iter % 4 != 0:
+            return
+
         # draw trajectory
         traj_verts = [self.states[0].particle_q.numpy().mean(axis=0)]
 
