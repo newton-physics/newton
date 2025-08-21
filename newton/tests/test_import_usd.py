@@ -25,7 +25,7 @@ import newton.examples
 from newton import JointType
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
-from newton.utils import parse_usd
+from newton.utils import parse_usd, quat_between_axes
 
 devices = get_test_devices()
 
@@ -532,7 +532,7 @@ class TestImportSampleAssets(unittest.TestCase):
     def verify_usdphysics_parser(self, file, model, compare_min_max_coords):
         """Verify model based on the UsdPhysics Parsing Utils"""
         # [1] https://openusd.org/release/api/usd_physics_page_front.html
-        from pxr import Sdf, Usd, UsdPhysics
+        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.Open(file)
         parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
@@ -830,8 +830,6 @@ class TestImportSampleAssets(unittest.TestCase):
                 )
 
             if newton_type in [3, 5]:
-                from newton.utils import quat_between_axes
-
                 usd_axis = int(shape_spec.axis) if hasattr(shape_spec, "axis") else 2
                 axis_quat = (
                     quat_between_axes(newton.Axis.Z, newton.Axis.X)
