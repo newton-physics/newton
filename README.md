@@ -83,7 +83,7 @@ get started.
       <code>python -m newton.examples basic_joints</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_viewer</code>
+      <!-- <code>python -m newton.examples basic_viewer</code> -->
     </td>
   </tr>
 </table>
