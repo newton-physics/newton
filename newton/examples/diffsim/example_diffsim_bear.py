@@ -24,13 +24,10 @@
 # momentum of the mesh.
 #
 # This example uses the Warp tile API, which as of Warp 1.6 is the
-# recommended way to handle matrix multiplication. example_walker.py in
-# examples/optim demonstrates the old way of doing matrix multiplication,
-# wp.matmul(), which will be deprecated in a future version.
+# recommended way to handle matrix multiplication.
 #
 ###########################################################################
 import math
-import os
 
 import numpy as np
 import warp as wp
@@ -97,59 +94,71 @@ def network(
 
 
 class Example:
-    def __init__(self, viewer_type: str, stage_path="example_tile_walker.usd", verbose=False, num_frames=300):
-        self.verbose = verbose
-
+    def __init__(self, viewer, verbose=False):
+        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.num_frames = num_frames
-
-        self.sim_substeps = 80
-        self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
+        self.sim_steps = 300
+        self.sim_substeps = 80
+        self.sim_substeps_count = self.sim_steps * self.sim_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
+        self.render_time = 0.0
+
+        self.verbose = verbose
+
+        # load bear mesh
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("bear.usd"))
+        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bear"))
+
+        tet_vertices = np.array(usd_geom.GetPointsAttr().Get())
+        tet_indices = np.array(usd_geom.GetPrim().GetAttribute("tetraIndices").Get())
+
+        quat_0 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.HALF_PI)
+        quat_1 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.HALF_PI)
+
+        num_tets = len(tet_indices) // 4
+
+        # setup training parameters
         self.train_iter = 0
         self.train_rate = 0.025
         self.loss = wp.zeros(1, dtype=float, requires_grad=True)
         self.coms = []
-        for _i in range(self.num_frames):
+        for _i in range(self.sim_steps):
             self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
 
         # model input (Neural network)
+        self.network_tiles = math.ceil(num_tets / TILE_TETS)
         self.phase_count = PHASE_COUNT
         self.phases = []
-        for _i in range(self.num_frames):
+        for _i in range(self.sim_steps):
             self.phases.append(wp.zeros(self.phase_count, dtype=float, requires_grad=True))
 
-        self.render_time = 0.0
+        # weights matrix for linear network
+        rng = np.random.default_rng(42)
+        k = 1.0 / self.phase_count
+        weights = rng.uniform(-np.sqrt(k), np.sqrt(k), (num_tets, self.phase_count))
+        self.weights = wp.array(weights, dtype=float, requires_grad=True)
 
-        # bear
-        asset_stage = Usd.Stage.Open(os.path.join(newton.examples.get_asset_directory(), "bear.usd"))
+        # tanh activation layer array
+        self.tet_activations = []
+        for _i in range(self.sim_steps):
+            self.tet_activations.append(wp.zeros(num_tets, dtype=float, requires_grad=True))
 
-        geom = UsdGeom.Mesh(asset_stage.GetPrimAtPath("/root/bear"))
-        points = geom.GetPointsAttr().Get()
+        # setup rendering
+        self.viewer = viewer
 
-        # xform = Gf.Matrix4f(geom.ComputeLocalToWorldTransform(0.0))
-        # for i in range(len(points)):
-        #     points[i] = xform.Transform(points[i])
+        # setup simulation scene
+        scene = newton.ModelBuilder()
 
-        quat0 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.HALF_PI)
-        quat1 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.HALF_PI)
-        xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), quat0 * quat1)
-
-        self.points = [wp.transform_point(xform, wp.vec3(point)) for point in points]
-        self.tet_indices = geom.GetPrim().GetAttribute("tetraIndices").Get()
-
-        # sim model
-        builder = newton.ModelBuilder()
-
-        builder.add_soft_mesh(
+        scene.add_soft_mesh(
             pos=wp.vec3(0.0, 0.0, 0.5),
-            rot=wp.quat_identity(),
+            rot=quat_0 * quat_1,
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
-            vertices=self.points,
-            indices=self.tet_indices,
+            vertices=tet_vertices,
+            indices=tet_indices,
             density=1.0,
             k_mu=2000.0,
             k_lambda=2000.0,
@@ -166,9 +175,11 @@ class Example:
         kd = 0.1
         kf = 10.0
         mu = 0.7
-        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
+
         # finalize model
-        self.model = builder.finalize(requires_grad=True)
+        # use `requires_grad=True` to create a model for differentiable simulation
+        self.model = scene.finalize(requires_grad=True)
 
         # Set soft contact parameters
         self.model.soft_contact_ke = ke
@@ -176,50 +187,25 @@ class Example:
         self.model.soft_contact_kf = kf
         self.model.soft_contact_mu = mu
 
-        radii = wp.zeros(self.model.particle_count, dtype=float)
-        radii.fill_(0.05)
-        self.model.particle_radius = radii
+        self.model.particle_radius = wp.full(self.model.particle_count, 0.05, dtype=float)
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
+        self.solver.enable_tri_contact = False
 
-        # allocate sim states
+        # allocate sim states, initialize control and contacts
         self.states = []
-        for _i in range(self.num_frames * self.sim_substeps + 1):
+        for _i in range(self.sim_substeps_count + 1):
             self.states.append(self.model.state(requires_grad=True))
-
         self.control = self.model.control()
-
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=40.0)
-
-        # weights matrix for linear network
-        rng = np.random.default_rng(42)
-        k = 1.0 / self.phase_count
-        weights = rng.uniform(-np.sqrt(k), np.sqrt(k), (self.model.tet_count, self.phase_count))
-        self.weights = wp.array(weights, dtype=float, requires_grad=True)
-
-        # tanh activation layer array
-        self.tet_activations = []
-        for _i in range(self.num_frames):
-            self.tet_activations.append(wp.zeros(self.model.tet_count, dtype=float, requires_grad=True))
 
         # optimization
         self.optimizer = wp.optim.Adam([self.weights.flatten()], lr=self.train_rate)
 
         # rendering
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
+        self.viewer.set_model(self.model)
 
-            self.viewer = ViewerUSD(self.model, output_path=stage_path)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.model)
-
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
             pos = type(self.viewer.camera.pos)(0.0, -25.0, 2.0)
             self.viewer.camera.pos = pos
             self.viewer.camera.yaw = 90.0
@@ -238,32 +224,32 @@ class Example:
     def forward_backward(self):
         self.tape = wp.Tape()
         with self.tape:
-            for i in range(self.num_frames):
+            for i in range(self.sim_steps):
                 self.forward(i)
         self.tape.backward(self.loss)
 
-    def forward(self, frame):
+    def forward(self, sim_step):
         with wp.ScopedTimer("network", active=self.verbose):
             # build sinusoidal input phases
-            wp.launch(kernel=compute_phases, dim=self.phase_count, inputs=[self.phases[frame], self.sim_time])
+            wp.launch(kernel=compute_phases, dim=self.phase_count, inputs=[self.phases[sim_step], self.sim_time])
 
             # apply linear network with tanh activation
             wp.launch_tiled(
                 kernel=network,
-                dim=math.ceil(self.model.tet_count / TILE_TETS),
-                inputs=[self.phases[frame].reshape((self.phase_count, 1)), self.weights],
-                outputs=[self.tet_activations[frame].reshape((self.model.tet_count, 1))],
+                dim=self.network_tiles,
+                inputs=[self.phases[sim_step].reshape((self.phase_count, 1)), self.weights],
+                outputs=[self.tet_activations[sim_step].reshape((self.model.tet_count, 1))],
                 block_dim=TILE_THREADS,
             )
-            self.control.tet_activations = self.tet_activations[frame]
+            self.control.tet_activations = self.tet_activations[sim_step]
 
         with wp.ScopedTimer("simulate", active=self.verbose):
             # run simulation loop
             for i in range(self.sim_substeps):
-                self.states[frame * self.sim_substeps + i].clear_forces()
+                self.states[sim_step * self.sim_substeps + i].clear_forces()
                 self.solver.step(
-                    self.states[frame * self.sim_substeps + i],
-                    self.states[frame * self.sim_substeps + i + 1],
+                    self.states[sim_step * self.sim_substeps + i],
+                    self.states[sim_step * self.sim_substeps + i + 1],
                     self.control,
                     self.contacts,
                     self.sim_dt,
@@ -276,28 +262,27 @@ class Example:
                 com_kernel,
                 dim=self.model.particle_count,
                 inputs=[
-                    self.states[(frame + 1) * self.sim_substeps].particle_qd,
+                    self.states[(sim_step + 1) * self.sim_substeps].particle_qd,
                     self.model.particle_count,
-                    self.coms[frame],
+                    self.coms[sim_step],
                 ],
                 outputs=[],
             )
             # compute loss
-            wp.launch(loss_kernel, dim=1, inputs=[self.coms[frame], self.loss], outputs=[])
+            wp.launch(loss_kernel, dim=1, inputs=[self.coms[sim_step], self.loss], outputs=[])
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            if self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.forward_backward()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.forward_backward()
 
-            # optimization
-            x = self.weights.grad.flatten()
-            self.optimizer.step([x])
+        # optimization
+        x = self.weights.grad.flatten()
+        self.optimizer.step([x])
 
-        loss = self.loss.numpy()
         if self.verbose:
+            loss = self.loss.numpy()
             print(f"Train iter {self.train_iter}: {loss}")
 
         # reset sim
@@ -307,7 +292,7 @@ class Example:
         # clear grads and zero arrays for next iteration
         self.tape.zero()
         self.loss.zero_()
-        for i in range(self.num_frames):
+        for i in range(self.sim_steps):
             self.coms[i].zero_()
 
         self.train_iter += 1
@@ -316,7 +301,7 @@ class Example:
         pass
 
     def render(self):
-        for i in range(self.num_frames + 1):
+        for i in range(self.sim_steps + 1):
             self.viewer.begin_frame(self.render_time)
             self.viewer.log_state(self.states[i * self.sim_substeps])
             self.viewer.end_frame()
@@ -325,34 +310,15 @@ class Example:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage_path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_tile_walker.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames per training iteration.")
-    parser.add_argument("--train_iters", type=int, default=30, help="Total number of training iterations.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
     parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            viewer_type=args.viewer,
-            stage_path=args.stage_path,
-            verbose=args.verbose,
-            num_frames=args.num_frames,
-        )
+    # Create example
+    example = Example(viewer, verbose=args.verbose)
 
-        for _ in range(args.train_iters):
-            example.step()
-            example.render()
-
-        if example.viewer:
-            example.viewer.close()
+    # Run example
+    newton.examples.run(example)
