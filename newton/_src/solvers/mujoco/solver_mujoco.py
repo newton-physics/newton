@@ -2257,6 +2257,27 @@ class SolverMuJoCo(SolverBase):
 
         self.mj_model = spec.compile()
 
+        self.mj_data = mujoco.MjData(self.mj_model)
+
+        self.mj_model.opt.tolerance = tolerance
+        self.mj_model.opt.ls_tolerance = ls_tolerance
+        self.mj_model.opt.cone = cone
+        self.mj_model.opt.iterations = iterations
+        self.mj_model.opt.ls_iterations = ls_iterations
+        self.mj_model.opt.integrator = integrator
+        self.mj_model.opt.solver = solver
+        self.mj_model.opt.impratio = impratio
+        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
+        self.update_mjc_data(self.mj_data, model, state)
+
+        # fill some MjWarp model fields that are outdated after update_mjc_data.
+        # just setting qpos0 to d.qpos leads to weird behavior here, needs
+        # to be investigated.
+
+        mujoco.mj_forward(self.mj_model, self.mj_data)
+
+        # index mapping from Newton shape and body ids to MuJoCo geoms and bodies
         mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
 
         self.shape_map = {}  # Maps newton shape ids to mujoco shapes
@@ -2292,6 +2313,9 @@ class SolverMuJoCo(SolverBase):
         shape_mapping = shape_to_geom_idx  # Replace with actual indices
 
         with wp.ScopedDevice(model.device):
+            # create the MuJoCo Warp model
+            self.mjw_model = mujoco_warp.put_model(self.mj_model)
+
             # build the geom index mappings now that we have the actual indices
             geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
             fill_arr_from_dict(geom_to_shape_idx_np, geom_to_shape_idx)
@@ -2305,56 +2329,32 @@ class SolverMuJoCo(SolverBase):
 
             # mapping from Newton shape id to a corrective transform
             # that maps from Newton's shape frame to MuJoCo's internal geom frame
-            # (this includes the shape transform due to the joint child transform
-            # and the transform MuJoCo does on mesh geoms)
             self.shape_incoming_xform = wp.full(model.shape_count, wp.transform_identity(), dtype=wp.transform)
 
-            wp.launch(
-                update_incoming_shape_xform_kernel,
-                dim=(self.model.num_envs, self.mj_model.ngeom),
-                inputs=[
-                    geom_to_shape_idx_wp,
-                    self.model.shape_group,
-                    self.model.shape_transform,
-                    shape_range_len,
-                    wp.array(self.mj_model.geom_pos, dtype=wp.vec3),
-                    wp.array(self.mj_model.geom_quat, dtype=wp.quat),
-                ],
-                outputs=[
-                    self.to_mjc_geom_index,
-                    self.to_newton_shape_index,
-                    self.shape_incoming_xform,
-                ],
-            )
+            if model.shape_count:
+                wp.launch(
+                    update_incoming_shape_xform_kernel,
+                    dim=(self.model.num_envs, self.mj_model.ngeom),
+                    inputs=[
+                        geom_to_shape_idx_wp,
+                        self.model.shape_group,
+                        self.model.shape_transform,
+                        shape_range_len,
+                        self.mjw_model.geom_pos[0],
+                        self.mjw_model.geom_quat[0],
+                    ],
+                    outputs=[
+                        self.to_mjc_geom_index,
+                        self.to_newton_shape_index,
+                        self.shape_incoming_xform,
+                    ],
+                )
 
-        self.mj_data = mujoco.MjData(self.mj_model)
-
-        self.mj_model.opt.tolerance = tolerance
-        self.mj_model.opt.ls_tolerance = ls_tolerance
-        self.mj_model.opt.cone = cone
-        self.mj_model.opt.iterations = iterations
-        self.mj_model.opt.ls_iterations = ls_iterations
-        self.mj_model.opt.integrator = integrator
-        self.mj_model.opt.solver = solver
-        self.mj_model.opt.impratio = impratio
-        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
-
-        self.update_mjc_data(self.mj_data, model, state)
-
-        # fill some MjWarp model fields that are outdated after update_mjc_data.
-        # just setting qpos0 to d.qpos leads to weird behavior here, needs
-        # to be investigated.
-
-        mujoco.mj_forward(self.mj_model, self.mj_data)
-
-        with wp.ScopedDevice(model.device):
             # mapping from Newton joint axis index to MJC actuator index
             self.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)
             # mapping from MJC body index to Newton body index (skip world index -1)
             to_mjc_body_index = np.fromiter(body_mapping.keys(), dtype=int)[1:] + 1
             self.to_mjc_body_index = wp.array(to_mjc_body_index, dtype=wp.int32)
-
-            self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
