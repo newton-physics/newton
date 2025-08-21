@@ -72,31 +72,21 @@ def enforce_constraint_kernel(lower_bound: wp.float32, upper_bound: wp.float32, 
 
 
 class Example:
-    def __init__(
-        self,
-        viewer_type: str,
-        stage_path="example_softbody_properties.usd",
-        material_behavior="anisotropic",
-        verbose=False,
-    ):
-        self.verbose = verbose
-        self.material_behavior = material_behavior
-
-        # seconds
-        sim_duration = 1.0
-
-        # control frequency
+    def __init__(self, viewer, material_behavior="anisotropic", verbose=False):
+        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        frame_steps = int(sim_duration / self.frame_dt)
-
-        # sim frequency
+        self.sim_steps = 60  # 1.0 seconds
         self.sim_substeps = 16
-        self.sim_steps = frame_steps * self.sim_substeps
+        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.render_time = 0.0
 
+        self.verbose = verbose
+        self.material_behavior = material_behavior
+
+        # setup training parameters
         self.train_iter = 0
         self.train_rate = 1e7
         self.target = wp.vec3(0.0, -1.0, 1.5)
@@ -105,17 +95,22 @@ class Example:
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
         self.losses = []
 
-        self.hard_lower_bound = wp.float32(500.0)
-        self.hard_upper_bound = wp.float32(4e6)
+        # setup rendering
+        self.viewer = viewer
 
         # Create FEM model.
-        self.cell_dim = 2
-        self.cell_size = 0.1
-        center = self.cell_size * self.cell_dim * 0.5
-        self.grid_origin = wp.vec3(-center, -0.5, 1.0)
-        self.create_model()
+        self.model = self.create_model()
 
-        # Initialize material parameters from model
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
+
+        # allocate sim states for trajectory, control and contacts
+        self.states = []
+        for _i in range(self.sim_substeps_count + 1):
+            self.states.append(self.model.state())
+        self.control = self.model.control()
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
+
+        # Initialize material parameters to be optimized from model
         if self.material_behavior == "anisotropic":
             # Different Lame parameters for each tet
             self.material_params = wp.array(
@@ -135,6 +130,10 @@ class Example:
             scale = self.material_params.size / float(self.model.tet_count)
             self.train_rate = self.train_rate * scale
 
+        # setup hard bounds for material parameters
+        self.hard_lower_bound = wp.float32(500.0)
+        self.hard_upper_bound = wp.float32(4e6)
+
         # Create optimizer
         self.optimizer = warp.optim.SGD(
             [self.material_params],
@@ -142,60 +141,46 @@ class Example:
             nesterov=False,
         )
 
-        self.solver = newton.solvers.SolverSemiImplicit(self.model)
-
-        # allocate sim states for trajectory
-        self.states = []
-        for _i in range(self.sim_steps + 1):
-            self.states.append(self.model.state())
-
-        self.control = self.model.control()
-
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
-
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
-
-            self.viewer = ViewerUSD(self.model, output_path=stage_path)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.model)
+        # rendering
+        self.viewer.set_model(self.model)
 
         # capture forward/backward passes
         self.capture()
 
     def create_model(self):
-        builder = newton.ModelBuilder()
+        # setup simulation scene
+        scene = newton.ModelBuilder()
+        scene.default_particle_radius = 0.0005
 
-        builder.default_particle_radius = 0.0005
+        # setup grid parameters
+        cell_dim = 2
+        cell_size = 0.1
 
+        # compute particle density
         total_mass = 0.2
-        num_particles = (self.cell_dim + 1) ** 3
+        num_particles = (cell_dim + 1) ** 3
         particle_mass = total_mass / num_particles
-        particle_density = particle_mass / (self.cell_size**3)
+        particle_density = particle_mass / (cell_size**3)
         if self.verbose:
             print(f"Particle density: {particle_density}")
 
+        # compute Lame parameters
         young_mod = 1.5 * 1e4
         poisson_ratio = 0.3
         k_mu = 0.5 * young_mod / (1.0 + poisson_ratio)
         k_lambda = young_mod * poisson_ratio / ((1 + poisson_ratio) * (1 - 2 * poisson_ratio))
 
-        builder.add_soft_grid(
-            pos=self.grid_origin,
+        # add soft grid to scene
+        scene.add_soft_grid(
+            pos=wp.vec3(-0.5 * cell_size * cell_dim, -0.5, 1.0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 6.0, -6.0),
-            dim_x=self.cell_dim,
-            dim_y=self.cell_dim,
-            dim_z=self.cell_dim,
-            cell_x=self.cell_size,
-            cell_y=self.cell_size,
-            cell_z=self.cell_size,
+            dim_x=cell_dim,
+            dim_y=cell_dim,
+            dim_z=cell_dim,
+            cell_x=cell_size,
+            cell_y=cell_size,
+            cell_z=cell_size,
             density=particle_density,
             k_mu=k_mu,
             k_lambda=k_lambda,
@@ -208,11 +193,12 @@ class Example:
             fix_bottom=False,
         )
 
+        # add wall and ground plane to scene
         ke = 1.0e3
         kf = 0.0
         kd = 1.0e0
         mu = 0.2
-        builder.add_shape_box(
+        scene.add_shape_box(
             body=-1,
             xform=wp.transform(wp.vec3(0.0, 2.0, 1.0), wp.quat_identity()),
             hx=1.0,
@@ -221,16 +207,18 @@ class Example:
             cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
         )
 
-        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
 
         # use `requires_grad=True` to create a model for differentiable simulation
-        self.model = builder.finalize(requires_grad=True)
+        model = scene.finalize(requires_grad=True)
 
-        self.model.soft_contact_ke = ke
-        self.model.soft_contact_kf = kf
-        self.model.soft_contact_kd = kd
-        self.model.soft_contact_mu = mu
-        self.model.soft_contact_restitution = 1.0
+        model.soft_contact_ke = ke
+        model.soft_contact_kf = kf
+        model.soft_contact_kd = kd
+        model.soft_contact_mu = mu
+        model.soft_contact_restitution = 1.0
+
+        return model
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -254,7 +242,7 @@ class Example:
             outputs=(self.model.tet_materials,),
         )
         # run control loop
-        for i in range(self.sim_steps):
+        for i in range(self.sim_substeps_count):
             self.states[i].clear_forces()
             self.contacts = self.model.collide(self.states[i], soft_contact_margin=0.001)
             self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
@@ -335,13 +323,18 @@ class Example:
         pass
 
     def render(self):
+        if self.render_time > 0.0 and self.train_iter % 10 != 0:
+            return
+
         # draw trajectory
         traj_verts = [np.mean(self.states[0].particle_q.numpy(), axis=0).tolist()]
-        for i in range(0, self.sim_steps, self.sim_substeps):
-            traj_verts.append(np.mean(self.states[i].particle_q.numpy(), axis=0).tolist())
+
+        for i in range(self.sim_steps + 1):
+            state = self.states[i * self.sim_substeps]
+            traj_verts.append(np.mean(state.particle_q.numpy(), axis=0).tolist())
 
             self.viewer.begin_frame(self.render_time)
-            self.viewer.log_state(self.states[i])
+            self.viewer.log_state(state)
             self.viewer.log_shapes(
                 "/target",
                 newton.GeoType.BOX,
@@ -357,61 +350,25 @@ class Example:
             )
             self.viewer.end_frame()
 
-            # if isinstance(self.viewer, newton.viewer.ViewerUSD):
-            #     from pxr import Gf, UsdGeom
-
-            #     particles_prim = self.viewer.stage.GetPrimAtPath("/root/particles")
-            #     particles = UsdGeom.Points.Get(self.viewer.stage, particles_prim.GetPath())
-            #     particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.viewer.time)
-
             self.render_time += self.frame_dt
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage_path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_softbody_properties.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument(
-        "--train_iters",
-        type=int,
-        default=300,
-        help="Total number of training iterations.",
-    )
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
+    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
     parser.add_argument(
         "--material_behavior",
         default="anisotropic",
         choices=["anisotropic", "isotropic"],
         help="Set material behavior to be Anisotropic or Isotropic.",
     )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print out additional status messages during execution.",
-    )
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            viewer_type=args.viewer,
-            stage_path=args.stage_path,
-            material_behavior=args.material_behavior,
-            verbose=args.verbose,
-        )
+    # Create example
+    example = Example(viewer, material_behavior=args.material_behavior, verbose=args.verbose)
 
-        # replay and optimize
-        for i in range(args.train_iters):
-            example.step()
-            if i == 0 or i % 10 == 0 or i == args.train_iters - 1:
-                example.render()
-
-        if example.viewer:
-            example.viewer.close()
+    # Run example
+    newton.examples.run(example)
