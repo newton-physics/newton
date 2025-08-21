@@ -27,7 +27,6 @@
 # recommended way to handle matrix multiplication.
 #
 ###########################################################################
-import math
 
 import numpy as np
 import warp as wp
@@ -129,7 +128,7 @@ class Example:
             self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
 
         # model input (Neural network)
-        self.network_tiles = math.ceil(num_tets / TILE_TETS)
+        self.network_tiles = int(np.ceil(num_tets / TILE_TETS))
         self.phase_count = PHASE_COUNT
         self.phases = []
         for _i in range(self.sim_steps):
