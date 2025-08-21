@@ -1673,23 +1673,32 @@ class SolverMuJoCo(SolverBase):
             actuator_gears = {}
 
         if isinstance(solver, str):
-            solver = {
-                "cg": mujoco.mjtSolver.mjSOL_CG,
-                "newton": mujoco.mjtSolver.mjSOL_NEWTON,
-            }.get(solver.lower(), mujoco.mjtSolver.mjSOL_CG)
+            opts = {"cg": mujoco.mjtSolver.mjSOL_CG, "newton": mujoco.mjtSolver.mjSOL_NEWTON}
+            try:
+                solver = opts[solver.lower()]
+            except KeyError:
+                raise ValueError(f"Unknown solver '{solver}'. Options: {list(opts)}")
 
         if isinstance(integrator, str):
-            integrator = {
+            opts = {
                 "euler": mujoco.mjtIntegrator.mjINT_EULER,
                 "rk4": mujoco.mjtIntegrator.mjINT_RK4,
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
+            }
+            try:
+                integrator = opts[integrator.lower()]
+            except KeyError:
+                raise ValueError(f"Unknown integrator '{integrator}'. Options: {list(opts)}")
 
         if isinstance(cone, str):
-            cone = {
+            opts = {
                 "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
                 "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
-            }.get(cone.lower(), mujoco.mjtCone.mjCONE_PYRAMIDAL)
+            }
+            try:
+                cone = opts[cone.lower()]
+            except KeyError:
+                raise ValueError(f"Unknown cone '{cone}'. Options: {list(opts)}")
 
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
