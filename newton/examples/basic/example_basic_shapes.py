@@ -14,15 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Basic URDF
+# Example Basic Shapes
 #
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
+# Shows how to programmatically creates a variety of
+# collision shapes using the newton.ModelBuilder() API.
 #
-# Users can pick bodies by right-clicking and dragging with the mouse.
-#
-# Command: python -m newton.examples basic_urdf
+# Command: python -m newton.examples basic_shapes
 #
 ###########################################################################
 
@@ -33,7 +30,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs):
+    def __init__(self, viewer):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -41,45 +38,48 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
-
         self.viewer = viewer
 
-        quadruped = newton.ModelBuilder()
+        builder = newton.ModelBuilder()
 
-        # set default parameters for the quadruped
-        quadruped.default_body_armature = 0.01
-        quadruped.default_joint_cfg.armature = 0.01
-        quadruped.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
-        quadruped.default_joint_cfg.target_ke = 2000.0
-        quadruped.default_joint_cfg.target_kd = 1.0
-        quadruped.default_shape_cfg.ke = 1.0e4
-        quadruped.default_shape_cfg.kd = 1.0e2
-        quadruped.default_shape_cfg.kf = 1.0e2
-        quadruped.default_shape_cfg.mu = 1.0
+        # add ground plane
+        builder.add_ground_plane()
 
-        # parse the URDF file
-        newton.utils.parse_urdf(
-            newton.examples.get_asset("quadruped.urdf"),
-            quadruped,
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
-            floating=True,
-            enable_self_collisions=False,
+        # z height to drop shapes from
+        drop_z = 2.0
+
+        # SPHERE
+        body_sphere = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -2.0, drop_z), q=wp.quat_identity()))
+        builder.add_shape_sphere(body_sphere, radius=0.5)
+
+        # CAPSULE
+        body_capsule = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, drop_z), q=wp.quat_identity()))
+        builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
+
+        # CYLINDER (no collisions)
+        body_cylinder = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()))
+        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
+
+        # BOX
+        body_box = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 2.0, drop_z), q=wp.quat_identity()))
+        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.25)
+
+        # CONE (no collisions)
+        body_cone = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 6.0, drop_z), q=wp.quat_identity()))
+        builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
+
+        # MESH (bunny)
+        mesh_vertices, mesh_indices = load_ply_triangles(newton.examples.get_asset("bunny.ply"))
+        mesh_vertices = [(5 * x, 5 * y, 5 * z) for (x, y, z) in mesh_vertices]
+        demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
+
+        body_mesh = builder.add_body(
+            xform=wp.transform(p=wp.vec3(0.0, 4.0, drop_z - 0.5), q=wp.quat(0.5, 0.5, 0.5, 0.5))
         )
-
-        # set initial joint positions
-        quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
-
-        # use "scene" for the entire set of environments
-        scene = newton.ModelBuilder()
-
-        # use the builder.replicate() function to create N copies of the environment
-        scene.replicate(quadruped, self.num_envs)
-        scene.add_ground_plane()
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         # finalize model
-        self.model = scene.finalize()
+        self.model = builder.finalize()
 
         self.solver = newton.solvers.SolverXPBD(self.model)
 
@@ -93,7 +93,6 @@ class Example:
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -135,15 +134,30 @@ class Example:
         self.viewer.end_frame()
 
 
-if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+# helper to load bunny mesh
+def load_ply_triangles(path):
+    with open(path) as f:
+        hdr = []
+        for line in f:
+            hdr.append(line.strip())
+            if line.startswith("end_header"):
+                break
+        nv = int(next(l for l in hdr if l.startswith("element vertex")).split()[2])
+        nf = int(next(l for l in hdr if l.startswith("element face")).split()[2])
+        verts = [tuple(map(float, f.readline().split()[:3])) for _ in range(nv)]
+        idx = []
+        for _ in range(nf):
+            parts = f.readline().split()
+            if parts and parts[0] == "3":
+                idx.extend(map(int, parts[1:4]))
+        return verts, idx
 
+
+if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init(parser)
+    viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer)
 
     newton.examples.run(example)

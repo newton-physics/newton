@@ -177,6 +177,7 @@ def main():
         "basic_pendulum": "newton.examples.basic.example_basic_pendulum",
         "basic_urdf": "newton.examples.basic.example_basic_urdf",
         "basic_viewer": "newton.examples.basic.example_basic_viewer",
+        "basic_shapes": "newton.examples.basic.example_basic_shapes",
         "cloth_bending": "newton.examples.cloth.example_cloth_bending",
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",

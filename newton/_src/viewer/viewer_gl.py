@@ -683,8 +683,11 @@ class ViewerGL(ViewerBase):
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
-                imgui.text("Mouse - Look around")
+                imgui.text("Left Click - Look around")
+                imgui.text("Right Click - Pick objects")
                 imgui.text("Scroll - Zoom")
+                imgui.text("Space - Pause/Resume")
+                imgui.text("H - Toggle UI")
 
             # Selection API section
             self._render_selection_panel()
