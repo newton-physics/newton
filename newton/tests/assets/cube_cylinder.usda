@@ -47,7 +47,7 @@ over "Render" (
 
 def PhysicsScene "physicsScene"
 {
-    bool warp:collapse_fixed_joints = 0
+    bool newton:collapse_fixed_joints = 0
 }
 
 def Xform "World"

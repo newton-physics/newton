@@ -60,6 +60,9 @@ class Picking:
         Args:
             state (newton.State): The simulation state.
         """
+        if self.model is None:
+            return
+
         # Launch kernel always because of graph capture
         wp.launch(
             kernel=apply_picking_force_kernel,
@@ -96,6 +99,9 @@ class Picking:
         )
 
     def pick(self, state, ray_start, ray_dir):
+        if self.model is None:
+            return
+
         p, d = ray_start, ray_dir
 
         num_geoms = self.model.shape_count

@@ -258,7 +258,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
     def test_randomize_body_mass(self):
         """
-        Tests if the body mass is randomized correctly and updates properly after simulation steps.
+        Tests if the body mass is randomized correctly and updated properly after simulation steps.
         """
         # Randomize masses for all bodies in all environments
         new_masses = self.rng.uniform(1.0, 10.0, size=self.model.body_count)
@@ -269,7 +269,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -319,7 +319,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -405,7 +405,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
 
         # Get body mapping once outside the loop
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
 
         def check_inertias(inertias_to_check, msg_prefix=""):
             for env_idx in range(self.model.num_envs):
@@ -520,7 +520,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         for env_idx in range(self.model.num_envs):
             for axis_idx in range(dofs_per_env):
                 global_axis_idx = env_idx * dofs_per_env + axis_idx
-                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
 
                 if actuator_idx >= 0:  # This axis has an actuator
                     force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
@@ -602,7 +602,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         for env_idx in range(self.model.num_envs):
             for axis_idx in range(dofs_per_env):
                 global_axis_idx = env_idx * dofs_per_env + axis_idx
-                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
 
                 if actuator_idx >= 0:
                     force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
@@ -658,10 +658,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Verify to_newton_shape_index mapping exists
-        self.assertTrue(hasattr(self.model, "to_newton_shape_index"))
+        self.assertTrue(hasattr(solver, "to_newton_shape_index"))
 
         # Get mappings and arrays
-        to_newton_shape_index = self.model.to_newton_shape_index.numpy()
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
         shape_types = self.model.shape_type.numpy()
         num_geoms = solver.mj_model.ngeom
 
@@ -672,7 +672,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
-        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
+        shape_incoming_xform = solver.shape_incoming_xform.numpy()
 
         # Get all property arrays from MuJoCo
         geom_friction = solver.mjw_model.geom_friction.numpy()
@@ -821,8 +821,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Get mappings
-        to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
+        shape_incoming_xform = solver.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step
@@ -843,7 +843,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # 1. Update friction
         new_mu = np.zeros(shape_count)
         for i in range(shape_count):
-            new_mu[i] = 0.1 + i * 0.05  # Pattern: 0.1, 0.15, 0.2, ...
+            new_mu[i] = 1.0 + (i + 1) * 0.05  # Pattern: 1.05, 1.10, ...
         self.model.shape_material_mu.assign(new_mu)
 
         # 2. Update contact stiffness/damping
@@ -1269,6 +1269,93 @@ class TestMuJoCoConversion(unittest.TestCase):
             expected_child_quat_mjc,
             atol=1e-6,
             err_msg="Child body quaternion should match composed joint transforms (with joint_q and translations)",
+        )
+
+    def test_global_joint_solver_params(self):
+        """Test that global joint solver parameters affect joint limit behavior."""
+        # Create a simple pendulum model
+        builder = newton.ModelBuilder()
+
+        # Add pendulum body
+        mass = 1.0
+        length = 1.0
+        I_sphere = wp.diag([2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2])
+
+        pendulum = builder.add_body(
+            mass=mass,
+            I_m=I_sphere,
+        )
+
+        # Add joint with limits - attach to world (-1)
+        builder.add_joint_revolute(
+            parent=-1,  # World/ground
+            child=pendulum,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, length), wp.quat_identity()),
+            axis=newton.Axis.Y,
+            limit_lower=0.0,  # Lower limit at 0 degrees
+            limit_upper=np.pi / 2,  # Upper limit at 90 degrees
+        )
+
+        model = builder.finalize(requires_grad=False)
+        state = model.state()
+
+        # Initialize joint near lower limit with strong negative velocity
+        state.joint_q.assign([0.1])  # Start above lower limit
+        state.joint_qd.assign([-10.0])  # Very strong velocity towards lower limit
+
+        # Create two solvers with different global solver parameters
+        # Soft solver - more compliant, should allow more penetration
+        solver_soft = newton.solvers.SolverMuJoCo(
+            model,
+            joint_solref_limit=(0.5, 10.0),  # Much softer response
+            joint_solimp_limit=(0.1, 0.2, 0.01, 0.5, 2.0),  # Much lower stiffness
+        )
+
+        # Stiff solver - less compliant, should allow less penetration
+        solver_stiff = newton.solvers.SolverMuJoCo(
+            model,
+            joint_solref_limit=(0.002, 0.1),  # Very stiff response
+            joint_solimp_limit=(0.99, 0.999, 0.00001, 0.5, 2.0),  # Very high stiffness
+        )
+
+        dt = 0.005
+        num_steps = 50
+
+        # Simulate both systems
+        state_soft_in = model.state()
+        state_soft_out = model.state()
+        state_stiff_in = model.state()
+        state_stiff_out = model.state()
+
+        # Copy initial state
+        state_soft_in.joint_q.assign(state.joint_q.numpy())
+        state_soft_in.joint_qd.assign(state.joint_qd.numpy())
+        state_stiff_in.joint_q.assign(state.joint_q.numpy())
+        state_stiff_in.joint_qd.assign(state.joint_qd.numpy())
+
+        control = model.control()
+        contacts = model.collide(state_soft_in)
+
+        # Track minimum positions during simulation
+        min_q_soft = float("inf")
+        min_q_stiff = float("inf")
+
+        # Run simulations
+        for _ in range(num_steps):
+            solver_soft.step(state_soft_in, state_soft_out, control, contacts, dt)
+            min_q_soft = min(min_q_soft, state_soft_out.joint_q.numpy()[0])
+            state_soft_in, state_soft_out = state_soft_out, state_soft_in
+
+            solver_stiff.step(state_stiff_in, state_stiff_out, control, contacts, dt)
+            min_q_stiff = min(min_q_stiff, state_stiff_out.joint_q.numpy()[0])
+            state_stiff_in, state_stiff_out = state_stiff_out, state_stiff_in
+
+        # The soft joint should penetrate more (have a lower minimum) than the stiff joint
+        self.assertLess(
+            min_q_soft,
+            min_q_stiff,
+            f"Soft joint min ({min_q_soft}) should be lower than stiff joint min ({min_q_stiff})",
         )
 
 
