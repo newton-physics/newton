@@ -1867,9 +1867,9 @@ class ModelBuilder:
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_group.clear()  # Clear body groups
-        if -1 in self.body_shapes:
-            static_shapes = self.body_shapes[-1]
-            self.body_shapes.clear()
+        static_shapes = self.body_shapes.get(-1)
+        self.body_shapes.clear()
+        if static_shapes is not None:
             # restore static shapes
             self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
