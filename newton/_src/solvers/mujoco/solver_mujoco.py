@@ -1244,7 +1244,7 @@ class SolverMuJoCo(SolverBase):
             self.use_mujoco_cpu = use_mujoco_cpu
             if separate_envs_to_worlds is None:
                 separate_envs_to_worlds = not use_mujoco_cpu
-            with wp.ScopedTimer("convert_model_to_mujoco"):
+            with wp.ScopedTimer("convert_model_to_mujoco", active=False):
                 self.convert_to_mjc(
                     model,
                     disableflags=disableflags,
