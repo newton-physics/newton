@@ -555,10 +555,7 @@ class TestImportSampleAssets(unittest.TestCase):
             parsed_collisions = {str(collider) for collider in body_desc.collisions}
             self.assertEqual(parsed_collisions, model_collisions)
 
-        # body mass
-        mass_verified = set()
-        inertia_verified = set()
-
+        # body mass properties
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         # in newton, only rigid bodies have mass
@@ -571,7 +568,6 @@ class TestImportSampleAssets(unittest.TestCase):
                 if mass_api.GetMassAttr().HasAuthoredValue():
                     mass = mass_api.GetMassAttr().Get()
                     self.assertAlmostEqual(body_mass[body_idx], mass, places=5)
-                    mass_verified.add(body_idx)
                 if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
                     diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
                     principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
@@ -580,11 +576,8 @@ class TestImportSampleAssets(unittest.TestCase):
                     )
                     inertia = p @ np.diag(diag_inertia) @ p.T
                     assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
-                    inertia_verified.add(body_idx)
-
-        # TODO: exclude or handle bodies that don't have explicit mass/inertia set
-        self.assertEqual(len(mass_verified), model.body_count)
-        self.assertEqual(len(inertia_verified), model.body_count)
+        # Rigid bodies that don't have mass and inertia parameters authored will not be checked
+        # TODO: check bodies with CollisionAPI children that have MassAPI specified
 
         joint_mapping = {
             JointType.PRISMATIC: UsdPhysics.ObjectType.PrismaticJoint,

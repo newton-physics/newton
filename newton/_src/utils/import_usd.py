@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -780,8 +781,19 @@ def parse_usd(
     # Setting up the default material
     material_specs[""] = PhysicsMaterial()
 
+    def warn_invalid_desc(path, descriptor) -> bool:
+        if not descriptor.isValid:
+            warnings.warn(
+                f'Warning: Invalid {type(descriptor).__name__} descriptor for prim at path "{path}".',
+                stacklevel=2,
+            )
+            return True
+        return False
+
     # Parsing physics materials from the stage
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
+        if warn_invalid_desc(sdf_path, desc):
+            continue
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -793,6 +805,8 @@ def parse_usd(
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs):
+            if warn_invalid_desc(prim_path, rigid_body_desc):
+                continue
             body_path = str(prim_path)
             body_specs[body_path] = rigid_body_desc
             body_density[body_path] = default_shape_density
@@ -833,6 +847,8 @@ def parse_usd(
         articulation_id = builder.articulation_count
         body_data = {}
         for path, desc in zip(paths, articulation_descs):
+            if warn_invalid_desc(path, desc):
+                continue
             prim = stage.GetPrimAtPath(path)
             builder.add_articulation(str(path))
             body_ids = {}
@@ -971,6 +987,8 @@ def parse_usd(
         }:
             paths, shape_specs = value
             for xpath, shape_spec in zip(paths, shape_specs):
+                if warn_invalid_desc(xpath, shape_spec):
+                    continue
                 prim = stage.GetPrimAtPath(xpath)
                 # print(prim)
                 # print(shape_spec)
