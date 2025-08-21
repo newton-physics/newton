@@ -577,7 +577,7 @@ class TestImportSampleAssets(unittest.TestCase):
                     p = np.array(
                         wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))
                     ).reshape((3, 3))
-                    inertia = p.T @ np.diag(diag_inertia) @ p
+                    inertia = p @ np.diag(diag_inertia) @ p.T
                     assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
                     inertia_verified.add(body_idx)
 
@@ -606,7 +606,6 @@ class TestImportSampleAssets(unittest.TestCase):
                 assert joint_key_to_idx.get(str(joint_path), None) is not None
                 assert model_joint_type[joint_idx] == joint_type
 
-        print(model.joint_key)
         self.assertEqual(len(joints_found) + 1, model.joint_count)
 
         body_q_array = model.body_q.numpy()
@@ -645,7 +644,7 @@ class TestImportSampleAssets(unittest.TestCase):
         drive_gain_scale = 1.0
         scene = UsdPhysics.Scene.Get(stage, Sdf.Path("/physicsScene"))
         if scene:
-            attr = scene.GetPrim().GetAttribute("warp:joint_drive_gains_scaling")
+            attr = scene.GetPrim().GetAttribute("newton:joint_drive_gains_scaling")
             if attr and attr.HasAuthoredValue():
                 drive_gain_scale = float(attr.Get())
 
@@ -707,13 +706,13 @@ class TestImportSampleAssets(unittest.TestCase):
                 ke_val = ke_attr.Get() if ke_attr.HasAuthoredValue() else None
                 if ke_val is not None:
                     ke = float(ke_val)
-                    self.assertAlmostEqual(float(model.joint_target_ke.numpy()[dof_index]), ke * drive_gain_scale, places=5)
+                    self.assertAlmostEqual(float(model.joint_target_ke.numpy()[dof_index]), ke * math.degrees(drive_gain_scale), places=2)
                     
             if kd_attr:
                 kd_val = kd_attr.Get() if kd_attr.HasAuthoredValue() else None
                 if kd_val is not None:
                     kd = float(kd_val)
-                    self.assertAlmostEqual(float(model.joint_target_kd.numpy()[dof_index]), kd * drive_gain_scale, places=5)
+                    self.assertAlmostEqual(float(model.joint_target_kd.numpy()[dof_index]), kd * math.degrees(drive_gain_scale), places=2)
 
         joint_X_p_array = model.joint_X_p.numpy()
         joint_X_c_array = model.joint_X_c.numpy()
@@ -812,7 +811,7 @@ class TestImportSampleAssets(unittest.TestCase):
                                      msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}")
             
             if newton_type in [3, 5]:
-                from newton.core import quat_between_axes
+                from newton.utils import quat_between_axes
                 usd_axis = int(shape_spec.axis) if hasattr(shape_spec, 'axis') else 2
                 axis_quat = (quat_between_axes(newton.Axis.Z, newton.Axis.X) if usd_axis == 0 else
                            quat_between_axes(newton.Axis.Z, newton.Axis.Y) if usd_axis == 1 else
