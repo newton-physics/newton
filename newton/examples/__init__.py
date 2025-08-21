@@ -160,7 +160,7 @@ def init(parser=None):
     elif args.viewer == "rerun":
         viewer = newton.viewer.ViewerRerun()
     elif args.viewer == "null":
-        viewer = newton.viewer.ViewerNull()
+        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 

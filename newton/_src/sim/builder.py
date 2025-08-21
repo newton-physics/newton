@@ -532,7 +532,7 @@ class ModelBuilder:
 
     # endregion
 
-    def _replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
+    def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
         # compute positional offsets per environment
         spacing = np.array(spacing)
         nonzeros = np.nonzero(spacing)[0]
@@ -575,7 +575,7 @@ class ModelBuilder:
         """Replicates the builder a given number of times offsetting
         each copy according to the supplied spacing"""
 
-        offsets = self._replicate_offsets(num_copies, spacing)
+        offsets = self._compute_replicate_offsets(num_copies, spacing)
         for i in range(num_copies):
             self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 

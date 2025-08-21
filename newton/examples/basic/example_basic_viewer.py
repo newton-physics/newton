@@ -78,9 +78,6 @@ class Example:
             dtype=wp.vec3,
         )
 
-        if viewer == "gl":
-            print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
-
         self.time = 0.0
 
     def step(self):
