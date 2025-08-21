@@ -312,36 +312,6 @@ class Example:
             self.viewer.begin_frame(self.sim_time)
             self.viewer.log_state(self.state_0)
             self.viewer.log_contacts(self.contacts, self.state_0)
-            # Small controller hint window inside the viewer (if supported)
-            if hasattr(self.viewer, "register_ui_callback") and not hasattr(self, "_ui_registered"):
-
-                def _controller_help(imgui, viewer):
-                    try:
-                        io = viewer.ui.io
-                        x = int(io.display_size[0] * 0.5)
-                        y = 10
-                        imgui.set_next_window_position(x, y, pivot_x=0.5, pivot_y=0.0)
-                    except Exception:
-                        pass
-                    flags = (
-                        getattr(imgui, "WINDOW_NO_RESIZE", 0)
-                        | getattr(imgui, "WINDOW_NO_MOVE", 0)
-                        | getattr(imgui, "WINDOW_ALWAYS_AUTO_RESIZE", 0)
-                        | getattr(imgui, "WINDOW_NO_SAVED_SETTINGS", 0)
-                        | getattr(imgui, "WINDOW_NO_FOCUS_ON_APPEARING", 0)
-                        | getattr(imgui, "WINDOW_NO_NAV", 0)
-                    )
-                    if imgui.begin("Controller", flags=flags):
-                        imgui.text("Controls:")
-                        imgui.bullet_text("Space: Pause/Resume")
-                        imgui.bullet_text("P: Reset robot")
-                        imgui.bullet_text("I/K: Forward/Backward")
-                        imgui.bullet_text("J/L: Left/Right")
-                        imgui.bullet_text("U/O: Rotate left/right")
-                    imgui.end()
-
-                self.viewer.register_ui_callback(_controller_help)
-                self._ui_registered = True
             self.viewer.end_frame()
 
     def test(self):
