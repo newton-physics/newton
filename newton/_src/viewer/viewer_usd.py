@@ -271,7 +271,7 @@ class ViewerUSD(ViewerBase):
         """Log lines (not implemented for USD backend)."""
         pass
 
-    def log_points(self, name, state):
+    def log_points(self, name, points, widths, colors, hidden=False):
         """Log points (not implemented for USD backend)."""
         pass
 

@@ -13,26 +13,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
-
 import numpy as np
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
+import newton.examples
 from newton.solvers import SolverImplicitMPM
 
 
 class Example:
-    def __init__(self, options: argparse.Namespace):
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    def __init__(self, viewer, options):
+        # setup simulation parameters first
+        self.fps = options.fps
+        self.frame_dt = 1.0 / self.fps
+
+        # group related attributes by prefix
+        self.sim_time = 0.0
+        self.sim_substeps = options.substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        # save a reference to the viewer
+        self.viewer = viewer
+        builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
         if options.collider is not None:
             collider = _create_collider_mesh(options.collider)
             builder.add_shape_mesh(
-                body=-1, mesh=newton.geometry.Mesh(collider.points.numpy(), collider.indices.numpy())
+                body=-1,
+                mesh=newton.Mesh(collider.points.numpy(), collider.indices.numpy()),
             )
             colliders = [collider]
         else:
@@ -49,28 +58,20 @@ class Example:
             options.compression_yield_stress,
         )
 
-        model: newton.Model = builder.finalize()
-        model.particle_mu = options.friction_coeff
+        self.model = builder.finalize()
+        self.model.particle_mu = options.friction_coeff
 
-        self.frame_dt = 1.0 / options.fps
-        self.sim_substeps = options.substeps
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
 
-        self.model = model
-        self.state_0: newton.State = model.state()
-        self.state_1: newton.State = model.state()
-
-        self.sim_time = 0.0
-        self.solver = SolverImplicitMPM(model, options)
-        self.solver.setup_collider(model, colliders=colliders)
+        self.solver = SolverImplicitMPM(self.model, options)
+        self.solver.setup_collider(self.model, colliders=colliders)
 
         self.solver.enrich_state(self.state_0)
         self.solver.enrich_state(self.state_1)
 
-        if options.headless:
-            self.renderer = None
-        else:
-            self.renderer = newton.viewer.RendererOpenGL(self.model, "MPM Granular")
+        self.viewer.set_model(self.model)
+        self.viewer.show_particles = True
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -79,18 +80,16 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("simulate", synchronize=True):
-            self.simulate()
+        self.simulate()
         self.sim_time += self.frame_dt
 
-    def render(self):
-        if self.renderer is None:
-            return
+    def test(self):
+        pass
 
-        with wp.ScopedTimer("render", synchronize=True):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+    def render(self):
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
@@ -108,7 +107,13 @@ class Example:
         Example._spawn_particles(builder, particle_res, particle_lo, particle_hi, max_fraction)
 
     @staticmethod
-    def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, packing_fraction):
+    def _spawn_particles(
+        builder: newton.ModelBuilder,
+        res,
+        bounds_lo,
+        bounds_hi,
+        packing_fraction,
+    ):
         Nx = res[0]
         Ny = res[1]
         Nz = res[2]
@@ -136,108 +141,32 @@ class Example:
         builder.particle_flags = np.zeros(points.shape[0], dtype=int)
 
 
-@wp.kernel
-def _fill_triangle_indices(
-    face_offsets: wp.array(dtype=int),
-    face_vertex_indices: wp.array(dtype=int),
-    tri_vertex_indices: wp.array(dtype=int),
-):
-    fid = wp.tid()
-
-    if fid == 0:
-        beg = 0
-    else:
-        beg = face_offsets[fid - 1]
-    end = face_offsets[fid]
-
-    for t in range(beg, end - 2):
-        tri_index = t - 2 * fid
-        tri_vertex_indices[3 * tri_index + 0] = face_vertex_indices[beg]
-        tri_vertex_indices[3 * tri_index + 1] = face_vertex_indices[t + 1]
-        tri_vertex_indices[3 * tri_index + 2] = face_vertex_indices[t + 2]
-
-
-def mesh_triangle_indices(face_index_counts, face_indices):
-    """Zero-vertex triangulates a polynomial mesh"""
-
-    face_count = len(face_index_counts)
-
-    face_offsets = np.cumsum(face_index_counts)
-    tot_index_count = int(face_offsets[-1])
-
-    tri_count = tot_index_count - 2 * face_count
-    tri_index_count = 3 * tri_count
-
-    face_offsets = wp.array(face_offsets, dtype=int)
-    face_indices = wp.array(face_indices, dtype=int)
-
-    tri_indices = wp.empty(tri_index_count, dtype=int)
-
-    wp.launch(
-        kernel=_fill_triangle_indices,
-        dim=face_count,
-        inputs=[face_offsets, face_indices, tri_indices],
-    )
-
-    return tri_indices
-
-
 def _create_collider_mesh(collider: str):
-    """Create a collider mesh from a string; either load from a file or create a simple predefined shape."""
+    """Create a collider mesh."""
 
-    if collider == "wedge":
-        cube_faces = np.array(
-            [
-                [0, 2, 6, 4],
-                [1, 5, 7, 3],
-                [0, 4, 5, 1],
-                [2, 3, 7, 6],
-                [0, 1, 3, 2],
-                [4, 6, 7, 5],
-            ]
+    if collider == "cube":
+        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
+
+        return wp.Mesh(
+            wp.array(cube_points[:, 0:3] + [0, 0, 0.5], dtype=wp.vec3),
+            wp.array(cube_indices, dtype=int),
         )
-
-        # Generate cube vertex positions and rotate them by 45 degrees along z
-        cube_points = np.array(
-            [
-                [0, 0, 0],
-                [0, 0, 1],
-                [0, 1, 0],
-                [0, 1, 1],
-                [1, 0, 0],
-                [1, 0, 1],
-                [1, 1, 0],
-                [1, 1, 1],
-            ]
-        )
-        cube_points = (cube_points * [1, 1, 2.5]) @ np.array(
-            [
-                [np.cos(np.pi / 4), -np.sin(np.pi / 4), 0],
-                [np.sin(np.pi / 4), np.cos(np.pi / 4), 0],
-                [0, 0, 1],
-            ]
-        )
-        cube_points = cube_points + np.array([-0.9, 1, -1.2])
-        cube_indices = mesh_triangle_indices(np.full(6, 4), cube_faces.flatten())
-
-        return wp.Mesh(wp.array(cube_points, dtype=wp.vec3), wp.array(cube_indices, dtype=int))
-
-    mesh_points, mesh_indices = newton.utils.load_mesh(collider)
-    return wp.Mesh(wp.array(mesh_points, dtype=wp.vec3), wp.array(mesh_indices, dtype=int))
+    else:
+        return None
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
 
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    # Add MPM-specific arguments
+    parser.add_argument("--collider", default="cube", type=str)
 
-    parser.add_argument("--collider", type=str)
-
-    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, 0, -1])
-    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 2, 1])
-    parser.add_argument("--gravity", type=float, nargs=3, default=[0, -10, 0])
+    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
+    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])
+    parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
 
@@ -245,7 +174,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--compliance", type=float, default=0.0)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction-coeff", "-mu", type=float, default=0.48)
+    parser.add_argument("--friction-coeff", "-mu", type=float, default=0.68)
     parser.add_argument("--yield-stress", "-ys", type=float, default=0.0)
     parser.add_argument("--compression-yield-stress", "-cys", type=float, default=1.0e8)
     parser.add_argument("--stretching-yield-stress", "-sys", type=float, default=1.0e8)
@@ -256,14 +185,12 @@ if __name__ == "__main__":
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
-    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(args)
+    # Create example and run
+    example = Example(viewer, args)
 
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
+    newton.examples.run(example)

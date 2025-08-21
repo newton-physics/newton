@@ -351,10 +351,12 @@ class TestOtherExamples(unittest.TestCase):
 
 add_example_test(
     TestOtherExamples,
-    name="example_mpm_granular",
+    name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
-    test_options={"headless": True, "num_frames": 100},
+    test_options={"viewer": "null", "num_frames": 100},
+    use_viewer=True,
 )
+
 add_example_test(
     TestOtherExamples,
     name="example_rigid_force",

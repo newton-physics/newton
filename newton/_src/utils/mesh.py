@@ -25,6 +25,29 @@ def create_sphere_mesh(
     num_longitudes=default_num_segments,
     reverse_winding=False,
 ):
+    """Create a sphere mesh with specified parameters.
+
+    Generates vertices and triangle indices for a UV sphere using
+    latitude/longitude parametrization. Each vertex contains position,
+    normal, and UV coordinates.
+
+    Args:
+        radius (float): Sphere radius. Defaults to 1.0.
+        num_latitudes (int): Number of horizontal divisions (latitude lines).
+            Defaults to default_num_segments.
+        num_longitudes (int): Number of vertical divisions (longitude lines).
+            Defaults to default_num_segments.
+        reverse_winding (bool): If True, reverses triangle winding order.
+            Defaults to False.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+    """
     vertices = []
     indices = []
 
@@ -61,6 +84,28 @@ def create_sphere_mesh(
 
 
 def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
+    """Create a capsule (pill-shaped) mesh with hemispherical ends.
+
+    Generates vertices and triangle indices for a capsule shape consisting
+    of a cylinder with hemispherical caps at both ends.
+
+    Args:
+        radius (float): Radius of the capsule.
+        half_height (float): Half the height of the cylindrical portion
+            (distance from center to hemisphere start).
+        up_axis (int): Axis along which the capsule extends (0=X, 1=Y, 2=Z).
+            Defaults to 1 (Y-axis).
+        segments (int): Number of segments for tessellation.
+            Defaults to default_num_segments.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+    """
     vertices = []
     indices = []
 
@@ -109,11 +154,62 @@ def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_seg
 
 
 def create_cone_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
+    """Create a cone mesh with circular base and pointed top.
+
+    Generates vertices and triangle indices for a cone shape. Implemented as
+    a cylinder with zero top radius to ensure correct normal calculations.
+
+    Args:
+        radius (float): Radius of the cone's circular base.
+        half_height (float): Half the total height of the cone
+            (distance from center to tip/base).
+        up_axis (int): Axis along which the cone extends (0=X, 1=Y, 2=Z).
+            Defaults to 1 (Y-axis).
+        segments (int): Number of segments around the circumference.
+            Defaults to default_num_segments.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+    """
     # render it as a cylinder with zero top radius so we get correct normals on the sides
     return create_cylinder_mesh(radius, half_height, up_axis, segments, 0.0)
 
 
 def create_cylinder_mesh(radius, half_height, up_axis=1, segments=default_num_segments, top_radius=None):
+    """Create a cylinder or truncated cone mesh.
+
+    Generates vertices and triangle indices for a cylindrical shape with
+    optional different top and bottom radii (creating a truncated cone when
+    different). Includes circular caps at both ends.
+
+    Args:
+        radius (float): Radius of the bottom circular face.
+        half_height (float): Half the total height of the cylinder
+            (distance from center to top/bottom face).
+        up_axis (int): Axis along which the cylinder extends (0=X, 1=Y, 2=Z).
+            Defaults to 1 (Y-axis).
+        segments (int): Number of segments around the circumference.
+            Defaults to default_num_segments.
+        top_radius (float, optional): Radius of the top circular face.
+            If None, uses same radius as bottom (true cylinder).
+            If different, creates a truncated cone.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+
+    Raises:
+        ValueError: If up_axis is not 0, 1, or 2.
+    """
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
 
@@ -187,6 +283,34 @@ def create_cylinder_mesh(radius, half_height, up_axis=1, segments=default_num_se
 def create_arrow_mesh(
     base_radius, base_height, cap_radius=None, cap_height=None, up_axis=1, segments=default_num_segments
 ):
+    """Create an arrow mesh with cylindrical shaft and conical head.
+
+    Generates vertices and triangle indices for an arrow shape consisting of
+    a cylindrical base (shaft) with a conical cap (arrowhead) at the top.
+
+    Args:
+        base_radius (float): Radius of the cylindrical shaft.
+        base_height (float): Height of the cylindrical shaft portion.
+        cap_radius (float, optional): Radius of the conical arrowhead base.
+            If None, defaults to base_radius * 1.8.
+        cap_height (float, optional): Height of the conical arrowhead.
+            If None, defaults to base_height * 0.18.
+        up_axis (int): Axis along which the arrow extends (0=X, 1=Y, 2=Z).
+            Defaults to 1 (Y-axis).
+        segments (int): Number of segments for tessellation.
+            Defaults to default_num_segments.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+
+    Raises:
+        ValueError: If up_axis is not 0, 1, or 2.
+    """
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
     if cap_radius is None:
@@ -211,6 +335,24 @@ def create_arrow_mesh(
 
 
 def create_box_mesh(extents):
+    """Create a rectangular box (cuboid) mesh.
+
+    Generates vertices and triangle indices for a box shape with 6 faces.
+    Each face consists of 2 triangles with proper normals pointing outward.
+
+    Args:
+        extents (tuple[float, float, float]): Half-extents of the box in each
+            dimension (half_width, half_length, half_height). The full box
+            dimensions will be twice these values.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+    """
     x_extent, y_extent, z_extent = extents
 
     vertices = [
@@ -261,4 +403,44 @@ def create_box_mesh(extents):
 
 
 def create_plane_mesh(width, length):
-    return create_box_mesh((width, length, 0.005))
+    """Create a rectangular plane mesh in the XY plane.
+
+    Generates vertices and triangle indices for a flat rectangular plane
+    lying in the XY plane (Z=0) with upward-pointing normals.
+
+    Args:
+        width (float): Width of the plane in the X direction.
+        length (float): Length of the plane in the Y direction.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (4, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords). All vertices have Z=0 and normals pointing up
+              (0, 0, 1).
+            - indices (np.ndarray): Uint32 array of 6 triangle indices forming
+              2 triangles with counterclockwise winding.
+    """
+    half_width = width / 2
+    half_length = length / 2
+
+    # Create 4 vertices for a rectangle in XY plane (Z=0)
+    vertices = [
+        # Position                           Normal      UV
+        [-half_width, -half_length, 0.0, 0, 0, 1, 0, 0],  # bottom-left
+        [half_width, -half_length, 0.0, 0, 0, 1, 1, 0],  # bottom-right
+        [half_width, half_length, 0.0, 0, 0, 1, 1, 1],  # top-right
+        [-half_width, half_length, 0.0, 0, 0, 1, 0, 1],  # top-left
+    ]
+
+    # Create 2 triangles (6 indices) - counterclockwise winding
+    indices = [
+        0,
+        1,
+        2,  # first triangle
+        0,
+        2,
+        3,  # second triangle
+    ]
+
+    return (np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32))

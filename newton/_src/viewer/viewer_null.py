@@ -59,7 +59,7 @@ class ViewerNull(ViewerBase):
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         pass
 
-    def log_points(self, name, state):
+    def log_points(self, name, points, widths, colors, hidden=False):
         pass
 
     def log_array(self, name, array):

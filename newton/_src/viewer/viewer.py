@@ -19,8 +19,7 @@ import numpy as np
 import warp as wp
 
 import newton
-
-from .mesh import (
+from newton.utils import (
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -34,7 +33,7 @@ class ViewerBase:
     def __init__(self):
         self.time = 0.0
 
-        self.device = None
+        self.device = wp.get_device()
         self.model = None
         self.model_changed = True
 
@@ -54,14 +53,13 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
-        self.options = {
-            "show_joints": False,
-            "show_com": False,
-            "show_particles": False,
-            "show_contacts": False,
-            "show_springs": False,
-            "show_triangles": False,
-        }
+        # Display options as individual boolean attributes
+        self.show_joints = False
+        self.show_com = False
+        self.show_particles = False
+        self.show_contacts = False
+        self.show_springs = False
+        self.show_triangles = True
 
     def set_model(self, model):
         if self.model is not None:
@@ -95,6 +93,7 @@ class ViewerBase:
             )
 
         self._log_triangles(state)
+        self._log_particles(state)
         self._log_joints(state)
 
         self.model_changed = False
@@ -108,7 +107,7 @@ class ViewerBase:
             state: Current simulation state
         """
 
-        if not self.options["show_contacts"]:
+        if not self.show_contacts:
             # Pass None to hide joints - renderer will handle creating empty arrays
             self.log_lines("/contacts", None, None, None)
             return
@@ -352,7 +351,7 @@ class ViewerBase:
         pass
 
     @abstractmethod
-    def log_points(self, name, state):
+    def log_points(self, name, points, widths, colors, hidden=False):
         pass
 
     @abstractmethod
@@ -573,7 +572,7 @@ class ViewerBase:
         Args:
             state: Current simulation state
         """
-        if not self.options["show_joints"]:
+        if not self.show_joints:
             # Pass None to hide joints - renderer will handle creating empty arrays
             self.log_lines("/model/joints", None, None, None)
             return
@@ -626,8 +625,24 @@ class ViewerBase:
                 "/model/triangles",
                 state.particle_q,
                 self.model.tri_indices.flatten(),
-                hidden=False,
+                hidden=not self.show_triangles,
                 backface_culling=False,
+            )
+
+    def _log_particles(self, state):
+        if self.model.particle_count:
+            # just set colors on first frame
+            if self.model_changed:
+                colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
+            else:
+                colors = None
+
+            self.log_points(
+                name="/model/particles",
+                points=state.particle_q,
+                widths=self.model.particle_radius,
+                colors=colors,
+                hidden=not self.show_particles,
             )
 
     @staticmethod

@@ -22,6 +22,7 @@ import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
+from newton.utils import create_sphere_mesh
 
 from .camera import Camera
 from .gl.gui import UI
@@ -87,10 +88,25 @@ class ViewerGL(ViewerBase):
         self._frame_count = 0
         self._current_fps = 0.0
 
+        # a low resolution sphere mesh for point rendering
+        self._point_mesh = None
+
         # UI visibility toggle
         self.show_ui = True
 
         self.set_model(None)
+
+    # helper function to create a low resolution sphere mesh for point rendering
+    def _create_point_mesh(self):
+        vertices, indices = create_sphere_mesh(1.0, 6, 6)
+        self._point_mesh = MeshGL(len(vertices), len(indices), self.device)
+
+        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
+        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
+        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
+        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+
+        self._point_mesh.update(points, indices, normals, uvs)
 
     def set_model(self, model):
         super().set_model(model)
@@ -122,6 +138,8 @@ class ViewerGL(ViewerBase):
             )
 
         self.objects[name].update(points, indices, normals, uvs)
+        self.objects[name].hidden = hidden
+        self.objects[name].backface_culling = backface_culling
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials):
         # check that mesh exists
@@ -135,7 +153,7 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             self.objects[name] = MeshInstancerGL(len(xforms), self.objects[mesh])
 
-        self.objects[name].update(xforms, scales, colors, materials)
+        self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
     def log_lines(
         self,
@@ -191,8 +209,15 @@ class ViewerGL(ViewerBase):
 
         self.lines[name].update(line_begins, line_ends, line_colors)
 
-    def log_points(self, name, state):
-        pass
+    def log_points(self, name, points, widths, colors, hidden=False):
+        if self._point_mesh is None:
+            self._create_point_mesh()
+
+        if name not in self.objects:
+            self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
+
+        self.objects[name].update_from_points(points, widths, colors)
+        self.objects[name].hidden = hidden
 
     def log_array(self, name, array):
         pass
@@ -581,28 +606,28 @@ class ViewerGL(ViewerBase):
                     imgui.separator()
 
                     # Joint visualization
-                    show_joints = self.options["show_joints"]
-                    changed, self.options["show_joints"] = imgui.checkbox("Show Joints", show_joints)
+                    show_joints = self.show_joints
+                    changed, self.show_joints = imgui.checkbox("Show Joints", show_joints)
 
                     # Contact visualization
-                    show_contacts = self.options["show_contacts"]
-                    changed, self.options["show_contacts"] = imgui.checkbox("Show Contacts", show_contacts)
+                    show_contacts = self.show_contacts
+                    changed, self.show_contacts = imgui.checkbox("Show Contacts", show_contacts)
 
                     # Particle visualization
-                    show_particles = self.options["show_particles"]
-                    changed, self.options["show_particles"] = imgui.checkbox("Show Particles", show_particles)
+                    show_particles = self.show_particles
+                    changed, self.show_particles = imgui.checkbox("Show Particles", show_particles)
 
                     # Spring visualization
-                    show_springs = self.options["show_springs"]
-                    changed, self.options["show_springs"] = imgui.checkbox("Show Springs", show_springs)
+                    show_springs = self.show_springs
+                    changed, self.show_springs = imgui.checkbox("Show Springs", show_springs)
 
                     # Center of mass visualization
-                    show_com = self.options["show_com"]
-                    changed, self.options["show_com"] = imgui.checkbox("Show Center of Mass", show_com)
+                    show_com = self.show_com
+                    changed, self.show_com = imgui.checkbox("Show Center of Mass", show_com)
 
                     # Triangle mesh visualization
-                    show_triangles = self.options["show_triangles"]
-                    changed, self.options["show_triangles"] = imgui.checkbox("Show Triangles", show_triangles)
+                    show_triangles = self.show_triangles
+                    changed, self.show_triangles = imgui.checkbox("Show Cloth", show_triangles)
 
             # Rendering Options section
             imgui.set_next_item_open(True, imgui.APPEARING)
