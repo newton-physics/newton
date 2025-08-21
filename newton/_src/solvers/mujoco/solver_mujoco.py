@@ -1676,8 +1676,8 @@ class SolverMuJoCo(SolverBase):
             opts = {"cg": mujoco.mjtSolver.mjSOL_CG, "newton": mujoco.mjtSolver.mjSOL_NEWTON}
             try:
                 solver = opts[solver.lower()]
-            except KeyError:
-                raise ValueError(f"Unknown solver '{solver}'. Options: {list(opts)}")
+            except KeyError as e:
+                raise ValueError(f"Unknown solver '{solver}'. Options: {list(opts)}") from e
 
         if isinstance(integrator, str):
             opts = {
@@ -1687,8 +1687,8 @@ class SolverMuJoCo(SolverBase):
             }
             try:
                 integrator = opts[integrator.lower()]
-            except KeyError:
-                raise ValueError(f"Unknown integrator '{integrator}'. Options: {list(opts)}")
+            except KeyError as e:
+                raise ValueError(f"Unknown integrator '{integrator}'. Options: {list(opts)}") from e
 
         if isinstance(cone, str):
             opts = {
@@ -1697,8 +1697,8 @@ class SolverMuJoCo(SolverBase):
             }
             try:
                 cone = opts[cone.lower()]
-            except KeyError:
-                raise ValueError(f"Unknown cone '{cone}'. Options: {list(opts)}")
+            except KeyError as e:
+                raise ValueError(f"Unknown cone '{cone}'. Options: {list(opts)}") from e
 
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
