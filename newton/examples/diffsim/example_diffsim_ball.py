@@ -1,0 +1,295 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+###########################################################################
+# Example Sim Grad Bounce
+#
+# Shows how to use Warp to optimize the initial velocity of a particle
+# such that it bounces off the wall and floor in order to hit a target.
+#
+# This example uses the built-in wp.Tape() object to compute gradients of
+# the distance to target (loss) w.r.t the initial velocity, followed by
+# a simple gradient-descent optimization step.
+#
+###########################################################################
+import warp as wp
+
+import newton
+import newton.examples
+
+
+@wp.kernel
+def loss_kernel(pos: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+    # distance to target
+    delta = pos[0] - target
+    loss[0] = wp.dot(delta, delta)
+
+
+@wp.kernel
+def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha: float):
+    tid = wp.tid()
+
+    # gradient descent step
+    x[tid] = x[tid] - grad[tid] * alpha
+
+
+class Example:
+    def __init__(self, viewer_type: str, stage_path="example_bounce.usd", verbose=False):
+        self.verbose = verbose
+
+        # seconds
+        sim_duration = 0.6
+
+        # control frequency
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+        frame_steps = int(sim_duration / self.frame_dt)
+
+        # sim frequency
+        self.sim_substeps = 8
+        self.sim_steps = frame_steps * self.sim_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        self.render_time = 0.0
+
+        self.train_iter = 0
+        self.train_rate = 0.02
+        self.target = (0.0, -2.0, 1.5)
+        self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+
+        builder.add_particle(pos=wp.vec3(0.0, -0.5, 1.0), vel=wp.vec3(0.0, 5.0, -5.0), mass=1.0)
+
+        ke = 1.0e4
+        kf = 0.0
+        kd = 1.0e1
+        mu = 0.2
+
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 2.0, 1.0), wp.quat_identity()),
+            hx=1.0,
+            hy=0.25,
+            hz=1.0,
+            cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu),
+        )
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
+
+        # use `requires_grad=True` to create a model for differentiable simulation
+        self.model = builder.finalize(requires_grad=True)
+
+        self.model.soft_contact_ke = ke
+        self.model.soft_contact_kf = kf
+        self.model.soft_contact_kd = kd
+        self.model.soft_contact_mu = mu
+        self.model.soft_contact_restitution = 1.0
+
+        self.solver = newton.solvers.SolverSemiImplicit(self.model)
+
+        # allocate sim states for trajectory
+        self.states = []
+        for _i in range(self.sim_steps + 1):
+            self.states.append(self.model.state())
+
+        self.control = self.model.control()
+
+        # one-shot contact creation (valid if we're doing simple collision against a constant normal plane)
+        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
+
+        if viewer_type == "usd":
+            from newton.viewer import ViewerUSD  # noqa: PLC0415
+
+            self.viewer = ViewerUSD(self.model, output_path=stage_path)
+        elif viewer_type == "rerun":
+            from newton.viewer import ViewerRerun  # noqa: PLC0415
+
+            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
+        else:
+            from newton.viewer import ViewerGL  # noqa: PLC0415
+
+            self.viewer = ViewerGL(self.model)
+
+        # capture forward/backward passes
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.forward_backward()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def forward_backward(self):
+        self.tape = wp.Tape()
+        with self.tape:
+            self.forward()
+        self.tape.backward(self.loss)
+
+    def forward(self):
+        # run control loop
+        for i in range(self.sim_steps):
+            self.states[i].clear_forces()
+            self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
+
+        # compute loss on final state
+        wp.launch(loss_kernel, dim=1, inputs=[self.states[-1].particle_q, self.target, self.loss])
+
+        return self.loss
+
+    def step(self):
+        with wp.ScopedTimer("step"):
+            if self.graph:
+                wp.capture_launch(self.graph)
+            else:
+                self.forward_backward()
+
+            # gradient descent step
+            x = self.states[0].particle_qd
+            wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
+
+            x_grad = self.tape.gradients[self.states[0].particle_qd]
+
+            if self.verbose:
+                print(f"Train iter: {self.train_iter} Loss: {self.loss}")
+                print(f"    x: {x} g: {x_grad}")
+
+            # clear grads for next iteration
+            self.tape.zero()
+
+            self.train_iter = self.train_iter + 1
+
+    def test(self):
+        pass
+
+    def render(self):
+        # draw trajectory
+        traj_verts = [self.states[0].particle_q.numpy()[0].tolist()]
+
+        for i in range(0, self.sim_steps, self.sim_substeps):
+            traj_verts.append(self.states[i].particle_q.numpy()[0].tolist())
+
+            self.viewer.begin_frame(self.render_time)
+            self.viewer.log_state(self.states[i])
+            self.viewer.log_shapes(
+                "/target",
+                newton.GeoType.BOX,
+                (0.1, 0.1, 0.1),
+                wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
+                wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+            )
+            self.viewer.log_lines(
+                f"/traj_{self.train_iter - 1}",
+                wp.array(traj_verts[0:-1], dtype=wp.vec3),
+                wp.array(traj_verts[1:], dtype=wp.vec3),
+                wp.render.bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
+            )
+
+            self.viewer.log_shapes(
+                "/particle",
+                newton.GeoType.SPHERE,
+                0.1,
+                wp.array([wp.transform(wp.vec3(traj_verts[-1]), wp.quat_identity())], dtype=wp.transform),
+                wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3),
+            )
+            self.viewer.end_frame()
+
+            # if isinstance(self.viewer, newton.viewer.ViewerUSD):
+            #     from pxr import Gf, UsdGeom
+
+            #     particles_prim = self.viewer.stage.GetPrimAtPath("/root/particles")
+            #     particles = UsdGeom.Points.Get(self.viewer.stage, particles_prim.GetPath())
+            #     particles.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 1.0, 1.0)], time=self.viewer.time)
+
+            self.render_time += self.frame_dt
+
+    def check_grad(self):
+        import numpy as np  # noqa: PLC0415
+
+        param = self.states[0].particle_qd
+
+        # initial value
+        x_c = param.numpy().flatten()
+
+        # compute numeric gradient
+        x_grad_numeric = np.zeros_like(x_c)
+
+        for i in range(len(x_c)):
+            eps = 1.0e-3
+
+            step = np.zeros_like(x_c)
+            step[i] = eps
+
+            x_1 = x_c + step
+            x_0 = x_c - step
+
+            param.assign(x_1)
+            l_1 = self.forward().numpy()[0]
+
+            param.assign(x_0)
+            l_0 = self.forward().numpy()[0]
+
+            dldx = (l_1 - l_0) / (eps * 2.0)
+
+            x_grad_numeric[i] = dldx
+
+        # reset initial state
+        param.assign(x_c)
+
+        # compute analytic gradient
+        tape = wp.Tape()
+        with tape:
+            l = self.forward()
+
+        tape.backward(l)
+
+        x_grad_analytic = tape.gradients[param]
+
+        print(f"numeric grad: {x_grad_numeric}")
+        print(f"analytic grad: {x_grad_analytic}")
+
+        tape.zero()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument(
+        "--stage_path",
+        type=lambda x: None if x == "None" else str(x),
+        default="example_bounce.usd",
+        help="Path to the output USD file.",
+    )
+    parser.add_argument("--train_iters", type=int, default=250, help="Total number of training iterations.")
+    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
+
+    args = parser.parse_known_args()[0]
+
+    example = Example(viewer_type=args.viewer, stage_path=args.stage_path, verbose=args.verbose)
+
+    example.check_grad()
+
+    # replay and optimize
+    for i in range(args.train_iters):
+        example.step()
+        if i % 16 == 0:
+            example.render()
+
+    if example.viewer:
+        example.viewer.close()
