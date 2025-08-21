@@ -18,7 +18,7 @@ from ._src.utils.recorder_gui import RecorderImGuiManager
 from ._src.utils.render import RendererOpenGL, RendererUsd
 
 # Import all viewer classes (they handle missing dependencies at instantiation time)
-from ._src.viewer import ViewerGL, ViewerRerun, ViewerUSD
+from ._src.viewer import ViewerGL, ViewerNull, ViewerRerun, ViewerUSD
 
 __all__ = [
     "GizmoSystem",
@@ -26,6 +26,7 @@ __all__ = [
     "RendererOpenGL",  # deprecated
     "RendererUsd",  # deprecated
     "ViewerGL",
+    "ViewerNull",
     "ViewerRerun",
     "ViewerUSD",
 ]

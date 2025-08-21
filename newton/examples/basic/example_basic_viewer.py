@@ -17,60 +17,36 @@
 # Example Viewer
 #
 # Shows how to use the Newton Viewer class to visualize various shapes
-# and line instances.
+# and line instances without a Newton model.
+#
+# Command: python -m newton.examples basic_viewer
 #
 ###########################################################################
 
 
-from __future__ import annotations
-
-import argparse
 import math
-import time
 
 import warp as wp
 
 import newton
-
-
-def create_model() -> newton.Model:
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    return builder.finalize()
+import newton.examples
 
 
 class Example:
-    def __init__(self, viewer_type: str):
-        # Create a minimal model and viewer
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-
-        self.model = builder.finalize()
-
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
-
-            self.viewer = ViewerUSD(self.model, output_path="example_viewer.usd", num_frames=600)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.model)
-
-        # No explicit mesh creation; we'll use viewer.log_shapes() below
+    def __init__(self, viewer):
+        self.viewer = viewer
 
         # self.colors and materials per instance
-        self.col_sphere = wp.array([wp.vec3(1.0, 0.1, 0.1)], dtype=wp.vec3)
-        self.col_box = wp.array([wp.vec3(0.1, 1.0, 0.1)], dtype=wp.vec3)
-        self.col_cone = wp.array([wp.vec3(0.1, 0.4, 1.0)], dtype=wp.vec3)
-        self.col_capsule = wp.array([wp.vec3(1.0, 1.0, 0.1)], dtype=wp.vec3)
+        self.col_sphere = wp.array([wp.vec3(0.9, 0.1, 0.1)], dtype=wp.vec3)
+        self.col_box = wp.array([wp.vec3(0.1, 0.9, 0.1)], dtype=wp.vec3)
+        self.col_cone = wp.array([wp.vec3(0.1, 0.4, 0.9)], dtype=wp.vec3)
+        self.col_capsule = wp.array([wp.vec3(0.9, 0.9, 0.1)], dtype=wp.vec3)
         self.col_cylinder = wp.array([wp.vec3(0.8, 0.5, 0.2)], dtype=wp.vec3)
+        self.col_plane = wp.array([wp.vec3(0.125, 0.125, 0.15)], dtype=wp.vec3)
 
         # material = (metallic, roughness, checker, unused)
         self.mat_default = wp.array([wp.vec4(0.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
+        self.mat_plane = wp.array([wp.vec4(0.5, 0.5, 1.0, 0.0)], dtype=wp.vec4)
 
         # Demonstrate log_lines() with animated debug/visualization lines
         axis_eps = 0.01
@@ -102,23 +78,14 @@ class Example:
             dtype=wp.vec3,
         )
 
-        if viewer_type == "gl":
-            print("Viewer running. WASD/Arrow keys to move, drag to orbit, scroll to zoom. Close window to exit.")
-
-        self.start = time.time()
-        self.frame = 0
+        self.time = 0.0
 
     def step(self):
         pass
 
     def render(self):
-        t = time.time() - self.start
-
         # Begin frame with time
-        self.viewer.begin_frame(t)
-
-        # Render model-driven content (ground plane)
-        self.viewer.log_state(self.model.state())
+        self.viewer.begin_frame(self.time)
 
         # Clean layout: arrange objects in a line along X-axis
         # All objects at same height to avoid ground intersection
@@ -127,12 +94,12 @@ class Example:
         spacing = 2.0
 
         # Simple rotation animations
-        qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * t)
-        qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * t)
-        qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * t)
+        qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * self.time)
+        qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * self.time)
+        qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * self.time)
 
         # Sphere: gentle bounce at x = -6
-        sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * t)))
+        sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * self.time)))
         x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
 
         base_left += spacing
@@ -150,7 +117,7 @@ class Example:
         base_left += spacing
 
         # Capsule: gentle sway at x = 6
-        capsule_pos = wp.vec3(0.3 * math.sin(0.8 * t), base_left, base_height)
+        capsule_pos = wp.vec3(0.3 * math.sin(0.8 * self.time), base_left, base_height)
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
         base_left += spacing
 
@@ -196,23 +163,30 @@ class Example:
             self.mat_default,
         )
 
+        self.viewer.log_shapes(
+            "/plane_instance",
+            newton.GeoType.PLANE,
+            (50.0, 50.0),
+            wp.array([wp.transform_identity()], dtype=wp.transform),
+            self.col_plane,
+            self.mat_plane,
+        )
+
         self.viewer.log_lines("coordinate_self.axes", self.axes_begins, self.axes_ends, self.axes_colors)
 
         # End frame (process events, render, present)
         self.viewer.end_frame()
 
-        self.frame += 1
+        self.time += 1.0 / 60.0
+
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    args = parser.parse_args()
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
 
-    example = Example(args.viewer)
-
-    while example.viewer.is_running():
-        example.step()
-        example.render()
-
-    example.viewer.close()
+    # Create viewer and run
+    example = Example(viewer)
+    newton.examples.run(example)

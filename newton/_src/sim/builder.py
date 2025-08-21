@@ -532,6 +532,53 @@ class ModelBuilder:
 
     # endregion
 
+    def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
+        # compute positional offsets per environment
+        spacing = np.array(spacing)
+        nonzeros = np.nonzero(spacing)[0]
+        num_dim = nonzeros.shape[0]
+        if num_dim > 0:
+            side_length = int(np.ceil(num_copies ** (1.0 / num_dim)))
+            spacings = []
+            if num_dim == 1:
+                for i in range(num_copies):
+                    spacings.append(i * spacing)
+            elif num_dim == 2:
+                for i in range(num_copies):
+                    d0 = i // side_length
+                    d1 = i % side_length
+                    offset = np.zeros(3)
+                    offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
+                    offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                    spacings.append(offset)
+            elif num_dim == 3:
+                for i in range(num_copies):
+                    d0 = i // (side_length * side_length)
+                    d1 = (i // side_length) % side_length
+                    d2 = i % side_length
+                    offset = np.zeros(3)
+                    offset[0] = d0 * spacing[0]
+                    offset[1] = d1 * spacing[1]
+                    offset[2] = d2 * spacing[2]
+                    spacings.append(offset)
+            spacings = np.array(spacings)
+        else:
+            spacings = np.zeros((num_copies, 3))
+        min_offsets = np.min(spacings, axis=0)
+        correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
+        # ensure the envs are not shifted below the ground plane
+        correction[Axis.from_any(self.up_axis)] = 0.0
+        spacings -= correction
+        return spacings
+
+    def replicate(self, builder: ModelBuilder, num_copies: int, spacing: tuple[float, float, float] = (5.0, 5.0, 0.0)):
+        """Replicates the builder a given number of times offsetting
+        each copy according to the supplied spacing"""
+
+        offsets = self._compute_replicate_offsets(num_copies, spacing)
+        for i in range(num_copies):
+            self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
         # these are used for computing forward kinematics e.g.:
