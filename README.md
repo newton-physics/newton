@@ -65,9 +65,9 @@ get started.
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- <a href="newton/examples/basic/example_basic_joints.py">
+      <a href="newton/examples/basic/example_basic_joints.py">
         <img src="docs/images/examples/example_basic_joints.jpg" alt="Joints">
-      </a> -->
+      </a>
     </td>
     <td align="center" width="33%">
       <!-- <a href="newton/examples/basic/example_basic_viewer.py">
@@ -80,7 +80,7 @@ get started.
       <code>python -m newton.examples basic_shapes</code>
     </td>
     <td align="center">
-      <!-- <code>python -m newton.examples basic_joints</code> -->
+      <code>python -m newton.examples basic_joints</code>
     </td>
     <td align="center">
       <!-- <code>python -m newton.examples basic_viewer</code> -->
