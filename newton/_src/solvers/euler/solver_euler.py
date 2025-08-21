@@ -65,6 +65,7 @@ class SolverSemiImplicit(SolverBase):
         friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
+        enable_tri_contact: bool = True,
     ):
         """Create a new Euler solver.
 
@@ -74,12 +75,14 @@ class SolverSemiImplicit(SolverBase):
             friction_smoothing (float, optional): Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
             joint_attach_ke (float, optional): Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd (float, optional): Joint attachment spring damping. Defaults to 1.0e2.
+            enable_tri_contact (bool, optional): Enable triangle contact. Defaults to True.
         """
         super().__init__(model=model)
         self.angular_damping = angular_damping
         self.friction_smoothing = friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
+        self.enable_tri_contact = enable_tri_contact
 
     @override
     def step(
@@ -112,7 +115,8 @@ class SolverSemiImplicit(SolverBase):
             eval_triangle_forces(model, state_in, control, particle_f)
 
             # triangle/triangle contacts
-            eval_triangle_contact_forces(model, state_in, particle_f)
+            if self.enable_tri_contact:
+                eval_triangle_contact_forces(model, state_in, particle_f)
 
             # triangle bending
             eval_bending_forces(model, state_in, particle_f)
