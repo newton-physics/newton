@@ -27,8 +27,6 @@ import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
 
-wp.config.enable_backward = False
-
 import newton
 import newton.examples
 

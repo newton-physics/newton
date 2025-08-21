@@ -24,8 +24,6 @@
 ###########################################################################
 
 
-from __future__ import annotations
-
 import math
 
 import warp as wp
@@ -171,7 +169,7 @@ class Example:
         self.viewer.log_shapes(
             "/plane_instance",
             newton.GeoType.PLANE,
-            (0.0, 0.0, 1.0, 0.0),
+            (50.0, 50.0),
             wp.array([wp.transform_identity()], dtype=wp.transform),
             self.col_plane,
             self.mat_plane,

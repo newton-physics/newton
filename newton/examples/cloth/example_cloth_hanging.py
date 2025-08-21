@@ -26,8 +26,6 @@ import warp as wp
 import newton
 import newton.examples
 
-wp.config.enable_backward = False
-
 
 class Example:
     def __init__(

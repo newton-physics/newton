@@ -162,6 +162,7 @@ def add_example_test(
                 )
                 command.extend(["--viewer", "usd", "--output-path", stage_path])
             else:
+                stage_path = "None"
                 command.extend(["--viewer", "null"])
 
         command.extend(_build_command_line_options(options))

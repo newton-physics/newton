@@ -22,19 +22,19 @@ import newton.examples
 import newton.utils
 from newton import Mesh, ParticleFlags
 
-wp.config.enable_backward = False
-
 
 class Example:
     def __init__(self, viewer):
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_time = 0.0
+
         # must be an even number when using CUDA Graph
         self.sim_substeps = 2
-        self.iterations = 20
+        self.sim_time = 0.0
         self.sim_dt = self.frame_dt / self.sim_substeps
+
+        self.iterations = 20
 
         self.viewer = viewer
         builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Z)

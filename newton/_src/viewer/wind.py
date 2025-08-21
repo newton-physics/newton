@@ -14,8 +14,8 @@
 # limitations under the License.
 
 """
-Wind force system for Newton viewer.
-Provides GPU-accelerated wind forces for particle systems with CUDA graph support.
+Wind system for Newton viewer.
+Provides GPU-accelerated wind for particle with CUDA graph support.
 """
 
 import warp as wp
@@ -42,7 +42,7 @@ def apply_wind_force_kernel(
     particle_flags: wp.array(dtype=wp.int32),
     wind_params: wp.array(dtype=WindParams),
 ):
-    """Apply sinusoidal wind forces to particles using struct parameters."""
+    """Apply sinusoidal wind impulses to particles using struct parameters."""
     tid = wp.tid()
 
     # Check if particle is active

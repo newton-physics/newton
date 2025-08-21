@@ -99,7 +99,7 @@ class ViewerGL(ViewerBase):
         self.wind = Wind(model)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
-        self.camera = Camera(width=fb_w, height=fb_h)
+        self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
     def log_mesh(
         self,
