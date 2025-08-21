@@ -1726,24 +1726,32 @@ class SolverMuJoCo(SolverBase):
         if actuator_gears is None:
             actuator_gears = {}
 
-        if isinstance(solver, str):
-            solver = {
-                "cg": mujoco.mjtSolver.mjSOL_CG,
-                "newton": mujoco.mjtSolver.mjSOL_NEWTON,
-            }.get(solver.lower(), mujoco.mjtSolver.mjSOL_CG)
+        def _resolve_mj_opt(val, opts: dict[str, int], kind: str):
+            if isinstance(val, str):
+                key = val.strip().lower()
+                try:
+                    return opts[key]
+                except KeyError as e:
+                    options = "', '".join(sorted(opts))
+                    raise ValueError(f"Unknown {kind} '{val}'. Valid options: '{options}'.") from e
+            return val
 
-        if isinstance(integrator, str):
-            integrator = {
+        solver = _resolve_mj_opt(
+            solver, {"cg": mujoco.mjtSolver.mjSOL_CG, "newton": mujoco.mjtSolver.mjSOL_NEWTON}, "solver"
+        )
+        integrator = _resolve_mj_opt(
+            integrator,
+            {
                 "euler": mujoco.mjtIntegrator.mjINT_EULER,
                 "rk4": mujoco.mjtIntegrator.mjINT_RK4,
                 "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            }.get(integrator.lower(), mujoco.mjtIntegrator.mjINT_EULER)
-
-        if isinstance(cone, str):
-            cone = {
-                "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
-                "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
-            }.get(cone.lower(), mujoco.mjtCone.mjCONE_PYRAMIDAL)
+                "implicitfast": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            },
+            "integrator",
+        )
+        cone = _resolve_mj_opt(
+            cone, {"pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL, "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC}, "cone"
+        )
 
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
