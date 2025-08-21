@@ -38,8 +38,8 @@ class TestAnymalCWalk(unittest.TestCase):
             root_pos = example.state_0.joint_q[:3].numpy()
             root_height = root_pos[2]
 
-            qd_linear = example.state_0.joint_qd[3:6].numpy()
-            qd_angular = example.state_0.joint_qd[0:3].numpy()
+            qd_linear = example.state_0.joint_qd[0:3].numpy()
+            qd_angular = example.state_0.joint_qd[3:6].numpy()
 
             qd_linear_corrected = qd_linear - np.cross(root_pos, qd_angular)
             height_threshold = 0.3
