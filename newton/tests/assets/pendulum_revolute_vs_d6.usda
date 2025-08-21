@@ -20,7 +20,7 @@ def Xform "Robot" (
     {
         float3 physics:diagonalInertia = (1, 1, 1)
         float physics:mass = 1000000
-        custom uint physics:warp:articulationIndex = 0
+        custom uint physics:newton:articulation_index = 0
     }
 
     def Xform "BodyL" (
