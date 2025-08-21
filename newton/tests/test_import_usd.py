@@ -529,7 +529,7 @@ class TestImportUsd(unittest.TestCase):
 
 
 class TestImportSampleAssets(unittest.TestCase):
-    def verify_usdphysics_parser(self, file, model):
+    def verify_usdphysics_parser(self, file, model, compare_min_max_coords):
         """Verify model based on the UsdPhysics Parsing Utils"""
         # [1] https://openusd.org/release/api/usd_physics_page_front.html
         from pxr import Sdf, Usd, UsdPhysics
@@ -731,37 +731,38 @@ class TestImportSampleAssets(unittest.TestCase):
                         float(model.joint_target_kd.numpy()[dof_index]), kd * math.degrees(drive_gain_scale), places=2
                     )
 
-        joint_X_p_array = model.joint_X_p.numpy()
-        joint_X_c_array = model.joint_X_c.numpy()
-        joint_X_p_positions = [joint_X_p_array[i, 0:3].tolist() for i in range(joint_X_p_array.shape[0])]
-        joint_X_p_quaternions = [joint_X_p_array[i, 3:7].tolist() for i in range(joint_X_p_array.shape[0])]
-        joint_X_c_positions = [joint_X_c_array[i, 0:3].tolist() for i in range(joint_X_c_array.shape[0])]
-        joint_X_c_quaternions = [joint_X_c_array[i, 3:7].tolist() for i in range(joint_X_c_array.shape[0])]
+        if compare_min_max_coords:
+            joint_X_p_array = model.joint_X_p.numpy()
+            joint_X_c_array = model.joint_X_c.numpy()
+            joint_X_p_positions = [joint_X_p_array[i, 0:3].tolist() for i in range(joint_X_p_array.shape[0])]
+            joint_X_p_quaternions = [joint_X_p_array[i, 3:7].tolist() for i in range(joint_X_p_array.shape[0])]
+            joint_X_c_positions = [joint_X_c_array[i, 0:3].tolist() for i in range(joint_X_c_array.shape[0])]
+            joint_X_c_quaternions = [joint_X_c_array[i, 3:7].tolist() for i in range(joint_X_c_array.shape[0])]
 
-        for j in range(model.joint_count):
-            p = int(model.joint_parent.numpy()[j])
-            c = int(model.joint_child.numpy()[j])
-            if p < 0 or c < 0:
-                continue
+            for j in range(model.joint_count):
+                p = int(model.joint_parent.numpy()[j])
+                c = int(model.joint_child.numpy()[j])
+                if p < 0 or c < 0:
+                    continue
 
-            parent_tf = wp.transform(wp.vec3(*body_positions[p]), wp.quat(*body_quaternions[p]))
-            child_tf = wp.transform(wp.vec3(*body_positions[c]), wp.quat(*body_quaternions[c]))
-            joint_parent_tf = wp.transform(wp.vec3(*joint_X_p_positions[j]), wp.quat(*joint_X_p_quaternions[j]))
-            joint_child_tf = wp.transform(wp.vec3(*joint_X_c_positions[j]), wp.quat(*joint_X_c_quaternions[j]))
+                parent_tf = wp.transform(wp.vec3(*body_positions[p]), wp.quat(*body_quaternions[p]))
+                child_tf = wp.transform(wp.vec3(*body_positions[c]), wp.quat(*body_quaternions[c]))
+                joint_parent_tf = wp.transform(wp.vec3(*joint_X_p_positions[j]), wp.quat(*joint_X_p_quaternions[j]))
+                joint_child_tf = wp.transform(wp.vec3(*joint_X_c_positions[j]), wp.quat(*joint_X_c_quaternions[j]))
 
-            lhs_tf = wp.transform_multiply(parent_tf, joint_parent_tf)
-            rhs_tf = wp.transform_multiply(child_tf, joint_child_tf)
+                lhs_tf = wp.transform_multiply(parent_tf, joint_parent_tf)
+                rhs_tf = wp.transform_multiply(child_tf, joint_child_tf)
 
-            lhs_p = wp.transform_get_translation(lhs_tf)
-            rhs_p = wp.transform_get_translation(rhs_tf)
-            lhs_q = wp.transform_get_rotation(lhs_tf)
-            rhs_q = wp.transform_get_rotation(rhs_tf)
+                lhs_p = wp.transform_get_translation(lhs_tf)
+                rhs_p = wp.transform_get_translation(rhs_tf)
+                lhs_q = wp.transform_get_rotation(lhs_tf)
+                rhs_q = wp.transform_get_rotation(rhs_tf)
 
-            self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)))
+                self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)))
 
-            q_diff = lhs_q * wp.quat_inverse(rhs_q)
-            angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
-            self.assertLessEqual(angle_diff, 1e-3)
+                q_diff = lhs_q * wp.quat_inverse(rhs_q)
+                angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
+                self.assertLessEqual(angle_diff, 1e-3)
 
         model.shape_body.numpy()
         shape_type_array = model.shape_type.numpy()
@@ -874,17 +875,17 @@ class TestImportSampleAssets(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_g1(self):
         builder = newton.ModelBuilder()
-        asset_path = "/home/chris/Documents/usd-test-assets/isaaclab/g1.usd"
+        asset_path = newton.utils.download_asset("g1_usd") / "g1_isaac.usd"
 
         newton.utils.parse_usd(
-            asset_path,
+            str(asset_path),
             builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(asset_path, model)
+        self.verify_usdphysics_parser(str(asset_path), model, compare_min_max_coords=False)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_anymal(self):
@@ -906,7 +907,7 @@ class TestImportSampleAssets(unittest.TestCase):
             load_non_physics_prims=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(stage_path, model)
+        self.verify_usdphysics_parser(stage_path, model, True)
 
 
 if __name__ == "__main__":
