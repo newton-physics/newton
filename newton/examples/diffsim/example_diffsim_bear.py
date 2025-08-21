@@ -282,11 +282,9 @@ class Example:
 
         if self.verbose:
             print(f"Train iter {self.train_iter}: {self.loss}")
-            x_flat = x.flatten().numpy()
-            x_grad_flat = x.grad.flatten().numpy()
-            print(
-                f"    x_min: {x_flat.min()} x_max: {x_flat.max()} g_min: {x_grad_flat.min()} g_max: {x_grad_flat.max()}"
-            )
+            x_np = x.flatten().numpy()
+            x_grad_np = x.grad.flatten().numpy()
+            print(f"    x_min: {x_np.min()} x_max: {x_np.max()} g_min: {x_grad_np.min()} g_max: {x_grad_np.max()}")
 
         # optimization
         self.optimizer.step([x.grad.flatten()])
