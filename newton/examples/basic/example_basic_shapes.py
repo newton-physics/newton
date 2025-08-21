@@ -56,17 +56,17 @@ class Example:
         body_capsule = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, drop_z), q=wp.quat_identity()))
         builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
 
-        # CYLINDER (no collisions)
-        body_cylinder = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()))
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
+        # CYLINDER (no collision support)
+        # body_cylinder = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()))
+        # builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
 
         # BOX
         body_box = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 2.0, drop_z), q=wp.quat_identity()))
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.25)
 
-        # CONE (no collisions)
-        body_cone = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 6.0, drop_z), q=wp.quat_identity()))
-        builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
+        # CONE (no collision support)
+        # body_cone = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 6.0, drop_z), q=wp.quat_identity()))
+        # builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
 
         # MESH (bunny)
         mesh_vertices, mesh_indices = load_ply_triangles(newton.examples.get_asset("bunny.ply"))
