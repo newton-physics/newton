@@ -18,7 +18,6 @@ class ViewerUSD(ViewerBase):
     for efficient instanced rendering with time-sampled transforms.
 
     Args:
-        model: Newton model to visualize
         output_path: Path for the output USD file
         fps: Frames per second for time sampling (default: 24)
         up_axis: USD up axis, one of 'Y', 'Z' (default: 'Z')
@@ -26,11 +25,11 @@ class ViewerUSD(ViewerBase):
             (default: None for unlimited)
     """
 
-    def __init__(self, model, output_path, fps=60, up_axis="Z", num_frames=None):
+    def __init__(self, output_path, fps=60, up_axis="Z", num_frames=None):
         if Usd is None:
             raise ImportError("usd-core package is required for ViewerUSD. Install with: pip install usd-core")
 
-        super().__init__(model)
+        super().__init__()
 
         self.output_path = output_path
         self.fps = fps
@@ -57,10 +56,6 @@ class ViewerUSD(ViewerBase):
         self._current_frame = 0
         self._frame_time = 0.0
         self._frame_count = 0
-
-        # Track if we need to populate model shapes
-        if model:
-            self._populate(model)
 
     def log_mesh(
         self,
@@ -269,13 +264,14 @@ class ViewerUSD(ViewerBase):
     def close(self):
         """Finalize and save the USD stage."""
         self.stage.GetRootLayer().Save()
+        self.stage = None
 
     # Abstract methods that need basic implementations
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         """Log lines (not implemented for USD backend)."""
         pass
 
-    def log_points(self, name, state):
+    def log_points(self, name, points, widths, colors, hidden=False):
         """Log points (not implemented for USD backend)."""
         pass
 

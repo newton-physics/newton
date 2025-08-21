@@ -17,26 +17,27 @@ import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
 
-wp.config.enable_backward = False
-
 import newton
+import newton.examples
 import newton.utils
 from newton import Mesh, ParticleFlags
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_style3d.usd", num_frames=3000):
-        fps = 60
-        self.frame_dt = 1.0 / fps
+    def __init__(self, viewer):
+        # setup simulation parameters first
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+
         # must be an even number when using CUDA Graph
-        self.num_substeps = 2
-        self.iterations = 20
-        self.dt = self.frame_dt / self.num_substeps
-        self.num_frames = num_frames
+        self.sim_substeps = 2
         self.sim_time = 0.0
-        self.profiler = {}
-        self.use_cuda_graph = wp.get_device().is_cuda
-        builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Y)
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        self.iterations = 20
+
+        self.viewer = viewer
+        builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Z)
 
         use_cloth_mesh = True
         if use_cloth_mesh:
@@ -46,6 +47,7 @@ class Example:
             # garment_usd_name = "Women_Skirt"
             # garment_usd_name = "Female_T_Shirt"
             garment_usd_name = "Women_Sweatshirt"
+
             usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
             usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment")))
 
@@ -63,7 +65,7 @@ class Example:
 
             builder.add_aniso_cloth_mesh(
                 pos=wp.vec3(0, 0, 0),
-                rot=wp.quat_identity(),
+                rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 vel=wp.vec3(0.0, 0.0, 0.0),
                 tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
                 edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
@@ -77,6 +79,10 @@ class Example:
             )
             builder.add_shape_mesh(
                 body=builder.add_body(),
+                xform=wp.transform(
+                    p=wp.vec3(0, 0, 0),
+                    q=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
+                ),
                 mesh=Mesh(avatar_mesh_points, avatar_mesh_indices),
             )
             # fixed_points = [0]
@@ -86,7 +92,7 @@ class Example:
             grid_width = 1.0
             cloth_density = 0.3
             builder.add_aniso_cloth_grid(
-                pos=wp.vec3(-0.5, 2.0, 0.0),
+                pos=wp.vec3(-0.5, 0.0, 2.0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 dim_x=grid_dim,
                 dim_y=grid_dim,
@@ -102,12 +108,7 @@ class Example:
             fixed_points = [0, grid_dim]
 
         # add a table
-        builder.add_shape_box(
-            body=builder.add_body(),
-            hx=2.5,
-            hy=0.1,
-            hz=2.5,
-        )
+        builder.add_ground_plane()
         self.model = builder.finalize()
 
         # set fixed points
@@ -122,6 +123,7 @@ class Example:
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
+        self.model.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         self.solver = newton.solvers.SolverStyle3D(
             self.model,
@@ -130,75 +132,57 @@ class Example:
         self.solver.precompute(
             builder,
         )
-        self.state0 = self.model.state()
-        self.state1 = self.model.state()
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state0)
+        self.contacts = self.model.collide(self.state_0)
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, camera_fov=30.0)
-            self.renderer.enable_backface_culling = False
-            self.renderer.render_wireframe = True
-            self.renderer.show_particles = False
-            self.renderer.draw_grid = True
-            self.renderer.paused = True
+        self.viewer.set_model(self.model)
 
-        self.cuda_graph = None
-        if self.use_cuda_graph:
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
-                self.integrate_frame_substeps()
-            self.cuda_graph = capture.graph
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
-    def integrate_frame_substeps(self):
-        self.contacts = self.model.collide(self.state0)
-        for _ in range(self.num_substeps):
-            self.solver.step(self.state0, self.state1, self.control, self.contacts, self.dt)
-            (self.state0, self.state1) = (self.state1, self.state0)
+    def simulate(self):
+        self.contacts = self.model.collide(self.state_0)
+        for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
+
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
-        with wp.ScopedTimer("step", print=False, dict=self.profiler):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.cuda_graph)
-            else:
-                self.integrate_frame_substeps()
-            self.sim_time += self.dt
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
 
-    def run(self):
-        for frame_idx in range(self.num_frames):
-            if self.renderer and self.renderer.has_exit:
-                break
-            self.step()
-            self.render()
+        self.sim_time += self.frame_dt
 
-            if self.renderer is None:
-                print(f"[{frame_idx:4d}/{self.num_frames}]")
+    def test(self):
+        pass
 
     def render(self):
-        if self.renderer is not None:
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state0)
-            self.renderer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_style3d.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=3000, help="Total number of frames.")
+    # Create example and run
+    example = Example(viewer)
 
-    args = parser.parse_known_args()[0]
-
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-        example.run()
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

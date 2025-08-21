@@ -532,6 +532,53 @@ class ModelBuilder:
 
     # endregion
 
+    def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
+        # compute positional offsets per environment
+        spacing = np.array(spacing)
+        nonzeros = np.nonzero(spacing)[0]
+        num_dim = nonzeros.shape[0]
+        if num_dim > 0:
+            side_length = int(np.ceil(num_copies ** (1.0 / num_dim)))
+            spacings = []
+            if num_dim == 1:
+                for i in range(num_copies):
+                    spacings.append(i * spacing)
+            elif num_dim == 2:
+                for i in range(num_copies):
+                    d0 = i // side_length
+                    d1 = i % side_length
+                    offset = np.zeros(3)
+                    offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
+                    offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                    spacings.append(offset)
+            elif num_dim == 3:
+                for i in range(num_copies):
+                    d0 = i // (side_length * side_length)
+                    d1 = (i // side_length) % side_length
+                    d2 = i % side_length
+                    offset = np.zeros(3)
+                    offset[0] = d0 * spacing[0]
+                    offset[1] = d1 * spacing[1]
+                    offset[2] = d2 * spacing[2]
+                    spacings.append(offset)
+            spacings = np.array(spacings)
+        else:
+            spacings = np.zeros((num_copies, 3))
+        min_offsets = np.min(spacings, axis=0)
+        correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
+        # ensure the envs are not shifted below the ground plane
+        correction[Axis.from_any(self.up_axis)] = 0.0
+        spacings -= correction
+        return spacings
+
+    def replicate(self, builder: ModelBuilder, num_copies: int, spacing: tuple[float, float, float] = (5.0, 5.0, 0.0)):
+        """Replicates the builder a given number of times offsetting
+        each copy according to the supplied spacing"""
+
+        offsets = self._compute_replicate_offsets(num_copies, spacing)
+        for i in range(num_copies):
+            self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
         # these are used for computing forward kinematics e.g.:
@@ -653,7 +700,12 @@ class ModelBuilder:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
-            self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
+            if b == -1:
+                if -1 not in self.body_shapes:
+                    self.body_shapes[-1] = []
+                self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
+            else:
+                self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
             joint_X_p = copy.deepcopy(builder.joint_X_p)
@@ -1862,9 +1914,9 @@ class ModelBuilder:
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_group.clear()  # Clear body groups
-        if -1 in self.body_shapes:
-            static_shapes = self.body_shapes[-1]
-            self.body_shapes.clear()
+        static_shapes = self.body_shapes.get(-1)
+        self.body_shapes.clear()
+        if static_shapes is not None:
             # restore static shapes
             self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
@@ -3719,7 +3771,7 @@ class ModelBuilder:
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_flags = wp.array([flag_to_int(f) for f in self.particle_flags], dtype=wp.int32)
-            m.particle_group = wp.array(self.particle_group, dtype=wp.int32) if self.particle_count > 0 else None
+            m.particle_group = wp.array(self.particle_group, dtype=wp.int32)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 
@@ -3762,7 +3814,7 @@ class ModelBuilder:
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_group = wp.array(self.shape_group, dtype=wp.int32) if self.shape_count > 0 else None
+            m.shape_group = wp.array(self.shape_group, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
 
@@ -3917,7 +3969,7 @@ class ModelBuilder:
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_key = self.body_key
-            m.body_group = wp.array(self.body_group, dtype=wp.int32) if self.body_count > 0 else None
+            m.body_group = wp.array(self.body_group, dtype=wp.int32)
 
             # joints
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
@@ -3930,7 +3982,7 @@ class ModelBuilder:
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_key = self.joint_key
-            m.joint_group = wp.array(self.joint_group, dtype=wp.int32) if self.joint_count > 0 else None
+            m.joint_group = wp.array(self.joint_group, dtype=wp.int32)
             # compute joint ancestors
             child_to_joint = {}
             for i, child in enumerate(self.joint_child):
@@ -3969,9 +4021,7 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
-            m.articulation_group = (
-                wp.array(self.articulation_group, dtype=wp.int32) if self.articulation_count > 0 else None
-            )
+            m.articulation_group = wp.array(self.articulation_group, dtype=wp.int32)
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)

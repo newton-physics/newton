@@ -313,7 +313,6 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
-    //FragColor = vec4(N*0.5 + vec3(0.5), 1.0);
     FragColor = vec4(color, 1.0);
 }
 """

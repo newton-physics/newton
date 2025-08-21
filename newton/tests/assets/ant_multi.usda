@@ -102,7 +102,7 @@ def "World"
                 )
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 0
+                    custom uint physics:newton:articulation_index = 0
                     bool physxRigidBody:disableGravity = 0
                     bool physxRigidBody:enableGyroscopicForces = 1
                     float physxRigidBody:maxDepenetrationVelocity = 10
@@ -310,7 +310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 1
+                    custom uint physics:newton:articulation_index = 1
                 }
 
                 over "joints"
@@ -435,7 +435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 2
+                    custom uint physics:newton:articulation_index = 2
                 }
 
                 over "joints"
@@ -560,7 +560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 3
+                    custom uint physics:newton:articulation_index = 3
                 }
 
                 over "joints"
@@ -685,7 +685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 4
+                    custom uint physics:newton:articulation_index = 4
                 }
 
                 over "joints"
@@ -810,7 +810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 5
+                    custom uint physics:newton:articulation_index = 5
                 }
 
                 over "joints"
@@ -935,7 +935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 6
+                    custom uint physics:newton:articulation_index = 6
                 }
 
                 over "joints"
@@ -1060,7 +1060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 7
+                    custom uint physics:newton:articulation_index = 7
                 }
 
                 over "joints"
@@ -1185,7 +1185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 8
+                    custom uint physics:newton:articulation_index = 8
                 }
 
                 over "joints"
@@ -1310,7 +1310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 9
+                    custom uint physics:newton:articulation_index = 9
                 }
 
                 over "joints"
@@ -1435,7 +1435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 10
+                    custom uint physics:newton:articulation_index = 10
                 }
 
                 over "joints"
@@ -1560,7 +1560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 11
+                    custom uint physics:newton:articulation_index = 11
                 }
 
                 over "joints"
@@ -1685,7 +1685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 12
+                    custom uint physics:newton:articulation_index = 12
                 }
 
                 over "joints"
@@ -1810,7 +1810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 13
+                    custom uint physics:newton:articulation_index = 13
                 }
 
                 over "joints"
@@ -1935,7 +1935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 14
+                    custom uint physics:newton:articulation_index = 14
                 }
 
                 over "joints"
@@ -2060,7 +2060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 15
+                    custom uint physics:newton:articulation_index = 15
                 }
 
                 over "joints"
@@ -2185,7 +2185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 16
+                    custom uint physics:newton:articulation_index = 16
                 }
 
                 over "joints"
@@ -2310,7 +2310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 17
+                    custom uint physics:newton:articulation_index = 17
                 }
 
                 over "joints"
@@ -2435,7 +2435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 18
+                    custom uint physics:newton:articulation_index = 18
                 }
 
                 over "joints"
@@ -2560,7 +2560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 19
+                    custom uint physics:newton:articulation_index = 19
                 }
 
                 over "joints"
@@ -2685,7 +2685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 20
+                    custom uint physics:newton:articulation_index = 20
                 }
 
                 over "joints"
@@ -2810,7 +2810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 21
+                    custom uint physics:newton:articulation_index = 21
                 }
 
                 over "joints"
@@ -2935,7 +2935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 22
+                    custom uint physics:newton:articulation_index = 22
                 }
 
                 over "joints"
@@ -3060,7 +3060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 23
+                    custom uint physics:newton:articulation_index = 23
                 }
 
                 over "joints"
@@ -3185,7 +3185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 24
+                    custom uint physics:newton:articulation_index = 24
                 }
 
                 over "joints"
@@ -3310,7 +3310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 25
+                    custom uint physics:newton:articulation_index = 25
                 }
 
                 over "joints"
@@ -3435,7 +3435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 26
+                    custom uint physics:newton:articulation_index = 26
                 }
 
                 over "joints"
@@ -3560,7 +3560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 27
+                    custom uint physics:newton:articulation_index = 27
                 }
 
                 over "joints"
@@ -3685,7 +3685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 28
+                    custom uint physics:newton:articulation_index = 28
                 }
 
                 over "joints"
@@ -3810,7 +3810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 29
+                    custom uint physics:newton:articulation_index = 29
                 }
 
                 over "joints"
@@ -3935,7 +3935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 30
+                    custom uint physics:newton:articulation_index = 30
                 }
 
                 over "joints"
@@ -4060,7 +4060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 31
+                    custom uint physics:newton:articulation_index = 31
                 }
 
                 over "joints"
@@ -4185,7 +4185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 32
+                    custom uint physics:newton:articulation_index = 32
                 }
 
                 over "joints"
@@ -4310,7 +4310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 33
+                    custom uint physics:newton:articulation_index = 33
                 }
 
                 over "joints"
@@ -4435,7 +4435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 34
+                    custom uint physics:newton:articulation_index = 34
                 }
 
                 over "joints"
@@ -4560,7 +4560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 35
+                    custom uint physics:newton:articulation_index = 35
                 }
 
                 over "joints"
@@ -4685,7 +4685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 36
+                    custom uint physics:newton:articulation_index = 36
                 }
 
                 over "joints"
@@ -4810,7 +4810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 37
+                    custom uint physics:newton:articulation_index = 37
                 }
 
                 over "joints"
@@ -4935,7 +4935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 38
+                    custom uint physics:newton:articulation_index = 38
                 }
 
                 over "joints"
@@ -5060,7 +5060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 39
+                    custom uint physics:newton:articulation_index = 39
                 }
 
                 over "joints"
@@ -5185,7 +5185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 40
+                    custom uint physics:newton:articulation_index = 40
                 }
 
                 over "joints"
@@ -5310,7 +5310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 41
+                    custom uint physics:newton:articulation_index = 41
                 }
 
                 over "joints"
@@ -5435,7 +5435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 42
+                    custom uint physics:newton:articulation_index = 42
                 }
 
                 over "joints"
@@ -5560,7 +5560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 43
+                    custom uint physics:newton:articulation_index = 43
                 }
 
                 over "joints"
@@ -5685,7 +5685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 44
+                    custom uint physics:newton:articulation_index = 44
                 }
 
                 over "joints"
@@ -5810,7 +5810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 45
+                    custom uint physics:newton:articulation_index = 45
                 }
 
                 over "joints"
@@ -5935,7 +5935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 46
+                    custom uint physics:newton:articulation_index = 46
                 }
 
                 over "joints"
@@ -6060,7 +6060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 47
+                    custom uint physics:newton:articulation_index = 47
                 }
 
                 over "joints"
@@ -6185,7 +6185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 48
+                    custom uint physics:newton:articulation_index = 48
                 }
 
                 over "joints"
@@ -6310,7 +6310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 49
+                    custom uint physics:newton:articulation_index = 49
                 }
 
                 over "joints"
@@ -6435,7 +6435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 50
+                    custom uint physics:newton:articulation_index = 50
                 }
 
                 over "joints"
@@ -6560,7 +6560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 51
+                    custom uint physics:newton:articulation_index = 51
                 }
 
                 over "joints"
@@ -6685,7 +6685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 52
+                    custom uint physics:newton:articulation_index = 52
                 }
 
                 over "joints"
@@ -6810,7 +6810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 53
+                    custom uint physics:newton:articulation_index = 53
                 }
 
                 over "joints"
@@ -6935,7 +6935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 54
+                    custom uint physics:newton:articulation_index = 54
                 }
 
                 over "joints"
@@ -7060,7 +7060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 55
+                    custom uint physics:newton:articulation_index = 55
                 }
 
                 over "joints"
@@ -7185,7 +7185,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 56
+                    custom uint physics:newton:articulation_index = 56
                 }
 
                 over "joints"
@@ -7310,7 +7310,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 57
+                    custom uint physics:newton:articulation_index = 57
                 }
 
                 over "joints"
@@ -7435,7 +7435,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 58
+                    custom uint physics:newton:articulation_index = 58
                 }
 
                 over "joints"
@@ -7560,7 +7560,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 59
+                    custom uint physics:newton:articulation_index = 59
                 }
 
                 over "joints"
@@ -7685,7 +7685,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 60
+                    custom uint physics:newton:articulation_index = 60
                 }
 
                 over "joints"
@@ -7810,7 +7810,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 61
+                    custom uint physics:newton:articulation_index = 61
                 }
 
                 over "joints"
@@ -7935,7 +7935,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 62
+                    custom uint physics:newton:articulation_index = 62
                 }
 
                 over "joints"
@@ -8060,7 +8060,7 @@ def "World"
                 over "torso"
                 {
                     custom string physics:engine = "warp"
-                    custom uint physics:warp:articulationIndex = 63
+                    custom uint physics:newton:articulation_index = 63
                 }
 
                 over "joints"
