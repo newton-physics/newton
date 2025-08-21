@@ -453,32 +453,30 @@ class Drone:
 class Example:
     def __init__(
         self,
-        viewer_type: str,
-        stage_path="example_drone.usd",
+        viewer,
         verbose=False,
+        num_rollouts=16,
         render_rollouts=False,
         drone_path=DEFAULT_DRONE_PATH,
-        num_frames=360,
-        num_rollouts=16,
-        headless=True,
-    ) -> None:
-        # Number of frames per second.
+    ):
+        # setup simulation parameters first
         self.fps = 60
-
-        # Duration of the simulation in number of frames.
-        self.num_frames = num_frames
-
-        # Number of simulation substeps to take per step.
-        self.sim_substep_count = 1
-
-        # Delta time between each simulation substep.
-        self.frame_dt = 1.0 / self.fps
-
-        # Delta time between each simulation substep.
-        self.sim_dt = self.frame_dt / self.sim_substep_count
-
-        # Frame number used for simulation and rendering.
         self.frame = 0
+        self.frame_dt = 1.0 / self.fps
+        self.sim_steps = 360  # 6.0 seconds
+        self.sim_substeps = 1
+        self.sim_substeps_count = self.sim_steps * self.sim_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        self.render_time = 0.0
+
+        self.verbose = verbose
+        self.rollout_count = num_rollouts
+        self.render_rollouts = render_rollouts
+        self.drone_path = drone_path
+
+        # setup rendering
+        self.viewer = viewer
 
         # Targets positions that the drone will try to reach in turn.
         self.targets = (
@@ -521,7 +519,6 @@ class Example:
         # Declare the drone's rollouts.
         # These allow to run parallel simulations in order to find the best
         # trajectory at each control point.
-        self.rollout_count = num_rollouts
         self.rollout_step_count = self.control_point_step * self.control_point_count
         self.rollouts = Drone(
             "rollout",
@@ -530,7 +527,7 @@ class Example:
             variation_count=self.rollout_count,
             size=drone_size,
             requires_grad=True,
-            state_count=self.rollout_step_count * self.sim_substep_count,
+            state_count=self.rollout_step_count * self.sim_substeps,
         )
 
         self.seed = wp.zeros(1, dtype=int)
@@ -546,20 +543,8 @@ class Example:
             momentum=0.0,
         )
 
-        self.tape = None
-
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
-
-            self.viewer = ViewerUSD(self.drone.model, output_path=stage_path, fps=self.fps)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.drone.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.drone.model)
+        # rendering
+        self.viewer.set_model(self.drone.model)
 
         if isinstance(self.viewer, newton.viewer.ViewerUSD):
             from pxr import UsdGeom  # noqa: PLC0415
@@ -571,7 +556,7 @@ class Example:
 
             # Add a reference to the drone geometry.
             drone_prim = self.viewer.stage.OverridePrim(f"{drone_root_prim.GetPath()}/crazyflie")
-            drone_prim.GetReferences().AddReference(drone_path)
+            drone_prim.GetReferences().AddReference(self.drone_path)
             drone_xform = UsdGeom.Xform(drone_prim)
             drone_xform.AddTranslateOp().Set((0.0, 0.0, -0.05))
             drone_xform.AddRotateXOp().Set(90.0)
@@ -580,7 +565,7 @@ class Example:
 
             # Get the propellers to spin
             for turning_direction in ("cw", "ccw"):
-                spin = 100.0 * 360.0 * self.num_frames / self.fps
+                spin = 100.0 * 360.0 * self.sim_steps / self.fps
                 spin = spin if turning_direction == "ccw" else -spin
                 for side in ("back", "front"):
                     prop_prim = self.viewer.stage.OverridePrim(
@@ -589,13 +574,25 @@ class Example:
                     prop_xform = UsdGeom.Xform(prop_prim)
                     rot = prop_xform.AddRotateYOp()
                     rot.Set(0.0, 0.0)
-                    rot.Set(spin, self.num_frames)
+                    rot.Set(spin, self.sim_steps)
 
-        self.use_cuda_graph = wp.get_device().is_cuda
-        self.optim_graph = None
+        # capture forward/backward passes
+        self.capture()
 
-        self.render_rollouts = render_rollouts
-        self.verbose = verbose
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.forward_backward()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def forward_backward(self):
+        self.tape = wp.Tape()
+        with self.tape:
+            self.forward()
+        self.rollout_costs.grad.fill_(1.0)
+        self.tape.backward()
 
     def update_drone(self, drone: Drone) -> None:
         drone.state.clear_forces()
@@ -610,7 +607,7 @@ class Example:
                 drone.trajectories,
                 self.control_dofs,
                 self.control_gains,
-                drone.sim_tick / (self.sim_substep_count * self.control_point_step),
+                drone.sim_tick / (self.sim_substeps * self.control_point_step),
                 self.control_dim,
             ),
             outputs=(drone.control.prop_controls,),
@@ -658,7 +655,7 @@ class Example:
         )
 
         for i in range(self.rollout_step_count):
-            for _ in range(self.sim_substep_count):
+            for _ in range(self.sim_substeps):
                 self.update_drone(self.rollouts)
 
             wp.launch(
@@ -696,14 +693,10 @@ class Example:
             )
 
     def step_optimizer(self):
-        if self.optim_graph is None:
-            self.tape = wp.Tape()
-            with self.tape:
-                self.forward()
-            self.rollout_costs.grad.fill_(1.0)
-            self.tape.backward()
+        if self.graph:
+            wp.capture_launch(self.graph)
         else:
-            wp.capture_launch(self.optim_graph)
+            self.forward_backward()
 
         self.optimizer.step([self.rollouts.trajectories.grad.flatten()])
 
@@ -717,7 +710,7 @@ class Example:
         self.tape.zero()
 
     def step(self):
-        if self.frame % int(self.num_frames / len(self.targets)) == 0:
+        if self.frame % int(self.sim_steps / len(self.targets)) == 0:
             if self.verbose:
                 print(f"Choosing new flight target: {self.target_idx + 1}")
 
@@ -727,14 +720,10 @@ class Example:
             # Assign the new target to the current target array.
             self.current_target.assign([self.targets[self.target_idx]])
 
-        if self.use_cuda_graph and self.optim_graph is None:
-            with wp.ScopedCapture() as capture:
-                self.tape = wp.Tape()
-                with self.tape:
-                    self.forward()
-                self.rollout_costs.grad.fill_(1.0)
-                self.tape.backward()
-            self.optim_graph = capture.graph
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.forward_backward()
 
         # Sample control waypoints around the nominal trajectory.
         noise_scale = 0.15
@@ -785,17 +774,17 @@ class Example:
 
         # Simulate the drone.
         self.drone.sim_tick = 0
-        for _ in range(self.sim_substep_count):
+        for _ in range(self.sim_substeps):
             self.update_drone(self.drone)
 
             # Swap the drone's states.
             (self.drone.states[0], self.drone.states[1]) = (self.drone.states[1], self.drone.states[0])
 
-    def render(self):
-        if self.viewer is None:
-            return
+        loss = np.min(self.rollout_costs.numpy())
+        print(f"[{(self.frame + 1):3d}/{self.sim_steps}] loss={loss:.8f}")
 
-        self.viewer.begin_frame(self.frame / self.fps)
+    def render(self):
+        self.viewer.begin_frame(self.render_time)
         self.viewer.log_state(self.drone.state)
 
         # Render a sphere as the current target.
@@ -827,20 +816,14 @@ class Example:
 
         self.viewer.end_frame()
 
+        self.frame += 1
+        self.render_time += self.frame_dt
+
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage_path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_drone.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num_frames", type=int, default=360, help="Total number of frames.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
+    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
     parser.add_argument("--num_rollouts", type=int, default=16, help="Number of drone rollouts.")
     parser.add_argument(
         "--drone_path",
@@ -854,34 +837,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Add rollout trajectories to the output stage.",
     )
-    parser.add_argument(
-        "--headless",
-        default=True,
-        action="store_true",
-        help="Run in headless mode, suppressing the opening of any graphical windows.",
+
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
+
+    example = Example(
+        viewer,
+        args.verbose,
+        args.num_rollouts,
+        args.render_rollouts,
+        args.drone_path,
     )
-    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
 
-    args = parser.parse_known_args()[0]
-
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            viewer_type=args.viewer,
-            stage_path=args.stage_path,
-            verbose=args.verbose,
-            render_rollouts=args.render_rollouts,
-            drone_path=args.drone_path,
-            num_frames=args.num_frames,
-            num_rollouts=args.num_rollouts,
-            headless=args.headless,
-        )
-        for _i in range(args.num_frames):
-            example.step()
-            example.render()
-            example.frame += 1
-
-            loss = np.min(example.rollout_costs.numpy())
-            print(f"[{example.frame:3d}/{example.num_frames}] loss={loss:.8f}")
-
-        if example.viewer is not None:
-            example.viewer.close()
+    # Run example
+    newton.examples.run(example)
