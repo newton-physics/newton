@@ -65,9 +65,9 @@ get started.
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_joints.py">
+      <!-- <a href="newton/examples/basic/example_basic_joints.py">
         <img src="docs/images/examples/example_basic_joints.jpg" alt="Joints">
-      </a>
+      </a> -->
     </td>
     <td align="center" width="33%">
       <!-- <a href="newton/examples/basic/example_basic_viewer.py">
@@ -80,10 +80,10 @@ get started.
       <code>python -m newton.examples basic_shapes</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_joints</code>
+      <!-- <code>python -m newton.examples basic_joints</code> -->
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_viewer</code>
+      <!-- <code>python -m newton.examples basic_viewer</code> -->
     </td>
   </tr>
 </table>
@@ -117,6 +117,35 @@ get started.
     </td>
     <td align="center">
       <code>python -m newton.examples cloth_style3d</code>
+    </td>
+  </tr>
+</table>
+
+## MPM Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/mpm/example_mpm_granular.py">
+        <img src="docs/images/examples/example_mpm_granular.jpg" alt="MPM Granular">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future MPM example -->
+    </td>
+    <td align="center" width="33%">
+      <!-- Future MPM example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples mpm_granular</code>
+    </td>
+    <td align="center">
+      <!-- Future MPM example -->
+    </td>
+    <td align="center">
+      <!-- Future MPM example -->
     </td>
   </tr>
 </table>
