@@ -81,6 +81,8 @@ class ViewerGL(ViewerBase):
         self._last_time = time.perf_counter()
 
         self.ui = UI(self.renderer.window)
+        # External UI extension points
+        self.custom_ui_callbacks = []
 
         # Performance tracking
         self._fps_history = []
@@ -338,6 +340,11 @@ class ViewerGL(ViewerBase):
         """Close the viewer and clean up resources."""
         self.renderer.close()
 
+    def register_ui_callback(self, callback):
+        """Register a custom UI callback taking (imgui, viewer)."""
+        if callable(callback):
+            self.custom_ui_callbacks.append(callback)
+
     @property
     def vsync(self) -> bool:
         """Get the current vsync state."""
@@ -557,6 +564,15 @@ class ViewerGL(ViewerBase):
 
         # Render top-right stats overlay
         self._render_stats_overlay()
+
+        # Render any externally-registered UI overlays
+        if self.custom_ui_callbacks:
+            for cb in list(self.custom_ui_callbacks):
+                try:
+                    cb(self.ui.imgui, self)
+                except Exception:
+                    # ignore failures in external callbacks
+                    pass
 
     def _render_left_panel(self):
         """Render the left panel with model info and visualization controls."""

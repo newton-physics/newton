@@ -16,11 +16,18 @@
 ###########################################################################
 # Example Robot control via keyboard
 #
-# Shows how to control robot pretrained in IL via mjwarp.
-#
+# Shows how to control robot pretrained in IsaacLab with Reinforcement learning.
+# The policy is loaded from a file and the robot is controlled via keyboard.
+# Press space to start the simulation.
+# Press "p" to reset the robot.
+# Press "i", "j", "k", "l", "u", "o" to move the robot.
+# Run this example with:
+# python example_RL_policy.py --robot assets/g1_29dof.yaml
+# python example_RL_policy.py --robot assets/go2.yaml
+# python example_RL_policy.py --robot assets/anymal.yaml
+# to run the example with physX trained policies run with --physx
 ###########################################################################
 
-import time
 from typing import Any
 
 import torch
@@ -31,8 +38,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import State
-
-wp.config.enable_backward = False
 
 
 @torch.jit.script
@@ -141,170 +146,13 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
     return mjc_to_physx, physx_to_mjc
 
 
-"""
-Robot Keyboard Controller
-
-A simple keyboard control interface for robot command input.
-"""
-try:
-    import pygame  # type: ignore
-
-    PYGAME_AVAILABLE = True
-except ImportError:
-    pygame = None  # type: ignore
-    PYGAME_AVAILABLE = False
-
-
-class RobotKeyboardController:
-    """
-    A simple keyboard controller for robot movement commands.
-    """
-
-    def __init__(
-        self,
-        command_size: int = 3,
-        command_limits: tuple[float, float] = (-1.0, 1.0),
-    ):
-        """
-        Initialize the keyboard controller.
-
-        Args:
-            command_size: Size of command tensor (default 3 for [forward, lateral, rotation])
-            command_limits: Min and max values for commands
-        """
-        if not PYGAME_AVAILABLE:
-            raise ImportError("pygame is required for RobotKeyboardController")
-
-        self.command_size = command_size
-        self.min_val, self.max_val = command_limits
-
-        # Initialize command tensor
-        self.command = torch.zeros((1, command_size), dtype=torch.float32)
-
-        # Simple key mappings
-        self.key_mappings = {
-            pygame.K_w: (0, 1.0),  # forward
-            pygame.K_s: (0, -1.0),  # backward
-            pygame.K_a: (1, 0.5),  # left (reduced speed)
-            pygame.K_d: (1, -0.5),  # right (reduced speed)
-            pygame.K_q: (2, 1.0),  # rotate left
-            pygame.K_e: (2, -1.0),  # rotate right
-        }
-
-        self._running = True
-        self._reset_requested = False
-        pygame.init()
-        pygame.font.init()
-
-        # Create window for input and display
-        self._screen = pygame.display.set_mode((400, 300))
-        pygame.display.set_caption("Robot Control")
-
-        # Initialize fonts
-        self._font = pygame.font.Font(None, 28)
-        self._small_font = pygame.font.Font(None, 24)
-
-    def update(self, verbose: bool = False) -> bool:
-        """
-        Update the controller state based on keyboard input.
-
-        Args:
-            verbose: If True, print command changes to console
-
-        Returns:
-            False if user wants to quit, True otherwise
-        """
-        # Process events.
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self._running = False
-                return False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r:
-                    self._reset_requested = True
-
-        # Reset commands
-        self.command.fill_(0.0)
-
-        # Check pressed keys
-        keys = pygame.key.get_pressed()
-        command_changed = False
-
-        for key, (index, value) in self.key_mappings.items():
-            if keys[key] and index < self.command_size:
-                clamped_value = max(self.min_val, min(self.max_val, value))
-                self.command[0, index] = clamped_value
-                command_changed = True
-
-        # Update display
-        self._update_display()
-
-        # Print feedback if requested
-        if verbose and command_changed:
-            cmd_str = ", ".join([f"{self.command[0, i].item():.3f}" for i in range(self.command_size)])
-            print(f"Command: [{cmd_str}]")
-
-        return self._running
-
-    def _update_display(self):
-        """Update the pygame window with current command values and instructions."""
-        # Clear screen with dark background
-        self._screen.fill((20, 30, 50))
-
-        # Display current command values
-        y_pos = 70
-
-        instructions = [
-            "Controls:",
-            "W/S: Forward/Backward",
-            "A/D: Left/Right",
-            "Q/E: Rotate Left/Right",
-            "R: Reset",
-            "Close window to exit",
-        ]
-
-        for instruction in instructions:
-            color = (255, 255, 255) if instruction.endswith(":") else (200, 200, 200)
-            inst_surface = self._small_font.render(instruction, True, color)
-            self._screen.blit(inst_surface, (20, y_pos))
-            y_pos += 25
-
-        # Update display
-        pygame.display.flip()
-
-    def get_command(self) -> torch.Tensor:
-        """Get the current command tensor."""
-        return self.command.clone()
-
-    def reset_commands(self):
-        """Reset all commands to zero."""
-        self.command.fill_(0.0)
-        self._update_display()
-
-    def cleanup(self):
-        """Clean up pygame resources."""
-        if PYGAME_AVAILABLE and pygame is not None and pygame.get_init():
-            pygame.quit()
-
-    def consume_reset_request(self) -> bool:
-        """Return whether a reset was requested and clear the request flag."""
-        requested = self._reset_requested
-        self._reset_requested = False
-        return requested
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.cleanup()
-
-
 class Example:
-    def __init__(self, config, asset_directory: str, mjc_to_physx: list[int], physx_to_mjc: list[int]):
+    def __init__(self, viewer, config, asset_directory: str, mjc_to_physx: list[int], physx_to_mjc: list[int]):
         self.device = wp.get_device()
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
         self.use_mujoco = False
         self.config = config
+        self.viewer = viewer
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.1,
@@ -358,13 +206,15 @@ class Example:
             ncon_per_env=30,
         )
 
-        self.renderer = newton.viewer.RendererOpenGL(self.model, "RL Policy Example")
         self.state_temp = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        self.viewer.set_model(self.model)
+        self.viewer.vsync = True
         # Store initial joint state for fast reset.
         self._initial_joint_q = wp.clone(self.state_0.joint_q)
         self._initial_joint_qd = wp.clone(self.state_0.joint_qd)
@@ -373,6 +223,7 @@ class Example:
         self.mjc_to_physx_indices = torch.tensor(mjc_to_physx, device=self.torch_device, dtype=torch.long)
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+        self._reset_key_prev = False
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and not self.use_mujoco
         if self.use_cuda_graph:
@@ -391,6 +242,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
+
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             if i < self.sim_substeps - 1 or not self.use_cuda_graph:
                 # we can just swap the state references
@@ -418,6 +270,19 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step"):
+            # Build command from viewer keyboard
+            if hasattr(self.viewer, "is_key_down"):
+                fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+                lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+                rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+                self.command[0, 0] = float(fwd)
+                self.command[0, 1] = float(lat)
+                self.command[0, 2] = float(rot)
+                # Reset when 'P' is pressed (edge-triggered)
+                reset_down = bool(self.viewer.is_key_down("p"))
+                if reset_down and not self._reset_key_prev:
+                    self.reset()
+                self._reset_key_prev = reset_down
             obs = compute_obs(
                 self.act,
                 self.state_0,
@@ -443,114 +308,92 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
-            return
-
         with wp.ScopedTimer("render"):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_state(self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_0)
+            # Small controller hint window inside the viewer (if supported)
+            if hasattr(self.viewer, "register_ui_callback") and not hasattr(self, "_ui_registered"):
+
+                def _controller_help(imgui, viewer):
+                    try:
+                        io = viewer.ui.io
+                        x = int(io.display_size[0] * 0.5)
+                        y = 10
+                        imgui.set_next_window_position(x, y, pivot_x=0.5, pivot_y=0.0)
+                    except Exception:
+                        pass
+                    flags = (
+                        getattr(imgui, "WINDOW_NO_RESIZE", 0)
+                        | getattr(imgui, "WINDOW_NO_MOVE", 0)
+                        | getattr(imgui, "WINDOW_ALWAYS_AUTO_RESIZE", 0)
+                        | getattr(imgui, "WINDOW_NO_SAVED_SETTINGS", 0)
+                        | getattr(imgui, "WINDOW_NO_FOCUS_ON_APPEARING", 0)
+                        | getattr(imgui, "WINDOW_NO_NAV", 0)
+                    )
+                    if imgui.begin("Controller", flags=flags):
+                        imgui.text("Controls:")
+                        imgui.bullet_text("Space: Pause/Resume")
+                        imgui.bullet_text("P: Reset robot")
+                        imgui.bullet_text("I/K: Forward/Backward")
+                        imgui.bullet_text("J/L: Left/Right")
+                        imgui.bullet_text("U/O: Rotate left/right")
+                    imgui.end()
+
+                self.viewer.register_ui_callback(_controller_help)
+                self._ui_registered = True
+            self.viewer.end_frame()
+
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument("--num_frames", type=int, default=100000, help="Total number of frames.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
     parser.add_argument("--robot", type=str, default="g1_29dof.yaml", help="Path to robot configuration YAML file")
-    parser.add_argument("--physx", action=argparse.BooleanOptionalAction, help="Run physX policy instead of MJWarp.")
+    parser.add_argument("--physx", action="store_true", help="Run physX policy instead of MJWarp.")
 
-    args = parser.parse_known_args()[0]
-    policy_directory = newton.utils.download_asset("rl_policies")
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
     # Load robot configuration from YAML file
-    yaml_path = str(policy_directory) + "/" + args.robot
     try:
-        with open(yaml_path, encoding="utf-8") as f:
+        with open(args.robot, encoding="utf-8") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"[ERROR] Robot config file not found: {yaml_path}")
+        print(f"[ERROR] Robot config file not found: {args.robot}")
         print("[INFO] Available robot configurations:")
         import os
 
         try:
-            for file in sorted(os.listdir(policy_directory)):
+            for file in sorted(os.listdir("assets")):
                 if file.endswith(".yaml"):
                     print(f"  - {file}")
         except OSError:
-            print(f"  Could not list files in: {policy_directory}")
+            print(f"  Could not list files in: {args.robot}")
         exit(1)
     except yaml.YAMLError as e:
         print(f"[ERROR] Error parsing YAML file: {e}")
         exit(1)
-
     asset_directory = str(newton.utils.download_asset(config["asset_dir"]))
+
     print("[INFO] Selected robot config:", config)
     mjc_to_physx = list(range(config["num_dofs"]))
     physx_to_mjc = list(range(config["num_dofs"]))
 
-    with wp.ScopedDevice(args.device):
-        if args.physx:
-            if "physx" not in config["policy_path"] or "physx_joint_names" not in config:
-                raise ValueError(f"PhysX policy/joint mapping not available in config file '{args.robot}'.")
-            policy_path = str(policy_directory) + "/" + config["policy_path"]["physx"]
-            mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(
-                config["mjw_joint_names"], config["physx_joint_names"]
-            )
-        else:
-            policy_path = str(policy_directory) + "/" + config["policy_path"]["mjw"]
+    if args.physx:
+        if "physx" not in config["policy_path"] or "physx_joint_names" not in config:
+            raise ValueError(f"PhysX policy/joint mapping not available in config file '{args.robot}'.")
+        policy_path = str(asset_directory) + "/" + config["policy_path"]["physx"]
+        mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config["mjw_joint_names"], config["physx_joint_names"])
+    else:
+        policy_path = str(asset_directory) + "/" + config["policy_path"]["mjw"]
 
-        example = Example(config, str(asset_directory), mjc_to_physx, physx_to_mjc)
+    example = Example(viewer, config, str(asset_directory), mjc_to_physx, physx_to_mjc)
 
-        # Use utility function to load policy and setup tensors
-        load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
+    # Use utility function to load policy and setup tensors
+    load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
-        # Initialize keyboard controller
-        keyboard_controller = RobotKeyboardController(
-            command_size=3,
-            command_limits=(-1.0, 1.0),
-        )
-
-        running = True
-        frame_count = 0
-        for _ in range(args.num_frames):
-            start_time = time.monotonic()
-            if not running:
-                break
-
-            # Handle keyboard input and check if we should continue
-            running = keyboard_controller.update(verbose=False)
-
-            # Update the robot's command from the keyboard controller
-            cpu_command = keyboard_controller.get_command()
-            example.command = cpu_command.to(example.torch_device)
-
-            # Print current command values for debugging
-            if frame_count % 180 == 0:  # Every second at 100 FPS
-                cmd = example.command[0]
-                kb_cmd = keyboard_controller.get_command()[0]
-                print(
-                    f"Frame {frame_count}: Robot cmd="
-                    f"[{cmd[0].item():.3f}, {cmd[1].item():.3f}], "
-                    f"KB cmd=[{kb_cmd[0].item():.3f}, "
-                    f"{kb_cmd[1].item():.3f}]"
-                )
-
-            example.step()
-            example.render()
-            elapsed_time = time.monotonic() - start_time
-            sleep_time = example.cycle_time - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-            frame_count += 1
-
-            # Reset only if the user requested a reset via keyboard (R key).
-            if keyboard_controller.consume_reset_request():
-                example.reset()
-
-        if example.renderer:
-            example.renderer.save()
-
-        keyboard_controller.cleanup()
+    # Run using standard example loop
+    newton.examples.run(example)
