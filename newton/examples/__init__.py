@@ -16,6 +16,7 @@
 import os
 
 import numpy as np
+import warp as wp
 
 import newton
 
@@ -32,9 +33,28 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def run(example):
+    while example.viewer.is_running():
+        with wp.ScopedTimer("step"):
+            example.step()
+
+        with wp.ScopedTimer("render"):
+            example.render()
+
+    example.viewer.close()
+
+
 def compute_env_offsets(
     num_envs: int, env_offset: tuple[float, float, float] = (5.0, 5.0, 0.0), up_axis: newton.AxisType = newton.Axis.Z
 ):
+    # raise deprecation warning
+    import warnings  # noqa: PLC0415
+
+    warnings.warn(
+        "compute_env_offsets is deprecated and will be removed in a future version. Use the builder.replicate() function instead.",
+        stacklevel=2,
+    )
+
     # compute positional offsets per environment
     env_offset = np.array(env_offset)
     nonzeros = np.nonzero(env_offset)[0]
@@ -72,3 +92,126 @@ def compute_env_offsets(
     correction[newton.Axis.from_any(up_axis)] = 0.0
     env_offsets -= correction
     return env_offsets
+
+
+def create_parser():
+    """Create a base argument parser with common parameters for Newton examples.
+
+    Individual examples can use this as a parent parser and add their own
+    specific arguments.
+
+    Returns:
+        argparse.ArgumentParser: Base parser with common arguments
+    """
+    import argparse  # noqa: PLC0415
+
+    # add_help=False since this is a parent parser
+    parser = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument(
+        "--viewer",
+        type=str,
+        default="gl",
+        choices=["gl", "usd", "rerun", "null"],
+        help="Viewer to use (gl, usd, rerun, or null).",
+    )
+    parser.add_argument(
+        "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
+    )
+    parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
+
+    return parser
+
+
+def init(parser=None):
+    """Initialize Newton example components from parsed arguments.
+
+    Args:
+        parser: Parsed arguments from argparse (should include arguments from
+              create_parser())
+
+    Returns:
+        tuple: (viewer, args) where viewer is configured based on args.viewer
+
+    Raises:
+        ValueError: If invalid viewer type or missing required arguments
+    """
+    import warp as wp  # noqa: PLC0415
+
+    import newton.viewer  # noqa: PLC0415
+
+    # parse args
+    if parser is None:
+        parser = create_parser()
+
+    args = parser.parse_known_args()[0]
+
+    # Set device if specified
+    if args.device:
+        wp.set_device(args.device)
+
+    # Create viewer based on type
+    if args.viewer == "gl":
+        viewer = newton.viewer.ViewerGL()
+    elif args.viewer == "usd":
+        if args.output_path is None:
+            raise ValueError("--output-path is required when using usd viewer")
+        viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+    elif args.viewer == "rerun":
+        viewer = newton.viewer.ViewerRerun()
+    elif args.viewer == "null":
+        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+    else:
+        raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    return viewer, args
+
+
+def main():
+    """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
+    import runpy  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    # Map short names to full module paths
+    example_map = {
+        "basic_pendulum": "newton.examples.basic.example_basic_pendulum",
+        "basic_urdf": "newton.examples.basic.example_basic_urdf",
+        "basic_viewer": "newton.examples.basic.example_basic_viewer",
+        "basic_shapes": "newton.examples.basic.example_basic_shapes",
+        "basic_joints": "newton.examples.basic.example_basic_joints",
+        "cloth_bending": "newton.examples.cloth.example_cloth_bending",
+        "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
+        "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
+        "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+    }
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m newton.examples <example_name>")
+        print("\nAvailable examples:")
+        for name in example_map.keys():
+            print(f"  {name}")
+        sys.exit(1)
+
+    example_name = sys.argv[1]
+
+    if example_name not in example_map:
+        print(f"Error: Unknown example '{example_name}'")
+        print("\nAvailable examples:")
+        for name in example_map.keys():
+            print(f"  {name}")
+        sys.exit(1)
+
+    # Set up sys.argv for the target script
+    target_module = example_map[example_name]
+    # Keep the module name as argv[0] and pass remaining args
+    sys.argv = [target_module, *sys.argv[2:]]
+
+    # Run the target example module
+    runpy.run_module(target_module, run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = ["create_parser", "init", "run"]

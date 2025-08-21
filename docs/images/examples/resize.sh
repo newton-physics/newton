@@ -1,0 +1,2 @@
+# resize all pngs in a directory by 2x in dimension, crop to square, + convert to jpg
+for f in *.png; do ffmpeg -y -i "$f" -vf "crop=min(iw\,ih):min(iw\,ih),scale=iw/2:ih/2,format=yuv420p" -update 1 -q:v 3 "${f%.png}.jpg"; done
