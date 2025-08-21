@@ -46,7 +46,7 @@ class RobotCfg:
 
 ROBOTS: dict[str, RobotCfg] = {
     "h1": RobotCfg(
-        asset="h1_description",
+        asset="unitree_h1",
         file=Path("mjcf/h1.xml"),
         parser=newton.utils.parse_mjcf,
         ee_names=("left_hand", "right_hand", "left_foot", "right_foot"),
@@ -56,8 +56,8 @@ ROBOTS: dict[str, RobotCfg] = {
         lambda_factor=2.0,
     ),
     "franka": RobotCfg(
-        asset="franka_description",
-        file=Path("urdfs/fr3.urdf"),
+        asset="franka_emika_panda",
+        file=Path("urdf/fr3.urdf"),
         parser=partial(newton.utils.parse_urdf, scale=1.0),
         ee_names=("ee",),
         ee_links=(9,),
