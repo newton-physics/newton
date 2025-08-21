@@ -62,7 +62,9 @@ class Example:
 
         a_rev = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
         b_rev = builder.add_body(
-            xform=wp.transform(p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.15))
+            xform=wp.transform(
+                p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.15)
+            )
         )
         builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_rev, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
@@ -89,7 +91,9 @@ class Example:
         y = rows[1]
         a_pri = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
         b_pri = builder.add_body(
-            xform=wp.transform(p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.12))
+            xform=wp.transform(
+                p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.12)
+            )
         )
         builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_pri, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
@@ -120,12 +124,16 @@ class Example:
         z_offset = -1.0  # Shift down by 2 units
 
         # kinematic (massless) sphere as the parent anchor
-        a_ball = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity()))
+        a_ball = builder.add_body(
+            xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity())
+        )
         b_ball = builder.add_body(
-            xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1))
+            xform=wp.transform(
+                p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1)
+            )
         )
         rigid_cfg = newton.ModelBuilder.ShapeConfig()
-        rigid_cfg.density = 0.0 
+        rigid_cfg.density = 0.0
         builder.add_shape_sphere(a_ball, radius=radius, cfg=rigid_cfg)
         builder.add_shape_box(b_ball, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
@@ -201,5 +209,3 @@ if __name__ == "__main__":
     example = Example(viewer)
 
     newton.examples.run(example)
-
-
