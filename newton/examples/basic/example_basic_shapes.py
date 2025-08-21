@@ -23,7 +23,9 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
@@ -69,8 +71,12 @@ class Example:
         # builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
 
         # MESH (bunny)
-        mesh_vertices, mesh_indices = load_ply_triangles(newton.examples.get_asset("bunny.ply"))
-        mesh_vertices = [(5 * x, 5 * y, 5 * z) for (x, y, z) in mesh_vertices]
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
+        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+
+        mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
+        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+
         demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
 
         body_mesh = builder.add_body(
@@ -132,26 +138,6 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
-
-
-# helper to load bunny mesh
-def load_ply_triangles(path):
-    with open(path) as f:
-        hdr = []
-        for line in f:
-            hdr.append(line.strip())
-            if line.startswith("end_header"):
-                break
-        nv = int(next(l for l in hdr if l.startswith("element vertex")).split()[2])
-        nf = int(next(l for l in hdr if l.startswith("element face")).split()[2])
-        verts = [tuple(map(float, f.readline().split()[:3])) for _ in range(nv)]
-        idx = []
-        for _ in range(nf):
-            parts = f.readline().split()
-            if parts and parts[0] == "3":
-                idx.extend(map(int, parts[1:4]))
-        return verts, idx
-
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
