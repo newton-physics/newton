@@ -27,10 +27,31 @@ __all__ = [
 ]
 
 # ==================================================================================
+# mesh utils
+# ==================================================================================
+from ._src.utils.mesh import (
+    create_box_mesh,
+    create_capsule_mesh,
+    create_cone_mesh,
+    create_cylinder_mesh,
+    create_plane_mesh,
+    create_sphere_mesh,
+)
+
+__all__ += [
+    "create_box_mesh",
+    "create_capsule_mesh",
+    "create_cone_mesh",
+    "create_cylinder_mesh",
+    "create_plane_mesh",
+    "create_sphere_mesh",
+]
+
+# ==================================================================================
 # spatial math
 # TODO: move these to Warp?
 # ==================================================================================
-from ._src.core.spatial import (
+from ._src.core.spatial import (  # noqa: E402
     quat_between_axes,
     quat_decompose,
     quat_from_euler,

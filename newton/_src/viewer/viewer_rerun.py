@@ -30,7 +30,6 @@ except ImportError:
 class ViewerRerun(ViewerBase):
     def __init__(
         self,
-        model,
         server: bool = True,
         address: str = "127.0.0.1:9876",
         launch_viewer: bool = True,
@@ -39,7 +38,6 @@ class ViewerRerun(ViewerBase):
         """Initialize the Rerun viewer backend.
 
         Args:
-            model: Newton model to visualize
             server: Whether to start in server mode (TCP/gRPC)
             address: Address and port for server mode
             launch_viewer: Whether to spawn a local rerun viewer client
@@ -48,7 +46,7 @@ class ViewerRerun(ViewerBase):
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
 
-        super().__init__(model)
+        super().__init__()
 
         self.server = server
         self.address = address
@@ -71,8 +69,6 @@ class ViewerRerun(ViewerBase):
         # Store mesh data for instances
         self._meshes = {}
         self._instances = {}
-
-        self._populate(model)
 
     def log_mesh(
         self,
@@ -237,7 +233,7 @@ class ViewerRerun(ViewerBase):
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
         pass
 
-    def log_points(self, name, state):
+    def log_points(self, name, points, widths, colors, hidden=False):
         pass
 
     def log_array(self, name, array):
