@@ -51,11 +51,13 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
 
     control = model.control()
     if test_angular:
-        control.joint_f.assign(np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0], dtype=np.float32))
-        test_index = 2
+        # FREE joints now use (linear, angular) ordering: angular_z is at index 5
+        control.joint_f.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 100.0], dtype=np.float32))
+        test_index = 5  # body_qd[5] = angular_z velocity
     else:
-        control.joint_f.assign(np.array([0.0, 0.0, 0.0, 0.0, 100.0, 0.0], dtype=np.float32))
-        test_index = 4
+        # FREE joints now use (linear, angular) ordering: linear_y is at index 1  
+        control.joint_f.assign(np.array([0.0, 100.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        test_index = 1  # body_qd[1] = linear_y velocity
 
     sim_dt = 1.0 / 10.0
 
