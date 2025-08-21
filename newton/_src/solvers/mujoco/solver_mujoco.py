@@ -1948,6 +1948,7 @@ class SolverMuJoCo(SolverBase):
         self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
         self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
         selected_shapes_set = set(selected_shapes)
+        selected_bodies_set = set(selected_bodies)
 
         def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -2260,6 +2261,8 @@ class SolverMuJoCo(SolverBase):
 
         self.shape_map = {}  # Maps newton shape ids to mujoco shapes
         for body, body_shapes in model.body_shapes.items():
+            if body not in selected_bodies_set:
+                continue
             if body < 0:
                 for body_shape in body_shapes:
                     self.shape_map[body_shape] = (-1, mj_geoms.get(body_shape, None))
