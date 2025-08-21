@@ -52,10 +52,10 @@ class Example:
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
+        self.sim_steps = 36
         self.sim_substeps = 8
+        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.sim_duration = 0.6
-        self.sim_steps = int(self.sim_duration / self.sim_dt)
 
         self.render_time = 0.0
 
@@ -69,6 +69,7 @@ class Example:
         self.viewer = viewer
         self.viewer.show_particles = True
 
+        # setup simulation scene
         scene = newton.ModelBuilder(up_axis=newton.Axis.Z)
 
         scene.add_particle(pos=wp.vec3(0.0, -0.5, 1.0), vel=wp.vec3(0.0, 5.0, -5.0), mass=1.0)
@@ -102,14 +103,11 @@ class Example:
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
-        # allocate sim states for trajectory
+        # allocate sim states, initialize control and one-shot contacts (valid for simple collisions against constant plane)
         self.states = []
-        for _i in range(self.sim_steps + 1):
+        for _i in range(self.sim_substeps_count + 1):
             self.states.append(self.model.state())
-
         self.control = self.model.control()
-
-        # one-shot contact creation (valid if we're doing simple collision against a constant normal plane)
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
 
         self.viewer.set_model(self.model)
@@ -133,7 +131,7 @@ class Example:
 
     def forward(self):
         # run control loop
-        for i in range(self.sim_steps):
+        for i in range(self.sim_substeps_count):
             self.states[i].clear_forces()
             self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
 
@@ -161,7 +159,7 @@ class Example:
         # clear grads for next iteration
         self.tape.zero()
 
-        self.train_iter = self.train_iter + 1
+        self.train_iter += 1
 
     def test(self):
         pass
@@ -173,12 +171,13 @@ class Example:
         # draw trajectory
         traj_verts = [self.states[0].particle_q.numpy()[0].tolist()]
 
-        for i in range(0, self.sim_steps, self.sim_substeps):
-            traj_verts.append(self.states[i].particle_q.numpy()[0].tolist())
+        for i in range(self.sim_steps + 1):
+            state = self.states[i * self.sim_substeps]
+            traj_verts.append(state.particle_q.numpy()[0].tolist())
 
             self.viewer.begin_frame(self.render_time)
-            self.viewer.log_state(self.states[i])
-            self.viewer.log_contacts(self.contacts, self.states[i])
+            self.viewer.log_state(state)
+            self.viewer.log_contacts(self.contacts, state)
             self.viewer.log_shapes(
                 "/target",
                 newton.GeoType.BOX,
