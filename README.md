@@ -1,4 +1,3 @@
-
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/m/newton-physics/newton/main)
 [![codecov](https://codecov.io/gh/newton-physics/newton/graph/badge.svg?token=V6ZXNPAWVG)](https://codecov.io/gh/newton-physics/newton)
@@ -59,6 +58,34 @@ get started.
       <code>python -m newton.examples basic_viewer</code>
     </td>
   </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/basic/example_basic_shapes.py">
+        <img src="docs/images/examples/example_basic_shapes.jpg" alt="Shapes">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/basic/example_basic_joints.py">
+        <img src="docs/images/examples/example_basic_joints.jpg" alt="Joints">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- <a href="newton/examples/basic/example_basic_viewer.py">
+        <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
+      </a> -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples basic_shapes</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples basic_joints</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples basic_viewer</code>
+    </td>
+  </tr>
 </table>
 
 ## Cloth Examples
@@ -98,12 +125,12 @@ get started.
 
 The examples support the following common line arguments:
 
-| Argument                | Description                                                                                | Default         |
-|-------------------------|--------------------------------------------------------------------------------------------|-----------------|
-| `--viewer`              | Viewer type: `gl` (OpenGL window), `usd` (USD file output), `rerun` (ReRun), or `null` (no viewer).         | `gl`            |
-| `--device`              | Compute device to use, e.g., `cpu`, `cuda:0`, etc.                                         | `None` (default Warp device) |
-| `--num-frames`          | Number of frames to simulate (for USD output).                                             | `100`          |
-| `--output-path`         | Output path for USD files (required if `--viewer usd` is used).                            | `None`          |
+| Argument        | Description                                                                                         | Default                      |
+| --------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `--viewer`      | Viewer type: `gl` (OpenGL window), `usd` (USD file output), `rerun` (ReRun), or `null` (no viewer). | `gl`                         |
+| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`, etc.                                                  | `None` (default Warp device) |
+| `--num-frames`  | Number of frames to simulate (for USD output).                                                      | `100`                        |
+| `--output-path` | Output path for USD files (required if `--viewer usd` is used).                                     | `None`                       |
 
 Some examples may add additional arguments (see their respective source files for details).
 
@@ -115,7 +142,7 @@ Some examples may add additional arguments (see their respective source files fo
     # With uv
     uv run python -m newton.examples basic_pendulum
 
-    # With viewer options  
+    # With viewer options
     python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
 
     # With device selection
@@ -123,7 +150,3 @@ Some examples may add additional arguments (see their respective source files fo
 
     # Multiple arguments
     python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
-
-
-
-
