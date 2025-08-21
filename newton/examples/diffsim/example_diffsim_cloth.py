@@ -55,38 +55,36 @@ def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha
 
 
 class Example:
-    def __init__(self, viewer_type: str, stage_path="example_cloth_throw.usd", verbose=False):
-        self.verbose = verbose
-
-        # seconds
-        sim_duration = 2.0
-
-        # control frequency
+    def __init__(self, viewer, verbose=False):
+        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        frame_steps = int(sim_duration / self.frame_dt)
-
-        # sim frequency
+        self.sim_steps = 120  # 2.0 seconds
         self.sim_substeps = 16
-        self.sim_steps = frame_steps * self.sim_substeps
+        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.render_time = 0.0
 
+        self.verbose = verbose
+
+        # setup training parameters
         self.train_iter = 0
         self.train_rate = 5.0
         self.target = (0.0, 8.0, 0.0)
         self.com = wp.zeros(1, dtype=wp.vec3, requires_grad=True)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
 
-        builder = newton.ModelBuilder()
+        # setup rendering
+        self.viewer = viewer
 
-        builder.default_particle_radius = 0.01
+        # setup simulation scene (cloth grid)
+        scene = newton.ModelBuilder()
+        scene.default_particle_radius = 0.01
 
         dim_x = 16
         dim_y = 16
-
-        builder.add_cloth_grid(
+        scene.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
             vel=wp.vec3(0.0, 0.1, 0.1),
             rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.75),
@@ -102,33 +100,22 @@ class Example:
             tri_drag=5.0,
         )
 
-        self.model = builder.finalize()
+        self.model = scene.finalize()
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
+        self.solver.enable_tri_contact = False
 
-        # allocate sim states for trajectory
+        # allocate sim states for trajectory (control and contacts are not used in this example)
         self.states = []
-        for _i in range(self.sim_steps + 1):
+        for _i in range(self.sim_substeps_count + 1):
             self.states.append(self.model.state(requires_grad=True))
-
-        # control and contacts are not used in this example
         self.control = self.model.control()
         self.contacts = None
 
-        if viewer_type == "usd":
-            from newton.viewer import ViewerUSD  # noqa: PLC0415
+        # rendering
+        self.viewer.set_model(self.model)
 
-            self.viewer = ViewerUSD(self.model, output_path=stage_path)
-        elif viewer_type == "rerun":
-            from newton.viewer import ViewerRerun  # noqa: PLC0415
-
-            self.viewer = ViewerRerun(self.model, server=True, launch_viewer=True)
-        else:
-            from newton.viewer import ViewerGL  # noqa: PLC0415
-
-            self.viewer = ViewerGL(self.model)
-
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
             pos = type(self.viewer.camera.pos)(12.5, 0.0, 2.0)
             self.viewer.camera.pos = pos
 
@@ -151,7 +138,7 @@ class Example:
 
     def forward(self):
         # run control loop
-        for i in range(self.sim_steps):
+        for i in range(self.sim_substeps_count):
             self.states[i].clear_forces()
 
             self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
@@ -166,24 +153,23 @@ class Example:
         wp.launch(loss_kernel, dim=1, inputs=[self.com, self.target, self.loss])
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            if self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.forward_backward()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.forward_backward()
 
-            # gradient descent step
-            x = self.states[0].particle_qd
+        # gradient descent step
+        x = self.states[0].particle_qd
 
-            if self.verbose:
-                print(f"Train iter: {self.train_iter} Loss: {self.loss}")
+        if self.verbose:
+            print(f"Train iter: {self.train_iter} Loss: {self.loss}")
 
-            wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
+        wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
 
-            # clear grads for next iteration
-            self.tape.zero()
+        # clear grads for next iteration
+        self.tape.zero()
 
-            self.train_iter = self.train_iter + 1
+        self.train_iter = self.train_iter + 1
 
     def test(self):
         pass
@@ -192,11 +178,12 @@ class Example:
         # draw trajectory
         traj_verts = [self.states[0].particle_q.numpy().mean(axis=0)]
 
-        for i in range(0, self.sim_steps, self.sim_substeps):
-            traj_verts.append(self.states[i].particle_q.numpy().mean(axis=0))
+        for i in range(self.sim_steps + 1):
+            state = self.states[i * self.sim_substeps]
+            traj_verts.append(state.particle_q.numpy().mean(axis=0))
 
             self.viewer.begin_frame(self.render_time)
-            self.viewer.log_state(self.states[i])
+            self.viewer.log_state(state)
             self.viewer.log_shapes(
                 "/target",
                 newton.GeoType.BOX,
@@ -216,29 +203,15 @@ class Example:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--viewer", choices=["gl", "usd", "rerun"], default="gl", help="Viewer backend to use.")
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage_path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_throw.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--train_iters", type=int, default=64, help="Total number of training iterations.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
     parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer_type=args.viewer, stage_path=args.stage_path, verbose=args.verbose)
+    # Create example
+    example = Example(viewer, verbose=args.verbose)
 
-    # replay and optimize
-    for i in range(args.train_iters):
-        example.step()
-        if i % 4 == 0:
-            example.render()
-
-    if example.viewer:
-        example.viewer.close()
+    # Run example
+    newton.examples.run(example)
