@@ -26,6 +26,8 @@
 # This example uses the Warp tile API, which as of Warp 1.6 is the
 # recommended way to handle matrix multiplication.
 #
+# Command: python -m newton.examples diffsim_bear
+#
 ###########################################################################
 
 import numpy as np
@@ -276,13 +278,18 @@ class Example:
         else:
             self.forward_backward()
 
-        # optimization
-        x = self.weights.grad.flatten()
-        self.optimizer.step([x])
+        x = self.weights
 
         if self.verbose:
-            loss = self.loss.numpy()
-            print(f"Train iter {self.train_iter}: {loss}")
+            print(f"Train iter {self.train_iter}: {self.loss}")
+            x_flat = x.flatten().numpy()
+            x_grad_flat = x.grad.flatten().numpy()
+            print(
+                f"    x_min: {x_flat.min()} x_max: {x_flat.max()} g_min: {x_grad_flat.min()} g_max: {x_grad_flat.max()}"
+            )
+
+        # optimization
+        self.optimizer.step([x.grad.flatten()])
 
         # reset sim
         self.sim_time = 0.0

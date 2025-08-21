@@ -21,6 +21,8 @@
 # The objective is to optimize the rest length of the springs in order
 # for the particle to be pulled towards a target position.
 #
+# Command: python -m newton.examples diffsim_spring_cage
+#
 ###########################################################################
 
 import warp as wp
@@ -163,22 +165,31 @@ class Example:
         else:
             self.forward_backward()
 
+        x = self.model.spring_rest_length
+
         if self.verbose:
             print(f"Train iter: {self.train_iter} Loss: {self.loss}")
+            x_flat = x.flatten().numpy()
+            x_grad_flat = x.grad.flatten().numpy()
+            print(
+                f"    x_min: {x_flat.min()} x_max: {x_flat.max()} g_min: {x_grad_flat.min()} g_max: {x_grad_flat.max()}"
+            )
 
+        # gradient descent step
         wp.launch(
             apply_gradient_kernel,
             dim=self.model.spring_count,
-            inputs=(
-                self.model.spring_rest_length.grad,
+            inputs=[
+                x.grad,
                 self.train_rate,
-            ),
-            outputs=(self.model.spring_rest_length,),
+            ],
+            outputs=[x],
         )
 
+        # clear grads for next iteration
         self.tape.zero()
 
-        self.train_iter = self.train_iter + 1
+        self.train_iter += 1
 
     def render(self):
         for i in range(self.sim_steps + 1):

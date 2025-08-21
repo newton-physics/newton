@@ -16,12 +16,14 @@
 ###########################################################################
 # Example Sim Grad Cloth
 #
-# Shows how to use Warp to optimize the initial velocities of a piece of
+# Shows how to use Newton to optimize the initial velocities of a piece of
 # cloth such that its center of mass hits a target after a specified time.
 #
 # This example uses the built-in wp.Tape() object to compute gradients of
 # the distance to target (loss) w.r.t the initial velocity, followed by
 # a simple gradient-descent optimization step.
+#
+# Command: python -m newton.examples diffsim_cloth
 #
 ###########################################################################
 import warp as wp
@@ -100,7 +102,9 @@ class Example:
             tri_drag=5.0,
         )
 
-        self.model = scene.finalize()
+        # finalize model
+        # use `requires_grad=True` to create a model for differentiable simulation
+        self.model = scene.finalize(requires_grad=True)
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
         self.solver.enable_tri_contact = False
@@ -158,18 +162,23 @@ class Example:
         else:
             self.forward_backward()
 
-        # gradient descent step
         x = self.states[0].particle_qd
 
         if self.verbose:
             print(f"Train iter: {self.train_iter} Loss: {self.loss}")
+            x_flat = x.flatten().numpy()
+            x_grad_flat = x.grad.flatten().numpy()
+            print(
+                f"    x_min: {x_flat.min()} x_max: {x_flat.max()} g_min: {x_grad_flat.min()} g_max: {x_grad_flat.max()}"
+            )
 
+        # gradient descent step
         wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
 
         # clear grads for next iteration
         self.tape.zero()
 
-        self.train_iter = self.train_iter + 1
+        self.train_iter += 1
 
     def test(self):
         pass

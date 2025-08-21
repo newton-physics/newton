@@ -16,12 +16,14 @@
 ###########################################################################
 # Example FEM Bounce
 #
-# Shows how to use Warp to optimize for the material parameters of a soft body,
+# Shows how to use Newton to optimize for the material parameters of a soft body,
 # such that it bounces off the wall and floor in order to hit a target.
 #
 # This example uses the built-in wp.Tape() object to compute gradients of
 # the distance to target (loss) w.r.t the material parameters, followed by
 # a simple gradient-descent optimization step.
+#
+# Command: python -m newton.examples diffsim_soft_body
 #
 ###########################################################################
 import numpy as np

@@ -146,15 +146,14 @@ class Example:
         else:
             self.forward_backward()
 
-        # gradient descent step
         x = self.states[0].particle_qd
-        wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
-
-        x_grad = self.tape.gradients[self.states[0].particle_qd]
 
         if self.verbose:
             print(f"Train iter: {self.train_iter} Loss: {self.loss}")
-            print(f"    x: {x} g: {x_grad}")
+            print(f"    x: {x} g: {x.grad}")
+
+        # gradient descent step
+        wp.launch(step_kernel, dim=len(x), inputs=[x, x.grad, self.train_rate])
 
         # clear grads for next iteration
         self.tape.zero()
