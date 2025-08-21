@@ -28,6 +28,13 @@ from ..solvers import SolverBase
 
 
 class MatchKind(Enum):
+    """Indicates the object type for a sensing object or a counterpart.
+
+    - MATCH_ANY indicates a wildcard counterpart
+    - SHAPE indicates a shape sensing object or counterpart
+    - BODY indicates a body sensing object or counterpart
+    """
+
     MATCH_ANY = 0
     SHAPE = 1
     BODY = 2
@@ -103,18 +110,42 @@ def select_aggregate_net_force(
 
 
 class MatchAny:
-    """Matches all contact partners."""
+    """Wildcard counterpart; matches any object."""
 
 
 def populate_contacts(
     contacts: Contacts,
     solver: SolverBase,
 ):
-    """Populate Contacts object from the solver."""
+    """Populate ``Contacts`` object from the solver."""
     solver.update_contacts(contacts)
 
 
 class ContactSensor:
+    """Sensor for contact forces between bodies or shapes.
+
+    The contact sensor aggregates forces arising from contacts between a set of sensing objects and -- optionally --
+    a set of counterparts. It produces a matrix of force readings, where each row corresponds to one sensing object and
+    each column corresponds to one counterpart. Each entry of this matrix is the vector of the net contact
+    force between the sensing object and the counterpart. If no counterparts are specified, the sensor will read
+    the net contact force for each sensing object.
+
+    If ``include_total`` is True, inserts a wildcard at the beginning of the counterparts, such that the first column of
+    the force matrix will read the total contact force for each sensing object.
+
+    If ``prune_noncolliding`` is True, the force matrix will be sparse, containing only readings for shape pairs
+    that can collide. In this case, force matrix will have as many columns as the maximum number of active
+    counterparts for any sensing object, and the ``reading_indices`` attribute can be used to recover the active
+    counterparts for each sensing object.
+
+    .. rubric:: Terminology
+
+    - **Sensing Object**: The body or shape "carrying" a force sensor.
+    - **Counterpart**: The other body or shape involved in a contact interaction with a sensing object.
+    - **Force Matrix**: The matrix organizing the force data by rows of sensing objects and columns of counterparts.
+    - **Force Reading**: An individual force measurement within the matrix.
+    """
+
     def __init__(
         self,
         model: Model,
@@ -127,28 +158,45 @@ class ContactSensor:
         prune_noncolliding: bool = False,
         verbose: bool | None = None,
     ):
-        """Add a contact sensor view to the model.
-        Exactly one of `sensing_obj_shapes` or `sensor_body` must be specified to define the sensor. If contact partners
-        are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
-        the total contact force.
+        """Create a contact sensor for a model.
+
+        Exactly one of ``sensing_obj_bodies`` or ``sensing_obj_shapes`` must be specified to define the sensing
+        objects. At most one of ``counterpart_bodies`` or ``counterpart_shapes`` may be specified. If neither is
+        specified, the sensor will read the net contact force for each sensing object.
 
         Args:
-            sensing_obj_shapes: pattern to match sensor shape names; one entity per matching shape.
-            sensor_body: pattern to match sensor body names; one entity per matching body.
-            contact_partners_shape: pattern to match contact partner shape names; one entity per matching shape.
-            contact_partners_body: pattern to match contact partner body names; one entity per matching body.
-            match_fn: function taking a name and a pattern and returning true if the name matches the pattern;
-            fnmatch.fnmatch is used if `match_fn` is `None`.
-            include_total: If contact partners are defined, include the total contact force as the first reading of each sensor.
-            prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
-            verbose: print details
+            sensing_obj_bodies: Pattern(s) to select which bodies act as sensing objects.
+            sensing_obj_shapes: Pattern(s) to select which shapes act as sensing objects.
+            counterpart_bodies: Pattern(s) to select which bodies are considered as counterparts.
+            counterpart_shapes: Pattern(s) to select which shapes are considered as counterparts.
+            match_fn: Callable for matching names to patterns; defaults to ``fnmatch.fnmatch`` if None.
+            include_total: If True and counterparts are specified, add a reading for the total contact force for
+                each sensing object. Does nothing when no counterparts are specified.
+            prune_noncolliding: If True, omit force readings for shape pairs that never collide from the force
+                matrix. Does nothing when no counterparts are specified.
+            verbose: If True, print detailed information during setup.
         """
 
+        self.shape: tuple[int, int]
+        """Shape of the force matrix (n_sensing_objs, n_counterparts) if ``prune_noncolliding`` is False, and
+        (n_sensing_objs, max_active_counterparts) if it is True."""
+        self.reading_indices: list[list[tuple[int, MatchKind], ...]]
+        """Index and kind of each counterpart, per sensing object. For recovering the active counterparts
+        when ``prune_noncolliding`` is True."""
+        self.sensing_objs: list[tuple[int, MatchKind]]
+        """Index and kind of each sensing object, length n_sensing_objs. Corresponds to the rows of the force matrix."""
+        self.counterparts: list[tuple[int, MatchKind]]
+        """Index and kind of each counterpart, length n_counterparts. Corresponds to the columns of the force matrix,
+        unless ``prune_noncolliding`` is True."""
+
+        self.net_force: wp.array2d(dtype=wp.vec3)
+        """Net force matrix."""
+
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
-            raise ValueError("Exactly one of `sensing_obj_bodies` and `sensing_obj_shapes` must be specified")
+            raise ValueError("Exactly one of ``sensing_obj_bodies`` and ``sensing_obj_shapes`` must be specified")
 
         if (counterpart_bodies is not None) and (counterpart_shapes is not None):
-            raise ValueError("At most one of `counterpart_bodies` and `counterpart_shapes` may be specified.")
+            raise ValueError("At most one of ``counterpart_bodies`` and ``counterpart_shapes`` may be specified.")
 
         self.device = model.device
         self.verbose = verbose if verbose is not None else wp.config.verbose
@@ -193,11 +241,13 @@ class ContactSensor:
         self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i, device=self.device)
         self.sp_reading, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_reading, wp.vec2i, device=self.device)
 
-        # net force (one vec3 per sensor-contactee pair)
+        # net force (one vec3 per sensor-counterpart pair)
         self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
         self.net_force = self._net_force.reshape(self.shape)
 
-    def eval(self, contacts: Contacts):
+    def eval(self, contacts: Contacts) -> None:
+        """Evaluate the force matrix. Requires that ``contacts`` has been populated with contact and force information
+        from the collision detection and solver using ``populate_contacts``."""
         self._eval_net_force(contacts)
 
     def get_total_force(self) -> wp.array2d(dtype=wp.vec3f):
