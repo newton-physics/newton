@@ -22,12 +22,13 @@
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
 # Run this example with:
-# python example_RL_policy.py --robot assets/g1_29dof.yaml
-# python example_RL_policy.py --robot assets/go2.yaml
-# python example_RL_policy.py --robot assets/anymal.yaml
+# python example_RL_policy.py --robot g1_29dof
+# python example_RL_policy.py --robot go2
+# python example_RL_policy.py --robot anymal
 # to run the example with physX trained policies run with --physx
 ###########################################################################
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -38,6 +39,45 @@ import newton
 import newton.examples
 import newton.utils
 from newton import State
+
+
+@dataclass
+class RobotConfig:
+    """Configuration for a robot including asset paths and policy paths."""
+
+    asset_dir: str
+    policy_path: dict[str, str]
+    asset_path: str
+    yaml_path: str  # Path within the asset directory to the configuration YAML
+
+
+# Robot configurations pointing to newton-assets repository
+ROBOT_CONFIGS = {
+    "anymal": RobotConfig(
+        asset_dir="anybotics_anymal_c",
+        policy_path={"mjw": "rl_policies/mjw_anymal.pt", "physx": "rl_policies/physx_anymal.pt"},
+        asset_path="usd/anymal_c.usda",
+        yaml_path="rl_policies/anymal.yaml",
+    ),
+    "go2": RobotConfig(
+        asset_dir="unitree_go2",
+        policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
+        asset_path="usd/go2.usd",
+        yaml_path="rl_policies/go2.yaml",
+    ),
+    "g1_29dof": RobotConfig(
+        asset_dir="unitree_g1",
+        policy_path={"mjw": "rl_policies/mjw_g1_29DOF.pt"},
+        asset_path="usd/g1_isaac.usd",
+        yaml_path="rl_policies/g1_29dof.yaml",
+    ),
+    "g1_23dof": RobotConfig(
+        asset_dir="unitree_g1",
+        policy_path={"mjw": "rl_policies/mjw_g1_23DOF.pt", "physx": "rl_policies/physx_g1_23DOF.pt"},
+        asset_path="usd/g1_minimal.usd",
+        yaml_path="rl_policies/g1_23dof.yaml",
+    ),
+}
 
 
 @torch.jit.script
@@ -147,11 +187,20 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 
 class Example:
-    def __init__(self, viewer, config, asset_directory: str, mjc_to_physx: list[int], physx_to_mjc: list[int]):
+    def __init__(
+        self,
+        viewer,
+        robot_config: RobotConfig,
+        config,
+        asset_directory: str,
+        mjc_to_physx: list[int],
+        physx_to_mjc: list[int],
+    ):
         self.device = wp.get_device()
         self.torch_device = "cuda" if self.device.is_cuda else "cpu"
         self.use_mujoco = False
         self.config = config
+        self.robot_config = robot_config
         self.viewer = viewer
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -165,7 +214,7 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         newton.utils.parse_usd(
-            newton.examples.get_asset(asset_directory + "/" + config["asset_path"]),
+            newton.examples.get_asset(asset_directory + "/" + robot_config.asset_path),
             builder,
             joint_drive_gains_scaling=1.0,
             collapse_fixed_joints=False,
@@ -321,46 +370,53 @@ class Example:
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
-    parser.add_argument("--robot", type=str, default="g1_29dof.yaml", help="Path to robot configuration YAML file")
+    parser.add_argument(
+        "--robot", type=str, default="g1_29dof", choices=list(ROBOT_CONFIGS.keys()), help="Robot name to load"
+    )
     parser.add_argument("--physx", action="store_true", help="Run physX policy instead of MJWarp.")
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Load robot configuration from YAML file
+    # Get robot configuration
+    if args.robot not in ROBOT_CONFIGS:
+        print(f"[ERROR] Unknown robot: {args.robot}")
+        print(f"[INFO] Available robots: {list(ROBOT_CONFIGS.keys())}")
+        exit(1)
+
+    robot_config = ROBOT_CONFIGS[args.robot]
+    print(f"[INFO] Selected robot: {args.robot}")
+
+    # Download assets from newton-assets repository
+    asset_directory = str(newton.utils.download_asset(robot_config.asset_dir))
+    print(f"[INFO] Asset directory: {asset_directory}")
+
+    # Load robot configuration from YAML file in the downloaded assets
+    yaml_file_path = f"{asset_directory}/{robot_config.yaml_path}"
     try:
-        with open(args.robot, encoding="utf-8") as f:
+        with open(yaml_file_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"[ERROR] Robot config file not found: {args.robot}")
-        print("[INFO] Available robot configurations:")
-        import os
-
-        try:
-            for file in sorted(os.listdir("assets")):
-                if file.endswith(".yaml"):
-                    print(f"  - {file}")
-        except OSError:
-            print(f"  Could not list files in: {args.robot}")
+        print(f"[ERROR] Robot config file not found: {yaml_file_path}")
         exit(1)
     except yaml.YAMLError as e:
         print(f"[ERROR] Error parsing YAML file: {e}")
         exit(1)
-    asset_directory = str(newton.utils.download_asset(config["asset_dir"]))
 
-    print("[INFO] Selected robot config:", config)
+    print(f"[INFO] Loaded config with {config['num_dofs']} DOFs")
+
     mjc_to_physx = list(range(config["num_dofs"]))
     physx_to_mjc = list(range(config["num_dofs"]))
 
     if args.physx:
-        if "physx" not in config["policy_path"] or "physx_joint_names" not in config:
-            raise ValueError(f"PhysX policy/joint mapping not available in config file '{args.robot}'.")
-        policy_path = str(asset_directory) + "/" + config["policy_path"]["physx"]
+        if "physx" not in robot_config.policy_path or "physx_joint_names" not in config:
+            raise ValueError(f"PhysX policy/joint mapping not available for robot '{args.robot}'.")
+        policy_path = f"{asset_directory}/{robot_config.policy_path['physx']}"
         mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config["mjw_joint_names"], config["physx_joint_names"])
     else:
-        policy_path = str(asset_directory) + "/" + config["policy_path"]["mjw"]
+        policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
-    example = Example(viewer, config, str(asset_directory), mjc_to_physx, physx_to_mjc)
+    example = Example(viewer, robot_config, config, asset_directory, mjc_to_physx, physx_to_mjc)
 
     # Use utility function to load policy and setup tensors
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
