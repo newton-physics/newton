@@ -2331,7 +2331,7 @@ class SolverMuJoCo(SolverBase):
             # that maps from Newton's shape frame to MuJoCo's internal geom frame
             self.shape_incoming_xform = wp.full(model.shape_count, wp.transform_identity(), dtype=wp.transform)
 
-            if model.shape_count:
+            if self.mjw_model.geom_pos.size:
                 wp.launch(
                     update_incoming_shape_xform_kernel,
                     dim=(self.model.num_envs, self.mj_model.ngeom),
