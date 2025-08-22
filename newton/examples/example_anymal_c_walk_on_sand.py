@@ -19,7 +19,7 @@
 # Shows Anymal C with a pretrained policy coupled with implicit mpm sand.
 #
 # Example usage:
-# uv run --extra cu12 newton/examples/example_anymal_c_walk_on_sand.py
+# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk_on_sand.py
 ###########################################################################
 
 import sys
@@ -83,7 +83,7 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("anymal_c_simple_description")
+        asset_path = newton.utils.download_asset("anybotics_anymal_c")
         newton.utils.parse_urdf(
             str(asset_path / "urdf" / "anymal.urdf"),
             builder,
