@@ -804,9 +804,9 @@ class Example:
                 color = wp.render.bourke_color_map(-max_cost, -min_cost, -costs[i])
                 self.viewer.log_lines(
                     f"/rollout_{i}",
-                    wp.array(positions[:, i], dtype=wp.vec3),
-                    wp.array(positions[:, i], dtype=wp.vec3),
-                    wp.array([color], dtype=wp.vec3),
+                    wp.array(positions[0:-1, i], dtype=wp.vec3),
+                    wp.array(positions[1:, i], dtype=wp.vec3),
+                    color,
                 )
 
         self.viewer.end_frame()
@@ -828,7 +828,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--render_rollouts",
-        default=False,
         action="store_true",
         help="Add rollout trajectories to the output stage.",
     )
