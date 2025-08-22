@@ -1938,7 +1938,6 @@ class SolverMuJoCo(SolverBase):
         self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
         self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
         selected_shapes_set = set(selected_shapes)
-        selected_bodies_set = set(selected_bodies)
 
         def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[newton_body_id]]
