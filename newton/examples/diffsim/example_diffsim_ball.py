@@ -51,13 +51,12 @@ class Example:
     def __init__(self, viewer, verbose=False):
         # setup simulation parameters first
         self.fps = 60
+        self.frame = 0
         self.frame_dt = 1.0 / self.fps
         self.sim_steps = 36
         self.sim_substeps = 8
         self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
-
-        self.render_time = 0.0
 
         self.verbose = verbose
 
@@ -164,7 +163,7 @@ class Example:
         pass
 
     def render(self):
-        if self.render_time > 0.0 and self.train_iter % 16 != 0:
+        if self.frame > 0 and self.train_iter % 16 != 0:
             return
 
         # draw trajectory
@@ -174,7 +173,7 @@ class Example:
             state = self.states[i * self.sim_substeps]
             traj_verts.append(state.particle_q.numpy()[0].tolist())
 
-            self.viewer.begin_frame(self.render_time)
+            self.viewer.begin_frame(self.frame * self.frame_dt)
             self.viewer.log_state(state)
             self.viewer.log_contacts(self.contacts, state)
             self.viewer.log_shapes(
@@ -192,7 +191,7 @@ class Example:
             )
             self.viewer.end_frame()
 
-            self.render_time += self.frame_dt
+            self.frame += 1
 
     def check_grad(self):
         import numpy as np  # noqa: PLC0415

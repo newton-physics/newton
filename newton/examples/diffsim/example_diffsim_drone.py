@@ -468,8 +468,6 @@ class Example:
         self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.render_time = 0.0
-
         self.verbose = verbose
         self.rollout_count = num_rollouts
         self.render_rollouts = render_rollouts
@@ -779,7 +777,7 @@ class Example:
         print(f"[{(self.frame + 1):3d}/{self.sim_steps}] loss={loss:.8f}")
 
     def render(self):
-        self.viewer.begin_frame(self.render_time)
+        self.viewer.begin_frame(self.frame * self.frame_dt)
         self.viewer.log_state(self.drone.state)
 
         # Render a sphere as the current target.
@@ -812,7 +810,6 @@ class Example:
         self.viewer.end_frame()
 
         self.frame += 1
-        self.render_time += self.frame_dt
 
 
 if __name__ == "__main__":

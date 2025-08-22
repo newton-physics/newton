@@ -98,14 +98,13 @@ class Example:
     def __init__(self, viewer, verbose=False):
         # setup simulation parameters first
         self.fps = 60
+        self.frame = 0
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_steps = 300
         self.sim_substeps = 80
         self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
-
-        self.render_time = 0.0
 
         self.verbose = verbose
 
@@ -306,11 +305,11 @@ class Example:
 
     def render(self):
         for i in range(self.sim_steps + 1):
-            self.viewer.begin_frame(self.render_time)
+            self.viewer.begin_frame(self.frame * self.frame_dt)
             self.viewer.log_state(self.states[i * self.sim_substeps])
             self.viewer.end_frame()
 
-            self.render_time += self.frame_dt
+            self.frame += 1
 
 
 if __name__ == "__main__":

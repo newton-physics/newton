@@ -77,13 +77,12 @@ class Example:
     def __init__(self, viewer, material_behavior="anisotropic", verbose=False):
         # setup simulation parameters first
         self.fps = 60
+        self.frame = 0
         self.frame_dt = 1.0 / self.fps
         self.sim_steps = 60  # 1.0 seconds
         self.sim_substeps = 16
         self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
-
-        self.render_time = 0.0
 
         self.verbose = verbose
         self.material_behavior = material_behavior
@@ -325,7 +324,7 @@ class Example:
         pass
 
     def render(self):
-        if self.render_time > 0.0 and self.train_iter % 10 != 0:
+        if self.frame > 0 and self.train_iter % 10 != 0:
             return
 
         # draw trajectory
@@ -335,7 +334,7 @@ class Example:
             state = self.states[i * self.sim_substeps]
             traj_verts.append(np.mean(state.particle_q.numpy(), axis=0).tolist())
 
-            self.viewer.begin_frame(self.render_time)
+            self.viewer.begin_frame(self.frame * self.frame_dt)
             self.viewer.log_state(state)
             self.viewer.log_shapes(
                 "/target",
@@ -352,7 +351,7 @@ class Example:
             )
             self.viewer.end_frame()
 
-            self.render_time += self.frame_dt
+            self.frame += 1
 
 
 if __name__ == "__main__":
