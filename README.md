@@ -172,13 +172,13 @@ get started.
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples diff_ball</code>
+      <code>python -m newton.examples diffsim_ball</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diff_cloth</code>
+      <code>python -m newton.examples diffsim_cloth</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diff_drone</code>
+      <code>python -m newton.examples diffsim_drone</code>
     </td>
   </tr>
   <tr>
@@ -200,13 +200,13 @@ get started.
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples diff_spring_cage</code>
+      <code>python -m newton.examples diffsim_spring_cage</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diff_soft_body</code>
+      <code>python -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diff_bear</code>
+      <code>python -m newton.examples diffsim_bear</code>
     </td>
   </tr>
 </table>
