@@ -135,7 +135,7 @@ def parse_usd(
         "convexhull": "convex_hull",
         "boundingsphere": "bounding_sphere",
         "boundingcube": "bounding_box",
-        "meshSimplification": "quadratic",
+        "meshsimplification": "quadratic",
     }
     # mapping from remeshing method to a list of shape indices
     remeshing_queue = {}
