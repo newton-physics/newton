@@ -22,9 +22,9 @@
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
 # Run this example with:
-# python example_RL_policy.py --robot g1_29dof
-# python example_RL_policy.py --robot go2
-# python example_RL_policy.py --robot anymal
+# python example_robot_policy.py --robot g1_29dof
+# python example_robot_policy.py --robot go2
+# python example_robot_policy.py --robot anymal
 # to run the example with physX trained policies run with --physx
 ###########################################################################
 
