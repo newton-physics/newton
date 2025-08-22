@@ -33,12 +33,10 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self):
         # setup simulation time and timestep
         self.sim_time = 0.0
         self.sim_dt = 1.0 / 60.0
-
-        self.viewer = viewer
 
         # create a pendulum model using the builder
         #   by default, the builder uses up_axis=newton.Axis.Z and gravity=-9.81 m/s^2
@@ -71,9 +69,6 @@ class Example:
         # finalize model
         #   this method transfers all data to the memory of the target device (eg. gpu) ready for simulation.
         self.model = pendulum.finalize()
-
-        # setup viewer, also works for null viewer
-        self.viewer.set_model(self.model)
 
         # create solver.
         #   see newton/docs/solvers.rst for more details.
@@ -133,20 +128,11 @@ class Example:
     def test(self):
         pass
 
-    def render(self):
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.end_frame()
-
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init(parser)
-
     # Create example
-    example = Example(viewer)
+    example = Example()
 
-    newton.examples.run(example)
+    # run 100 steps
+    for _ in range(100):
+        example.step()
