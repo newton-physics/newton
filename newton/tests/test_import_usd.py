@@ -529,13 +529,14 @@ class TestImportUsd(unittest.TestCase):
 
 
 class TestImportSampleAssets(unittest.TestCase):
-    def verify_usdphysics_parser(self, file, model, compare_min_max_coords):
+    def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):
         """Verify model based on the UsdPhysics Parsing Utils"""
         # [1] https://openusd.org/release/api/usd_physics_page_front.html
         from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.Open(file)
         parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+        # since the key is generated from USD paths we can assume that keys are unique
         body_key_to_idx = dict(zip(model.body_key, range(model.body_count)))
         shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count)))
 
@@ -600,7 +601,9 @@ class TestImportSampleAssets(unittest.TestCase):
                 assert joint_key_to_idx.get(str(joint_path), None) is not None
                 assert model_joint_type[joint_idx] == joint_type
 
-        self.assertEqual(len(joints_found) + 1, model.joint_count)
+        # the parser will insert free joints as parents to floating bodies with nonzero mass
+        expected_model_joints = len(joints_found) + 1 if floating else len(joints_found)
+        self.assertEqual(model.joint_count, expected_model_joints)
 
         body_q_array = model.body_q.numpy()
         joint_dof_dim_array = model.joint_dof_dim.numpy()
@@ -864,24 +867,24 @@ class TestImportSampleAssets(unittest.TestCase):
                 self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_g1(self):
+    def test_ant(self):
         builder = newton.ModelBuilder()
-        asset_path = newton.utils.download_asset("g1_usd") / "g1_isaac.usd"
 
+        asset_path = newton.examples.get_asset("ant.usda")
         newton.utils.parse_usd(
-            str(asset_path),
+            asset_path,
             builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(str(asset_path), model, compare_min_max_coords=False)
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_anymal(self):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        asset_root = newton.utils.download_asset("anymal_usd")
+        asset_root = newton.utils.download_asset("anybotics_anymal_d/usd")
         stage_path = None
         for root, _, files in os.walk(asset_root):
             if "anymal_d.usda" in files:
@@ -898,7 +901,52 @@ class TestImportSampleAssets(unittest.TestCase):
             load_non_physics_prims=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(stage_path, model, True)
+        self.verify_usdphysics_parser(stage_path, model, True, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cartpole(self):
+        builder = newton.ModelBuilder()
+
+        asset_path = newton.examples.get_asset("cartpole.usda")
+        newton.utils.parse_usd(
+            asset_path,
+            builder,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=False)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_g1(self):
+        builder = newton.ModelBuilder()
+        asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
+
+        newton.utils.parse_usd(
+            asset_path,
+            builder,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=False, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_h1(self):
+        builder = newton.ModelBuilder()
+        asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usd")
+
+        newton.utils.parse_usd(
+            asset_path,
+            builder,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
 
 
 if __name__ == "__main__":
