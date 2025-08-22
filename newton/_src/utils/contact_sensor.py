@@ -70,7 +70,7 @@ def select_aggregate_net_force(
     sp_ep_offset: wp.array(dtype=wp.int32),
     sp_ep_count: wp.array(dtype=wp.int32),
     contact_pair: wp.array(dtype=wp.vec2i),
-    contact_normal: wp.array(dtype=wp.vec3f),
+    contact_normal: wp.array(dtype=wp.vec3),
     contact_force: wp.array(dtype=wp.float32),
     # output
     net_force: wp.array(dtype=wp.vec3),
@@ -117,8 +117,7 @@ def populate_contacts(
     contacts: Contacts,
     solver: SolverBase,
 ):
-    """
-    Populate a Contacts object with the latest contact data from a solver.
+    """Populate a Contacts object with the latest contact data from a solver.
 
     This function updates the given `contacts` object in-place using the contact information from the provided
     `solver`. It is typically called after a simulation step to refresh the contact data for use in sensors or
@@ -196,9 +195,8 @@ class ContactSensor:
         self.shape: tuple[int, int]
         """Shape of the force matrix (n_sensing_objs, n_counterparts) if ``prune_noncolliding`` is False, and
         (n_sensing_objs, max_active_counterparts) if it is True."""
-        self.reading_indices: list[list[tuple[int, MatchKind], ...]]
-        """Index and kind of each counterpart, per sensing object. For recovering the active counterparts
-        when ``prune_noncolliding`` is True."""
+        self.reading_indices: list[list[int]]
+        """List of active counterpart indices per sensing object."""
         self.sensing_objs: list[tuple[int, MatchKind]]
         """Index and kind of each sensing object, length n_sensing_objs. Corresponds to the rows of the force matrix."""
         self.counterparts: list[tuple[int, MatchKind]]
@@ -262,8 +260,7 @@ class ContactSensor:
         self.net_force = self._net_force.reshape(self.shape)
 
     def eval(self, contacts: Contacts):
-        """
-        Evaluate the contact sensor readings based on the provided contacts.
+        """Evaluate the contact sensor readings based on the provided contacts.
 
         Process the given Contacts object and updates the internal net force readings for each sensing_obj-counterpart
         pair.
@@ -273,12 +270,11 @@ class ContactSensor:
         """
         self._eval_net_force(contacts)
 
-    def get_total_force(self) -> wp.array2d(dtype=wp.vec3f):
-        """
-        Get the total net force measured by the contact sensor.
+    def get_total_force(self) -> wp.array2d(dtype=wp.vec3):
+        """Get the total net force measured by the contact sensor.
 
         Returns:
-            wp.array2d(dtype=wp.vec3f): The net force array, with shape ``shape``.
+            The net force array.
         """
         return self.net_force
 
