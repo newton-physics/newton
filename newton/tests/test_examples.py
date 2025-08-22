@@ -330,22 +330,25 @@ add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_articulations",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100},
+    test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
+    use_viewer=True,
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_cartpole",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100},
+    test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
+    use_viewer=True,
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="example_selection_materials",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100},
+    test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
+    use_viewer=True,
 )
 
 

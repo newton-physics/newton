@@ -13,6 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+###########################################################################
+# Example Selection Articulations
+#
+# Demonstrates batch control of multiple articulated robots using
+# ArticulationView. This example spawns ant and humanoid robots across
+# multiple environments, applies random forces to their joints, and
+# performs selective resets on subsets of environments.
+#
+# Command: python -m newton.examples selection_articulations
+#
+###########################################################################
+
 from __future__ import annotations
 
 import warp as wp
