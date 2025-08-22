@@ -183,6 +183,12 @@ def main():
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+        "diffsim_ball": "newton.examples.diffsim.example_diffsim_ball",
+        "diffsim_cloth": "newton.examples.diffsim.example_diffsim_cloth",
+        "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
+        "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
+        "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
+        "diffsim_bear": "newton.examples.diffsim.example_diffsim_bear",
     }
 
     if len(sys.argv) < 2:
