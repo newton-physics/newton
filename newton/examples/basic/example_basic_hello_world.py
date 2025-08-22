@@ -21,6 +21,7 @@
 # require any additional dependencies.
 #
 # Example usage:
+# python -m newton.examples basic_hello_world
 # uv run newton/examples/basic/example_basic_hello_world.py
 #
 ###########################################################################
@@ -37,21 +38,23 @@ class Example:
         self.sim_time = 0.0
         self.sim_dt = 1.0 / 60.0
 
-        # create double pendulum model using the builder
-        builder = newton.ModelBuilder()
+        # create a pendulum model using the builder
+        #   by default, the builder uses up_axis=newton.Axis.Z and gravity=-9.81 m/s^2
+        #   but we make it explicit here for clarity (see newton.ModelBuilder for more details).
+        pendulum = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
 
-        builder.add_articulation(key="double_pendulum")
+        pendulum.add_articulation(key="pendulum")
 
         hx = 1.0
         hy = 0.1
         hz = 0.1
 
         # create pendulum link
-        pendulum_link = builder.add_body()
-        builder.add_shape_box(pendulum_link, hx=hx, hy=hy, hz=hz)
+        pendulum_link = pendulum.add_body()
+        pendulum.add_shape_box(pendulum_link, hx=hx, hy=hy, hz=hz)
 
         # add joint to world
-        builder.add_joint_revolute(
+        pendulum.add_joint_revolute(
             parent=-1,  # parent is world
             child=pendulum_link,
             axis=wp.vec3(0.0, 1.0, 0.0),
@@ -59,29 +62,33 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
 
+        # set reduced-coordinate initial angles and velocities
+        pendulum.joint_q[0] = 0.0
+        pendulum.joint_qd[0] = -1.0
+
         # finalize model
-        self.model = builder.finalize()
+        #   this method transfers all data to the memory of the target device (eg. gpu) ready for simulation.
+        self.model = pendulum.finalize()
 
-        # set gravity to 9.81 m/s^2 in the negative z direction
-        self.model.gravity = wp.vec3(0.0, 0.0, -9.81)
-
+        # create solver.
+        #   see newton/docs/solvers.rst for more details.
         self.solver = newton.solvers.SolverXPBD(self.model)
 
+        # create state objects for simulation
+        #   state_0 is initialized with the initial configuration given in the model description.
+        #   the attributes of state_0, like body_q, body_qd, etc., are all on the target device (eg. gpu).
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        # set reduced-coordinate initial angles and velocities
-        host_model_joint_q = self.model.joint_q.to("cpu")
-        host_model_joint_q.numpy()[0] = 0
-        wp.copy(self.model.joint_q, host_model_joint_q)
+        # create control and contact objects for simulation
+        #   unused in this example, but presented here for completeness
+        self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
-        host_model_joint_qd = self.model.joint_qd.to("cpu")
-        host_model_joint_qd.numpy()[0] = -1.0
-        wp.copy(self.model.joint_qd, host_model_joint_qd)
-
-        # Set initial pendulum position and velocity from reduced coordinates
+        # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
+        # capture graph if a cuda device is available to improve performance.
         self.capture()
 
     def capture(self):
@@ -93,17 +100,27 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.solver.step(self.state_0, self.state_0, None, None, self.sim_dt)
-        # copy states for graph capture because we are only taking a single step
-        # wp.copy(self.state_0.body_q, self.state_1.body_q)
-        # wp.copy(self.state_0.body_qd, self.state_1.body_qd)
+        # clear forces
+        self.state_0.clear_forces()
+
+        # solve for the next state
+        self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
+
+        # swap states
+        self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        print(f"[Time {self.sim_time:.2f}s] Pendulum angular velocity {self.state_0.body_qd.numpy()[0, 1]}")
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
+
+        # body_qd is a warp array of shape (body_count, ) and type spatial_vector that lives on the target device (eg. gpu)
+        # to access the data from the host (eg. cpu), we need to use the .numpy() method.
+        # - for more details about the spatial vector conventions that are used in Newton, see newton/docs/conventions.rst.
+        # - for more details about gpu to cpu transfers, warp arrays see the notebook tutorials from warp:
+        #   https://github.com/NVIDIA/warp?tab=readme-ov-file#running-notebooks
+        print(f"[Time {self.sim_time:.2f}s] Pendulum angular velocity {self.state_0.body_qd.numpy()[0, 1]}")
 
         self.sim_time += self.sim_dt
 
@@ -112,7 +129,7 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create viewer and run
+    # Create example
     example = Example()
 
     # run 100 steps
