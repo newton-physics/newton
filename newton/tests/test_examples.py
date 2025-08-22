@@ -223,6 +223,15 @@ add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=t
 
 add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
 
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_hello_world_with_viewer",
+    devices=test_devices,
+    test_options={"num_frames": 100},
+    test_options_cpu={"num_frames": 100},
+    use_viewer=True,
+)
+
 
 class TestClothExamples(unittest.TestCase):
     pass
