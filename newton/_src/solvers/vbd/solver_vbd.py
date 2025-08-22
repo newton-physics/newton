@@ -845,7 +845,7 @@ def evaluate_edge_edge_contact_2_vertices(
     dis = st[2]
     collision_normal = diff / dis
 
-    if dis < collision_radius:
+    if 0.0 < dis < collision_radius:
         bs = wp.vec4(1.0 - s, s, -1.0 + t, -t)
 
         dEdD, d2E_dDdD = evaluate_self_contact_force_norm(dis, collision_radius, collision_stiffness)
@@ -1045,7 +1045,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
     dis = wp.length(diff)
     collision_normal = diff / dis
 
-    if dis < collision_radius:
+    if 0.0 < dis < collision_radius:
         bs = wp.vec4(-bary[0], -bary[1], -bary[2], 1.0)
 
         dEdD, d2E_dDdD = evaluate_self_contact_force_norm(dis, collision_radius, collision_stiffness)
