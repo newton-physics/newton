@@ -19,7 +19,7 @@
 # Shows how to control Anymal C with a pretrained policy.
 #
 # Example usage:
-# uv run --extra cu12 newton/examples/example_anymal_c_walk.py
+# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk.py
 #
 ###########################################################################
 

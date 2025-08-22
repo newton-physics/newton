@@ -1,5 +1,3 @@
 # Changelog
 
-## [0.0.1] - 2025-04-08
-
-- Initial version.
+We are not maintaining a changelog during the alpha development phase.
