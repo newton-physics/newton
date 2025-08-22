@@ -168,7 +168,12 @@ def array_inner(
 ):
     from warp.context import runtime  # noqa: PLC0415
 
-    runtime.core.wp_array_inner_float_device(
+    if a.device.is_cpu:
+        func = runtime.core.wp_array_inner_float_host
+    else:
+        func = runtime.core.wp_array_inner_float_device
+
+    func(
         a.ptr,
         b.ptr,
         out_ptr,

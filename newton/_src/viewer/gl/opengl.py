@@ -6,7 +6,8 @@ import sys
 import numpy as np
 import warp as wp
 
-from ..mesh import create_sphere_mesh
+from newton.utils import create_sphere_mesh
+
 from .shaders import (
     FrameShader,
     ShaderLine,
@@ -15,7 +16,7 @@ from .shaders import (
     ShadowShader,
 )
 
-ENABLE_CUDA_INTEROP = False
+ENABLE_CUDA_INTEROP = True
 ENABLE_GL_CHECKS = False
 
 wp.set_module_options({"enable_backward": False})
@@ -483,6 +484,47 @@ def update_vbo_transforms(
     )
 
 
+@wp.kernel
+def update_vbo_transforms_from_points(
+    points: wp.array(dtype=wp.vec3),
+    widths: wp.array(dtype=wp.float32),
+    vbo_transforms: wp.array(dtype=wp.mat44),
+):
+    """Update VBO with simple instance transformation matrices."""
+    tid = wp.tid()
+
+    # Get transform and scaling
+    p = points[tid]
+
+    if widths:
+        s = widths[tid]
+    else:
+        s = 1.0
+
+    # Build rotation matrix
+    R = wp.identity(n=3, dtype=wp.float32)
+
+    # Apply scaling
+    vbo_transforms[tid] = wp.mat44(
+        R[0, 0] * s,
+        R[1, 0] * s,
+        R[2, 0] * s,
+        0.0,
+        R[0, 1] * s,
+        R[1, 1] * s,
+        R[2, 1] * s,
+        0.0,
+        R[0, 2] * s,
+        R[1, 2] * s,
+        R[2, 2] * s,
+        0.0,
+        p[0],
+        p[1],
+        p[2],
+        1.0,
+    )
+
+
 class MeshInstancerGL:
     """
     Handles instanced rendering for a mesh.
@@ -493,6 +535,7 @@ class MeshInstancerGL:
     def __init__(self, num_instances, mesh):
         self.mesh = mesh
         self.device = mesh.device
+        self.hidden = False
         self.instance_transform_buffer = None
         self.instance_scale_buffer = None
         self.instance_color_buffer = None
@@ -607,10 +650,13 @@ class MeshInstancerGL:
 
         # ------------------------
         # materials buffer
+        host_materials = np.zeros(self.num_instances * 4, dtype=np.float32)
 
         gl.glGenBuffers(1, self.instance_material_buffer)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_material_buffer_size, None, gl.GL_STATIC_DRAW)
+        gl.glBufferData(
+            gl.GL_ARRAY_BUFFER, self.instance_material_buffer_size, host_materials.ctypes.data, gl.GL_STATIC_DRAW
+        )
 
         gl.glVertexAttribPointer(8, 4, gl.GL_FLOAT, gl.GL_FALSE, self.material_byte_size, ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(8)
@@ -626,15 +672,13 @@ class MeshInstancerGL:
         else:
             self._instance_transform_cuda_buffer = None
 
-    def update(
+    def update_from_transforms(
         self,
         transforms: wp.array = None,
         scalings: wp.array = None,
         colors: wp.array = None,
         materials: wp.array = None,
     ):
-        gl = RendererGL.gl
-
         if transforms is not None or scalings is not None:
             # update world transforms
             wp.launch(
@@ -651,16 +695,40 @@ class MeshInstancerGL:
                 record_tape=False,
             )
 
-            if ENABLE_CUDA_INTEROP and self.device.is_cuda:
-                vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
-                wp.copy(vbo_transforms, self.world_xforms)
-                self._instance_transform_cuda_buffer.unmap()
-            else:
-                host_transforms = self.world_xforms.numpy()
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-                gl.glBufferData(
-                    gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_STATIC_DRAW
-                )
+            self._update_vbo(self.world_xforms, colors, materials)
+
+    # helper to update instance transforms from points
+    def update_from_points(self, points, widths, colors):
+        if points is not None or widths is not None:
+            # update world transforms
+            wp.launch(
+                update_vbo_transforms_from_points,
+                dim=self.num_instances,
+                inputs=[
+                    points,
+                    widths,
+                ],
+                outputs=[
+                    self.world_xforms,
+                ],
+                device=self.device,
+                record_tape=False,
+            )
+
+        self._update_vbo(self.world_xforms, colors, None)
+
+    # upload to vbo
+    def _update_vbo(self, xforms, colors, materials):
+        gl = RendererGL.gl
+
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
+            vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
+            wp.copy(vbo_transforms, xforms)
+            self._instance_transform_cuda_buffer.unmap()
+        else:
+            host_transforms = xforms.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_STATIC_DRAW)
 
         # update other properties through CPU for now
         if colors is not None:
@@ -675,6 +743,9 @@ class MeshInstancerGL:
 
     def render(self):
         gl = RendererGL.gl
+
+        if self.hidden:
+            return
 
         if self.mesh.backface_culling:
             gl.glEnable(gl.GL_CULL_FACE)
@@ -696,12 +767,11 @@ class RendererGL:
 
             cls.gl = gl
 
-    def __init__(self, title="Warp", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
+    def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
         self.draw_wireframe = False
-        self.vsync = vsync
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -946,6 +1016,22 @@ class RendererGL:
 
     def set_title(self, title):
         self.window.set_caption(title)
+
+    def set_vsync(self, enabled: bool):
+        """Enable or disable vertical synchronization (vsync).
+
+        Args:
+            enabled: If True, enable vsync; if False, disable vsync.
+        """
+        self.window.set_vsync(enabled)
+
+    def get_vsync(self) -> bool:
+        """Get the current vsync state.
+
+        Returns:
+            True if vsync is enabled, False otherwise.
+        """
+        return self.window.vsync
 
     def has_exit(self):
         return self.app.event_loop.has_exit

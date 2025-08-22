@@ -91,10 +91,10 @@ def _setup_humanoid(articulation_builder):
 
 
 def _setup_g1(articulation_builder):
-    asset_path = newton.utils.download_asset("g1_description")
+    asset_path = newton.utils.download_asset("unitree_g1")
 
     newton.utils.parse_mjcf(
-        str(asset_path / "g1_29dof_with_hand_rev_1_0.xml"),
+        str(asset_path / "mjcf" / "g1_29dof_with_hand_rev_1_0.xml"),
         articulation_builder,
         collapse_fixed_joints=True,
         up_axis="Z",
@@ -127,7 +127,7 @@ def _setup_h1(articulation_builder):
     articulation_builder.default_joint_cfg.armature = 0.1
     articulation_builder.default_body_armature = 0.1
 
-    asset_path = newton.utils.download_asset("h1_description")
+    asset_path = newton.utils.download_asset("unitree_h1")
     newton.utils.parse_mjcf(
         str(asset_path / "mjcf" / "h1_with_hand.xml"),
         articulation_builder,

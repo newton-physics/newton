@@ -45,8 +45,8 @@ class TestAnymalReset(unittest.TestCase):
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("anymal_usd")
-        stage_path = str(asset_path / "anymal_d.usda")
+        asset_path = newton.utils.download_asset("anybotics_anymal_d")
+        stage_path = str(asset_path / "usd" / "anymal_d.usda")
         newton.utils.parse_usd(
             stage_path,
             builder,

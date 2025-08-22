@@ -235,7 +235,7 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("anymal_c_simple_description")
+        asset_path = newton.utils.download_asset("anybotics_anymal_c")
 
         newton.utils.parse_urdf(
             str(asset_path / "urdf" / "anymal.urdf"),

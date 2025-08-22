@@ -258,7 +258,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
     def test_randomize_body_mass(self):
         """
-        Tests if the body mass is randomized correctly and updates properly after simulation steps.
+        Tests if the body mass is randomized correctly and updated properly after simulation steps.
         """
         # Randomize masses for all bodies in all environments
         new_masses = self.rng.uniform(1.0, 10.0, size=self.model.body_count)
@@ -269,7 +269,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Check that masses were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -319,7 +319,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
         for env_idx in range(self.model.num_envs):
             for body_idx in range(bodies_per_env):
                 newton_idx = env_idx * bodies_per_env + body_idx
@@ -405,7 +405,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
 
         # Get body mapping once outside the loop
-        body_mapping = self.model.to_mjc_body_index.numpy()
+        body_mapping = solver.to_mjc_body_index.numpy()
 
         def check_inertias(inertias_to_check, msg_prefix=""):
             for env_idx in range(self.model.num_envs):
@@ -520,7 +520,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         for env_idx in range(self.model.num_envs):
             for axis_idx in range(dofs_per_env):
                 global_axis_idx = env_idx * dofs_per_env + axis_idx
-                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
 
                 if actuator_idx >= 0:  # This axis has an actuator
                     force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
@@ -602,7 +602,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         for env_idx in range(self.model.num_envs):
             for axis_idx in range(dofs_per_env):
                 global_axis_idx = env_idx * dofs_per_env + axis_idx
-                actuator_idx = solver.model.mjc_axis_to_actuator.numpy()[axis_idx]
+                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
 
                 if actuator_idx >= 0:
                     force_range = solver.mjw_model.actuator_forcerange.numpy()[env_idx, actuator_idx]
@@ -658,10 +658,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Verify to_newton_shape_index mapping exists
-        self.assertTrue(hasattr(self.model, "to_newton_shape_index"))
+        self.assertTrue(hasattr(solver, "to_newton_shape_index"))
 
         # Get mappings and arrays
-        to_newton_shape_index = self.model.to_newton_shape_index.numpy()
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
         shape_types = self.model.shape_type.numpy()
         num_geoms = solver.mj_model.ngeom
 
@@ -672,7 +672,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
-        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
+        shape_incoming_xform = solver.shape_incoming_xform.numpy()
 
         # Get all property arrays from MuJoCo
         geom_friction = solver.mjw_model.geom_friction.numpy()
@@ -821,8 +821,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Get mappings
-        to_newton_shape_index = self.model.to_newton_shape_index.numpy()
-        shape_incoming_xform = self.model.shape_incoming_xform.numpy()
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
+        shape_incoming_xform = solver.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step
@@ -843,7 +843,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # 1. Update friction
         new_mu = np.zeros(shape_count)
         for i in range(shape_count):
-            new_mu[i] = 0.1 + i * 0.05  # Pattern: 0.1, 0.15, 0.2, ...
+            new_mu[i] = 1.0 + (i + 1) * 0.05  # Pattern: 1.05, 1.10, ...
         self.model.shape_material_mu.assign(new_mu)
 
         # 2. Update contact stiffness/damping
