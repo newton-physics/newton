@@ -115,7 +115,7 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
-        collision_detection_block_size=32,
+        collision_detection_block_size=16,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
@@ -286,7 +286,7 @@ class TriMeshCollisionDetector:
             dim=self.model.tri_count,
             device=self.model.device,
         )
-        self.bvh_tris.rebuild()
+        self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
 
         wp.launch(
             kernel=compute_edge_aabbs,
@@ -295,7 +295,7 @@ class TriMeshCollisionDetector:
             dim=self.model.edge_count,
             device=self.model.device,
         )
-        self.bvh_edges.rebuild()
+        self.bvh_edges = wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges)
 
     def refit(self, new_pos=None):
         if new_pos is not None:
