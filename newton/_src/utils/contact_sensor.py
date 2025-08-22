@@ -251,9 +251,11 @@ class ContactSensor:
         )
 
         # initialize warp arrays
-        self.n_shape_pairs: int = len(sp_sorted)
-        self.sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i, device=self.device)
-        self.sp_reading, self.sp_ep_offset, self.sp_ep_count = _lol_to_arrays(sp_reading, wp.vec2i, device=self.device)
+        self._n_shape_pairs: int = len(sp_sorted)
+        self._sp_sorted = wp.array(sp_sorted, dtype=wp.vec2i, device=self.device)
+        self._sp_reading, self._sp_ep_offset, self._sp_ep_count = _lol_to_arrays(
+            sp_reading, wp.vec2i, device=self.device
+        )
 
         # net force (one vec3 per sensor-counterpart pair)
         self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
@@ -358,11 +360,11 @@ class ContactSensor:
             dim=contact.rigid_contact_max,
             inputs=[
                 contact.rigid_contact_count,
-                self.sp_sorted,
-                self.n_shape_pairs,
-                self.sp_reading,
-                self.sp_ep_offset,
-                self.sp_ep_count,
+                self._sp_sorted,
+                self._n_shape_pairs,
+                self._sp_reading,
+                self._sp_ep_offset,
+                self._sp_ep_count,
                 contact.pair,
                 contact.normal,
                 contact.force,
