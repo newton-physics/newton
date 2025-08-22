@@ -90,7 +90,7 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         if stage_path is None:
-            asset_path = newton.utils.download_asset("anymal_c_simple_description")
+            asset_path = newton.utils.download_asset("anybotics_anymal_c")
             stage_path = str(asset_path / "urdf" / "anymal.urdf")
         newton.utils.parse_urdf(
             stage_path,
@@ -235,8 +235,8 @@ if __name__ == "__main__":
         example = Example(stage_path=args.stage_path, headless=args.headless)
 
         # Download the policy from the newton-assets repository
-        policy_asset_path = newton.utils.download_asset("anymal_c_policies")
-        policy_path = str(policy_asset_path / "anymal_walking_policy_physx.pt")
+        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
 
         example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
         example.joint_pos_initial = torch.tensor(

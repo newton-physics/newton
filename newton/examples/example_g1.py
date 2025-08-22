@@ -46,10 +46,10 @@ class Example:
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
         )
-        asset_path = newton.utils.download_asset("g1_usd")
+        asset_path = newton.utils.download_asset("unitree_g1")
 
         newton.utils.parse_usd(
-            str(asset_path / "g1_isaac.usd"),
+            str(asset_path / "usd" / "g1_isaac.usd"),
             articulation_builder,
             xform=wp.transform(wp.vec3f(0, 0, 0.8), wp.quat_identity()),
             collapse_fixed_joints=True,
