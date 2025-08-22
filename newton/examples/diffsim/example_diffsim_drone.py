@@ -720,11 +720,6 @@ class Example:
             # Assign the new target to the current target array.
             self.current_target.assign([self.targets[self.target_idx]])
 
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.forward_backward()
-
         # Sample control waypoints around the nominal trajectory.
         noise_scale = 0.15
         wp.launch(
