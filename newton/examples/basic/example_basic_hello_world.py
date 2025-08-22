@@ -116,9 +116,10 @@ class Example:
             self.simulate()
 
         # body_qd is a warp array of shape (body_count, ) and type spatial_vector that lives on the target device (eg. gpu)
-        # to access the data from the host (eg. cpu), we need to use the .numpy() method.
+        # to access the data via slicing (eg. array[0,0:3]) from the host (eg. cpu), we need to create a copy of the warp array
+        # to the host using the .numpy() method.
         # - for more details about the spatial vector conventions that are used in Newton, see newton/docs/conventions.rst.
-        # - for more details about gpu to cpu transfers, warp arrays see the notebook tutorials from warp:
+        # - for more details about warp arrays and interoperability with numpy and pytorch, see the notebook tutorials from warp:
         #   https://github.com/NVIDIA/warp?tab=readme-ov-file#running-notebooks
         print(f"[Time {self.sim_time:.2f}s] Pendulum angular velocity {self.state_0.body_qd.numpy()[0, 1]}")
 
