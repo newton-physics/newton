@@ -362,7 +362,6 @@ class ViewerBase:
     def log_scalar(self, name, value):
         pass
 
-    @abstractmethod
     def apply_forces(self, state):
         pass
 
