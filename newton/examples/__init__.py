@@ -184,6 +184,7 @@ def main():
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
         "basic_hello_world": "newton.examples.basic.example_basic_hello_world",
+        "basic_hello_world_with_viewer": "newton.examples.basic.example_basic_hello_world_with_viewer",
     }
 
     if len(sys.argv) < 2:
