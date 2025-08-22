@@ -16,7 +16,7 @@
 ###########################################################################
 # Example Robot control via keyboard
 #
-# Shows how to control robot pretrained in IsaacLab with Reinforcement learning.
+# Shows how to control robot pretrained in IsaacLab with RL.
 # The policy is loaded from a file and the robot is controlled via keyboard.
 # Press space to start the simulation.
 # Press "p" to reset the robot.
@@ -196,12 +196,31 @@ class Example:
         mjc_to_physx: list[int],
         physx_to_mjc: list[int],
     ):
-        self.device = wp.get_device()
-        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
+        # Setup simulation parameters first
+        fps = 200
+        self.frame_dt = 1.0e0 / fps
+        self.decimation = 4
+        self.cycle_time = 1 / fps * self.decimation
+
+        # Group related attributes by prefix
+        self.sim_time = 0.0
+        self.sim_step = 0
+        self.sim_substeps = 1
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        # Save a reference to the viewer
+        self.viewer = viewer
+
+        # Store configuration
         self.use_mujoco = False
         self.config = config
         self.robot_config = robot_config
-        self.viewer = viewer
+
+        # Device setup
+        self.device = wp.get_device()
+        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
+
+        # Build the model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.1,
@@ -225,15 +244,6 @@ class Example:
 
         builder.add_ground_plane()
         builder.gravity = wp.vec3(0.0, 0.0, -9.81)
-        self.sim_time = 0.0
-        self.sim_step = 0
-        fps = 200
-        self.decimation = 4
-        self.frame_dt = 1.0e0 / fps
-        self.cycle_time = 1 / fps * self.decimation
-
-        self.sim_substeps = 1
-        self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -255,18 +265,24 @@ class Example:
             ncon_per_env=30,
         )
 
+        # Initialize state objects
         self.state_temp = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
+        # Set model in viewer
         self.viewer.set_model(self.model)
         self.viewer.vsync = True
-        # Store initial joint state for fast reset.
+
+        # Ensure FK evaluation (for non-MuJoCo solvers)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Store initial joint state for fast reset
         self._initial_joint_q = wp.clone(self.state_0.joint_q)
         self._initial_joint_qd = wp.clone(self.state_0.joint_qd)
+
         # Pre-compute tensors that don't change during simulation
         self.physx_to_mjc_indices = torch.tensor(physx_to_mjc, device=self.torch_device, dtype=torch.long)
         self.mjc_to_physx_indices = torch.tensor(mjc_to_physx, device=self.torch_device, dtype=torch.long)
@@ -274,17 +290,31 @@ class Example:
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self._reset_key_prev = False
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and not self.use_mujoco
-        if self.use_cuda_graph:
-            torch_tensor = torch.zeros(config["num_dofs"] + 6, device=self.torch_device, dtype=torch.float32)
+        # Initialize policy-related attributes
+        # (will be set by load_policy_and_setup_tensors)
+        self.policy = None
+        self.joint_pos_initial = None
+        self.act = None
+        self.rearranged_act = None
+
+        # Call capture at the end
+        self.capture()
+
+    def capture(self):
+        """Put graph capture into it's own method."""
+        self.graph = None
+        self.use_cuda_graph = False
+        if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
+            print("[INFO] Using CUDA graph")
+            self.use_cuda_graph = True
+            torch_tensor = torch.zeros(self.config["num_dofs"] + 6, device=self.torch_device, dtype=torch.float32)
             self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
+        """Simulate performs one frame's worth of updates."""
         state_0_dict = self.state_0.__dict__
         state_1_dict = self.state_1.__dict__
         state_temp_dict = self.state_temp.__dict__
@@ -292,12 +322,17 @@ class Example:
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
+            # # Apply forces to the model for picking, wind, etc
+            # self.viewer.apply_forces(self.state_0)
+
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # Swap states - handle CUDA graph case specially
             if i < self.sim_substeps - 1 or not self.use_cuda_graph:
-                # we can just swap the state references
+                # We can just swap the state references
                 self.state_0, self.state_1 = self.state_1, self.state_0
             elif self.use_cuda_graph:
-                # swap states by copying the state arrays for graph capture
+                # Swap states by copying the state arrays for graph capture
                 for key, value in state_0_dict.items():
                     if isinstance(value, wp.array):
                         if key not in state_temp_dict:
@@ -318,57 +353,58 @@ class Example:
         newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            # Build command from viewer keyboard
-            if hasattr(self.viewer, "is_key_down"):
-                fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-                lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-                rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-                self.command[0, 0] = float(fwd)
-                self.command[0, 1] = float(lat)
-                self.command[0, 2] = float(rot)
-                # Reset when 'P' is pressed (edge-triggered)
-                reset_down = bool(self.viewer.is_key_down("p"))
-                if reset_down and not self._reset_key_prev:
-                    self.reset()
-                self._reset_key_prev = reset_down
-            obs = compute_obs(
-                self.act,
-                self.state_0,
-                self.joint_pos_initial,
-                self.torch_device,
-                self.physx_to_mjc_indices,
-                self.gravity_vec,
-                self.command,
-            )
-            with torch.no_grad():
-                self.act = self.policy(obs)
-                self.rearranged_act = torch.index_select(self.act, 1, self.mjc_to_physx_indices)
-                a = self.joint_pos_initial + self.config["action_scale"] * self.rearranged_act
-                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-                wp.copy(self.control.joint_target, a_wp)
+        # Build command from viewer keyboard
+        if hasattr(self.viewer, "is_key_down"):
+            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+            self.command[0, 0] = float(fwd)
+            self.command[0, 1] = float(lat)
+            self.command[0, 2] = float(rot)
+            # Reset when 'P' is pressed (edge-triggered)
+            reset_down = bool(self.viewer.is_key_down("p"))
+            if reset_down and not self._reset_key_prev:
+                self.reset()
+            self._reset_key_prev = reset_down
 
-            for _ in range(self.decimation):
-                if self.use_cuda_graph:
-                    wp.capture_launch(self.graph)
-                else:
-                    self.simulate()
+        obs = compute_obs(
+            self.act,
+            self.state_0,
+            self.joint_pos_initial,
+            self.torch_device,
+            self.physx_to_mjc_indices,
+            self.gravity_vec,
+            self.command,
+        )
+        with torch.no_grad():
+            self.act = self.policy(obs)
+            self.rearranged_act = torch.index_select(self.act, 1, self.mjc_to_physx_indices)
+            a = self.joint_pos_initial + self.config["action_scale"] * self.rearranged_act
+            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+            wp.copy(self.control.joint_target, a_wp)
+
+        for _ in range(self.decimation):
+            if self.graph:
+                wp.capture_launch(self.graph)
+            else:
+                self.simulate()
+
         self.sim_time += self.frame_dt
 
     def render(self):
-        with wp.ScopedTimer("render"):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_state(self.state_0)
-            self.viewer.log_contacts(self.contacts, self.state_0)
-            self.viewer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
     def test(self):
         pass
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
+    # Create parser that inherits common arguments and adds
+    # example-specific ones
     parser = newton.examples.create_parser()
     parser.add_argument(
         "--robot", type=str, default="g1_29dof", choices=list(ROBOT_CONFIGS.keys()), help="Robot name to load"

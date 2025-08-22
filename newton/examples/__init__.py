@@ -183,6 +183,7 @@ def main():
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+        "robot_policy": "newton.examples.robot.example_robot_policy",
     }
 
     if len(sys.argv) < 2:
