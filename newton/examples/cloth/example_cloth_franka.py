@@ -45,25 +45,6 @@ def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
     )
 
 
-def vec_rotation(x: float, y: float, z: float) -> wp.transform:
-    """Convert plane coordinates given by the plane normal and its offset along the normal to a transform."""
-    normal = wp.normalize(wp.vec3(x, y, z))
-    if allclose(normal, wp.vec3(0.0, 0.0, 1.0)):
-        # no rotation necessary
-        return wp.quat(0.0, 0.0, 0.0, 1.0)
-    elif allclose(normal, wp.vec3(0.0, 0.0, -1.0)):
-        # 180 degree rotation around x-axis
-        return wp.quat(1.0, 0.0, 0.0, 0.0)
-    else:
-        c = wp.cross(wp.vec3(0.0, 0.0, 1.0), normal)
-        angle = wp.asin(wp.length(c))
-        # adjust for arcsin ambiguity
-        if wp.dot(normal, wp.vec3(0.0, 0.0, 1.0)) < 0:
-            angle = wp.pi - angle
-        axis = c / wp.length(c)
-        return wp.quat_from_axis_angle(axis, angle)
-
-
 @wp.kernel
 def compute_ee_delta(
     body_q: wp.array(dtype=wp.transform),
@@ -377,41 +358,41 @@ class Example:
             [
                 # translation_duration, gripper transform (3D position, 4D quaternion), gripper open (1) or closed (0)
                 # # top left
-                [2.5, 0.31, -0.60, 0.13, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [2, 0.31, -0.60, 0.13, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, 0.26, -0.60, 0.16, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, 0.12, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [3, -0.06, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1, -0.06, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
+                [2.5, 0.31, -0.60, 0.13, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.31, -0.60, 0.13, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.26, -0.60, 0.16, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.12, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.06, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.06, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom right
-                [2, 0.15, -0.33, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [3, 0.15, -0.33, 0.11, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [3, 0.15, -0.33, 0.11, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, 0.15, -0.33, 0.18, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [3, -0.02, -0.33, 0.18, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1, -0.02, -0.33, 0.18, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
+                [2, 0.15, -0.33, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 0.15, -0.33, 0.11, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 0.15, -0.33, 0.11, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.15, -0.33, 0.18, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.02, -0.33, 0.18, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.02, -0.33, 0.18, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # top left
-                [2, -0.28, -0.60, 0.18, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [2, -0.28, -0.60, 0.10, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [2, -0.28, -0.60, 0.10, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, -0.18, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [3, 0.05, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1, 0.05, -0.60, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.18, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.10, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.10, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.18, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, 0.05, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, 0.05, -0.60, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # # bottom left
-                [3, -0.18, -0.30, 0.105, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [3, -0.18, -0.30, 0.105, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, -0.03, -0.30, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [3, -0.03, -0.30, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, -0.03, -0.30, 0.21, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
+                [3, -0.18, -0.30, 0.105, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, -0.18, -0.30, 0.105, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.03, -0.30, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.03, -0.30, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.03, -0.30, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, -0.0, -0.21, 0.20, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [2, -0.0, -0.21, 0.1, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [2, -0.0, -0.21, 0.1, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [2, -0.0, -0.21, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1, -0.0, -0.30, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1.5, -0.0, -0.30, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1.5, -0.0, -0.40, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
-                [1, -0.0, -0.40, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.20, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.1, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.1, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.0, -0.21, 0.25, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.0, -0.30, 0.25, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, -0.0, -0.30, 0.25, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, -0.0, -0.40, 0.25, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.0, -0.40, 0.25, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
