@@ -35,10 +35,10 @@ def get_asset(filename: str) -> str:
 
 def run(example):
     while example.viewer.is_running():
-        with wp.ScopedTimer("step"):
+        with wp.ScopedTimer("step", active=False):
             example.step()
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", active=False):
             example.render()
 
     example.viewer.close()
@@ -184,10 +184,10 @@ def main():
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
         "anymal_c_walk": "newton.examples.robot.example_anymal_c_walk",
-        "anymal_c_walk_physx": "newton.examples.robot.example_anymal_c_walk_physx_policy",
         "anymal_d": "newton.examples.robot.example_anymal_d",
         "cartpole": "newton.examples.robot.example_cartpole",
         "g1": "newton.examples.robot.example_g1",
+        "h1": "newton.examples.robot.example_h1",
         "humanoid": "newton.examples.robot.example_humanoid",
         "quadruped": "newton.examples.robot.example_quadruped",
     }
