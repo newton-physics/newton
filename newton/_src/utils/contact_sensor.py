@@ -110,11 +110,35 @@ def populate_contacts(
     contacts: Contacts,
     solver: SolverBase,
 ):
-    """Populate Contacts object from the solver."""
+    """
+    Populate a Contacts object with the latest contact data from a solver.
+
+    This function updates the given `contacts` object in-place using the contact information
+    from the provided `solver`. It is typically called after a simulation step to refresh
+    the contact data for use in sensors or analysis.
+
+    Args:
+        contacts (Contacts): The Contacts object to be populated or updated.
+        solver (SolverBase): The solver instance containing the latest contact results.
+
+    Returns:
+        None
+    """
     solver.update_contacts(contacts)
 
 
 class ContactSensor:
+    """
+    A class representing a contact sensor view for a physics model.
+
+    The ContactSensor allows you to define a set of "sensing objects" (bodies or shapes)
+    and optionally a set of "counterpart" objects (bodies or shapes) to sense contact forces against.
+    The sensor can be configured to report the total contact force or per-counterpart readings.
+
+    Raises:
+        ValueError: If the configuration of sensing/counterpart objects is invalid.
+    """
+
     def __init__(
         self,
         model: Model,
@@ -127,21 +151,24 @@ class ContactSensor:
         prune_noncolliding: bool = False,
         verbose: bool | None = None,
     ):
-        """Add a contact sensor view to the model.
-        Exactly one of `sensing_obj_shapes` or `sensor_body` must be specified to define the sensor. If contact partners
-        are specified, each sensor produces separate readings per contact partner; otherwise, the sensor will read
-        the total contact force.
+        """
+        Initialize a ContactSensor.
 
         Args:
-            sensing_obj_shapes: pattern to match sensor shape names; one entity per matching shape.
-            sensor_body: pattern to match sensor body names; one entity per matching body.
-            contact_partners_shape: pattern to match contact partner shape names; one entity per matching shape.
-            contact_partners_body: pattern to match contact partner body names; one entity per matching body.
-            match_fn: function taking a name and a pattern and returning true if the name matches the pattern;
-            fnmatch.fnmatch is used if `match_fn` is `None`.
-            include_total: If contact partners are defined, include the total contact force as the first reading of each sensor.
-            prune_noncolliding: Skip readings that only pertain to non-colliding shape pairs.
-            verbose: print details
+            model (Model): The physics model to which the sensor is attached.
+            sensing_obj_bodies (str | list[str] | None): Pattern(s) to match sensor body names. Exactly one of
+                `sensing_obj_bodies` or `sensing_obj_shapes` must be specified.
+            sensing_obj_shapes (str | list[str] | None): Pattern(s) to match sensor shape names. Exactly one of
+                `sensing_obj_bodies` or `sensing_obj_shapes` must be specified.
+            counterpart_bodies (str | list[str] | None): Pattern(s) to match contact partner body names. At most one of
+                `counterpart_bodies` or `counterpart_shapes` may be specified.
+            counterpart_shapes (str | list[str] | None): Pattern(s) to match contact partner shape names. At most one of
+                `counterpart_bodies` or `counterpart_shapes` may be specified.
+            match_fn (Callable[[str, str], bool] | None): Function to match names to patterns. If None, uses `fnmatch`.
+            include_total (bool): If True and contact partners are defined, include the total contact force as the first
+                reading of each sensor.
+            prune_noncolliding (bool): If True, skip readings that only pertain to non-colliding shape pairs.
+            verbose (bool | None): If True, print details. If None, uses `wp.config.verbose`.
         """
 
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
@@ -198,9 +225,24 @@ class ContactSensor:
         self.net_force = self._net_force.reshape(self.shape)
 
     def eval(self, contacts: Contacts):
+        """
+        Evaluate the contact sensor readings based on the provided contacts.
+
+        Process the given Contacts object and updates the internal
+        net force readings for each sensor-contactee pair.
+
+        Args:
+            contacts (Contacts): The contact data to evaluate.
+        """
         self._eval_net_force(contacts)
 
     def get_total_force(self) -> wp.array2d(dtype=wp.vec3f):
+        """
+        Get the total net force measured by the contact sensor.
+
+        Returns:
+            wp.array2d(dtype=wp.vec3f): The net force array, shaped according to the sensor configuration.
+        """
         return self.net_force
 
     @staticmethod

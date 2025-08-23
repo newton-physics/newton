@@ -187,7 +187,7 @@ jobs:
           fi
 
           echo "Running Newton test suite..."
-          uv run --extra dev --extra cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback --failfast 2>&1
+          uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback --failfast 2>&1
           EOF
 
           # Prepare script to be passed as SSM parameters

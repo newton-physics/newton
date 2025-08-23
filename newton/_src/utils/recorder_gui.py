@@ -19,9 +19,26 @@ from warp.render.imgui_manager import ImGuiManager
 
 
 class RecorderImGuiManager(ImGuiManager):
-    """An ImGui manager for controlling simulation playback with a recorder."""
+    """
+    An ImGui manager for controlling simulation playback with a recorder.
+
+    This class provides a graphical user interface for controlling simulation playback,
+    including pausing, resuming, scrubbing through frames, and saving/loading recordings.
+    It also manages the visualization of contact points and updates the renderer
+    according to the selected frame.
+    """
 
     def __init__(self, renderer, recorder, example, window_pos=(10, 10), window_size=(300, 120)):
+        """
+        Initialize the RecorderImGuiManager.
+
+        Args:
+            renderer: The renderer instance used for visualization.
+            recorder: The recorder object that stores simulation history.
+            example: The simulation example object (must have .paused and .frame_dt attributes).
+            window_pos (tuple, optional): The (x, y) position of the ImGui window. Defaults to (10, 10).
+            window_size (tuple, optional): The (width, height) of the ImGui window. Defaults to (300, 120).
+        """
         super().__init__(renderer)
         if not self.is_available:
             return
@@ -34,14 +51,24 @@ class RecorderImGuiManager(ImGuiManager):
         self.num_point_clouds_rendered = 0
 
     def _clear_contact_points(self):
-        """Clears all rendered contact points."""
+        """
+        Clears all rendered contact points from the viewer.
+
+        This method removes all previously rendered contact point clouds by rendering
+        empty point clouds in their place.
+        """
         for i in range(self.num_point_clouds_rendered):
             # use size 1 as size 0 seems to do nothing
             self.renderer.render_points(f"contact_points{i}", wp.empty(1, dtype=wp.vec3), radius=1e-2)
         self.num_point_clouds_rendered = 0
 
     def _update_frame(self, frame_id):
-        """Update the selected frame and renderer transforms if paused."""
+        """
+        Update the selected frame and renderer transforms if paused.
+
+        Args:
+            frame_id (int): The frame index to display.
+        """
         self.selected_frame = frame_id
         if self.example.paused:
             transforms, point_clouds = self.recorder.playback(self.selected_frame)
@@ -57,6 +84,11 @@ class RecorderImGuiManager(ImGuiManager):
                 self.num_point_clouds_rendered = len(point_clouds)
 
     def draw_ui(self):
+        """
+        Draw the ImGui user interface for controlling playback and managing recordings.
+
+        This includes controls for pausing/resuming, frame navigation, saving, and loading.
+        """
         total_frames = len(self.recorder.transforms_history)
         if not self.example.paused and total_frames > 0:
             self.selected_frame = total_frames - 1

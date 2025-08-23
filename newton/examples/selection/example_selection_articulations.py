@@ -13,14 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+###########################################################################
+# Example Selection Articulations
+#
+# Demonstrates batch control of multiple articulated robots using
+# ArticulationView. This example spawns ant and humanoid robots across
+# multiple environments, applies random forces to their joints, and
+# performs selective resets on subsets of environments.
+#
+# Command: python -m newton.examples selection_articulations
+#
+###########################################################################
+
 from __future__ import annotations
 
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
-from newton.examples import compute_env_offsets
+import newton.examples
 from newton.selection import ArticulationView
 
 USE_TORCH = False
@@ -74,66 +84,47 @@ def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_env
 
 
 class Example:
-    def __init__(
-        self, stage_path: str | None = "example_selection_articulations.usd", num_envs=16, use_cuda_graph=True
-    ):
+    def __init__(self, viewer, num_envs=16):
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+
+        self.sim_time = 0.0
+        self.sim_substeps = 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
         self.num_envs = num_envs
 
-        up_axis = newton.Axis.Z
-
-        env_builder = newton.ModelBuilder(up_axis=up_axis)
+        env = newton.ModelBuilder()
         newton.utils.parse_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
-            env_builder,
+            env,
             ignore_names=["floor", "ground"],
-            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
         newton.utils.parse_mjcf(
             newton.examples.get_asset("nv_humanoid.xml"),
-            env_builder,
+            env,
             ignore_names=["floor", "ground"],
-            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
 
-        env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
+        scene = newton.ModelBuilder()
 
-        builder = newton.ModelBuilder()
-        for i in range(self.num_envs):
-            builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
-
-        builder.add_ground_plane()
+        scene.add_ground_plane()
+        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
 
         # finalize model
-        self.model = builder.finalize()
+        self.model = scene.finalize()
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=stage_path,
-                model=self.model,
-                scaling=2.0,
-                up_axis=str(up_axis),
-                screen_width=1280,
-                screen_height=720,
-                camera_pos=(0, 4, 30),
-            )
+        self.viewer = viewer
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-
-        self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
-
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.next_reset = 0.0
         self.step_count = 0
@@ -198,12 +189,17 @@ class Example:
             self.mask_1 = wp.empty(num_envs, dtype=bool)
             wp.launch(init_masks, dim=num_envs, inputs=[self.mask_0, self.mask_1])
 
+        self.viewer.set_model(self.model)
+
         # reset all
         self.reset()
+        self.capture()
+
         self.next_reset = self.sim_time + 2.0
 
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
-        if self.use_cuda_graph:
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -240,11 +236,11 @@ class Example:
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
-        with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+
         self.sim_time += self.frame_dt
         self.step_count += 1
 
@@ -286,61 +282,24 @@ class Example:
             self.hums.eval_fk(self.state_0, mask=mask)
 
     def render(self):
-        if self.renderer is None:
-            return
-
-        with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
-
-
-# scoped device manager for both Warp and Torch
-class ScopedDevice:
-    def __init__(self, device):
-        self.warp_scoped_device = wp.ScopedDevice(device)
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            self.torch_scoped_device = torch.device(wp.device_to_torch(device))
-
-    def __enter__(self):
-        self.warp_scoped_device.__enter__()
-        if USE_TORCH:
-            self.torch_scoped_device.__enter__()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.warp_scoped_device.__exit__(exc_type, exc_val, exc_tb)
-        if USE_TORCH:
-            self.torch_scoped_device.__exit__(exc_type, exc_val, exc_tb)
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_selection_articulations.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
+    parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
-    with ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+    viewer, args = newton.examples.init(parser)
 
-        for frame_idx in range(args.num_frames):
-            example.step()
-            example.render()
+    if USE_TORCH:
+        import torch
 
-            if not example.renderer:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
+        torch.set_device(args.device)
 
-        if example.renderer:
-            example.renderer.save()
+    example = Example(viewer, num_envs=args.num_envs)
+
+    newton.examples.run(example)

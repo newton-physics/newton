@@ -28,6 +28,14 @@ except ImportError:
 
 
 class ViewerRerun(ViewerBase):
+    """
+    ViewerRerun provides a backend for visualizing Newton simulations using the rerun visualization library.
+
+    This viewer logs mesh and instance data to rerun, enabling real-time or offline visualization of simulation
+    geometry and transforms. It supports both server and client modes, and can optionally launch a web viewer.
+    The class manages mesh assets, instanced geometry, and frame/timeline synchronization with rerun.
+    """
+
     def __init__(
         self,
         server: bool = True,
@@ -35,13 +43,14 @@ class ViewerRerun(ViewerBase):
         launch_viewer: bool = True,
         app_id: Optional[str] = None,
     ):
-        """Initialize the Rerun viewer backend.
+        """
+        Initialize the ViewerRerun backend for Newton using the rerun visualization library.
 
         Args:
-            server: Whether to start in server mode (TCP/gRPC)
-            address: Address and port for server mode
-            launch_viewer: Whether to spawn a local rerun viewer client
-            app_id: Application ID for rerun (defaults to 'newton-viewer')
+            server (bool): If True, start rerun in server mode (TCP/gRPC).
+            address (str): Address and port for rerun server mode.
+            launch_viewer (bool): If True, launch a local rerun viewer client.
+            app_id (Optional[str]): Application ID for rerun (defaults to 'newton-viewer').
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -80,14 +89,17 @@ class ViewerRerun(ViewerBase):
         hidden=False,
         backface_culling=True,
     ):
-        """Log mesh data to rerun.
+        """
+        Log a mesh to rerun for visualization.
 
         Args:
-            name: Entity path for the mesh
-            points: Vertex positions (wp.array of wp.vec3)
-            indices: Triangle indices (wp.array of wp.uint32)
-            normals: Vertex normals (optional, wp.array of wp.vec3)
-            uvs: UV coordinates (optional, wp.array of wp.vec2)
+            name (str): Entity path for the mesh.
+            points (wp.array): Vertex positions (wp.vec3).
+            indices (wp.array): Triangle indices (wp.uint32).
+            normals (wp.array, optional): Vertex normals (wp.vec3).
+            uvs (wp.array, optional): UV coordinates (wp.vec2).
+            hidden (bool): Whether the mesh is hidden (unused).
+            backface_culling (bool): Whether to enable backface culling (unused).
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -120,15 +132,16 @@ class ViewerRerun(ViewerBase):
         rr.log(name, mesh_3d, static=True)
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials):
-        """Log instanced mesh data to rerun using InstancePoses3D.
+        """
+        Log instanced mesh data to rerun using InstancePoses3D.
 
         Args:
-            name: Entity path for instances
-            mesh: Path to mesh asset
-            xforms: Instance transforms (wp.array of wp.transform)
-            scales: Instance scales (wp.array of wp.vec3)
-            colors: Instance colors (wp.array of wp.vec3)
-            materials: Instance materials (wp.array of wp.vec4)
+            name (str): Entity path for the instances.
+            mesh (str): Name of the mesh asset to instance.
+            xforms (wp.array): Instance transforms (wp.transform).
+            scales (wp.array): Instance scales (wp.vec3).
+            colors (wp.array): Instance colors (wp.vec3).
+            materials (wp.array): Instance materials (wp.vec4).
         """
         # Check that mesh exists
         if mesh not in self._meshes:
@@ -191,25 +204,44 @@ class ViewerRerun(ViewerBase):
             rr.log(name, instance_poses)
 
     def begin_frame(self, time):
-        """Begin a new frame with given time."""
+        """
+        Begin a new frame and set the timeline for rerun.
+
+        Args:
+            time (float): The current simulation time.
+        """
         self.time = time
         # Set the timeline for this frame
         rr.set_time("time", timestamp=time)
 
     def end_frame(self):
-        """End the current frame."""
+        """
+        End the current frame.
+
+        Note:
+            Rerun handles frame finishing automatically.
+        """
         # Rerun handles frame finishing automatically
         pass
 
     def is_running(self) -> bool:
-        """Check if the viewer is still running."""
+        """
+        Check if the viewer is still running.
+
+        Returns:
+            bool: True if the viewer is running, False otherwise.
+        """
         # Check if viewer process is still alive
         if self._viewer_process is not None:
             return self._viewer_process.poll() is None
         return self._running
 
     def close(self):
-        """Close the viewer and clean up resources."""
+        """
+        Close the viewer and clean up resources.
+
+        This will terminate any spawned viewer process and disconnect from rerun.
+        """
         self._running = False
 
         # Close viewer process if we spawned one
@@ -231,13 +263,47 @@ class ViewerRerun(ViewerBase):
 
     # Not implemented yet - placeholder methods from ViewerBase
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
+        """
+        Placeholder for logging lines to rerun.
+
+        Args:
+            name (str): Name of the line batch.
+            line_begins: Line start points.
+            line_ends: Line end points.
+            line_colors: Line colors.
+            hidden (bool): Whether the lines are hidden.
+        """
         pass
 
     def log_points(self, name, points, widths, colors, hidden=False):
+        """
+        Placeholder for logging points to rerun.
+
+        Args:
+            name (str): Name of the point batch.
+            points: Point positions.
+            widths: Point radii.
+            colors: Point colors.
+            hidden (bool): Whether the points are hidden.
+        """
         pass
 
     def log_array(self, name, array):
+        """
+        Placeholder for logging a generic array to rerun.
+
+        Args:
+            name (str): Name of the array.
+            array: The array data.
+        """
         pass
 
     def log_scalar(self, name, value):
+        """
+        Placeholder for logging a scalar value to rerun.
+
+        Args:
+            name (str): Name of the scalar.
+            value: The scalar value.
+        """
         pass

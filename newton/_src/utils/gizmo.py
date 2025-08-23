@@ -626,9 +626,25 @@ class DragState:
 
 
 class GizmoSystem:
-    """Manages collection of interactive gizmos."""
+    """
+    Manages a collection of interactive gizmos for 3D manipulation.
+
+    This system handles the creation, rendering, and interaction of gizmo targets,
+    which are used for translating and rotating objects in a 3D scene. It manages
+    GPU resources for collision detection, handles mouse events for picking and
+    dragging gizmo components, and updates the visual representation of gizmos.
+    """
 
     def __init__(self, renderer, scale_factor=1.0, rotation_sensitivity=0.01, max_gizmos=800):
+        """
+        Initialize the GizmoSystem.
+
+        Args:
+            renderer: The renderer instance used for drawing and coordinate transforms.
+            scale_factor (float, optional): Global scaling for gizmo size. Defaults to 1.0.
+            rotation_sensitivity (float, optional): Sensitivity for rotation interactions. Defaults to 0.01.
+            max_gizmos (int, optional): Maximum number of gizmos supported. Defaults to 800.
+        """
         self.renderer = renderer
         self.scale_factor = scale_factor
         self.rotation_sensitivity = rotation_sensitivity
@@ -652,7 +668,9 @@ class GizmoSystem:
         self.num_gizmos = 0
 
     def _allocate_gpu_arrays(self):
-        """Allocate GPU arrays for collision detection."""
+        """
+        Allocate GPU arrays for collision detection and ray casting.
+        """
         self.body_transforms_gpu = wp.zeros((self.MAX_GIZMOS,), dtype=wp.transform, device=self.device)
         self.ray_origin_array = wp.zeros((1,), dtype=wp.vec3, device=self.device)
         self.ray_direction_array = wp.zeros((1,), dtype=wp.vec3, device=self.device)
@@ -667,7 +685,15 @@ class GizmoSystem:
         self.capsule_to_component_idx = wp.zeros((self.MAX_CAPSULES,), dtype=int, device=self.device)
 
     def create_target(self, target_id, position, rotation=None, world_offset=None):
-        """Create a new gizmo target."""
+        """
+        Create a new gizmo target and allocate its resources.
+
+        Args:
+            target_id: Unique identifier for the target.
+            position: Initial position of the target.
+            rotation: Initial rotation of the target (optional).
+            world_offset: World offset for the target (optional).
+        """
         if world_offset is None:
             world_offset = [0.0, 0.0, 0.0]
 
@@ -690,12 +716,22 @@ class GizmoSystem:
         )
 
     def finalize(self):
-        """Finalize gizmo allocation after all targets are created."""
+        """
+        Finalize gizmo allocation after all targets are created.
+
+        This should be called after all gizmo targets have been created to allocate
+        rendering and collision resources.
+        """
         if self._needs_reallocation:
             self._allocate_all_gizmos()
 
     def _allocate_all_gizmos(self):
-        """Allocate rendering and collision resources for all gizmos."""
+        """
+        Allocate rendering and collision resources for all gizmos.
+
+        This method collects all capsule data for rendering and collision, and
+        updates the instancer and GPU arrays.
+        """
         if not self.targets:
             return
 
@@ -761,7 +797,13 @@ class GizmoSystem:
         self._update_all_bodies()
 
     def _update_body_transform(self, body_id, transform):
-        """Update transform for a single body."""
+        """
+        Update the transform for a single gizmo body.
+
+        Args:
+            body_id: The body id to update.
+            transform: The new transform (position + rotation).
+        """
         wp.launch(
             update_single_body_transform,
             dim=1,
@@ -773,31 +815,61 @@ class GizmoSystem:
             self._update_all_bodies()
 
     def _update_all_bodies(self):
-        """Update all body transforms in renderer."""
+        """
+        Update all body transforms in the renderer's instance buffer.
+        """
         if self.instancer:
             self.instancer.update_instance_buffer()
 
     def update_target_position(self, target_id, position):
-        """Update target position."""
+        """
+        Update the position of a gizmo target.
+
+        Args:
+            target_id: The id of the target to update.
+            position: The new position.
+        """
         if target_id in self.targets:
             if self._needs_reallocation:
                 self._allocate_all_gizmos()
             self.targets[target_id].update_position(position)
 
     def update_target_rotation(self, target_id, rotation):
-        """Update target rotation."""
+        """
+        Update the rotation of a gizmo target.
+
+        Args:
+            target_id: The id of the target to update.
+            rotation: The new rotation.
+        """
         if target_id in self.targets:
             if self._needs_reallocation:
                 self._allocate_all_gizmos()
             self.targets[target_id].update_rotation(rotation)
 
     def set_callbacks(self, position_callback=None, rotation_callback=None):
-        """Set callbacks for position/rotation changes."""
+        """
+        Set callbacks for position and rotation changes.
+
+        Args:
+            position_callback: Function to call on position change.
+            rotation_callback: Function to call on rotation change.
+        """
         self.position_callback = position_callback
         self.rotation_callback = rotation_callback
 
     def on_mouse_press(self, x, y, button, modifiers):
-        """Handle mouse press events."""
+        """
+        Handle mouse press events for picking gizmo components.
+
+        Args:
+            x, y: Mouse coordinates.
+            button: Mouse button pressed.
+            modifiers: Modifier keys.
+
+        Returns:
+            True if a gizmo component was picked and drag started, else False.
+        """
         import pyglet.window.mouse  # noqa: PLC0415
 
         if button != pyglet.window.mouse.LEFT or self.num_gizmos == 0:
@@ -874,7 +946,18 @@ class GizmoSystem:
         return False
 
     def on_mouse_drag(self, x, y, dx, dy, button, modifiers):
-        """Handle mouse drag events."""
+        """
+        Handle mouse drag events for manipulating gizmo components.
+
+        Args:
+            x, y: Current mouse coordinates.
+            dx, dy: Mouse movement delta.
+            button: Mouse button pressed.
+            modifiers: Modifier keys.
+
+        Returns:
+            True if dragging a rotation gizmo (blocks view pan), else False.
+        """
         import pyglet.window.mouse  # noqa: PLC0415
 
         if not self.drag_state or not (button & pyglet.window.mouse.LEFT):
@@ -901,7 +984,17 @@ class GizmoSystem:
         return self.drag_state.mode == "rotate"
 
     def on_mouse_release(self, x, y, button, modifiers):
-        """Handle mouse release events."""
+        """
+        Handle mouse release events to end gizmo dragging.
+
+        Args:
+            x, y: Mouse coordinates.
+            button: Mouse button released.
+            modifiers: Modifier keys.
+
+        Returns:
+            True if a drag was ended, else False.
+        """
         import pyglet.window.mouse  # noqa: PLC0415
 
         if button == pyglet.window.mouse.LEFT and self.drag_state:
@@ -912,7 +1005,15 @@ class GizmoSystem:
         return False
 
     def _cast_ray_from_screen(self, x, y):
-        """Cast ray from screen coordinates."""
+        """
+        Cast a ray from screen coordinates into world space.
+
+        Args:
+            x, y: Screen coordinates.
+
+        Returns:
+            (ray_origin, ray_direction): Tuple of numpy arrays, or (None, None) if not available.
+        """
         if self.renderer.screen_width == 0 or self.renderer.screen_height == 0:
             return None, None
 
@@ -947,7 +1048,9 @@ class GizmoSystem:
         return self.ray_origin_array.numpy()[0], self.ray_direction_array.numpy()[0]
 
     def _update_drag_axis(self):
-        """Update drag axis visualization."""
+        """
+        Update the drag axis visualization in the renderer.
+        """
         if self.drag_state:
             self.renderer.render_line_strip(
                 name="drag_axis_visualization",
@@ -957,7 +1060,9 @@ class GizmoSystem:
             )
 
     def _hide_drag_axis(self):
-        """Hide drag axis visualization."""
+        """
+        Hide the drag axis visualization in the renderer.
+        """
         self.renderer.render_line_strip(
             name="drag_axis_visualization",
             vertices=[],
