@@ -16,294 +16,141 @@
 ###########################################################################
 # Example Anymal C walk
 #
-# Shows how to control Anymal C with a pretrained policy.
+# Shows how to control Anymal C with a policy pretrained in physx.
 #
 # Example usage:
-# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk.py
+# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk_physx_policy.py
 #
 ###########################################################################
 
-import sys
-
-import numpy as np
 import torch
 import warp as wp
+from warp.torch import device_to_torch
 
 wp.config.enable_backward = False
 
 import newton
-import newton.examples
 import newton.utils
-from newton import Control, State
+import newton.examples
+from newton import State
+
+lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
+mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]
 
 
-@wp.kernel
-def compute_observations_anymal(
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
-    basis_vec0: wp.vec3,
-    basis_vec1: wp.vec3,
-    dof_q: int,
-    dof_qd: int,
-    # outputs
-    obs: wp.array(dtype=float, ndim=2),
-):
-    env_id = wp.tid()
-
-    torso_pos = wp.vec3(
-        joint_q[dof_q * env_id + 0],
-        joint_q[dof_q * env_id + 1],
-        joint_q[dof_q * env_id + 2],
-    )
-    torso_quat = wp.quat(
-        joint_q[dof_q * env_id + 3],
-        joint_q[dof_q * env_id + 4],
-        joint_q[dof_q * env_id + 5],
-        joint_q[dof_q * env_id + 6],
-    )
-    lin_vel = wp.vec3(
-        joint_qd[dof_qd * env_id + 3],
-        joint_qd[dof_qd * env_id + 4],
-        joint_qd[dof_qd * env_id + 5],
-    )
-    ang_vel = wp.vec3(
-        joint_qd[dof_qd * env_id + 0],
-        joint_qd[dof_qd * env_id + 1],
-        joint_qd[dof_qd * env_id + 2],
-    )
-
-    # convert the linear velocity of the torso from twist representation to the velocity of the center of mass in world frame
-    lin_vel = lin_vel - wp.cross(torso_pos, ang_vel)
-
-    up_vec = wp.quat_rotate(torso_quat, basis_vec1)
-    heading_vec = wp.quat_rotate(torso_quat, basis_vec0)
-
-    obs[env_id, 0] = torso_pos[1]  # 0
-    for i in range(4):  # 1:5
-        obs[env_id, 1 + i] = torso_quat[i]
-    for i in range(3):  # 5:8
-        obs[env_id, 5 + i] = lin_vel[i]
-    for i in range(3):  # 8:11
-        obs[env_id, 8 + i] = ang_vel[i]
-    for i in range(12):  # 11:23
-        obs[env_id, 11 + i] = joint_q[dof_q * env_id + 7 + i]
-    for i in range(12):  # 23:35
-        obs[env_id, 23 + i] = joint_qd[dof_qd * env_id + 6 + i]
-    obs[env_id, 35] = up_vec[1]  # 35
-    obs[env_id, 36] = heading_vec[0]  # 36
+@torch.jit.script
+def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate a vector by the inverse of a quaternion along the last dimension of q and v.    Args:
+    q: The quaternion in (x, y, z, w). Shape is (..., 4).
+    v: The vector in (x, y, z). Shape is (..., 3).    Returns:
+    The rotated vector in (x, y, z). Shape is (..., 3).
+    """
+    q_w = q[..., 3]  # w component is at index 3 for XYZW format
+    q_vec = q[..., :3]  # xyz components are at indices 0, 1, 2
+    a = v * (2.0 * q_w**2 - 1.0).unsqueeze(-1)
+    b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
+    # for two-dimensional tensors, bmm is faster than einsum
+    if q_vec.dim() == 2:
+        c = q_vec * torch.bmm(q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)).squeeze(-1) * 2.0
+    else:
+        c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
+    return a - b + c
 
 
-@wp.kernel
-def apply_joint_position_pd_control(
-    actions: wp.array(dtype=wp.float32, ndim=1),
-    action_scale: wp.float32,
-    default_joint_q: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
-    joint_qd: wp.array(dtype=wp.float32),
-    Kp: wp.float32,
-    Kd: wp.float32,
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    # outputs
-    joint_f: wp.array(dtype=wp.float32),
-):
-    joint_id = wp.tid()
-    if joint_id == 0:
-        return  # skip the free joint
-    qi = joint_q_start[joint_id]
-    qdi = joint_qd_start[joint_id]
-    dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
-    for j in range(dim):
-        qj = qi + j
-        qdj = qdi + j
-        q = joint_q[qj]
-        qd = joint_qd[qdj]
-
-        tq = wp.clamp(actions[qdj - 6], -1.0, 1.0) * action_scale + default_joint_q[qj]
-        tq = Kp * (tq - q) - Kd * qd
-
-        joint_f[qdj] = tq
-
-
-class AnymalController:
-    """Controller for Anymal with pretrained policy."""
-
-    def __init__(self, model, device):
-        self.model = model
-        self.device = device
-        self.control_dim = 12
-        action_strength = 150.0
-        self.control_gains_wp = wp.array(
-            np.array(
-                [
-                    50.0,  # LF_HAA
-                    40.0,  # LF_HFE
-                    8.0,  # LF_KFE
-                    50.0,  # RF_HAA
-                    40.0,  # RF_HFE
-                    8.0,  # RF_KFE
-                    50.0,  # LH_HAA
-                    40.0,  # LH_HFE
-                    8.0,  # LH_KFE
-                    50.0,  # RH_HAA
-                    40.0,  # RH_HFE
-                    8.0,  # RH_KFE
-                ]
-            )
-            * action_strength
-            / 100.0,
-            dtype=float,
-        )
-        self.action_scale = 0.5
-        self.Kp = 140.0
-        self.Kd = 2.0
-        self.joint_torque_limit = self.control_gains_wp
-        self.default_joint_q = self.model.joint_q
-
-        self.basis_vec0 = wp.vec3(1.0, 0.0, 0.0)
-        self.basis_vec1 = wp.vec3(0.0, 0.0, 1.0)
-
-        self.policy_model = torch.jit.load(newton.examples.get_asset("anymal_walking_policy.pt")).cuda()
-
-        self.dof_q_per_env = model.joint_coord_count
-        self.dof_qd_per_env = model.joint_dof_count
-        self.num_envs = 1
-        self.ctrl = None
-        obs_dim = 37
-        self.obs_buf = wp.empty(
-            (self.num_envs, obs_dim),
-            dtype=wp.float32,
-            device=self.device,
-        )
-
-    def compute_observations(self, state: State, observations: wp.array):
-        wp.launch(
-            compute_observations_anymal,
-            dim=self.num_envs,
-            inputs=[
-                state.joint_q,
-                state.joint_qd,
-                self.basis_vec0,
-                self.basis_vec1,
-                self.dof_q_per_env,
-                self.dof_qd_per_env,
-            ],
-            outputs=[observations],
-            device=self.device,
-        )
-
-    def assign_control(self, control: Control, state: State):
-        wp.launch(
-            kernel=apply_joint_position_pd_control,
-            dim=self.model.joint_count,
-            inputs=[
-                wp.from_torch(wp.to_torch(self.ctrl).reshape(-1)),
-                self.action_scale,
-                self.default_joint_q,
-                state.joint_q,
-                state.joint_qd,
-                self.Kp,
-                self.Kd,
-                self.model.joint_q_start,
-                self.model.joint_qd_start,
-                self.model.joint_dof_dim,
-            ],
-            outputs=[
-                control.joint_f,
-            ],
-            device=self.model.device,
-        )
-
-    def get_control(self, state: State):
-        self.compute_observations(state, self.obs_buf)
-        obs_torch = wp.to_torch(self.obs_buf).detach()
-        self.ctrl = wp.array(torch.clamp(self.policy_model(obs_torch).detach(), -1, 1), dtype=float)
+def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
+    root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
+    joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
+    vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
+    a_vel_b = quat_rotate_inverse(root_quat_w, root_ang_vel_w)
+    grav = quat_rotate_inverse(root_quat_w, gravity_vec)
+    joint_pos_rel = joint_pos_current - joint_pos_initial
+    joint_vel_rel = joint_vel_current
+    rearranged_joint_pos_rel = torch.index_select(joint_pos_rel, 1, indices)
+    rearranged_joint_vel_rel = torch.index_select(joint_vel_rel, 1, indices)
+    obs = torch.cat([vel_b, a_vel_b, grav, command, rearranged_joint_pos_rel, rearranged_joint_vel_rel, actions], dim=1)
+    return obs
 
 
 class Example:
-    def __init__(self, stage_path="example_anymal_c_walk.usd", headless=False):
+    def __init__(self, viewer):
+        self.viewer = viewer
         self.device = wp.get_device()
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+        self.torch_device = device_to_torch(self.device)
+
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
             limit_kd=1.0e1,
         )
         builder.default_shape_cfg.ke = 5.0e4
-        builder.default_shape_cfg.kd = 7.0e2
+        builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("anybotics_anymal_c")
-
+        stage_path = str(asset_path / "urdf" / "anymal.urdf")
         newton.utils.parse_urdf(
-            str(asset_path / "urdf" / "anymal.urdf"),
+            stage_path,
             builder,
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
         )
+
         builder.add_ground_plane()
 
         self.sim_time = 0.0
         self.sim_step = 0
-        fps = 60
+        fps = 50
         self.frame_dt = 1.0e0 / fps
 
-        self.sim_substeps = 10
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        builder.joint_q[:3] = [
+        builder.joint_q[:3] = [0.0, 0.0, 0.62]
+
+        builder.joint_q[3:7] = [
             0.0,
-            0.7,
             0.0,
+            0.7071,
+            0.7071,
         ]
 
         builder.joint_q[7:] = [
-            0.03,  # LF_HAA
-            0.4,  # LF_HFE
-            -0.8,  # LF_KFE
-            -0.03,  # RF_HAA
-            0.4,  # RF_HFE
-            -0.8,  # RF_KFE
-            0.03,  # LH_HAA
-            -0.4,  # LH_HFE
-            0.8,  # LH_KFE
-            -0.03,  # RH_HAA
-            -0.4,  # RH_HFE
-            0.8,  # RH_KFE
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            0.4,
+            -0.8,
+            0.0,
+            0.4,
+            -0.8,
         ]
+        for i in range(len(builder.joint_dof_mode)):
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
-        # finalize model
+        for i in range(len(builder.joint_target_ke)):
+            builder.joint_target_ke[i] = 150
+            builder.joint_target_kd[i] = 5
+
         self.model = builder.finalize()
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        # the policy was trained with the following inertia tensors
-        # fmt: off
-        self.model.body_inertia = wp.array(
-            [
-                [[1.30548920,  0.00067627, 0.05068519], [ 0.000676270, 2.74363500,  0.00123380], [0.05068519,  0.00123380, 2.82926230]],
-                [[0.01809368,  0.00826303, 0.00475366], [ 0.008263030, 0.01629626, -0.00638789], [0.00475366, -0.00638789, 0.02370901]],
-                [[0.18137439, -0.00109795, 0.05645556], [-0.001097950, 0.20255709, -0.00183889], [0.05645556, -0.00183889, 0.02763401]],
-                [[0.03070243,  0.00022458, 0.00102368], [ 0.000224580, 0.02828139, -0.00652076], [0.00102368, -0.00652076, 0.00269065]],
-                [[0.01809368, -0.00825236, 0.00474725], [-0.008252360, 0.01629626,  0.00638789], [0.00474725,  0.00638789, 0.02370901]],
-                [[0.18137439,  0.00111040, 0.05645556], [ 0.001110400, 0.20255709,  0.00183910], [0.05645556,  0.00183910, 0.02763401]],
-                [[0.03070243, -0.00022458, 0.00102368], [-0.000224580, 0.02828139,  0.00652076], [0.00102368,  0.00652076, 0.00269065]],
-                [[0.01809368, -0.00825236, 0.00474726], [-0.008252360, 0.01629626,  0.00638789], [0.00474726,  0.00638789, 0.02370901]],
-                [[0.18137439,  0.00111041, 0.05645556], [ 0.001110410, 0.20255709,  0.00183909], [0.05645556,  0.00183909, 0.02763401]],
-                [[0.03070243, -0.00022458, 0.00102368], [-0.000224580, 0.02828139,  0.00652076], [0.00102368,  0.00652076, 0.00269065]],
-                [[0.01809368,  0.00826303, 0.00475366], [ 0.008263030, 0.01629626, -0.00638789], [0.00475366, -0.00638789, 0.02370901]],
-                [[0.18137439, -0.00109796, 0.05645556], [-0.001097960, 0.20255709, -0.00183888], [0.05645556, -0.00183888, 0.02763401]],
-                [[0.03070243,  0.00022458, 0.00102368], [ 0.000224580, 0.02828139, -0.00652076], [0.00102368, -0.00652076, 0.00269065]]
-            ],
-            dtype=wp.mat33f,
-        )
-        self.model.body_mass = wp.array([27.99286, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505], dtype=wp.float32,)
-        # fmt: on
+        self.viewer.set_model(self.model)
 
-        self.solver = newton.solvers.SolverFeatherstone(self.model)
-        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
+        
+        
+
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -311,11 +158,37 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        self.controller = AnymalController(self.model, self.device)
-        self.controller.get_control(self.state_0)
+        # Download the policy from the newton-assets repository
+        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if self.use_cuda_graph:
+        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        self.joint_pos_initial = torch.tensor(
+            self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
+        ).unsqueeze(0)
+        self.joint_vel_initial = torch.tensor(
+            self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32
+        )
+        self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+        self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+
+        # Pre-compute tensors that don't change during simulation
+        self.lab_to_mujoco_indices = torch.tensor(
+            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
+        )
+        self.mujoco_to_lab_indices = torch.tensor(
+            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
+        )
+        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
+        self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+        self.command[0, 0] = 1
+
+        self.capture()
+
+    def capture(self):
+        if self.device.is_cuda:
+            torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
+            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -326,55 +199,54 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.controller.assign_control(self.control, self.state_0)
+
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
+
+            self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         with wp.ScopedTimer("step"):
-            if self.use_cuda_graph:
+            obs = compute_obs(
+                self.act,
+                self.state_0,
+                self.joint_pos_initial,
+                self.torch_device,
+                self.lab_to_mujoco_indices,
+                self.gravity_vec,
+                self.command,
+            )
+            with torch.no_grad():
+                self.act = self.policy(obs)
+                self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
+                a = self.joint_pos_initial + 0.5 * self.rearranged_act
+                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+                wp.copy(
+                    self.control.joint_target, a_wp
+                )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+            if self.graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-            self.controller.get_control(self.state_0)
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
-            return
-
-        with wp.ScopedTimer("render"):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_anymal_c_walk.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=10000, help="Total number of frames.")
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
+    # Create viewer and run
+    example = Example(viewer)
 
-    args = parser.parse_known_args()[0]
-
-    if wp.get_device(args.device).is_cpu:
-        print("Error: This example requires a GPU device.")
-        sys.exit(1)
-
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, headless=args.headless)
-
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

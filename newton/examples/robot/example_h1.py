@@ -14,10 +14,14 @@
 # limitations under the License.
 
 ###########################################################################
-# Example G1 Robot
+# Example H1
 #
-# Shows how to set up a simulation of a G1 robot articulation
-# from a USD stage using newton.ModelBuilder().
+# Shows how to set up a simulation of a H1 articulation
+# from a USD file using the newton.ModelBuilder().
+# Note this example does not include a trained policy.
+#
+# Example usage:
+# uv run newton/examples/example_h1.py
 #
 ###########################################################################
 
@@ -31,11 +35,13 @@ import newton.utils
 class Example:
     def __init__(self, viewer, num_envs=4):
         # setup simulation parameters first
-        self.fps = 60
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
+
+        # group related attributes by prefix
         self.sim_time = 0.0
-        self.sim_substeps = 6
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_substeps = 4  # renamed from num_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
 
         # unpack any example specific args
         self.num_envs = num_envs
@@ -43,7 +49,9 @@ class Example:
         # save a reference to the viewer
         self.viewer = viewer
 
-        articulation_builder = newton.ModelBuilder()
+        self.device = wp.get_device()
+
+        articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
         )
@@ -52,23 +60,29 @@ class Example:
         articulation_builder.default_shape_cfg.kf = 1.0e3
         articulation_builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("unitree_g1")
-
+        asset_path = newton.utils.download_asset("unitree_h1")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
         newton.utils.parse_usd(
-            str(asset_path / "usd" / "g1_isaac.usd"),
+            asset_file,
             articulation_builder,
-            xform=wp.transform(wp.vec3f(0, 0, 0.8), wp.quat_identity()),
-            collapse_fixed_joints=True,
+            ignore_paths=["/GroundPlane"],
+            collapse_fixed_joints=False,
             enable_self_collisions=False,
+            load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
 
         articulation_builder.approximate_meshes("bounding_box")
 
+        for i in range(len(articulation_builder.joint_dof_mode)):
+            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+            articulation_builder.joint_target_ke[i] = 150
+            articulation_builder.joint_target_kd[i] = 5
+
         spacing = 3.0
         sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
 
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for i in range(self.num_envs):
             pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
             builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
@@ -76,18 +90,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            use_mujoco_cpu=False,
-            solver="newton",
-            integrator="euler",
-            nefc_per_env=300,
-            ncon_per_env=150,
-            cone="elliptic",
-            impratio=100,
-            iterations=100,
-            ls_iterations=50,
-        )
+        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

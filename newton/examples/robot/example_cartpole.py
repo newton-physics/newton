@@ -23,16 +23,27 @@
 
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
 import newton.examples
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_cartpole.usd", num_envs=8, use_cuda_graph=True):
+    def __init__(self, viewer, num_envs=8):
+        # setup simulation parameters first
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+
+        # group related attributes by prefix
+        self.sim_time = 0.0
+        self.sim_substeps = 10  # renamed from num_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
+
+        # unpack any example specific args
         self.num_envs = num_envs
+
+        # save a reference to the viewer
+        self.viewer = viewer
 
         articulation_builder = newton.ModelBuilder()
         articulation_builder.default_shape_cfg.density = 100.0
@@ -47,13 +58,6 @@ class Example:
         )
 
         builder = newton.ModelBuilder()
-
-        self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
-
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
 
         positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
 
@@ -70,77 +74,70 @@ class Example:
         # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.SolverFeatherstone(self.model)
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=2.0)
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        # we do not need to evaluate contacts for this example
+        self.contacts = None
 
+        # ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
-        if self.use_cuda_graph:
+        # ensure this is called at the end of the Example constructor
+        self.viewer.set_model(self.model)
+
+        # put graph capture into it's own function
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
-        self.run_time = 0.0
-
+    # simulate() performs one frame's worth of updates
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
+
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", synchronize=True, print=False) as timer:
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
 
-        self.run_time += timer.elapsed
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
-            return
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
-        with wp.ScopedTimer("render", synchronize=True, print=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_cartpole.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    # keep example options short, don't overload user with options
+    # device, viewer type, and other options are created by default
+    parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+    # Create example and run
+    example = Example(viewer, args.num_envs)
 
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
-        steps = args.num_frames * example.sim_substeps * args.num_envs
-        print(f"Simulation time: {example.run_time:.3f} ms")
-        print(f"Steps per second:  {steps / (example.run_time / 1000):,.0f}")
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)
