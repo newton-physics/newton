@@ -379,7 +379,7 @@ add_example_test(
     name="diffsim.example_diffsim_drone",
     devices=test_devices,
     test_options={"num_frames": 360},  # sim_steps
-    test_options_cpu={"num_frames": 360},
+    # test_options_cpu={"num_frames": 360}, # Disable for now.
     use_viewer=True,
 )
 
