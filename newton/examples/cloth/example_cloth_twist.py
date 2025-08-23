@@ -33,6 +33,7 @@ from pxr import Usd, UsdGeom
 wp.config.enable_backward = False
 
 import newton
+import newton.examples
 from newton import ParticleFlags
 
 
@@ -122,7 +123,8 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=300):
+    def __init__(self, viewer, num_frames=300):
+        self.viewer = viewer
         fps = 60
         self.frame_dt = 1.0 / fps
         # must be an even number when using CUDA Graph
@@ -224,12 +226,7 @@ class Example:
             ],
         )
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
-            self.renderer.enable_backface_culling = False
-            self.renderer.draw_grid = False
-            self.renderer.render_wireframe = True
+        self.viewer.set_model(self.model)
 
         self.cuda_graph = None
         if self.use_cuda_graph:
@@ -239,6 +236,7 @@ class Example:
 
     def simulate_substeps(self):
         self.contacts = self.model.collide(self.state_0)
+        self.solver.rebuild_bvh(self.state_0)
         for _ in range(self.num_substeps):
             wp.launch(
                 kernel=apply_rotation,
@@ -283,36 +281,22 @@ class Example:
                 self.cuda_graph = capture.graph
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
-        self.renderer.end_frame()
+        # Begin frame with time
+        self.viewer.begin_frame(self.sim_time)
+
+        # Render model-driven content (ground plane)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init()
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_self_contact.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
+    # Create example and run
+    example = Example(viewer)
 
-    args = parser.parse_known_args()[0]
-
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        example.run()
-
-        frame_times = example.profiler["step"]
-        print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

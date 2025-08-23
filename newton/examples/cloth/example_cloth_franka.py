@@ -412,7 +412,6 @@ class Example:
                 [1.5, -0.0, -0.30, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
                 [1.5, -0.0, -0.40, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_close_activation_val],
                 [1, -0.0, -0.40, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
-                [1, 0.0, -0.40, 0.25, *vec_rotation(0.0, 0.0, -1.0), clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
