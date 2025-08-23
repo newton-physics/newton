@@ -546,36 +546,6 @@ class Example:
         # rendering
         self.viewer.set_model(self.drone.model)
 
-        if isinstance(self.viewer, newton.viewer.ViewerUSD):
-            from pxr import UsdGeom  # noqa: PLC0415
-
-            # Remove the default drone geometries.
-            drone_root_prim = self.viewer.stage.GetPrimAtPath("/root/body_0_drone_0")
-            for prim in drone_root_prim.GetChildren():
-                self.viewer.stage.RemovePrim(prim.GetPath())
-
-            # Add a reference to the drone geometry.
-            drone_prim = self.viewer.stage.OverridePrim(f"{drone_root_prim.GetPath()}/crazyflie")
-            drone_prim.GetReferences().AddReference(self.drone_path)
-            drone_xform = UsdGeom.Xform(drone_prim)
-            drone_xform.AddTranslateOp().Set((0.0, 0.0, -0.05))
-            drone_xform.AddRotateXOp().Set(90.0)
-            drone_xform.AddRotateYOp().Set(135.0)
-            drone_xform.AddScaleOp().Set((drone_size * 20.0,) * 3)
-
-            # Get the propellers to spin
-            for turning_direction in ("cw", "ccw"):
-                spin = 100.0 * 360.0 * self.sim_steps / self.fps
-                spin = spin if turning_direction == "ccw" else -spin
-                for side in ("back", "front"):
-                    prop_prim = self.viewer.stage.OverridePrim(
-                        f"{drone_prim.GetPath()}/propeller_{turning_direction}_{side}"
-                    )
-                    prop_xform = UsdGeom.Xform(prop_prim)
-                    rot = prop_xform.AddRotateYOp()
-                    rot.Set(0.0, 0.0)
-                    rot.Set(spin, self.sim_steps)
-
         # capture forward/backward passes
         self.capture()
 
