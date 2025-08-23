@@ -627,7 +627,7 @@ class MeshInstancerGL:
 
         gl.glGenBuffers(1, self.instance_transform_buffer)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer_size, None, gl.GL_STATIC_DRAW)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer_size, None, gl.GL_DYNAMIC_DRAW)
 
         # we can only send vec4s to the shader, so we need to split the instance transforms matrix into its column vectors
         for i in range(4):
@@ -667,7 +667,7 @@ class MeshInstancerGL:
         # Create CUDA buffer for instance transforms
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             self._instance_transform_cuda_buffer = wp.RegisteredGLBuffer(
-                int(self.instance_transform_buffer.value), self.device
+                int(self.instance_transform_buffer.value), self.device, flags=wp.RegisteredGLBuffer.WRITE_DISCARD
             )
         else:
             self._instance_transform_cuda_buffer = None
@@ -728,7 +728,7 @@ class MeshInstancerGL:
         else:
             host_transforms = xforms.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_STATIC_DRAW)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
 
         # update other properties through CPU for now
         if colors is not None:

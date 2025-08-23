@@ -13,14 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+###########################################################################
+# Example Selection Materials
+#
+# Demonstrates runtime material property modification using ArticulationView.
+# This example spawns multiple ant robots across environments and dynamically
+# changes their friction coefficients during simulation. The ants alternate
+# between forward and backward movement with randomized material properties,
+# showcasing how to efficiently modify physics parameters for batches of
+# objects using the selection API.
+#
+# Command: python -m newton.examples selection_materials
+#
+###########################################################################
+
 from __future__ import annotations
 
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
-from newton.examples import compute_env_offsets
+import newton.examples
 from newton.selection import ArticulationView
 from newton.solvers import SolverNotifyFlags
 
@@ -36,75 +48,62 @@ RANDOMIZE_PER_ENV = True
 
 @wp.kernel
 def compute_middle_kernel(
-    lower: wp.array2d(dtype=float), upper: wp.array2d(dtype=float), middle: wp.array2d(dtype=float)
+    lower: wp.array2d(dtype=float),
+    upper: wp.array2d(dtype=float),
+    middle: wp.array2d(dtype=float),
 ):
     i, j = wp.tid()
     middle[i, j] = 0.5 * (lower[i, j] + upper[i, j])
 
 
 @wp.kernel
-def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, num_envs: int):
+def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, shape_count: int):
     i, j = wp.tid()
 
     if RANDOMIZE_PER_ENV:
         rng = wp.rand_init(seed, i)
     else:
-        rng = wp.rand_init(seed, i * num_envs + j)
+        rng = wp.rand_init(seed, i * shape_count + j)
 
     mu[i, j] = wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
-    def __init__(self, stage_path: str | None = "example_selection_materials.usd", num_envs=16, use_cuda_graph=True):
+    def __init__(self, viewer, num_envs=16):
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+
+        self.sim_time = 0.0
+        self.sim_substeps = 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
         self.num_envs = num_envs
 
-        up_axis = newton.Axis.Z
-
-        env_builder = newton.ModelBuilder(up_axis=up_axis)
+        env = newton.ModelBuilder()
         newton.utils.parse_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
-            env_builder,
+            env,
             ignore_names=["floor", "ground"],
-            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 0.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
 
-        env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
+        scene = newton.ModelBuilder()
 
-        builder = newton.ModelBuilder()
-        for i in range(self.num_envs):
-            builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
-
-        builder.add_ground_plane()
+        scene.add_ground_plane()
+        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
 
         # finalize model
-        self.model = builder.finalize()
+        self.model = scene.finalize()
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=stage_path,
-                model=self.model,
-                scaling=2.0,
-                up_axis=str(up_axis),
-                screen_width=1280,
-                screen_height=720,
-                camera_pos=(0, 4, 30),
-            )
+        self.viewer = viewer
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-
-        self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
-
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.contacts = self.model.collide(self.state_0)
 
         self.next_reset = 0.0
         self.reset_count = 0
@@ -112,7 +111,12 @@ class Example:
         # ===========================================================
         # create articulation view
         # ===========================================================
-        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
+        self.ants = ArticulationView(
+            self.model,
+            "ant",
+            verbose=VERBOSE,
+            exclude_joint_types=[newton.JointType.FREE],
+        )
 
         if USE_TORCH:
             # default ant root states
@@ -136,16 +140,28 @@ class Example:
             wp.launch(
                 compute_middle_kernel,
                 dim=self.default_ant_dof_positions.shape,
-                inputs=[dof_limit_lower, dof_limit_upper, self.default_ant_dof_positions],
+                inputs=[
+                    dof_limit_lower,
+                    dof_limit_upper,
+                    self.default_ant_dof_positions,
+                ],
             )
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
+        self.viewer.set_model(self.model)
+
+        # Ensure FK evaluation (for non-MuJoCo solvers):
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
         # reset all
         self.reset()
+        self.capture()
+
         self.next_reset = self.sim_time + 2.0
 
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
-        if self.use_cuda_graph:
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -154,13 +170,16 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
+
             # explicit collisions needed without MuJoCo solver
             if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                contacts = self.model.collide(self.state_0)
+                self.contacts = self.model.collide(self.state_0)
             else:
-                contacts = None
+                self.contacts = None
 
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -168,11 +187,11 @@ class Example:
             self.reset()
             self.next_reset = self.sim_time + 2.0
 
-        with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+
         self.sim_time += self.frame_dt
 
     def reset(self, mask=None):
@@ -203,7 +222,9 @@ class Example:
             # randomize materials
             material_mu = self.ants.get_attribute("shape_material_mu", self.model)
             wp.launch(
-                reset_materials_kernel, dim=material_mu.shape, inputs=[material_mu, self.reset_count, self.num_envs]
+                reset_materials_kernel,
+                dim=material_mu.shape,
+                inputs=[material_mu, self.reset_count, self.ants.shape_count],
             )
 
         self.ants.set_attribute("shape_material_mu", self.model, material_mu)
@@ -229,61 +250,32 @@ class Example:
         self.reset_count += 1
 
     def render(self):
-        if self.renderer is None:
-            return
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
-        with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
-
-
-# scoped device manager for both Warp and Torch
-class ScopedDevice:
-    def __init__(self, device):
-        self.warp_scoped_device = wp.ScopedDevice(device)
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            self.torch_scoped_device = torch.device(wp.device_to_torch(device))
-
-    def __enter__(self):
-        self.warp_scoped_device.__enter__()
-        if USE_TORCH:
-            self.torch_scoped_device.__enter__()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.warp_scoped_device.__exit__(exc_type, exc_val, exc_tb)
-        if USE_TORCH:
-            self.torch_scoped_device.__exit__(exc_type, exc_val, exc_tb)
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser = newton.examples.create_parser()
     parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_selection_materials.usd",
-        help="Path to the output USD file.",
+        "--num-envs",
+        type=int,
+        default=16,
+        help="Total number of simulated environments.",
     )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_known_args()[0]
 
-    with ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+    viewer, args = newton.examples.init(parser)
 
-        for frame_idx in range(args.num_frames):
-            example.step()
-            example.render()
+    if USE_TORCH:
+        import torch
 
-            if not example.renderer:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
+        torch.set_device(args.device)
 
-        if example.renderer:
-            example.renderer.save()
+    example = Example(viewer, num_envs=args.num_envs)
+
+    newton.examples.run(example)

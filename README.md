@@ -22,8 +22,7 @@ and [NVIDIA](https://www.nvidia.com/).
 
 ## Development
 
-See the [development guide](https://newton-physics.github.io/newton/development-guide.html) for instructions on how to
-get started.
+See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for instructions on how to set up and get started.
 
 ## Examples
 
@@ -146,6 +145,40 @@ get started.
     </td>
     <td align="center">
       <!-- Future MPM example -->
+    </td>
+  </tr>
+</table>
+
+
+## Selection Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_cartpole.py">
+        <img src="docs/images/examples/example_selection_cartpole.jpg" alt="Selection Cartpole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_materials.py">
+        <img src="docs/images/examples/example_selection_materials.jpg" alt="Selection Materials">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_articulations.py">
+        <img src="docs/images/examples/example_selection_articulations.jpg" alt="Selection Articulations">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples selection_cartpole</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples selection_materials</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples selection_articulations</code>
     </td>
   </tr>
 </table>

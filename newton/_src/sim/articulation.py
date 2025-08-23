@@ -404,8 +404,8 @@ def eval_fk(
         model (Model): The model to evaluate.
         joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
-        mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], int/bool
         state (State): The state to update.
+        mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
     """
     wp.launch(
         kernel=eval_articulation_fk,

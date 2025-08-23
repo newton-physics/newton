@@ -183,6 +183,9 @@ def main():
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+        "selection_articulations": "newton.examples.selection.example_selection_articulations",
+        "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
+        "selection_materials": "newton.examples.selection.example_selection_materials",
     }
 
     if len(sys.argv) < 2:
