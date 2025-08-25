@@ -50,6 +50,7 @@ def parse_usd(
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
     load_non_physics_prims: bool = True,
+    hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ) -> dict[str, Any]:
     """
@@ -77,6 +78,7 @@ def parse_usd(
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+        hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
 
     Returns:
@@ -308,6 +310,11 @@ def parse_usd(
         ):
             return
         xform = incoming_xform * parse_xform(prim)
+        if prim.IsInstance():
+            proto = prim.GetPrototype()
+            for child in proto.GetChildren():
+                load_visual_shapes(parent_body_id, child, xform)
+            return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
@@ -452,12 +459,6 @@ def parse_usd(
                 path_shape_scale[path_name] = scale
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
-
-        if type_name == "xform":
-            if prim.IsInstance():
-                proto = prim.GetPrototype()
-                for child in proto.GetChildren():
-                    load_visual_shapes(parent_body_id, child, xform)
 
         for child in prim.GetChildren():
             load_visual_shapes(parent_body_id, child, xform)
@@ -1022,6 +1023,7 @@ def parse_usd(
                         restitution=material.restitution,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
+                        is_visible=not hide_collision_shapes,
                     ),
                     "key": path,
                 }
