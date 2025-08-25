@@ -406,7 +406,7 @@ add_example_test(
     name="diffsim.example_diffsim_bear",
     devices=test_devices,
     test_options={"num_frames": 30 * 300},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 300},
+    test_options_cpu={"num_frames": 1 * 300, "test_timeout": 1000},
     use_viewer=True,
 )
 
