@@ -18,8 +18,8 @@
 #
 # Shows Anymal C with a pretrained policy coupled with implicit mpm sand.
 #
-# Example usage:
-# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk_on_sand.py
+# Example usage (via unified runner):
+#   python -m newton.examples anymal_c_walk_on_sand --viewer gl
 ###########################################################################
 
 import sys
@@ -28,11 +28,9 @@ import numpy as np
 import torch
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
+import newton.examples
 import newton.utils
-import newton.viewer
 from newton.solvers import SolverImplicitMPM
 
 lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
@@ -98,31 +96,30 @@ def update_collider_mesh(
     res.velocities[v] = (next_p - cur_p) / dt
     res.points[v] = cur_p
 
+
 class Example:
     def __init__(
         self,
-        stage_path="example_anymal_c_walk_on_sand.usd",
+        viewer,
         voxel_size=0.05,
         particles_per_cell=3,
         tolerance=1.0e-5,
-        headless=False,
         sand_friction=0.48,
         dynamic_grid=True,
     ):
-        self.device = wp.get_device()
-        # Convert Warp device to PyTorch device string
-        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
-
+        # setup simulation parameters first
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_step = 0
-        fps = 60
-        self.frame_dt = 1.0e0 / fps
-
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # import the robot model
+        self.viewer = viewer
 
+        self.device = wp.get_device()
+        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
+
+        # import the robot model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
@@ -146,16 +143,8 @@ class Example:
         builder.add_ground_plane()
 
         # setup robot joint properties
-
         builder.joint_q[:3] = [0.0, 0.0, 0.62]
-
-        builder.joint_q[3:7] = [
-            0.0,
-            0.0,
-            0.7071,
-            0.7071,
-        ]
-
+        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
         builder.joint_q[7:] = [
             0.0,
             -0.4,
@@ -172,13 +161,11 @@ class Example:
         ]
         for i in range(len(builder.joint_dof_mode)):
             builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
         # add sand particles
-
         max_fraction = 1.0
         particle_lo = np.array([-0.5, -0.5, 0.0])  # emission lower bound
         particle_hi = np.array([0.5, 2.5, 0.15])  # emission upper bound
@@ -186,7 +173,6 @@ class Example:
             np.ceil(particles_per_cell * (particle_hi - particle_lo) / voxel_size),
             dtype=int,
         )
-
         _spawn_particles(builder, particle_res, particle_lo, particle_hi, max_fraction)
 
         # finalize model
@@ -194,7 +180,6 @@ class Example:
         self.model.particle_mu = sand_friction
 
         # Select and merge meshes for robot/sand collisions
-        # (The implicit mpm solver currently only support meshes as collision primitives)
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
             [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
@@ -221,7 +206,6 @@ class Example:
         mpm_options.tolerance = tolerance
         mpm_options.unilateral = False
         mpm_options.max_iterations = 50
-        # options.gauss_seidel = False
         mpm_options.dynamic_grid = dynamic_grid
         if not dynamic_grid:
             mpm_options.grid_padding = 5
@@ -229,19 +213,33 @@ class Example:
         self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
-        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
-
+        # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         self.mpm_solver.enrich_state(self.state_0)
         self.mpm_solver.enrich_state(self.state_1)
 
+        # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
         # Setup control policy
         self.control = self.model.control()
+
+        # Download the policy from the newton-assets repository
+        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
+
+        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        self.joint_pos_initial = torch.tensor(
+            self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
+        ).unsqueeze(0)
+        self.joint_vel_initial = torch.tensor(
+            self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32
+        )
+        self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+        self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
 
         # Pre-compute tensors that don't change during simulation
         self.lab_to_mujoco_indices = torch.tensor(
@@ -254,15 +252,17 @@ class Example:
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self.command[0, 0] = 1
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if self.use_cuda_graph:
-            torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+        # set model on viewer and setup capture
+        self.viewer.set_model(self.model)
+        self.viewer.show_particles = True
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate_robot()
-            self.robot_graph = capture.graph
-        else:
-            self.robot_graph = None
+            self.graph = capture.graph
 
     def apply_control(self):
         obs = compute_obs(
@@ -280,45 +280,43 @@ class Example:
             a = self.joint_pos_initial + 0.5 * self.rearranged_act
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            wp.copy(
-                self.control.joint_target, a_wp
-            )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+            # copy action targets to control buffer
+            wp.copy(self.control.joint_target, a_wp)
 
     def simulate_robot(self):
+        # robot substeps
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def simulate_sand(self):
+        # sand step (in-place on frame dt)
         self._update_collider_mesh(self.state_0)
-        # solve in-place, avoids having to resync robot sim state
         self.mpm_solver.step(self.state_0, self.state_0, contacts=None, control=None, dt=self.frame_dt)
 
     def step(self):
-        with wp.ScopedTimer("step", synchronize=True):
-            self.apply_control()
+        # compute control before graph/step
+        self.apply_control()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate_robot()
 
-            if self.use_cuda_graph:
-                wp.capture_launch(self.robot_graph)
-            else:
-                self.simulate_robot()
-
-            self.simulate_sand()
+        # MPM solver step is not graph-capturable yet 
+        self.simulate_sand()
 
         self.sim_time += self.frame_dt
 
+    def test(self):
+        pass
+
     def render(self):
-        if self.renderer is None:
-            return
-
-        with wp.ScopedTimer("render", synchronize=True):
-            self.renderer.begin_frame(self.sim_time)
-
-            self.renderer.render(self.state_0)
-
-            self.renderer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
     def _update_collider_mesh(self, state):
         wp.launch(
@@ -392,55 +390,32 @@ def _merge_meshes(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_anymal_c_walk_on_sand.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=10000, help="Total number of frames.")
+    # Create parser that inherits common arguments and adds example-specific ones
+    parser = newton.examples.create_parser()
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
     parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
     parser.add_argument("--dynamic-grid", action=argparse.BooleanOptionalAction, default=True)
 
-    args = parser.parse_known_args()[0]
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
-    if wp.get_device(args.device).is_cpu:
+    # This example requires a GPU device
+    if wp.get_device().is_cpu:
         print("Error: This example requires a GPU device.")
         sys.exit(1)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            voxel_size=args.voxel_size,
-            particles_per_cell=args.particles_per_cell,
-            tolerance=args.tolerance,
-            headless=args.headless,
-            sand_friction=args.sand_friction,
-            dynamic_grid=args.dynamic_grid,
-        )
+    # Create example and load policy
+    example = Example(
+        viewer,
+        voxel_size=args.voxel_size,
+        particles_per_cell=args.particles_per_cell,
+        tolerance=args.tolerance,
+        sand_friction=args.sand_friction,
+        dynamic_grid=args.dynamic_grid,
+    )
 
-        # Download the policy from the newton-assets repository
-        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
-        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
 
-        example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
-        example.joint_pos_initial = torch.tensor(
-            example.state_0.joint_q[7:], device=example.torch_device, dtype=torch.float32
-        ).unsqueeze(0)
-        example.joint_vel_initial = torch.tensor(
-            example.state_0.joint_qd[6:], device=example.torch_device, dtype=torch.float32
-        )
-        example.act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
-        example.rearranged_act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
-
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
-        if example.renderer:
-            example.renderer.save()
+    # Run via unified example runner
+    newton.examples.run(example)
