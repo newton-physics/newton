@@ -40,7 +40,7 @@ def compute_loss_kernel(
     loss[0] = wp.length_sq(pos[0] - target_pos)
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel()
 def apply_gradient_kernel(
     spring_rest_lengths_grad: wp.array(dtype=float),
     train_rate: float,
