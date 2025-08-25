@@ -130,7 +130,9 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future MPM example -->
+      <a href="newton/examples/mpm/example_anymal_c_walk_on_sand.py">
+        <img src="docs/images/examples/example_anymal_c_walk_on_sand.jpg" alt="Anymal-C Walk on Sand">
+      </a>
     </td>
     <td align="center" width="33%">
       <!-- Future MPM example -->
@@ -141,7 +143,7 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
       <code>python -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <!-- Future MPM example -->
+      <code>python -m newton.examples anymal_c_walk_on_sand</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
