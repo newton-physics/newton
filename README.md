@@ -24,6 +24,10 @@ During the alpha development phase, we recommend using the [uv](https://docs.ast
 
 Once uv is installed, running Newton examples is straightforward:
 ```
+# Clone the repository
+git clone git@github.com:newton-physics/newton.git
+cd newton
+
 # set up the uv environment for running Newton examples
 uv sync --extra examples
 
