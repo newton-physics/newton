@@ -90,20 +90,20 @@ def _check_function_signature_matches_method_signature(func, method):
 
 class TestApi(unittest.TestCase):
     def test_builder_urdf_signature_parity(self):
-        from newton import ModelBuilder
-        from newton._src.utils.import_urdf import parse_urdf
+        from newton import ModelBuilder  # noqa: PLC0415
+        from newton._src.utils.import_urdf import parse_urdf  # noqa: PLC0415
 
         _check_function_signature_matches_method_signature(parse_urdf, ModelBuilder.add_urdf)
 
     def test_builder_mjcf_signature_parity(self):
-        from newton import ModelBuilder
-        from newton._src.utils.import_mjcf import parse_mjcf
+        from newton import ModelBuilder  # noqa: PLC0415
+        from newton._src.utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
         _check_function_signature_matches_method_signature(parse_mjcf, ModelBuilder.add_mjcf)
 
     def test_builder_usd_signature_parity(self):
-        from newton import ModelBuilder
-        from newton._src.utils.import_usd import parse_usd
+        from newton import ModelBuilder  # noqa: PLC0415
+        from newton._src.utils.import_usd import parse_usd  # noqa: PLC0415
 
         _check_function_signature_matches_method_signature(parse_usd, ModelBuilder.add_usd)
 
