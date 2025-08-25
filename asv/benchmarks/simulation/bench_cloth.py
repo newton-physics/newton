@@ -29,7 +29,7 @@ class FastExampleClothManipulation:
 
     def setup(self):
         self.num_frames = 30
-        self.example = ExampleClothManipulation(ViewerNull(), num_frames=self.num_frames)
+        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
@@ -44,7 +44,7 @@ class FastExampleClothSelfContactVBD:
 
     def setup(self):
         self.num_frames = 100
-        self.example = ExampleClothSelfContact(ViewerNull())
+        self.example = ExampleClothSelfContact(ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

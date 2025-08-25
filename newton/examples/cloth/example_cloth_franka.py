@@ -138,21 +138,19 @@ class Example:
     def __init__(
         self,
         viewer,
-        num_frames: int | None = None,
     ):
         self.viewer = viewer
-        self.cuda_graph = None
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.graph = None
         self.add_cloth = True
         self.add_robot = True
 
         # parameters
         #   simulation
-        self.num_substeps = 15
+        self.sim_substeps = 15
         self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
-        self.sim_dt = self.frame_dt / self.num_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps
         self.up_axis = "Z"
 
         #   contact
@@ -184,14 +182,14 @@ class Example:
         self.soft_contact_max = 1000000
 
         if self.add_robot:
-            articulation_builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
-            self.create_articulation(articulation_builder)
+            franka = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
+            self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.builder.add_builder(articulation_builder, xform, separate_collision_group=False)
-            self.bodies_per_env = articulation_builder.body_count
-            self.dof_q_per_env = articulation_builder.joint_coord_count
-            self.dof_qd_per_env = articulation_builder.joint_dof_count
+            self.builder.add_builder(franka, xform, separate_collision_group=False)
+            self.bodies_per_env = franka.body_count
+            self.dof_q_per_env = franka.joint_coord_count
+            self.dof_qd_per_env = franka.joint_dof_count
 
         # add a table
         self.builder.add_shape_box(
@@ -239,18 +237,15 @@ class Example:
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
 
-        if num_frames is None:
-            if self.add_robot:
-                episode_duration = np.sum(self.transition_duration)
-            else:
-                episode_duration = 10.0
-
-            self.num_frames = int(episode_duration / self.frame_dt)
+        if self.add_robot:
+            episode_duration = np.sum(self.transition_duration)
         else:
-            self.num_frames = num_frames
+            episode_duration = 10.0
 
-        self.sim_dt = self.frame_dt / max(1, self.num_substeps)
-        self.sim_steps = self.num_frames * self.num_substeps
+        self.num_frames = int(episode_duration / self.frame_dt)
+
+        self.sim_dt = self.frame_dt / max(1, self.sim_substeps)
+        self.sim_steps = self.num_frames * self.sim_substeps
         self.sim_step = 0
         self.sim_time = 0.0
 
@@ -264,7 +259,7 @@ class Example:
         self.sim_time = 0.0
 
         # initialize robot solver
-        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.num_substeps)
+        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.sim_substeps)
         self.set_up_control()
 
         self.cloth_solver: SolverVBD | None = None
@@ -287,9 +282,12 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        # Ensure FK evaluation (for non-MuJoCo solvers):
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
         # graph capture
         if self.add_cloth:
-            self.capture_cuda_graph()
+            self.capture()
 
     def set_up_control(self):
         self.control = self.model.control()
@@ -325,12 +323,13 @@ class Example:
         self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
         self.initial_pose = self.model.joint_q.numpy()
 
-    def capture_cuda_graph(self):
-        if self.use_cuda_graph:
+    def capture(self):
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
-                self.integrate_frame()
-
-            self.cuda_graph = capture.graph
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")
@@ -506,18 +505,25 @@ class Example:
 
     def step(self):
         self.generate_control_joint_qd(self.state_0)
-        if self.use_cuda_graph:
-            wp.capture_launch(self.cuda_graph)
-            self.sim_time += self.sim_dt * self.num_substeps
+        if self.graph:
+            wp.capture_launch(self.graph)
         else:
-            self.integrate_frame()
+            self.simulate()
 
-    def integrate_frame(self):
+        self.sim_time += self.frame_dt
+
+    def test(self):
+        pass
+
+    def simulate(self):
         self.cloth_solver.rebuild_bvh(self.state_0)
-        for _step in range(self.num_substeps):
+        for _step in range(self.sim_substeps):
             # robot sim
             self.state_0.clear_forces()
             self.state_1.clear_forces()
+
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
 
             if self.add_robot:
                 particle_count = self.model.particle_count

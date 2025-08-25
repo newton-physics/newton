@@ -123,7 +123,7 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, viewer, num_frames=300):
+    def __init__(self, viewer):
         self.viewer = viewer
         fps = 60
         self.frame_dt = 1.0 / fps
@@ -136,7 +136,7 @@ class Example:
         # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
         self.bvh_rebuild_frames = 10
 
-        self.num_frames = num_frames
+        self.num_frames = 300
         self.sim_time = 0.0
         self.profiler = {}
 
@@ -261,12 +261,11 @@ class Example:
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
-        with wp.ScopedTimer("step", print=False, dict=self.profiler):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.cuda_graph)
-            else:
-                self.simulate_substeps()
-            self.sim_time += self.frame_dt
+        if self.use_cuda_graph:
+            wp.capture_launch(self.cuda_graph)
+        else:
+            self.simulate_substeps()
+        self.sim_time += self.frame_dt
 
     def run(self):
         for i in range(self.num_frames):
