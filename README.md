@@ -34,7 +34,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 Then restart your terminal (or update paths) and run an example:
 ```bash
-uv run --extra examples -m newton.examples basic_urdf
+uv run --extra examples -m newton.examples basic_pendulum
 ```
 
 See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include instructions for how to setup Newton in a virtual environment.
