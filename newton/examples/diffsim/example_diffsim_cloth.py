@@ -64,7 +64,6 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_steps = 120  # 2.0 seconds
         self.sim_substeps = 16
-        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.verbose = verbose
@@ -109,9 +108,7 @@ class Example:
         self.solver.enable_tri_contact = False
 
         # allocate sim states for trajectory (control and contacts are not used in this example)
-        self.states = []
-        for _i in range(self.sim_substeps_count + 1):
-            self.states.append(self.model.state(requires_grad=True))
+        self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
         self.contacts = None
 

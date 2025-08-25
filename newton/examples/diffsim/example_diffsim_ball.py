@@ -55,7 +55,6 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_steps = 36
         self.sim_substeps = 8
-        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.verbose = verbose
@@ -103,9 +102,7 @@ class Example:
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
         # allocate sim states, initialize control and one-shot contacts (valid for simple collisions against constant plane)
-        self.states = []
-        for _i in range(self.sim_substeps_count + 1):
-            self.states.append(self.model.state())
+        self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
 

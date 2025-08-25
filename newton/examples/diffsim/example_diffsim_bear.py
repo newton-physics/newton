@@ -100,7 +100,6 @@ class Example:
         self.sim_time = 0.0
         self.sim_steps = 300
         self.sim_substeps = 80
-        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.verbose = verbose
@@ -190,9 +189,7 @@ class Example:
         self.solver.enable_tri_contact = False
 
         # allocate sim states, initialize control and contacts
-        self.states = []
-        for _i in range(self.sim_substeps_count + 1):
-            self.states.append(self.model.state(requires_grad=True))
+        self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=40.0)
 
