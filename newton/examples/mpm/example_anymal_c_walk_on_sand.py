@@ -56,12 +56,14 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return a - b + c
 
 
-def compute_obs(actions, state: newton.State, joint_pos_initial, device, indices, gravity_vec, command):
-    root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
+def compute_obs(actions, state: newton.State, joint_pos_initial, indices, gravity_vec, command):
+    q = wp.to_torch(state.joint_q)
+    qd = wp.to_torch(state.joint_qd)
+    root_quat_w = q[3:7].unsqueeze(0)
+    root_lin_vel_w = qd[3:6].unsqueeze(0)
+    root_ang_vel_w = qd[:3].unsqueeze(0)
+    joint_pos_current = q[7:].unsqueeze(0)
+    joint_vel_current = qd[6:].unsqueeze(0)
     vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
     a_vel_b = quat_rotate_inverse(root_quat_w, root_ang_vel_w)
     grav = quat_rotate_inverse(root_quat_w, gravity_vec)
@@ -267,7 +269,6 @@ class Example:
             self.act,
             self.state_0,
             self.joint_pos_initial,
-            self.torch_device,
             self.lab_to_mujoco_indices,
             self.gravity_vec,
             self.command,

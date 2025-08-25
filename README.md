@@ -130,7 +130,7 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/mpm/anymal_c_walk_on_sand.py">
+      <a href="newton/examples/mpm/example_anymal_c_walk_on_sand.py">
         <img src="docs/images/examples/example_anymal_c_walk_on_sand.jpg" alt="Anymal-C Walk on Sand">
       </a>
     </td>
