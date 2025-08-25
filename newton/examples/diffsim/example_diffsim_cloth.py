@@ -140,11 +140,9 @@ class Example:
         self.tape.backward(self.loss)
 
     def forward(self):
-        # run control loop
-        for i in range(self.sim_substeps_count):
-            self.states[i].clear_forces()
-
-            self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
+        # run simulation loop
+        for sim_step in range(self.sim_steps):
+            self.simulate(sim_step)
 
         # compute loss on final state
         self.com.zero_()
@@ -154,6 +152,12 @@ class Example:
             inputs=[self.states[-1].particle_q, self.model.particle_count, self.com],
         )
         wp.launch(loss_kernel, dim=1, inputs=[self.com, self.target, self.loss])
+
+    def simulate(self, sim_step):
+        for i in range(self.sim_substeps):
+            t = sim_step * self.sim_substeps + i
+            self.states[t].clear_forces()
+            self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
 
     def step(self):
         if self.graph:

@@ -242,11 +242,10 @@ class Example:
             inputs=(self.material_params,),
             outputs=(self.model.tet_materials,),
         )
-        # run control loop
-        for i in range(self.sim_substeps_count):
-            self.states[i].clear_forces()
-            self.contacts = self.model.collide(self.states[i], soft_contact_margin=0.001)
-            self.solver.step(self.states[i], self.states[i + 1], self.control, self.contacts, self.sim_dt)
+
+        # run simulation loop
+        for sim_step in range(self.sim_steps):
+            self.simulate(sim_step)
 
         # Update loss
         # Compute the center of mass for the last time step.
@@ -269,6 +268,13 @@ class Example:
         )
 
         return self.loss
+
+    def simulate(self, sim_step):
+        for i in range(self.sim_substeps):
+            t = sim_step * self.sim_substeps + i
+            self.states[t].clear_forces()
+            self.contacts = self.model.collide(self.states[t], soft_contact_margin=0.001)
+            self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
 
     def step(self):
         if self.graph:

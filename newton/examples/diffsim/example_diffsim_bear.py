@@ -221,52 +221,53 @@ class Example:
     def forward_backward(self):
         self.tape = wp.Tape()
         with self.tape:
-            for i in range(self.sim_steps):
-                self.forward(i)
+            self.forward()
         self.tape.backward(self.loss)
 
-    def forward(self, sim_step):
-        with wp.ScopedTimer("network", active=self.verbose):
-            # build sinusoidal input phases
-            wp.launch(kernel=compute_phases, dim=self.phase_count, inputs=[self.phases[sim_step], self.sim_time])
-
-            # apply linear network with tanh activation
-            wp.launch_tiled(
-                kernel=network,
-                dim=self.network_tiles,
-                inputs=[self.phases[sim_step].reshape((self.phase_count, 1)), self.weights],
-                outputs=[self.tet_activations[sim_step].reshape((self.model.tet_count, 1))],
-                block_dim=TILE_THREADS,
-            )
-            self.control.tet_activations = self.tet_activations[sim_step]
-
-        with wp.ScopedTimer("simulate", active=self.verbose):
-            # run simulation loop
-            for i in range(self.sim_substeps):
-                self.states[sim_step * self.sim_substeps + i].clear_forces()
-                self.solver.step(
-                    self.states[sim_step * self.sim_substeps + i],
-                    self.states[sim_step * self.sim_substeps + i + 1],
-                    self.control,
-                    self.contacts,
-                    self.sim_dt,
+    def forward(self):
+        for sim_step in range(self.sim_steps):
+            with wp.ScopedTimer("network", active=self.verbose):
+                # build sinusoidal input phases
+                wp.launch(
+                    kernel=compute_phases,
+                    dim=self.phase_count,
+                    inputs=[self.phases[sim_step], self.sim_time],
                 )
-                self.sim_time += self.sim_dt
 
-        with wp.ScopedTimer("loss", active=self.verbose):
-            # compute center of mass velocity
-            wp.launch(
-                com_kernel,
-                dim=self.model.particle_count,
-                inputs=[
-                    self.states[(sim_step + 1) * self.sim_substeps].particle_qd,
-                    self.model.particle_count,
-                    self.coms[sim_step],
-                ],
-                outputs=[],
-            )
-            # compute loss
-            wp.launch(loss_kernel, dim=1, inputs=[self.coms[sim_step], self.loss], outputs=[])
+                # apply linear network with tanh activation
+                wp.launch_tiled(
+                    kernel=network,
+                    dim=self.network_tiles,
+                    inputs=[self.phases[sim_step].reshape((self.phase_count, 1)), self.weights],
+                    outputs=[self.tet_activations[sim_step].reshape((self.model.tet_count, 1))],
+                    block_dim=TILE_THREADS,
+                )
+                self.control.tet_activations = self.tet_activations[sim_step]
+
+            with wp.ScopedTimer("simulate", active=self.verbose):
+                self.simulate(sim_step)
+
+            with wp.ScopedTimer("loss", active=self.verbose):
+                # compute center of mass velocity
+                wp.launch(
+                    com_kernel,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self.states[(sim_step + 1) * self.sim_substeps].particle_qd,
+                        self.model.particle_count,
+                        self.coms[sim_step],
+                    ],
+                    outputs=[],
+                )
+                # compute loss
+                wp.launch(loss_kernel, dim=1, inputs=[self.coms[sim_step], self.loss], outputs=[])
+
+    def simulate(self, sim_step):
+        for i in range(self.sim_substeps):
+            t = sim_step * self.sim_substeps + i
+            self.states[t].clear_forces()
+            self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
+            self.sim_time += self.sim_dt
 
     def step(self):
         if self.graph:
