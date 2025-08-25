@@ -62,14 +62,29 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 
 
 class Axis(IntEnum):
-    """Enum for representing the three axes in 3D space."""
+    """Enumeration of axes in 3D space."""
 
     X = 0
+    """X-axis."""
     Y = 1
+    """Y-axis."""
     Z = 2
+    """Z-axis."""
 
     @classmethod
     def from_string(cls, axis_str: str) -> Axis:
+        """
+        Convert a string representation of an axis ("x", "y", or "z") to the corresponding Axis enum member.
+
+        Args:
+            axis_str (str): The axis as a string. Should be "x", "y", or "z" (case-insensitive).
+
+        Returns:
+            Axis: The corresponding Axis enum member.
+
+        Raises:
+            ValueError: If the input string does not correspond to a valid axis.
+        """
         axis_str = axis_str.lower()
         if axis_str == "x":
             return cls.X
@@ -81,6 +96,19 @@ class Axis(IntEnum):
 
     @classmethod
     def from_any(cls, value: AxisType) -> Axis:
+        """
+        Convert a value of various types to an Axis enum member.
+
+        Args:
+            value (AxisType): The value to convert. Can be an Axis, str, or int-like.
+
+        Returns:
+            Axis: The corresponding Axis enum member.
+
+        Raises:
+            TypeError: If the value cannot be converted to an Axis.
+            ValueError: If the string or integer does not correspond to a valid Axis.
+        """
         if isinstance(value, cls):
             return value
         if isinstance(value, str):
@@ -110,6 +138,12 @@ class Axis(IntEnum):
         return hash(self.name)
 
     def to_vector(self) -> tuple[float, float, float]:
+        """
+        Return the axis as a 3D unit vector.
+
+        Returns:
+            tuple[float, float, float]: The unit vector corresponding to the axis.
+        """
         if self == Axis.X:
             return (1.0, 0.0, 0.0)
         elif self == Axis.Y:
@@ -118,6 +152,12 @@ class Axis(IntEnum):
             return (0.0, 0.0, 1.0)
 
     def to_vec3(self) -> wp.vec3:
+        """
+        Return the axis as a warp.vec3 unit vector.
+
+        Returns:
+            wp.vec3: The unit vector corresponding to the axis.
+        """
         return wp.vec3(*self.to_vector())
 
 
