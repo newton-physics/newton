@@ -5,7 +5,7 @@
 .. autoclass:: {{ objname }}
    :members:
    :inherited-members:
-   :member-order: bysource
+   :member-order: groupwise
    
    {% block methods %}
 

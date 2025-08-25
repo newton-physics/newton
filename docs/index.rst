@@ -12,10 +12,11 @@ Newton Physics
    :caption: User Guide
    
    Overview <guide/overview>
-   guide/quickstart
+   guide/installation
+   guide/visualization
    guide/key-concepts
    guide/tutorials
-   Conventions <conventions>
+   Development <guide/development>
 
 .. toctree::
    :maxdepth: 1
@@ -23,6 +24,7 @@ Newton Physics
    :caption: Concepts
    
    Articulations <concepts/articulations>
+   Conventions <concepts/conventions>
 
 .. toctree::
    :maxdepth: 1
@@ -44,9 +46,7 @@ Newton Physics
    :caption: Further Reading
 
    FAQ <faq>
-   Changelog <changelog>
    Migration Guide <migration>
-   Developer Guide <development-guide>
    Integrations <integrations/index>
 
 

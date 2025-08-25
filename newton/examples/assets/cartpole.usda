@@ -4,8 +4,9 @@
         dictionary renderSettings = {
         }
     }
-    defaultPrim = "cartpole"
+    defaultPrim = "cartPole"
     metersPerUnit = 1
+    kilogramsPerUnit = 1
     upAxis = "Z"
 )
 
@@ -22,67 +23,125 @@ def PhysicsScene "physicsScene"
     float3 gravity = (0, 0, -9.81)
 }
 
-def Xform "cartpole" (
+def Xform "cartPole" (
     prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
 )
 {
     bool physxArticulation:enabledSelfCollisions = 0
-    int physxArticulation:solverPositionIterationCount = 4
-    int physxArticulation:solverVelocityIterationCount = 0
 
-    def Cube "rail" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+    def Xform "rail" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
     )
     {
-        double size = 1
-        float3 xformOp:scale = (0.02, 6, 0.02)
-        uniform token[] xformOpOrder = ["xformOp:scale"]
-        color3f[] primvars:displayColor = [(0.9, 0.6, 0.2)]
+        def Cube "rail" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+            float3 xformOp:scale = (0.03, 8, 0.03)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.9, 0.6, 0.2)]
+        }
     }
 
-    def Cube "cart" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    def Xform "cart" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
     )
     {
-        double size = 1
         float3 xformOp:translate = (0, 0, 0)
         float3 xformOp:scale = (0.2, 0.25, 0.2)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
-        color3f[] primvars:displayColor = [(0.3, 0.5, 0.7)]
+
+		float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+		float physics:mass = 1
+		quatf physics:principalAxes = (1, 0, 0, 0)
+
+        def Cube "cart" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+			color3f[] primvars:displayColor = [(0.3, 0.5, 0.7)]
+        }
     }
 
-    def Cube "pole" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    def Xform "pole1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
     )
     {
-        double size = 1
         float3 xformOp:translate = (0.11, 0, 0.5)
-        float3 xformOp:scale = (0.02, 0.04, 1)
+        float3 xformOp:scale = (0.04, 0.06, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
-        color3f[] primvars:displayColor = [(0.1, 0.1, 0.3)]
+
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 0.25
+        quatf physics:principalAxes = (1, 0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+
+        def Cube "pole1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+            color3f[] primvars:displayColor = [(0.1, 0.1, 0.3)]
+
+        }
     }
 
-    // fixed base
+    def Xform "pole2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float3 xformOp:translate = (0.11, 0, 1.5)
+        float3 xformOp:scale = (0.04, 0.06, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 0.25
+        quatf physics:principalAxes = (1, 0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+
+        def Cube "pole2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 1
+            color3f[] primvars:displayColor = [(0.1, 0.1, 0.3)]
+
+        }
+    }
+    # fixed base
     def PhysicsFixedJoint "rootJoint"
     {
-        rel physics:body1 = </cartpole/rail>
+        rel physics:body1 = </cartPole/rail>
     }
 
-    def PhysicsPrismaticJoint "cartJoint"
+    def PhysicsPrismaticJoint "railCartJoint"
     {
-        rel physics:body0 = </cartpole/rail>
-        rel physics:body1 = </cartpole/cart>
+        rel physics:body0 = </cartPole/rail>
+        rel physics:body1 = </cartPole/cart>
         uniform token physics:axis = "Y"
-        float physics:lowerLimit = -3
-        float physics:upperLimit = 3
+        float physics:lowerLimit = -4
+        float physics:upperLimit = 4
     }
 
-    def PhysicsRevoluteJoint "poleJoint"
+    def PhysicsRevoluteJoint "cartPoleJoint"
     {
-        rel physics:body0 = </cartpole/cart>
-        rel physics:body1 = </cartpole/pole>
+        rel physics:body0 = </cartPole/cart>
+        rel physics:body1 = </cartPole/pole1>
         uniform token physics:axis = "X"
         point3f physics:localPos0 = (0.55, 0.0, 0)
+        point3f physics:localPos1 = (0, 0, -0.5)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+
+    def PhysicsRevoluteJoint "polePoleJoint"
+    {
+        rel physics:body0 = </cartPole/pole1>
+        rel physics:body1 = </cartPole/pole2>
+        uniform token physics:axis = "X"
+        point3f physics:localPos0 = (0, 0, 0.5)
         point3f physics:localPos1 = (0, 0, -0.5)
         quatf physics:localRot0 = (1, 0, 0, 0)
         quatf physics:localRot1 = (1, 0, 0, 0)

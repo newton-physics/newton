@@ -64,12 +64,12 @@ def parse_usd(
         default_density (float): The default density to use for bodies without a density attribute.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "warp:joint_drive_gains_scaling".
+        joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "warp:collapse_fixed_joints".
+        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "newton:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
@@ -177,10 +177,7 @@ def parse_usd(
         if not attr or not attr.HasAuthoredValue():
             return default
         val = attr.Get()
-        if invert_rotations:
-            quat = wp.quat(*val.imaginary, -val.real)
-        else:
-            quat = wp.quat(*val.imaginary, val.real)
+        quat = from_gfquat(val)
         l = wp.length(quat)
         if np.isfinite(l) and l > 0.0:
             return quat
@@ -379,12 +376,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Capsule extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -393,12 +392,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Cylinder extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -407,12 +408,14 @@ def parse_usd(
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
                 half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not has_attribute(prim, "extents"), "Cone extents are not supported."
+                # Apply axis rotation to transform
+                axis_idx = "XYZ".index(axis_str)
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
                     xform,
                     radius,
                     half_height,
-                    axis="XYZ".index(axis_str),
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -485,7 +488,7 @@ def parse_usd(
         path = str(prim.GetPath())
 
         body_armature = parse_float_with_fallback(
-            (prim, physics_scene_prim), "warp:armature", builder.default_body_armature
+            (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
         )
 
         if add_body_to_builder:
@@ -514,13 +517,21 @@ def parse_usd(
         parent_path = str(joint_desc.body0)
         child_path = str(joint_desc.body1)
         parent_id = path_body_map.get(parent_path, -1)
-        # if parent_id == -1:
-        #     print("joint connected to world")
         child_id = path_body_map.get(child_path, -1)
         parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
+        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            if parent_id == -1:
+                if verbose:
+                    print(f"Skipping joint {joint_path}: both bodies unresolved")
+                return
+            parent_id, child_id = child_id, parent_id
+            parent_tf, child_tf = child_tf, parent_tf
+            if verbose:
+                print(f"Joint {joint_path} connects {parent_path} to world")
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
-        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
 
         joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
         joint_params = {
@@ -532,10 +543,10 @@ def parse_usd(
             "enabled": joint_desc.jointEnabled,
         }
         current_joint_limit_ke = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "warp:joint_limit_ke", default_joint_limit_ke
+            (joint_prim, physics_scene_prim), "newton:joint_limit_ke", default_joint_limit_ke
         )
         current_joint_limit_kd = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "warp:joint_limit_kd", default_joint_limit_kd
+            (joint_prim, physics_scene_prim), "newton:joint_limit_kd", default_joint_limit_kd
         )
 
         if key == UsdPhysics.ObjectType.FixedJoint:
@@ -556,8 +567,9 @@ def parse_usd(
                     joint_params["target"] = joint_desc.drive.targetPosition
                     joint_params["mode"] = JointMode.TARGET_POSITION
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness * joint_drive_gains_scaling
-                joint_params["target_kd"] = joint_desc.drive.damping * joint_drive_gains_scaling
+                joint_params["target_ke"] = joint_desc.drive.stiffness
+                joint_params["target_kd"] = joint_desc.drive.damping
+                joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
@@ -569,13 +581,13 @@ def parse_usd(
             else:
                 if joint_desc.drive.enabled:
                     joint_params["target"] *= DegreesToRadian
-                    # joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    # joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                # joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                # joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -611,6 +623,7 @@ def parse_usd(
                     mode = JointMode.NONE
                     target_ke = 0.0
                     target_kd = 0.0
+                    effort_limit = np.inf
                     for drive in joint_desc.jointDrives:
                         if drive.first != dof:
                             continue
@@ -623,9 +636,10 @@ def parse_usd(
                                 mode = JointMode.TARGET_POSITION
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
-                    return target, mode, target_ke, target_kd
+                            effort_limit = drive.second.forceLimit
+                    return target, mode, target_ke, target_kd, effort_limit
 
-                target, mode, target_ke, target_kd = define_joint_mode(dof, joint_desc)
+                target, mode, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -655,6 +669,7 @@ def parse_usd(
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
@@ -670,6 +685,7 @@ def parse_usd(
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
+                            effort_limit=effort_limit,
                         )
                     )
                     joint_prim.CreateAttribute(
@@ -718,7 +734,7 @@ def parse_usd(
 
         # Updating joint_drive_gains_scaling if set of the PhysicsScene
         joint_drive_gains_scaling = parse_float(
-            physics_scene_prim, "warp:joint_drive_gains_scaling", joint_drive_gains_scaling
+            physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
     else:
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
@@ -834,9 +850,9 @@ def parse_usd(
                 else:
                     usd_prim = stage.GetPrimAtPath(Sdf.Path(key))
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                        usd_prim.CreateAttribute("physics:warp:articulationIndex", Sdf.ValueTypeNames.UInt, True).Set(
-                            articulation_id
-                        )
+                        usd_prim.CreateAttribute(
+                            "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
+                        ).Set(articulation_id)
                         articulation_roots.append(key)
 
                 if key in body_specs:
@@ -995,12 +1011,12 @@ def parse_usd(
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=parse_float_with_fallback(prim_and_scene, "warp:contact_ke", builder.default_shape_cfg.ke),
-                        kd=parse_float_with_fallback(prim_and_scene, "warp:contact_kd", builder.default_shape_cfg.kd),
-                        kf=parse_float_with_fallback(prim_and_scene, "warp:contact_kf", builder.default_shape_cfg.kf),
-                        ka=parse_float_with_fallback(prim_and_scene, "warp:contact_ka", builder.default_shape_cfg.ka),
+                        ke=parse_float_with_fallback(prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke),
+                        kd=parse_float_with_fallback(prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd),
+                        kf=parse_float_with_fallback(prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf),
+                        ka=parse_float_with_fallback(prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka),
                         thickness=parse_float_with_fallback(
-                            prim_and_scene, "warp:contact_thickness", builder.default_shape_cfg.thickness
+                            prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
@@ -1024,25 +1040,37 @@ def parse_usd(
                         radius=shape_spec.radius * scale[0],
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
+                    # Apply axis rotation to transform
+                    axis = int(shape_spec.axis)
+                    shape_params["xform"] = wp.transform(
+                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
+                    )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
                         radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
                         half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
-                        axis=int(shape_spec.axis),
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
@@ -1172,7 +1200,7 @@ def parse_usd(
     collapse_results = None
     merged_body_data = {}
     path_body_relative_transform = {}
-    if scene_attributes.get("warp:collapse_fixed_joints", collapse_fixed_joints):
+    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
