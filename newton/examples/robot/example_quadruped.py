@@ -55,9 +55,8 @@ class Example:
         articulation_builder.default_shape_cfg.kd = 1.0e2
         articulation_builder.default_shape_cfg.kf = 1.0e2
         articulation_builder.default_shape_cfg.mu = 1.0
-        newton.utils.parse_urdf(
+        articulation_builder.add_urdf(
             newton.examples.get_asset("quadruped.urdf"),
-            articulation_builder,
             xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,

@@ -58,9 +58,8 @@ class Example:
 
         articulation_builder = newton.ModelBuilder()
 
-        newton.utils.parse_mjcf(
+        articulation_builder.add_mjcf(
             mjcf_filename,
-            articulation_builder,
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )

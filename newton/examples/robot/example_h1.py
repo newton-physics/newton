@@ -62,9 +62,8 @@ class Example:
 
         asset_path = newton.utils.download_asset("unitree_h1")
         asset_file = str(asset_path / "usd" / "h1_minimal.usd")
-        newton.utils.parse_usd(
+        articulation_builder.add_usd(
             asset_file,
-            articulation_builder,
             ignore_paths=["/GroundPlane"],
             collapse_fixed_joints=False,
             enable_self_collisions=False,

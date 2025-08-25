@@ -48,7 +48,7 @@ ROBOTS: dict[str, RobotCfg] = {
     "h1": RobotCfg(
         asset="unitree_h1",
         file=Path("mjcf/h1.xml"),
-        parser=newton.utils.parse_mjcf,
+        parser=newton.ModelBuilder.add_mjcf,
         ee_names=("left_hand", "right_hand", "left_foot", "right_foot"),
         ee_links=(15, 19, 5, 10),
         seeds=256,
@@ -58,7 +58,7 @@ ROBOTS: dict[str, RobotCfg] = {
     "franka": RobotCfg(
         asset="franka_emika_panda",
         file=Path("urdf/fr3.urdf"),
-        parser=partial(newton.utils.parse_urdf, scale=1.0),
+        parser=partial(newton.ModelBuilder.add_urdf, scale=1.0),
         ee_names=("ee",),
         ee_links=(9,),
         seeds=64,
@@ -136,7 +136,7 @@ class Example:
         builder.default_shape_cfg.density = 100.0
 
         asset_path = newton.utils.download_asset(self.cfg.asset) / self.cfg.file
-        self.cfg.parser(asset_path, builder, floating=False)
+        self.cfg.parser(builder, asset_path, floating=False)
 
         model = builder.finalize(requires_grad=False)
         return model

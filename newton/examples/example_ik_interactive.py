@@ -158,9 +158,8 @@ class Example:
         articulation_builder.default_joint_cfg.armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
-        newton.utils.parse_mjcf(
+        articulation_builder.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
-            articulation_builder,
             floating=floating,
         )
 

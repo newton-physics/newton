@@ -54,9 +54,8 @@ class Example:
 
         asset_path = newton.utils.download_asset("unitree_g1")
 
-        newton.utils.parse_usd(
+        articulation_builder.add_usd(
             str(asset_path / "usd" / "g1_isaac.usd"),
-            articulation_builder,
             xform=wp.transform(wp.vec3f(0, 0, 0.8), wp.quat_identity()),
             collapse_fixed_joints=True,
             enable_self_collisions=False,

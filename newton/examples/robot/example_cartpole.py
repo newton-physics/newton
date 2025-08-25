@@ -50,9 +50,8 @@ class Example:
         articulation_builder.default_joint_cfg.armature = 0.1
         articulation_builder.default_body_armature = 0.1
 
-        newton.utils.parse_usd(
+        articulation_builder.add_usd(
             newton.examples.get_asset("cartpole.usda"),
-            articulation_builder,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )

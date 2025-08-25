@@ -30,8 +30,8 @@ from warp.torch import device_to_torch
 wp.config.enable_backward = False
 
 import newton
-import newton.utils
 import newton.examples
+import newton.utils
 from newton import State
 
 lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
@@ -80,7 +80,6 @@ class Example:
         self.device = wp.get_device()
         self.torch_device = device_to_torch(self.device)
 
-
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
@@ -94,9 +93,8 @@ class Example:
 
         asset_path = newton.utils.download_asset("anybotics_anymal_c")
         stage_path = str(asset_path / "urdf" / "anymal.urdf")
-        newton.utils.parse_urdf(
+        builder.add_urdf(
             stage_path,
-            builder,
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
@@ -148,10 +146,6 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        
-        
-
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -166,9 +160,7 @@ class Example:
         self.joint_pos_initial = torch.tensor(
             self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
         ).unsqueeze(0)
-        self.joint_vel_initial = torch.tensor(
-            self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32
-        )
+        self.joint_vel_initial = torch.tensor(self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32)
         self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
         self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
 

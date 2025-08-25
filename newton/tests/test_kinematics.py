@@ -19,7 +19,6 @@ import unittest
 import warp as wp
 
 import newton.examples
-import newton.utils
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -29,11 +28,7 @@ def test_fk_ik(test, device):
     num_envs = 1
 
     for i in range(num_envs):
-        newton.utils.parse_mjcf(
-            newton.examples.get_asset("nv_ant.xml"),
-            builder,
-            up_axis="Y",
-        )
+        builder.add_mjcf(newton.examples.get_asset("nv_ant.xml"), up_axis="Y")
 
         coord_count = 15
         dof_count = 14

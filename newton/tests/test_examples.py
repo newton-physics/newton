@@ -263,33 +263,54 @@ add_example_test(
 )
 
 
-class TestBasicRobotExamples(unittest.TestCase):
+class TestRobotExamples(unittest.TestCase):
     pass
 
 
 add_example_test(
-    TestBasicRobotExamples,
+    TestRobotExamples,
     name="example_cartpole",
     devices=test_devices,
     test_options={"usd_required": True, "stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
-    TestBasicRobotExamples,
+    TestRobotExamples,
+    name="example_anymal_c_walk",
+    devices=test_devices,
+    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestRobotExamples,
+    name="example_anymal_d",
+    devices=test_devices,
+    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestRobotExamples,
     name="example_g1",
     devices=test_devices,
     test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
-    TestBasicRobotExamples,
+    TestRobotExamples,
+    name="example_h1",
+    devices=test_devices,
+    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options_cpu={"num_frames": 10},
+)
+add_example_test(
+    TestRobotExamples,
     name="example_humanoid",
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},
 )
 add_example_test(
-    TestBasicRobotExamples,
+    TestRobotExamples,
     name="example_quadruped",
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 1000},
