@@ -85,3 +85,35 @@ def test_group_pair(group_a: int, group_b: int) -> bool:
         return group_a == group_b or group_b < 0
     if group_a < 0:
         return group_a != group_b
+
+
+@wp.func
+def test_environment_and_group_pair(
+    env_group_a: int, env_group_b: int, collision_group_a: int, collision_group_b: int
+) -> bool:
+    """Test if two entities should collide based on environment and collision groups.
+
+    Environment groups define which simulation environment an entity belongs to:
+    - Group -1: Global entities that collide with all environments
+    - Groups 0, 1, 2, ...: Environment-specific entities
+
+    Collision rules:
+    1. Entities from different environments (except -1) do not collide
+    2. Global entities (group -1) collide with all environments
+    3. Within the same environment, collision groups determine interactions
+
+    Args:
+        env_group_a: Environment group of first entity
+        env_group_b: Environment group of second entity
+        collision_group_a: Collision group of first entity
+        collision_group_b: Collision group of second entity
+
+    Returns:
+        bool: True if the entities should collide, False otherwise
+    """
+    # Check environment groups first
+    if env_group_a != -1 and env_group_b != -1 and env_group_a != env_group_b:
+        return False
+
+    # If same environment or at least one is global (-1), check collision groups
+    return test_group_pair(collision_group_a, collision_group_b)

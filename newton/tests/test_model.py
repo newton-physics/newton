@@ -218,7 +218,6 @@ class TestModel(unittest.TestCase):
                 env_builder,
                 xform,
                 update_num_env_count=True,
-                separate_collision_group=True,
             )
 
         self.assertEqual(

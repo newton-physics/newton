@@ -112,7 +112,7 @@ class Style3DModelBuilder(ModelBuilder):
         builder: Style3DModelBuilder,
         xform: Transform | None = None,
         update_num_env_count: bool = True,
-        separate_collision_group: bool = True,
+        environment: int | None = None,
     ):
         """Copies the data from another `Style3DModelBuilder` to this `Style3DModelBuilder`.
 
@@ -120,14 +120,14 @@ class Style3DModelBuilder(ModelBuilder):
             builder (ModelBuilder): a model builder to add model data from.
             xform (Transform): offset transform applied to root bodies.
             update_num_env_count (bool): if True, the number of environments is incremented by 1.
-            separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
+            environment (int | None): environment group index to assign to ALL entities from this builder.
         """
 
         super().add_builder(
             builder=builder,
             xform=xform,
             update_num_env_count=update_num_env_count,
-            separate_collision_group=separate_collision_group,
+            environment=environment,
         )
 
         style3d_builder_attrs = [

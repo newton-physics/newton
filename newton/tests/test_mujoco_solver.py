@@ -236,9 +236,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 
         for i in range(num_envs):
             env_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
-            self.builder.add_builder(
-                template_builder, xform=env_transform, update_num_env_count=True, separate_collision_group=True
-            )
+            self.builder.add_builder(template_builder, xform=env_transform, update_num_env_count=True)
 
         try:
             if self.builder.num_envs == 0 and num_envs > 0:
