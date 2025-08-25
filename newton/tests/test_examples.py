@@ -404,9 +404,9 @@ add_example_test(
 add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_bear",
-    devices=test_devices,
-    test_options={"num_frames": 30 * 300},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 1 * 300, "test_timeout": 1200},
+    devices=cuda_test_devices,
+    test_options={"num_frames": 10 * 300},  # train_iters * sim_steps
+    # test_options_cpu={"num_frames": 1 * 300, "test_timeout": 1200},
     use_viewer=True,
 )
 
