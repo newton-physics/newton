@@ -25,6 +25,7 @@
 import sys
 
 import numpy as np
+import torch
 import warp as wp
 
 wp.config.enable_backward = False
@@ -32,8 +33,46 @@ wp.config.enable_backward = False
 import newton
 import newton.utils
 import newton.viewer
-from newton.examples.example_anymal_c_walk import AnymalController
 from newton.solvers import SolverImplicitMPM
+
+lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
+mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]
+
+
+@torch.jit.script
+def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate a vector by the inverse of a quaternion along the last dimension of q and v.    Args:
+    q: The quaternion in (x, y, z, w). Shape is (..., 4).
+    v: The vector in (x, y, z). Shape is (..., 3).    Returns:
+    The rotated vector in (x, y, z). Shape is (..., 3).
+    """
+    q_w = q[..., 3]  # w component is at index 3 for XYZW format
+    q_vec = q[..., :3]  # xyz components are at indices 0, 1, 2
+    a = v * (2.0 * q_w**2 - 1.0).unsqueeze(-1)
+    b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
+    # for two-dimensional tensors, bmm is faster than einsum
+    if q_vec.dim() == 2:
+        c = q_vec * torch.bmm(q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)).squeeze(-1) * 2.0
+    else:
+        c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
+    return a - b + c
+
+
+def compute_obs(actions, state: newton.State, joint_pos_initial, device, indices, gravity_vec, command):
+    root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
+    joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
+    vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
+    a_vel_b = quat_rotate_inverse(root_quat_w, root_ang_vel_w)
+    grav = quat_rotate_inverse(root_quat_w, gravity_vec)
+    joint_pos_rel = joint_pos_current - joint_pos_initial
+    joint_vel_rel = joint_vel_current
+    rearranged_joint_pos_rel = torch.index_select(joint_pos_rel, 1, indices)
+    rearranged_joint_vel_rel = torch.index_select(joint_vel_rel, 1, indices)
+    obs = torch.cat([vel_b, a_vel_b, grav, command, rearranged_joint_pos_rel, rearranged_joint_vel_rel, actions], dim=1)
+    return obs
 
 
 @wp.kernel
@@ -59,7 +98,6 @@ def update_collider_mesh(
     res.velocities[v] = (next_p - cur_p) / dt
     res.points[v] = cur_p
 
-
 class Example:
     def __init__(
         self,
@@ -72,7 +110,20 @@ class Example:
         dynamic_grid=True,
     ):
         self.device = wp.get_device()
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+        # Convert Warp device to PyTorch device string
+        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
+
+        self.sim_time = 0.0
+        self.sim_step = 0
+        fps = 60
+        self.frame_dt = 1.0e0 / fps
+
+        self.sim_substeps = 4
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        # import the robot model
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
@@ -94,40 +145,43 @@ class Example:
         )
         builder.add_ground_plane()
 
-        self.sim_time = 0.0
-        self.sim_step = 0
-        fps = 60
-        self.frame_dt = 1.0e0 / fps
+        # setup robot joint properties
 
-        self.sim_substeps = 6
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        builder.joint_q[:3] = [0.0, 0.0, 0.62]
 
-        builder.joint_q[:3] = [
+        builder.joint_q[3:7] = [
             0.0,
-            0.7,
             0.0,
+            0.7071,
+            0.7071,
         ]
 
         builder.joint_q[7:] = [
-            0.03,  # LF_HAA
-            0.4,  # LF_HFE
-            -0.8,  # LF_KFE
-            -0.03,  # RF_HAA
-            0.4,  # RF_HFE
-            -0.8,  # RF_KFE
-            0.03,  # LH_HAA
-            -0.4,  # LH_HFE
-            0.8,  # LH_KFE
-            -0.03,  # RH_HAA
-            -0.4,  # RH_HFE
-            0.8,  # RH_KFE
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            -0.4,
+            0.8,
+            0.0,
+            0.4,
+            -0.8,
+            0.0,
+            0.4,
+            -0.8,
         ]
+        for i in range(len(builder.joint_dof_mode)):
+            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+
+        for i in range(len(builder.joint_target_ke)):
+            builder.joint_target_ke[i] = 150
+            builder.joint_target_kd[i] = 5
 
         # add sand particles
 
         max_fraction = 1.0
-        particle_lo = np.array([-0.5, 0.0, -0.5])
-        particle_hi = np.array([2.5, 0.15, 0.5])
+        particle_lo = np.array([-0.5, -0.5, 0.0])  # emission lower bound
+        particle_hi = np.array([0.5, 2.5, 0.15])  # emission upper bound
         particle_res = np.array(
             np.ceil(particles_per_cell * (particle_hi - particle_lo) / voxel_size),
             dtype=int,
@@ -137,33 +191,10 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-
-        # the policy was trained with the following inertia tensors
-        # fmt: off
-        self.model.body_inertia = wp.array(
-            [
-                [[1.30548920,  0.00067627, 0.05068519], [ 0.000676270, 2.74363500,  0.00123380], [0.05068519,  0.00123380, 2.82926230]],
-                [[0.01809368,  0.00826303, 0.00475366], [ 0.008263030, 0.01629626, -0.00638789], [0.00475366, -0.00638789, 0.02370901]],
-                [[0.18137439, -0.00109795, 0.05645556], [-0.001097950, 0.20255709, -0.00183889], [0.05645556, -0.00183889, 0.02763401]],
-                [[0.03070243,  0.00022458, 0.00102368], [ 0.000224580, 0.02828139, -0.00652076], [0.00102368, -0.00652076, 0.00269065]],
-                [[0.01809368, -0.00825236, 0.00474725], [-0.008252360, 0.01629626,  0.00638789], [0.00474725,  0.00638789, 0.02370901]],
-                [[0.18137439,  0.00111040, 0.05645556], [ 0.001110400, 0.20255709,  0.00183910], [0.05645556,  0.00183910, 0.02763401]],
-                [[0.03070243, -0.00022458, 0.00102368], [-0.000224580, 0.02828139,  0.00652076], [0.00102368,  0.00652076, 0.00269065]],
-                [[0.01809368, -0.00825236, 0.00474726], [-0.008252360, 0.01629626,  0.00638789], [0.00474726,  0.00638789, 0.02370901]],
-                [[0.18137439,  0.00111041, 0.05645556], [ 0.001110410, 0.20255709,  0.00183909], [0.05645556,  0.00183909, 0.02763401]],
-                [[0.03070243, -0.00022458, 0.00102368], [-0.000224580, 0.02828139,  0.00652076], [0.00102368,  0.00652076, 0.00269065]],
-                [[0.01809368,  0.00826303, 0.00475366], [ 0.008263030, 0.01629626, -0.00638789], [0.00475366, -0.00638789, 0.02370901]],
-                [[0.18137439, -0.00109796, 0.05645556], [-0.001097960, 0.20255709, -0.00183888], [0.05645556, -0.00183888, 0.02763401]],
-                [[0.03070243,  0.00022458, 0.00102368], [ 0.000224580, 0.02828139, -0.00652076], [0.00102368, -0.00652076, 0.00269065]]
-            ],
-            dtype=wp.mat33f,
-        )
-        self.model.body_mass = wp.array([27.99286, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505, 2.51203, 3.27327, 0.55505], dtype=wp.float32,)
-        # fmt: on
-
         self.model.particle_mu = sand_friction
 
-        ## Grab meshes for collisions
+        # Select and merge meshes for robot/sand collisions
+        # (The implicit mpm solver currently only support meshes as collision primitives)
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
             [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
@@ -180,20 +211,22 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
-        self.solver = newton.solvers.SolverFeatherstone(self.model)
+        # setup solvers
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        options = SolverImplicitMPM.Options()
-        options.voxel_size = voxel_size
-        options.max_fraction = max_fraction
-        options.tolerance = tolerance
-        options.unilateral = False
-        options.max_iterations = 50
+        # setup mpm solver
+        mpm_options = SolverImplicitMPM.Options()
+        mpm_options.voxel_size = voxel_size
+        mpm_options.max_fraction = max_fraction
+        mpm_options.tolerance = tolerance
+        mpm_options.unilateral = False
+        mpm_options.max_iterations = 50
         # options.gauss_seidel = False
-        options.dynamic_grid = dynamic_grid
+        mpm_options.dynamic_grid = dynamic_grid
         if not dynamic_grid:
-            options.grid_padding = 5
+            mpm_options.grid_padding = 5
 
-        self.mpm_solver = SolverImplicitMPM(self.model, options)
+        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
         self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
 
         self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
@@ -207,23 +240,54 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         self._update_collider_mesh(self.state_0)
 
+        # Setup control policy
         self.control = self.model.control()
-        self.controller = AnymalController(self.model, self.device)
-        self.controller.get_control(self.state_0)
+
+        # Pre-compute tensors that don't change during simulation
+        self.lab_to_mujoco_indices = torch.tensor(
+            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
+        )
+        self.mujoco_to_lab_indices = torch.tensor(
+            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
+        )
+        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
+        self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+        self.command[0, 0] = 1
 
         self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
+            torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
+            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate_robot()
             self.robot_graph = capture.graph
         else:
             self.robot_graph = None
 
+    def apply_control(self):
+        obs = compute_obs(
+            self.act,
+            self.state_0,
+            self.joint_pos_initial,
+            self.torch_device,
+            self.lab_to_mujoco_indices,
+            self.gravity_vec,
+            self.command,
+        )
+        with torch.no_grad():
+            self.act = self.policy(obs)
+            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
+            a = self.joint_pos_initial + 0.5 * self.rearranged_act
+            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+            wp.copy(
+                self.control.joint_target, a_wp
+            )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+
     def simulate_robot(self):
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.controller.assign_control(self.control, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -234,13 +298,14 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step", synchronize=True):
+            self.apply_control()
+
             if self.use_cuda_graph:
                 wp.capture_launch(self.robot_graph)
             else:
                 self.simulate_robot()
 
             self.simulate_sand()
-            self.controller.get_control(self.state_0)
 
         self.sim_time += self.frame_dt
 
@@ -358,6 +423,20 @@ if __name__ == "__main__":
             sand_friction=args.sand_friction,
             dynamic_grid=args.dynamic_grid,
         )
+
+        # Download the policy from the newton-assets repository
+        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
+
+        example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
+        example.joint_pos_initial = torch.tensor(
+            example.state_0.joint_q[7:], device=example.torch_device, dtype=torch.float32
+        ).unsqueeze(0)
+        example.joint_vel_initial = torch.tensor(
+            example.state_0.joint_qd[6:], device=example.torch_device, dtype=torch.float32
+        )
+        example.act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
+        example.rearranged_act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
 
         for _ in range(args.num_frames):
             example.step()
