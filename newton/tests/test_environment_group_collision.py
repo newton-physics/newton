@@ -258,6 +258,61 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
 
         self.assertEqual(contact_set, expected_pairs, f"Contact pairs mismatch. Got: {contact_set}")
 
+    def test_collision_filter_pair_canonicalization(self):
+        """Test that collision filter pairs are properly canonicalized when merging builders."""
+        # Realistic scenario: Create child body first, then parent body, then connect with joint
+        # This naturally creates non-canonical filter pairs!
+        builder = ModelBuilder()
+
+        # Create child body with shapes first
+        child_body = builder.add_body(xform=wp.transform_identity())
+        builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 0
+        builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 1
+
+        # Create parent body with shapes after
+        parent_body = builder.add_body(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
+        builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 2
+        builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 3
+
+        # Connect with joint - this will naturally create non-canonical pairs!
+        # Without canonicalization, this would add pairs like (2,0), (2,1), (3,0), (3,1)
+        # where parent shapes (2,3) > child shapes (0,1)
+        builder.add_joint_revolute(
+            parent=parent_body,
+            child=child_body,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            axis=(0, 0, 1),
+            collision_filter_parent=True,  # This triggers parent-child shape filtering
+        )
+
+        # Also test merging builders
+        sub_builder = ModelBuilder()
+        sub_body = sub_builder.add_body(xform=wp.transform_identity())
+        sub_builder.add_shape_box(body=sub_body, hx=0.5, hy=0.5, hz=0.5)
+
+        # Add more shapes to main builder to create offset
+        builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 4
+
+        # Merge sub_builder - its filter pairs need canonicalization after offset
+        builder.add_builder(sub_builder)
+
+        # Finalize
+        model = builder.finalize(device=self.device)
+
+        # Verify that parent-child filtering worked correctly
+        contact_pairs = model.shape_contact_pairs.numpy()
+        contact_set = {tuple(sorted(pair)) for pair in contact_pairs}
+
+        # Parent shapes (2,3) should not collide with child shapes (0,1,4)
+        for parent_shape in [2, 3]:
+            for child_shape in [0, 1, 4]:
+                self.assertNotIn(
+                    (min(parent_shape, child_shape), max(parent_shape, child_shape)),
+                    contact_set,
+                    f"Parent shape {parent_shape} should not collide with child shape {child_shape}",
+                )
+
 
 class TestEnvironmentGroupBroadphaseKernels(unittest.TestCase):
     """Test the broadphase kernels with environment group filtering."""

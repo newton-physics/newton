@@ -1110,7 +1110,11 @@ class ModelBuilder:
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
-                    self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+                    # Ensure canonical order (smaller, larger) for consistent lookup
+                    a, b = parent_shape, child_shape
+                    if a > b:
+                        a, b = b, a
+                    self.shape_collision_filter_pairs.add((a, b))
 
         return self.joint_count - 1
 
