@@ -110,27 +110,27 @@ class ViewerNull(ViewerBase):
         pass
 
     # Not implemented yet - placeholder methods from ViewerBase
-    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
+    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
         No-op implementation for logging lines.
 
         Args:
             name: Name of the line batch.
-            line_begins: Line start points.
-            line_ends: Line end points.
-            line_colors: Line colors.
+            starts: Line start points.
+            ends: Line end points.
+            colors: Line colors.
             hidden: Whether the lines are hidden.
         """
         pass
 
-    def log_points(self, name, points, widths, colors, hidden=False):
+    def log_points(self, name, points, radii, colors, width: float = 0.01, hidden=False):
         """
         No-op implementation for logging points.
 
         Args:
             name: Name of the point batch.
             points: Point positions.
-            widths: Point radii.
+            radii: Point radii.
             colors: Point colors.
             hidden: Whether the points are hidden.
         """
