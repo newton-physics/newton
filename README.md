@@ -23,7 +23,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/guide/installation.html#method-1-using-uv-recommended).
 
 Once uv is installed, running Newton examples is straightforward:
-```console
+```
 # set up the uv environment for running Newton examples
 uv sync --extra examples
 
@@ -36,7 +36,7 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
 # Examples
 
 Before running the examples below, set up the uv environment with:
-```console
+```
 uv sync --extra examples
 ```
 
@@ -212,24 +212,24 @@ Some examples may add additional arguments (see their respective source files fo
 
 ## Example Usage
 
-```console
-    # First, set up the uv environment for running Newton examples
-    uv sync --extra examples
+```
+# First, set up the uv environment for running Newton examples
+uv sync --extra examples
 
-    # Basic usage
-    uv run -m newton.examples basic_pendulum
+# Basic usage
+uv run -m newton.examples basic_pendulum
 
-    # Within a Python environment setup for Newton
-    python -m newton.examples basic_pendulum
+# Within a Python environment setup for Newton
+python -m newton.examples basic_pendulum
 
-    # With viewer options
-    uv run -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
+# With viewer options
+uv run -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
 
-    # With device selection
-    uv run -m newton.examples basic_urdf --device cuda:0
+# With device selection
+uv run -m newton.examples basic_urdf --device cuda:0
 
-    # Multiple arguments
-    uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
+# Multiple arguments
+uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
 
 # Contributing and Development
