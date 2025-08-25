@@ -17,7 +17,7 @@
 # Example Humanoid
 #
 # Shows how to set up a simulation of a humanoid articulation
-# from a USD stage using newton.ModelBuilder().
+# from MJCF using newton.ModelBuilder.add_mjcf().
 #
 # Command: python -m newton.examples humanoid --num-envs 16
 #

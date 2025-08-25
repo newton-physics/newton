@@ -14,9 +14,9 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C walk Coupled with Sand
+# Example Anymal C Walk On Sand
 #
-# Shows Anymal C with a pretrained policy coupled with implicit mpm sand.
+# Shows Anymal C with a pretrained policy coupled with implicit MPM sand.
 #
 # Example usage (via unified runner):
 #   python -m newton.examples anymal_c_walk_on_sand --viewer gl
@@ -133,9 +133,8 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("anybotics_anymal_c")
-        newton.utils.parse_urdf(
+        builder.add_urdf(
             str(asset_path / "urdf" / "anymal.urdf"),
-            builder,
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
