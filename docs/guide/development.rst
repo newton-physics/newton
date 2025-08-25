@@ -69,11 +69,26 @@ Pass ``--help`` to either run method below to see all available flags.
             
 Most tests run when the ``dev`` extras are installed. The tests that run examples that use PyTorch to inference an RL policy are skipped if the ``torch`` dependency is not installed. In order to run these tests, include the ``torch-cu12`` extras:
 
+.. tab-set::
+    :sync-group: env
 
-.. code-block:: console
+    .. tab-item:: uv
+        :sync: uv
 
-    # install development extras and run tests
-    uv run --extra dev --extra torch-cu12 -m newton.tests
+        .. code-block:: console
+
+            # install development extras and run tests
+            uv run --extra dev --extra torch-cu12 -m newton.tests
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            # install both dev and torch-cu12 extras (need to pull from PyTorch CUDA 12.8 wheel index)
+            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .[dev,torch-cu12]
+            # run tests
+            python -m newton.tests
 
 To generate a coverage report:
 
