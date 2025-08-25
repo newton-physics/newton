@@ -235,9 +235,7 @@ class Example:
         self.joint_pos_initial = torch.tensor(
             self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
         ).unsqueeze(0)
-        self.joint_vel_initial = torch.tensor(
-            self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32
-        )
+        self.joint_vel_initial = torch.tensor(self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32)
         self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
         self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
 
@@ -305,7 +303,7 @@ class Example:
         else:
             self.simulate_robot()
 
-        # MPM solver step is not graph-capturable yet 
+        # MPM solver step is not graph-capturable yet
         self.simulate_sand()
 
         self.sim_time += self.frame_dt
@@ -415,7 +413,6 @@ if __name__ == "__main__":
         sand_friction=args.sand_friction,
         dynamic_grid=args.dynamic_grid,
     )
-
 
     # Run via unified example runner
     newton.examples.run(example)
