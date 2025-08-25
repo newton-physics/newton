@@ -14,12 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal D walk
+# Example Anymal D
 #
-# Shows how to control Anymal D with multiple environments.
+# Shows how to simulate Anymal D with multiple environments using SolverMuJoCo.
 #
-# Example usage:
-# uv run newton/examples/example_anymal_d.py --num-envs 4
+# Command: python -m newton.examples anymal_d --num-envs 16
 #
 ###########################################################################
 
@@ -33,19 +32,14 @@ import newton.utils
 
 class Example:
     def __init__(self, viewer, num_envs=8):
-        # setup simulation parameters first
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
-
-        # group related attributes by prefix
         self.sim_time = 0.0
-        self.sim_substeps = 4  # renamed from num_substeps
-        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
+        self.sim_substeps = 4
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # unpack any example specific args
         self.num_envs = num_envs
 
-        # save a reference to the viewer
         self.viewer = viewer
 
         self.device = wp.get_device()
@@ -109,7 +103,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
+        if self.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -147,16 +141,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    # keep example options short, don't overload user with options
-    # device, viewer type, and other options are created by default
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=8, help="Total number of simulated environments.")
 
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)

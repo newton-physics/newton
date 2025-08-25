@@ -17,7 +17,9 @@
 # Example G1 Robot
 #
 # Shows how to set up a simulation of a G1 robot articulation
-# from a USD stage using newton.ModelBuilder().
+# from a USD stage using newton.ModelBuilder.add_usd().
+#
+# Command: python -m newton.examples g1 --num-envs 16
 #
 ###########################################################################
 
@@ -30,47 +32,38 @@ import newton.utils
 
 class Example:
     def __init__(self, viewer, num_envs=4):
-        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # unpack any example specific args
         self.num_envs = num_envs
 
-        # save a reference to the viewer
         self.viewer = viewer
 
-        articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
-        )
-        articulation_builder.default_shape_cfg.ke = 5.0e4
-        articulation_builder.default_shape_cfg.kd = 5.0e2
-        articulation_builder.default_shape_cfg.kf = 1.0e3
-        articulation_builder.default_shape_cfg.mu = 0.75
+        g1 = newton.ModelBuilder()
+        g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        g1.default_shape_cfg.ke = 5.0e4
+        g1.default_shape_cfg.kd = 5.0e2
+        g1.default_shape_cfg.kf = 1.0e3
+        g1.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("unitree_g1")
 
-        articulation_builder.add_usd(
+        g1.add_usd(
             str(asset_path / "usd" / "g1_isaac.usd"),
-            xform=wp.transform(wp.vec3f(0, 0, 0.8), wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0, 0, 0.8)),
             collapse_fixed_joints=True,
             enable_self_collisions=False,
             hide_collision_shapes=True,
         )
 
-        articulation_builder.approximate_meshes("bounding_box")
-
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
+        # approximate meshes for faster collision detection
+        g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
 
         builder.add_ground_plane()
 
@@ -96,10 +89,8 @@ class Example:
         # ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -109,7 +100,6 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
-    # simulate() performs one frame's worth of updates
     def simulate(self):
         self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
@@ -142,16 +132,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    # keep example options short, don't overload user with options
-    # device, viewer type, and other options are created by default
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
 
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)

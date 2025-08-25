@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C walk
+# Example Anymal C Walk
 #
-# Shows how to control Anymal C with a policy pretrained in physx.
+# Shows how to simulate Anymal C using SolverMuJoCo and control it with a
+# policy trained in PhysX.
 #
-# Example usage:
-# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk_physx_policy.py
+# Command: python -m newton.examples anymal_c_walk
 #
 ###########################################################################
 
@@ -80,7 +80,7 @@ class Example:
         self.device = wp.get_device()
         self.torch_device = device_to_torch(self.device)
 
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder()
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
@@ -235,10 +235,8 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
 
-    # Create viewer and run
     example = Example(viewer)
 
     newton.examples.run(example)

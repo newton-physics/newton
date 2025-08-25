@@ -17,11 +17,9 @@
 # Example H1
 #
 # Shows how to set up a simulation of a H1 articulation
-# from a USD file using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
+# from a USD file using newton.ModelBuilder.add_usd().
 #
-# Example usage:
-# uv run newton/examples/example_h1.py
+# Command: python -m newton.examples h1 --num-envs 16
 #
 ###########################################################################
 
@@ -34,35 +32,29 @@ import newton.utils
 
 class Example:
     def __init__(self, viewer, num_envs=4):
-        # setup simulation parameters first
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
-        # group related attributes by prefix
         self.sim_time = 0.0
-        self.sim_substeps = 4  # renamed from num_substeps
-        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
+        self.sim_substeps = 4
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # unpack any example specific args
         self.num_envs = num_envs
 
-        # save a reference to the viewer
         self.viewer = viewer
 
         self.device = wp.get_device()
 
-        articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
-        )
-        articulation_builder.default_shape_cfg.ke = 5.0e4
-        articulation_builder.default_shape_cfg.kd = 5.0e2
-        articulation_builder.default_shape_cfg.kf = 1.0e3
-        articulation_builder.default_shape_cfg.mu = 0.75
+        h1 = newton.ModelBuilder()
+        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        h1.default_shape_cfg.ke = 5.0e4
+        h1.default_shape_cfg.kd = 5.0e2
+        h1.default_shape_cfg.kf = 1.0e3
+        h1.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("unitree_h1")
         asset_file = str(asset_path / "usd" / "h1_minimal.usd")
-        articulation_builder.add_usd(
+        h1.add_usd(
             asset_file,
             ignore_paths=["/GroundPlane"],
             collapse_fixed_joints=False,
@@ -70,21 +62,16 @@ class Example:
             load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
+        # approximate meshes for faster collision detection
+        h1.approximate_meshes("bounding_box")
 
-        articulation_builder.approximate_meshes("bounding_box")
+        for i in range(len(h1.joint_dof_mode)):
+            h1.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+            h1.joint_target_ke[i] = 150
+            h1.joint_target_kd[i] = 5
 
-        for i in range(len(articulation_builder.joint_dof_mode)):
-            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-            articulation_builder.joint_target_ke[i] = 150
-            articulation_builder.joint_target_kd[i] = 5
-
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
-
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        builder = newton.ModelBuilder()
+        builder.replicate(h1, self.num_envs, spacing=(3, 3, 0))
 
         builder.add_ground_plane()
 
@@ -99,10 +86,8 @@ class Example:
         # ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -112,7 +97,6 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
-    # simulate() performs one frame's worth of updates
     def simulate(self):
         self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
@@ -145,16 +129,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    # keep example options short, don't overload user with options
-    # device, viewer type, and other options are created by default
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
 
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)

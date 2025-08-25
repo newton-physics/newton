@@ -14,10 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Cartpole
+# Example Cartpole
 #
 # Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder().
+# from a USD stage using newton.ModelBuilder.add_usd().
+#
+# Command: python -m newton.examples cartpole --num-envs 100
 #
 ###########################################################################
 
@@ -25,46 +27,35 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.utils
 
 
 class Example:
     def __init__(self, viewer, num_envs=8):
-        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-
-        # group related attributes by prefix
         self.sim_time = 0.0
-        self.sim_substeps = 10  # renamed from num_substeps
-        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
+        self.sim_substeps = 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # unpack any example specific args
         self.num_envs = num_envs
 
-        # save a reference to the viewer
         self.viewer = viewer
 
-        articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_shape_cfg.density = 100.0
-        articulation_builder.default_joint_cfg.armature = 0.1
-        articulation_builder.default_body_armature = 0.1
+        cartpole = newton.ModelBuilder()
+        cartpole.default_shape_cfg.density = 100.0
+        cartpole.default_joint_cfg.armature = 0.1
+        cartpole.default_body_armature = 0.1
 
-        articulation_builder.add_usd(
+        cartpole.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
+        # set initial joint positions
+        cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
         builder = newton.ModelBuilder()
-
-        positions = newton.examples.compute_env_offsets(num_envs, env_offset=(1.0, 2.0, 0.0))
-
-        for i in range(self.num_envs):
-            builder.add_builder(articulation_builder, xform=wp.transform(positions[i], wp.quat_identity()))
-
-            # joint initial positions
-            builder.joint_q[-3:] = [0.0, 0.3, 0.0]
+        builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
 
         # finalize model
         self.model = builder.finalize()
@@ -79,13 +70,10 @@ class Example:
         # we do not need to evaluate contacts for this example
         self.contacts = None
 
-        # ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -95,7 +83,6 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
-    # simulate() performs one frame's worth of updates
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -119,7 +106,6 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test(self):
@@ -127,16 +113,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    # keep example options short, don't overload user with options
-    # device, viewer type, and other options are created by default
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
-
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)

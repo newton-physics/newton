@@ -17,7 +17,9 @@
 # Example Quadruped
 #
 # Shows how to set up a simulation of a quadruped articulation
-# from a USD stage using newton.ModelBuilder().
+# from URDF using newton.ModelBuilder.add_urdf().
+#
+# Command: python -m newton.examples quadruped --num-envs 100
 #
 ###########################################################################
 
@@ -25,52 +27,41 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.utils
 
 
 class Example:
     def __init__(self, viewer, num_envs=4):
-        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-
-        # group related attributes by prefix
         self.sim_time = 0.0
-        self.sim_substeps = 10  # renamed from num_substeps
-        self.sim_dt = self.frame_dt / self.sim_substeps  # renamed from dt
+        self.sim_substeps = 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # unpack any example specific args
         self.num_envs = num_envs
 
-        # save a reference to the viewer
         self.viewer = viewer
 
-        articulation_builder = newton.ModelBuilder()
-        articulation_builder.default_body_armature = 0.01
-        articulation_builder.default_joint_cfg.armature = 0.01
-        articulation_builder.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
-        articulation_builder.default_joint_cfg.target_ke = 2000.0
-        articulation_builder.default_joint_cfg.target_kd = 20.0
-        articulation_builder.default_shape_cfg.ke = 1.0e4
-        articulation_builder.default_shape_cfg.kd = 1.0e2
-        articulation_builder.default_shape_cfg.kf = 1.0e2
-        articulation_builder.default_shape_cfg.mu = 1.0
-        articulation_builder.add_urdf(
+        quadruped = newton.ModelBuilder()
+        quadruped.default_body_armature = 0.01
+        quadruped.default_joint_cfg.armature = 0.01
+        quadruped.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
+        quadruped.default_joint_cfg.target_ke = 2000.0
+        quadruped.default_joint_cfg.target_kd = 20.0
+        quadruped.default_shape_cfg.ke = 1.0e4
+        quadruped.default_shape_cfg.kd = 1.0e2
+        quadruped.default_shape_cfg.kf = 1.0e2
+        quadruped.default_shape_cfg.mu = 1.0
+        quadruped.add_urdf(
             newton.examples.get_asset("quadruped.urdf"),
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.7)),
             floating=True,
             enable_self_collisions=False,
         )
-        articulation_builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        articulation_builder.joint_target[-12:] = articulation_builder.joint_q[-12:]
+        quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+        quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
 
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
-
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        builder = newton.ModelBuilder()
+        builder.replicate(quadruped, self.num_envs, spacing=(3, 2, 0))
 
         builder.add_ground_plane()
 
@@ -85,10 +76,8 @@ class Example:
         # ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
 
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
@@ -98,7 +87,6 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
-    # simulate() performs one frame's worth of updates
     def simulate(self):
         self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
@@ -131,16 +119,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    # keep example options short, don't overload user with options
-    # device, viewer type, and other options are created by default
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
 
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)
