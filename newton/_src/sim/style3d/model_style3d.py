@@ -47,6 +47,18 @@ class Style3DModel(Model):
 
     @classmethod
     def from_model(cls, model: Model):
+        """
+        Creates a Style3DModel instance from an existing Newton Model.
+
+        This method copies all attributes from the given Model instance and
+        initializes Style3D-specific attributes to None.
+
+        Args:
+            model (Model): The base Newton Model to convert.
+
+        Returns:
+            Style3DModel: A new Style3DModel instance with copied attributes.
+        """
         style3d_model = cls.__new__(cls)
         style3d_model.__dict__.update(model.__dict__)
         style3d_model.tri_aniso_ke = None

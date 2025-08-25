@@ -20,6 +20,13 @@ from enum import IntEnum
 
 # model update flags - used for solver.notify_model_update()
 class SolverNotifyFlags(IntEnum):
+    """
+    Flags indicating which parts of the model have been updated and require the solver to be notified.
+
+    These flags are used with `solver.notify_model_update()` to specify which properties have changed,
+    allowing the solver to efficiently update only the necessary components.
+    """
+
     JOINT_PROPERTIES = 1 << 0
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
 
