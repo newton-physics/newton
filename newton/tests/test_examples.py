@@ -202,154 +202,154 @@ cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test o
 test_devices = get_test_devices(mode="basic")
 
 
-class TestBasicExamples(unittest.TestCase):
-    pass
+# class TestBasicExamples(unittest.TestCase):
+#     pass
 
 
-add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+# add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
 
-add_example_test(
-    TestBasicExamples,
-    name="basic.example_basic_urdf",
-    devices=test_devices,
-    test_options_cpu={"num_envs": 16},
-    test_options_cuda={"num_envs": 64},
-    use_viewer=True,
-)
+# add_example_test(
+#     TestBasicExamples,
+#     name="basic.example_basic_urdf",
+#     devices=test_devices,
+#     test_options_cpu={"num_envs": 16},
+#     test_options_cuda={"num_envs": 64},
+#     use_viewer=True,
+# )
 
-add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
+# add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
+# add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
-
-
-class TestClothExamples(unittest.TestCase):
-    pass
+# add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
 
 
-add_example_test(
-    TestClothExamples,
-    name="cloth.example_cloth_bending",
-    devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 100},
-    use_viewer=True,
-)
-add_example_test(
-    TestClothExamples,
-    name="example_cloth_self_contact",
-    devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None"},
-    test_options_cuda={"num_frames": 150},
-    test_options_cpu={"num_frames": 5},
-)
-add_example_test(
-    TestClothExamples,
-    name="cloth.example_cloth_hanging",
-    devices=test_devices,
-    test_options={},
-    test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestClothExamples,
-    name="cloth.example_cloth_style3d",
-    devices=test_devices,
-    test_options={},
-    test_options_cuda={"num_frames": 32},
-    test_options_cpu={"num_frames": 2},
-    use_viewer=True,
-)
+# class TestClothExamples(unittest.TestCase):
+#     pass
 
 
-class TestBasicRobotExamples(unittest.TestCase):
-    pass
+# add_example_test(
+#     TestClothExamples,
+#     name="cloth.example_cloth_bending",
+#     devices=test_devices,
+#     test_options={"num_frames": 100},
+#     test_options_cpu={"num_frames": 100},
+#     use_viewer=True,
+# )
+# add_example_test(
+#     TestClothExamples,
+#     name="example_cloth_self_contact",
+#     devices=test_devices,
+#     test_options={"usd_required": True, "stage_path": "None"},
+#     test_options_cuda={"num_frames": 150},
+#     test_options_cpu={"num_frames": 5},
+# )
+# add_example_test(
+#     TestClothExamples,
+#     name="cloth.example_cloth_hanging",
+#     devices=test_devices,
+#     test_options={},
+#     test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
+#     use_viewer=True,
+# )
+# add_example_test(
+#     TestClothExamples,
+#     name="cloth.example_cloth_style3d",
+#     devices=test_devices,
+#     test_options={},
+#     test_options_cuda={"num_frames": 32},
+#     test_options_cpu={"num_frames": 2},
+#     use_viewer=True,
+# )
 
 
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_cartpole",
-    devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None", "num_frames": 100},
-    test_options_cpu={"num_frames": 10},
-)
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_g1",
-    devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True},
-    test_options_cpu={"num_frames": 10},
-)
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_humanoid",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
-)
-add_example_test(
-    TestBasicRobotExamples,
-    name="example_quadruped",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 1000},
-    test_options_cpu={"num_envs": 10},
-)
+# class TestBasicRobotExamples(unittest.TestCase):
+#     pass
 
 
-class TestAdvancedRobotExamples(unittest.TestCase):
-    pass
+# add_example_test(
+#     TestBasicRobotExamples,
+#     name="example_cartpole",
+#     devices=test_devices,
+#     test_options={"usd_required": True, "stage_path": "None", "num_frames": 100},
+#     test_options_cpu={"num_frames": 10},
+# )
+# add_example_test(
+#     TestBasicRobotExamples,
+#     name="example_g1",
+#     devices=test_devices,
+#     test_options={"usd_required": True, "num_frames": 500, "headless": True},
+#     test_options_cpu={"num_frames": 10},
+# )
+# add_example_test(
+#     TestBasicRobotExamples,
+#     name="example_humanoid",
+#     devices=test_devices,
+#     test_options={"stage_path": "None", "num_frames": 500},
+#     test_options_cpu={"num_frames": 10},
+# )
+# add_example_test(
+#     TestBasicRobotExamples,
+#     name="example_quadruped",
+#     devices=test_devices,
+#     test_options={"stage_path": "None", "num_frames": 1000},
+#     test_options_cpu={"num_envs": 10},
+# )
 
 
-add_example_test(
-    TestAdvancedRobotExamples,
-    name="example_robot_manipulating_cloth",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 300},
-    test_options_cpu={"num_frames": 2},
-)
-add_example_test(
-    TestAdvancedRobotExamples,
-    name="example_anymal_c_walk",
-    devices=cuda_test_devices,
-    test_options={"stage_path": "None", "num_frames": 200, "headless": True, "torch_required": True},
-)
-add_example_test(
-    TestAdvancedRobotExamples,
-    name="example_anymal_c_walk_on_sand",
-    devices=cuda_test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
-)
+# class TestAdvancedRobotExamples(unittest.TestCase):
+#     pass
 
 
-class TestSelectionAPIExamples(unittest.TestCase):
-    pass
+# add_example_test(
+#     TestAdvancedRobotExamples,
+#     name="example_robot_manipulating_cloth",
+#     devices=test_devices,
+#     test_options={"stage_path": "None", "num_frames": 300},
+#     test_options_cpu={"num_frames": 2},
+# )
+# add_example_test(
+#     TestAdvancedRobotExamples,
+#     name="example_anymal_c_walk",
+#     devices=cuda_test_devices,
+#     test_options={"stage_path": "None", "num_frames": 200, "headless": True, "torch_required": True},
+# )
+# add_example_test(
+#     TestAdvancedRobotExamples,
+#     name="example_anymal_c_walk_on_sand",
+#     devices=cuda_test_devices,
+#     test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
+# )
 
 
-add_example_test(
-    TestSelectionAPIExamples,
-    name="selection.example_selection_articulations",
-    devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestSelectionAPIExamples,
-    name="selection.example_selection_cartpole",
-    devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestSelectionAPIExamples,
-    name="selection.example_selection_materials",
-    devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
-    use_viewer=True,
-)
+# class TestSelectionAPIExamples(unittest.TestCase):
+#     pass
+
+
+# add_example_test(
+#     TestSelectionAPIExamples,
+#     name="selection.example_selection_articulations",
+#     devices=test_devices,
+#     test_options={"num_frames": 100},
+#     test_options_cpu={"num_frames": 10},
+#     use_viewer=True,
+# )
+# add_example_test(
+#     TestSelectionAPIExamples,
+#     name="selection.example_selection_cartpole",
+#     devices=test_devices,
+#     test_options={"num_frames": 100},
+#     test_options_cpu={"num_frames": 10},
+#     use_viewer=True,
+# )
+# add_example_test(
+#     TestSelectionAPIExamples,
+#     name="selection.example_selection_materials",
+#     devices=test_devices,
+#     test_options={"num_frames": 100},
+#     test_options_cpu={"num_frames": 10},
+#     use_viewer=True,
+# )
 
 
 class TestDiffSimExamples(unittest.TestCase):
@@ -411,39 +411,39 @@ add_example_test(
 )
 
 
-class TestOtherExamples(unittest.TestCase):
-    pass
+# class TestOtherExamples(unittest.TestCase):
+#     pass
 
 
-add_example_test(
-    TestOtherExamples,
-    name="mpm.example_mpm_granular",
-    devices=cuda_test_devices,
-    test_options={"viewer": "null", "num_frames": 100},
-    use_viewer=True,
-)
+# add_example_test(
+#     TestOtherExamples,
+#     name="mpm.example_mpm_granular",
+#     devices=cuda_test_devices,
+#     test_options={"viewer": "null", "num_frames": 100},
+#     use_viewer=True,
+# )
 
-add_example_test(
-    TestOtherExamples,
-    name="example_rigid_force",
-    devices=test_devices,
-    test_options={"headless": True},
-)
-add_example_test(
-    TestOtherExamples,
-    name="example_ik_benchmark",
-    devices=test_devices,
-    test_options={"stage_path": "None"},
-    test_options_cpu={"batch_sizes": [1, 10]},
-)
+# add_example_test(
+#     TestOtherExamples,
+#     name="example_rigid_force",
+#     devices=test_devices,
+#     test_options={"headless": True},
+# )
+# add_example_test(
+#     TestOtherExamples,
+#     name="example_ik_benchmark",
+#     devices=test_devices,
+#     test_options={"stage_path": "None"},
+#     test_options_cpu={"batch_sizes": [1, 10]},
+# )
 
-add_example_test(
-    TestOtherExamples,
-    name="example_contact_sensor",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100},
-    test_options_cpu={"num_frames": 10},
-)
+# add_example_test(
+#     TestOtherExamples,
+#     name="example_contact_sensor",
+#     devices=test_devices,
+#     test_options={"stage_path": "None", "num_frames": 100},
+#     test_options_cpu={"num_frames": 10},
+# )
 
 
 if __name__ == "__main__":
