@@ -232,7 +232,7 @@ Some examples may add additional arguments (see their respective source files fo
 
 # Contributing and Development
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/development-guide.html) for instructions on how to contribute to Newton.
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/guide/development.html) for instructions on how to contribute to Newton.
 
 # Support and Community Discussion
 
