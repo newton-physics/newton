@@ -33,6 +33,9 @@ import warp.optim
 
 import newton
 import newton.examples
+
+# TODO: These should be imported from a public API once available
+# For now, implementing locally.
 from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 
 DEFAULT_DRONE_PATH = os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd")  # Path to input drone asset
