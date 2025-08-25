@@ -51,7 +51,10 @@ def compute_env_offsets(
     import warnings  # noqa: PLC0415
 
     warnings.warn(
-        "compute_env_offsets is deprecated and will be removed in a future version. Use the builder.replicate() function instead.",
+        (
+            "compute_env_offsets is deprecated and will be removed in a future version. "
+            "Use the builder.replicate() function instead."
+        ),
         stacklevel=2,
     )
 
@@ -183,6 +186,7 @@ def main():
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+        "anymal_c_walk_on_sand": "newton.examples.mpm.example_anymal_c_walk_on_sand",
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",
