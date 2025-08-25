@@ -163,7 +163,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples anymal_c_walk_on_sand</code>
+      <code>uv run -m newton.examples anymal_c_walk_on_sand</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
