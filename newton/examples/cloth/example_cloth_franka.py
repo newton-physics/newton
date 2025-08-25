@@ -178,7 +178,7 @@ class Example:
 
         self.gravity = -10.0  # cm/s^2
 
-        self.builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
+        self.scene = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
         self.soft_contact_max = 1000000
 
         if self.add_robot:
@@ -186,13 +186,13 @@ class Example:
             self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.builder.add_builder(franka, xform, separate_collision_group=False)
+            self.scene.add_builder(franka, xform, separate_collision_group=False)
             self.bodies_per_env = franka.body_count
             self.dof_q_per_env = franka.joint_coord_count
             self.dof_qd_per_env = franka.joint_dof_count
 
         # add a table
-        self.builder.add_shape_box(
+        self.scene.add_shape_box(
             -1,
             wp.transform(
                 wp.vec3(
@@ -215,7 +215,7 @@ class Example:
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
-            self.builder.add_cloth_mesh(
+            self.scene.add_cloth_mesh(
                 vertices=vertices,
                 indices=mesh_indices,
                 rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi),
@@ -231,8 +231,11 @@ class Example:
                 particle_radius=self.cloth_particle_radius,
             )
 
-            self.builder.color()
-        self.model = self.builder.finalize(requires_grad=False)
+            self.scene.color()
+
+        self.scene.add_ground_plane()
+
+        self.model = self.scene.finalize(requires_grad=False)
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction

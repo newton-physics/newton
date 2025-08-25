@@ -156,8 +156,8 @@ class Example:
         vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
 
-        builder = newton.ModelBuilder()
-        builder.add_cloth_mesh(
+        scene = newton.ModelBuilder()
+        scene.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
@@ -170,8 +170,8 @@ class Example:
             tri_kd=2.0e-4,
             edge_ke=10,
         )
-        builder.color()
-        self.model = builder.finalize()
+        scene.color()
+        self.model = scene.finalize()
         self.model.soft_contact_ke = 1.0e5
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
