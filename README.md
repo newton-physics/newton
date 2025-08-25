@@ -149,6 +149,40 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
   </tr>
 </table>
 
+
+## Selection Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_cartpole.py">
+        <img src="docs/images/examples/example_selection_cartpole.jpg" alt="Selection Cartpole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_materials.py">
+        <img src="docs/images/examples/example_selection_materials.jpg" alt="Selection Materials">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/selection/example_selection_articulations.py">
+        <img src="docs/images/examples/example_selection_articulations.jpg" alt="Selection Articulations">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples selection_cartpole</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples selection_materials</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples selection_articulations</code>
+    </td>
+  </tr>
+</table>
+
 ## Example Options
 
 The examples support the following common line arguments:

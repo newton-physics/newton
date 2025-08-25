@@ -190,6 +190,9 @@ def main():
         "h1": "newton.examples.robot.example_h1",
         "humanoid": "newton.examples.robot.example_humanoid",
         "quadruped": "newton.examples.robot.example_quadruped",
+        "selection_articulations": "newton.examples.selection.example_selection_articulations",
+        "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
+        "selection_materials": "newton.examples.selection.example_selection_materials",
     }
 
     if len(sys.argv) < 2:
