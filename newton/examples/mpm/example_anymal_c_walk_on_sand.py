@@ -119,7 +119,6 @@ class Example:
         self.viewer = viewer
 
         self.device = wp.get_device()
-        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
 
         # import the robot model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -229,17 +228,15 @@ class Example:
         # Setup control policy
         self.control = self.model.control()
 
-        # Download the policy from the newton-assets repository
-        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
-        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
-
-        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
-        self.joint_pos_initial = torch.tensor(
-            self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
-        ).unsqueeze(0)
-        self.joint_vel_initial = torch.tensor(self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32)
+        q0 = wp.to_torch(self.state_0.joint_q)
+        self.torch_device = q0.device
+        self.joint_pos_initial = q0[7:].unsqueeze(0).detach().clone()
         self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
         self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+
+        # Download the policy from the newton-assets repository
+        policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
+        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
 
         # Pre-compute tensors that don't change during simulation
         self.lab_to_mujoco_indices = torch.tensor(
