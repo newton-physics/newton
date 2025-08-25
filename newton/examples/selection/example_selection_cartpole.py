@@ -76,7 +76,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        scene.replicate(env, num_copies=self.num_envs, spacing=(2.0, 0.0, 0.0))
 
         # finalize model
         self.model = scene.finalize()

@@ -328,7 +328,7 @@ class TestSelectionAPIExamples(unittest.TestCase):
 
 add_example_test(
     TestSelectionAPIExamples,
-    name="example_selection_articulations",
+    name="selection.example_selection_articulations",
     devices=test_devices,
     test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
@@ -336,7 +336,7 @@ add_example_test(
 )
 add_example_test(
     TestSelectionAPIExamples,
-    name="example_selection_cartpole",
+    name="selection.example_selection_cartpole",
     devices=test_devices,
     test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
@@ -344,7 +344,7 @@ add_example_test(
 )
 add_example_test(
     TestSelectionAPIExamples,
-    name="example_selection_materials",
+    name="selection.example_selection_materials",
     devices=test_devices,
     test_options={"num_frames": 100},
     test_options_cpu={"num_frames": 10},
@@ -389,5 +389,5 @@ add_example_test(
 
 if __name__ == "__main__":
     # force rebuild of all kernels
-    wp.clear_kernel_cache()
+    # wp.clear_kernel_cache()
     unittest.main(verbosity=2)

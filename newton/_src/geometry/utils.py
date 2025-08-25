@@ -472,15 +472,22 @@ def remesh_mesh(
     inplace: bool = False,
     **remeshing_kwargs,
 ) -> Mesh:
-    """Remesh a mesh using the specified method.
+    """
+    Remeshes a Mesh object using the specified remeshing method.
+
     Args:
-        mesh: The mesh to remesh.
-        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
-        recompute_inertia: Whether to recompute the inertia of the mesh.
-        inplace: Whether to modify the mesh in place or return a new mesh.
+        mesh (Mesh): The mesh to be remeshed.
+        method (RemeshingMethod, optional): The remeshing method to use.
+            One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
+            Defaults to "quadratic".
+        recompute_inertia (bool, optional): If True, recompute the mass, center of mass,
+            and inertia tensor of the mesh after remeshing. Defaults to False.
+        inplace (bool, optional): If True, modify the mesh in place. If False,
+            return a new mesh instance with the remeshed geometry. Defaults to False.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
+
     Returns:
-        The remeshed mesh.
+        Mesh: The remeshed mesh. If `inplace` is True, returns the modified input mesh.
     """
     if method == "convex_hull":
         remeshing_kwargs["maxhullvert"] = mesh.maxhullvert

@@ -27,39 +27,39 @@ from .state import State
 
 
 class Model:
-    """Holds the definition of the simulation model
+    """
+    Represents the static (non-time-varying) definition of a simulation model in Newton.
 
-    This class holds the non-time varying description of the system, i.e.:
-    all geometry, constraints, and parameters used to describe the simulation.
+    The Model class encapsulates all geometry, constraints, and parameters that describe a physical system
+    for simulation. It is designed to be constructed via the ModelBuilder, which handles the correct
+    initialization and population of all fields.
 
-    Environment Grouping:
-        The model supports grouping entities by environment using group indices:
-        - `particle_group`, `body_group`, `shape_group`, `joint_group`, `articulation_group`
-        - Group -1 indicates global entities shared across all environments
-        - Groups 0, 1, 2, ... indicate environment-specific entities
-
-        These groups can be used for:
-        - Collision detection optimization (separating environments)
-        - Visualization (spacing out different environments)
-        - Parallel processing of independent environments
+    Key Features:
+        - Stores all static data for simulation: particles, rigid bodies, joints, shapes, soft/rigid elements, etc.
+        - Supports grouping of entities by environment using group indices (e.g., `particle_group`, `body_group`, etc.).
+          - Group index -1: global entities shared across all environments.
+          - Group indices 0, 1, 2, ...: environment-specific entities.
+        - Grouping enables:
+          - Collision detection optimization (e.g., separating environments)
+          - Visualization (e.g., spatially separating environments)
+          - Parallel processing of independent environments
 
     Note:
-        It is strongly recommended to use the ModelBuilder to construct a
-        simulation rather than creating your own Model object directly,
-        however it is possible to do so if desired.
+        It is strongly recommended to use the :class:`ModelBuilder` to construct a Model.
+        Direct instantiation and manual population of Model fields is possible but discouraged.
     """
 
     def __init__(self, device: Devicelike | None = None):
         """
-        Initializes the Model object.
+        Initialize a Model object.
 
         Args:
-            device (wp.Device): Device on which the Model's data will be allocated.
+            device (wp.Device, optional): Device on which the Model's data will be allocated.
         """
         self.requires_grad = False
-        """Indicates whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
+        """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         self.num_envs = 0
-        """Number of articulation environments that were added to the ModelBuilder via `add_builder`."""
+        """Number of articulation environments added to the ModelBuilder via `add_builder`."""
 
         self.particle_q = None
         """Particle positions, shape [particle_count, 3], float."""
@@ -74,25 +74,25 @@ class Model:
         self.particle_max_radius = 0.0
         """Maximum particle radius (useful for HashGrid construction)."""
         self.particle_ke = 1.0e3
-        """Particle normal contact stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`). Default is 1.0e3."""
+        """Particle normal contact stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kd = 1.0e2
-        """Particle normal contact damping (used by :class:`~newton.solvers.SolverSemiImplicit`). Default is 1.0e2."""
+        """Particle normal contact damping (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kf = 1.0e2
-        """Particle friction force stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`). Default is 1.0e2."""
+        """Particle friction force stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_mu = 0.5
-        """Particle friction coefficient. Default is 0.5."""
+        """Particle friction coefficient."""
         self.particle_cohesion = 0.0
-        """Particle cohesion strength. Default is 0.0."""
+        """Particle cohesion strength."""
         self.particle_adhesion = 0.0
-        """Particle adhesion strength. Default is 0.0."""
+        """Particle adhesion strength."""
         self.particle_grid = None
-        """HashGrid instance used for accelerated simulation of particle interactions."""
+        """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity = 1e5
-        """Maximum particle velocity (to prevent instability). Default is 1e5."""
+        """Maximum particle velocity (to prevent instability)."""
         self.particle_group = None
-        """Environment group index for each particle, shape [particle_count], int. Global entities have group index -1."""
+        """Environment group index for each particle, shape [particle_count], int. -1 for global."""
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -142,13 +142,13 @@ class Model:
         self.shape_collision_filter_pairs = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
-        """Collision radius of each shape used for bounding sphere broadphase collision checking, shape [shape_count], float."""
+        """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
         """Number of shape contact pairs."""
         self.shape_group = None
-        """Environment group index for each shape, shape [shape_count], int. Global entities have group index -1."""
+        """Environment group index for each shape, shape [shape_count], int. -1 for global."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -181,7 +181,7 @@ class Model:
         self.edge_rest_length = None
         """Bending edge rest length, shape [edge_count], float."""
         self.edge_bending_properties = None
-        """Bending edge stiffness and damping parameters, shape [edge_count, 2], float."""
+        """Bending edge stiffness and damping, shape [edge_count, 2], float."""
         self.edge_constraint_lambdas = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
@@ -206,9 +206,9 @@ class Model:
         """Muscle activations, shape [muscle_count], float."""
 
         self.body_q = None
-        """Poses of rigid bodies used for state initialization, shape [body_count, 7], float."""
+        """Rigid body poses for state initialization, shape [body_count, 7], float."""
         self.body_qd = None
-        """Velocities of rigid bodies used for state initialization, shape [body_count, 6], float."""
+        """Rigid body velocities for state initialization, shape [body_count, 6], float."""
         self.body_com = None
         """Rigid body center of mass (in local frame), shape [body_count, 3], float."""
         self.body_inertia = None
@@ -225,11 +225,11 @@ class Model:
         """Environment group index for each body, shape [body_count], int. Global entities have group index -1."""
 
         self.joint_q = None
-        """Generalized joint positions used for state initialization, shape [joint_coord_count], float."""
+        """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
         self.joint_qd = None
-        """Generalized joint velocities used for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
-        """Generalized joint forces used for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
         self.joint_target = None
         """Generalized joint target inputs, shape [joint_dof_count], float."""
         self.joint_type = None
@@ -277,30 +277,30 @@ class Model:
         self.joint_twist_upper = None
         """Joint upper twist limit, shape [joint_count], float."""
         self.joint_q_start = None
-        """Start index of the first position coordinate per joint (note the last value is an additional sentinel entry to allow for querying the q dimensionality of joint i via ``joint_q_start[i+1] - joint_q_start[i]``), shape [joint_count + 1], int."""
+        """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start = None
-        """Start index of the first velocity coordinate per joint (note the last value is an additional sentinel entry to allow for querying the qd dimensionality of joint i via ``joint_qd_start[i+1] - joint_qd_start[i]``), shape [joint_count + 1], int."""
+        """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_key = []
         """Joint keys, shape [joint_count], str."""
         self.joint_group = None
-        """Environment group index for each joint, shape [joint_count], int. Global entities have group index -1."""
+        """Environment group index for each joint, shape [joint_count], int. -1 for global."""
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_group = None
-        """Environment group index for each articulation, shape [articulation_count], int. Global entities have group index -1."""
+        """Environment group index for each articulation, shape [articulation_count], int. -1 for global."""
 
         self.soft_contact_ke = 1.0e3
-        """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`). Default is 1.0e3."""
+        """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd = 10.0
-        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`). Default is 10.0."""
+        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kf = 1.0e3
-        """Stiffness of friction force in soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`). Default is 1.0e3."""
+        """Stiffness of friction force in soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu = 0.5
-        """Friction coefficient of soft contacts. Default is 0.5."""
+        """Friction coefficient of soft contacts."""
         self.soft_contact_restitution = 0.0
-        """Restitution coefficient of soft contacts (used by :class:`SolverXPBD`). Default is 0.0."""
+        """Restitution coefficient of soft contacts (used by :class:`SolverXPBD`)."""
 
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
@@ -312,7 +312,7 @@ class Model:
         self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
-        """Up axis, 0 for x, 1 for y, 2 for z."""
+        """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = np.array((0.0, 0.0, -9.81))
         """Gravity vector, shape [3], float."""
 
@@ -360,24 +360,23 @@ class Model:
         self.articulation_count = 0
         """Total number of articulations in the system."""
         self.joint_dof_count = 0
-        """Total number of velocity degrees of freedom of all joints in the system. Equals the number of joint axes."""
+        """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count = 0
-        """Total number of position degrees of freedom of all joints in the system."""
+        """Total number of position degrees of freedom of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []
-        """The coloring of all the particles, used by :class:`~newton.solvers.SolverVBD` for Gauss-Seidel iteration. Each array contains indices of particles sharing the same color."""
-        # the color of each particles
+        """Coloring of all particles for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of particles sharing the same color."""
         self.particle_colors = None
-        """Contains the color assignment for every particle."""
+        """Color assignment for every particle."""
 
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
         self.attribute_frequency = {}
-        """Classify each attribute as per body, per joint, per DOF, etc."""
+        """Classifies each attribute as per body, per joint, per DOF, etc."""
 
         # attributes per body
         self.attribute_frequency["body_q"] = "body"
@@ -439,18 +438,18 @@ class Model:
         self.attribute_frequency["shape_filter"] = "shape"
 
     def state(self, requires_grad: bool | None = None) -> State:
-        """Returns a state object for the model
+        """
+        Create and return a new :class:`State` object for this model.
 
-        The returned state will be initialized with the initial configuration given in
-        the model description.
+        The returned state is initialized with the initial configuration from the model description.
 
         Args:
-            requires_grad (bool): Manual overwrite whether the state variables should have `requires_grad` enabled (defaults to `None` to use the model's setting :attr:`requires_grad`)
+            requires_grad (bool, optional): Whether the state variables should have `requires_grad` enabled.
+                If None, uses the model's :attr:`requires_grad` setting.
 
         Returns:
             State: The state object
         """
-
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -461,12 +460,13 @@ class Model:
             s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
             s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
 
-        # articulations
+        # rigid bodies
         if self.body_count:
             s.body_q = wp.clone(self.body_q, requires_grad=requires_grad)
             s.body_qd = wp.clone(self.body_qd, requires_grad=requires_grad)
             s.body_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
+        # joints
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
@@ -475,16 +475,17 @@ class Model:
 
     def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
         """
-        Returns a control object for the model.
+        Create and return a new :class:`Control` object for this model.
 
-        The returned control object will be initialized with the control inputs given in the model description.
+        The returned control object is initialized with the control inputs from the model description.
 
         Args:
-            requires_grad (bool): Manual overwrite whether the control variables should have `requires_grad` enabled (defaults to `None` to use the model's setting :attr:`requires_grad`)
-            clone_variables (bool): Whether to clone the control inputs or use the original data
+            requires_grad (bool, optional): Whether the control variables should have `requires_grad` enabled.
+                If None, uses the model's :attr:`requires_grad` setting.
+            clone_variables (bool): If True, clone the control input arrays; if False, use references.
 
         Returns:
-            Control: The control object
+            Control: The initialized control object.
         """
         c = Control()
         if requires_grad is None:
@@ -520,14 +521,20 @@ class Model:
         requires_grad: bool | None = None,
     ) -> Contacts:
         """
-        Generates contact points for the particles and rigid bodies in the model for use in contact-dynamics kernels.
+        Generate contact points for the particles and rigid bodies in the model.
+
+        This method produces a :class:`Contacts` object containing collision/contact information
+        for use in contact-dynamics kernels.
 
         Args:
             state (State): The current state of the model.
-            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation. If not provided, a new one will be created if it hasn't been constructed before for this model.
-            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair. If None, a kernel is launched to count the number of possible contacts.
+            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation.
+                If not provided, a new one will be created if it hasn't been constructed before for this model.
+            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair.
+                If None, a kernel is launched to count the number of possible contacts.
             rigid_contact_margin (float, optional): Margin for rigid contact generation. Default is 0.01.
-            soft_contact_max (int, optional): Maximum number of soft contacts. If None, a kernel is launched to count the number of possible contacts.
+            soft_contact_max (int, optional): Maximum number of soft contacts.
+                If None, a kernel is launched to count the number of possible contacts.
             soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
             edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
             iterate_mesh_vertices (bool, optional): Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box <> mesh collision). Default is True.
@@ -564,7 +571,22 @@ class Model:
         return self._collision_pipeline.collide(self, state)
 
     def add_attribute(self, name: str, attrib: wp.array, frequency: str):
-        """Add a custom attribute to the model"""
+        """
+        Add a custom attribute to the model.
+
+        Args:
+            name (str): Name of the attribute.
+            attrib (wp.array): The array to add as an attribute.
+            frequency (str): The frequency of the attribute. Must be one of:
+                - "body": per body
+                - "joint": per joint
+                - "joint_coord": per joint coordinate
+                - "joint_dof": per joint degree of freedom
+                - "shape": per shape
+
+        Raises:
+            AttributeError: If the attribute already exists, is not a wp.array, or is on the wrong device.
+        """
         if hasattr(self, name):
             raise AttributeError(f"Attribute '{name}' already exists")
 
@@ -580,7 +602,25 @@ class Model:
         self.attribute_frequency[name] = frequency
 
     def get_attribute_frequency(self, name):
-        """Get the frequency of an attribute, e.g., "body", "joint", etc."""
+        """
+        Get the frequency of an attribute.
+
+        Possible frequencies are:
+            - "body": per body
+            - "joint": per joint
+            - "joint_coord": per joint coordinate
+            - "joint_dof": per joint degree of freedom
+            - "shape": per shape
+
+        Args:
+            name (str): Name of the attribute.
+
+        Returns:
+            str: The frequency of the attribute.
+
+        Raises:
+            AttributeError: If the attribute frequency is not known.
+        """
         frequency = self.attribute_frequency.get(name)
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")

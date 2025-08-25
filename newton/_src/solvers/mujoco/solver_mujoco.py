@@ -1265,7 +1265,6 @@ class SolverMuJoCo(SolverBase):
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
-        self.contact_geom_mapping = self.create_newton_contact_geom_mapping(model)
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
@@ -1592,22 +1591,6 @@ class SolverMuJoCo(SolverBase):
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
         return shape_color
 
-    def create_newton_contact_geom_mapping(self, model: Model):
-        indices = [idx for w, idx in self.shape_map.values() if idx is not None]
-        if not indices:
-            return wp.array([], dtype=wp.int32, device=model.device)
-        max_mj_shape_id = max(indices)
-        geom_mapping = np.full((model.num_envs, max_mj_shape_id + 1), -1, dtype=np.int32)
-
-        for shape, (worldid, mj_geom) in self.shape_map.items():
-            if mj_geom is None:
-                continue
-            if worldid == -1:
-                worldid = slice(None)  # noqa
-            geom_mapping[worldid, mj_geom] = shape
-
-        return wp.array(geom_mapping, dtype=wp.int32, device=model.device)
-
     @override
     def update_contacts(self, contacts: Contacts) -> None:
         # TODO: ensure that class invariants are preserved
@@ -1634,7 +1617,7 @@ class SolverMuJoCo(SolverBase):
             convert_mjw_contact_to_warp_kernel,
             dim=mj_data.nconmax,
             inputs=[
-                self.contact_geom_mapping,
+                self.to_newton_shape_index,
                 self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
                 mj_data.ncon,
                 mj_contact.frame,
@@ -1901,7 +1884,6 @@ class SolverMuJoCo(SolverBase):
         }
 
         mj_bodies = [spec.worldbody]
-        mj_geoms = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom id
@@ -1956,7 +1938,6 @@ class SolverMuJoCo(SolverBase):
         self.selected_joints = wp.array(selected_joints, dtype=wp.int32, device=model.device)
         self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
         selected_shapes_set = set(selected_shapes)
-        selected_bodies_set = set(selected_bodies)
 
         def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -2030,7 +2011,7 @@ class SolverMuJoCo(SolverBase):
                             model.rigid_contact_rolling_friction * mu,
                         ]
 
-                mj_geoms.append((shape, body.add_geom(**geom_params)))
+                body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
                 shape_mapping[shape] = name
 
@@ -2284,25 +2265,6 @@ class SolverMuJoCo(SolverBase):
         # to be investigated.
 
         mujoco.mj_forward(self.mj_model, self.mj_data)
-
-        # index mapping from Newton shape and body ids to MuJoCo geoms and bodies
-        mj_geoms = {shape: mj_geom.id for shape, mj_geom in mj_geoms}
-
-        self.shape_map = {}  # Maps newton shape ids to mujoco shapes
-        for body, body_shapes in model.body_shapes.items():
-            if body not in selected_bodies_set:
-                continue
-            if body < 0:
-                for body_shape in body_shapes:
-                    self.shape_map[body_shape] = (-1, mj_geoms.get(body_shape, None))
-                continue
-
-            bodies_per_env = self.model.body_count // self.model.num_envs
-            worldid = body // bodies_per_env
-            base_shapes = model.body_shapes[body % bodies_per_env]
-            assert len(base_shapes) == len(body_shapes)
-            for base_shape, body_shape in zip(base_shapes, body_shapes):
-                self.shape_map[body_shape] = (worldid, mj_geoms.get(base_shape, None))
 
         if target_filename:
             with open(target_filename, "w") as f:
