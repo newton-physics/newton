@@ -35,8 +35,9 @@ def get_asset(filename: str) -> str:
 
 def run(example):
     while example.viewer.is_running():
-        with wp.ScopedTimer("step"):
-            example.step()
+        if not example.viewer.is_paused():
+            with wp.ScopedTimer("step"):
+                example.step()
 
         with wp.ScopedTimer("render"):
             example.render()
