@@ -24,7 +24,7 @@
 # Command: python -m newton.examples diffsim_spring_cage
 #
 ###########################################################################
-
+import numpy as np
 import warp as wp
 
 import newton
@@ -209,28 +209,31 @@ class Example:
 
             # TODO: Draw springs inside log_state()
             q = state.particle_q.numpy()
+
+            lines_starts = []
+            lines_ends = []
+            half_lengths = []
+            colors = []
+
             for j in range(1, len(q)):
-                # Draw line as sanity check
-                self.viewer.log_lines(
-                    f"/spring_{j}",
-                    wp.array([q[0]], dtype=wp.vec3),
-                    wp.array([q[j]], dtype=wp.vec3),
-                    (0.7, 0.6, 0.4),
-                )
+                lines_starts.append(q[0])
+                lines_ends.append(q[j])
+                half_lengths.append(0.5 * np.linalg.norm(q[0] - q[j]))
 
-                import numpy as np  # noqa: PLC0415
+            min_length = min(half_lengths)
+            max_length = max(half_lengths)
+            for l in range(len(half_lengths)):
+                color = wp.render.bourke_color_map(min_length, max_length, half_lengths[l])
+                colors.append(color)
 
-                half_l = 0.5 * np.linalg.norm(q[0] - q[j])
-                quat = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(q[0] - q[j]))
-                xform = wp.transform(p=0.5 * (q[0] + q[j]), q=quat)
-                self.viewer.log_shapes(
-                    f"/spring_capsule_{j}",
-                    newton.GeoType.CAPSULE,
-                    (0.01, half_l),
-                    wp.array([xform], dtype=wp.transform),
-                    wp.array([wp.vec3(0.7, 0.6, 0.4)], dtype=wp.vec3),
-                )
-
+            # Draw line as sanity check
+            self.viewer.log_lines(
+                "/springs_lines",
+                wp.array(lines_starts, dtype=wp.vec3),
+                wp.array(lines_ends, dtype=wp.vec3),
+                wp.array(colors, dtype=wp.vec3),
+                0.02,
+            )
             self.viewer.end_frame()
 
             self.frame += 1
