@@ -271,36 +271,35 @@ class Example:
         return self.loss
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            if self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.forward_backward()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.forward_backward()
 
-            if self.verbose:
-                self.log_step()
+        if self.verbose:
+            self.log_step()
 
-            self.optimizer.step([self.material_params.grad])
+        self.optimizer.step([self.material_params.grad])
 
-            wp.launch(
-                kernel=enforce_constraint_kernel,
-                dim=self.material_params.shape[0],
-                inputs=(
-                    self.hard_lower_bound,
-                    self.hard_upper_bound,
-                ),
-                outputs=(self.material_params,),
-            )
+        wp.launch(
+            kernel=enforce_constraint_kernel,
+            dim=self.material_params.shape[0],
+            inputs=(
+                self.hard_lower_bound,
+                self.hard_upper_bound,
+            ),
+            outputs=(self.material_params,),
+        )
 
-            self.losses.append(self.loss.numpy()[0])
+        self.losses.append(self.loss.numpy()[0])
 
-            # clear grads for next iteration
-            self.tape.zero()
-            self.loss.zero_()
-            self.com.zero_()
-            self.pos_error.zero_()
+        # clear grads for next iteration
+        self.tape.zero()
+        self.loss.zero_()
+        self.com.zero_()
+        self.pos_error.zero_()
 
-            self.train_iter = self.train_iter + 1
+        self.train_iter = self.train_iter + 1
 
     def log_step(self):
         x = self.material_params.numpy().reshape(-1, 2)
