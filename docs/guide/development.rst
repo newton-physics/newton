@@ -3,7 +3,7 @@ Development
 
 This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
 
-Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for the basics of contributing to Newton, e.g. legal aspects like the contributor license agreement (CLA).
+Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA).
 
 Installation
 ------------
