@@ -20,7 +20,7 @@ and scalable robotics simulation.
 Newton is maintained by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/),
 and [NVIDIA](https://www.nvidia.com/).
 
-## Development
+## Development  
 
 See the [development guide](https://newton-physics.github.io/newton/development-guide.html) for instructions on how to
 get started.
