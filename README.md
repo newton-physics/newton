@@ -20,30 +20,25 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 # Quickstart
 
-During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager.
+During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/guide/installation.html#method-1-using-uv-recommended).
 
-Install on Linux:
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+Once uv is installed, running Newton examples is straightforward:
+```console
+# set up the uv environment for running Newton examples
+uv sync --extra examples
+
+# run an example
+uv run -m newton.examples basic_pendulum
 ```
 
-Install on Windows (PowerShell):
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Then restart your terminal (or update paths) and run an example:
-```bash
-uv run --extra examples -m newton.examples basic_pendulum
-```
-
-See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include instructions for how to setup Newton in a virtual environment.
+See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
 
 # Examples
 
-For running the below example commands with [uv](https://docs.astral.sh/uv/), replace the `python` command with `uv run --extra examples`, analogous to the above.
-
-Without UV as shown below, you need to setup a virtual environment, see the [installation guide](https://newton-physics.github.io/newton/guide/installation.html#method-3-manual-setup-using-pip-in-a-virtual-environment).
+Before running the examples below, set up the uv environment with:
+```console
+uv sync --extra examples
+```
 
 ## Basic Examples
 
@@ -67,13 +62,13 @@ Without UV as shown below, you need to setup a virtual environment, see the [ins
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples basic_pendulum</code>
+      <code>uv run -m newton.examples basic_pendulum</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_urdf</code>
+      <code>uv run -m newton.examples basic_urdf</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_viewer</code>
+      <code>uv run -m newton.examples basic_viewer</code>
     </td>
   </tr>
   <tr>
@@ -95,10 +90,10 @@ Without UV as shown below, you need to setup a virtual environment, see the [ins
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples basic_shapes</code>
+      <code>uv run -m newton.examples basic_shapes</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples basic_joints</code>
+      <code>uv run -m newton.examples basic_joints</code>
     </td>
     <td align="center">
       <!-- <code>python -m newton.examples basic_viewer</code> -->
@@ -128,13 +123,13 @@ Without UV as shown below, you need to setup a virtual environment, see the [ins
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples cloth_bending</code>
+      <code>uv run -m newton.examples cloth_bending</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples cloth_hanging</code>
+      <code>uv run -m newton.examples cloth_hanging</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples cloth_style3d</code>
+      <code>uv run -m newton.examples cloth_style3d</code>
     </td>
   </tr>
 </table>
@@ -157,7 +152,7 @@ Without UV as shown below, you need to setup a virtual environment, see the [ins
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples mpm_granular</code>
+      <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
@@ -191,13 +186,13 @@ Without UV as shown below, you need to setup a virtual environment, see the [ins
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples selection_cartpole</code>
+      <code>uv run -m newton.examples selection_cartpole</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples selection_materials</code>
+      <code>uv run -m newton.examples selection_materials</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples selection_articulations</code>
+      <code>uv run -m newton.examples selection_articulations</code>
     </td>
   </tr>
 </table>
@@ -217,20 +212,25 @@ Some examples may add additional arguments (see their respective source files fo
 
 ## Example Usage
 
+```console
+    # First, set up the uv environment for running Newton examples
+    uv sync --extra examples
+
     # Basic usage
+    uv run -m newton.examples basic_pendulum
+
+    # Within a Python environment setup for Newton
     python -m newton.examples basic_pendulum
 
-    # With uv
-    uv run --extra examples -m newton.examples basic_pendulum
-
     # With viewer options
-    python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
+    uv run -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
 
     # With device selection
-    python -m newton.examples basic_urdf --device cuda:0
+    uv run -m newton.examples basic_urdf --device cuda:0
 
     # Multiple arguments
-    python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
+    uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
+```
 
 # Contributing and Development
 
