@@ -203,7 +203,7 @@ uv sync --extra examples
 
 ## Example Options
 
-The examples support the following common line arguments:
+The examples support the following command-line arguments:
 
 | Argument        | Description                                                                                         | Default                      |
 | --------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- |
