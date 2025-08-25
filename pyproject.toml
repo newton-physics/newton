@@ -26,7 +26,9 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["warp-lang>=1.7.0.dev20250625"]
+dependencies = [
+    "warp-lang>=1.7.0.dev20250625",
+]
 
 [project.optional-dependencies]
 # Core simulation dependencies
@@ -34,6 +36,7 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=0.0.1",            # MuJoCo, warp-accelerated
     "mujoco>=3.3.3.dev769049331",    # MuJoCo physics engine
+	"cbor2>=5.7.0",
 ]
 
 # Asset import and mesh processing dependencies
