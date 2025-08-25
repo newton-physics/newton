@@ -534,7 +534,8 @@ class Example:
         self.rollout_costs = wp.zeros(self.rollout_count, dtype=float, requires_grad=True)
 
         # Use the Euler integrator for stepping through the simulation.
-        self.solver = newton.solvers.SolverSemiImplicit(self.rollouts.model)
+        self.solver_rollouts = newton.solvers.SolverSemiImplicit(self.rollouts.model)
+        self.solver_drone = newton.solvers.SolverSemiImplicit(self.drone.model)
 
         self.optimizer = wp.optim.SGD(
             [self.rollouts.trajectories.flatten()],
@@ -564,7 +565,7 @@ class Example:
         self.rollout_costs.grad.fill_(1.0)
         self.tape.backward()
 
-    def update_drone(self, drone: Drone) -> None:
+    def update_drone(self, drone: Drone, solver) -> None:
         drone.state.clear_forces()
 
         wp.launch(
@@ -595,8 +596,7 @@ class Example:
             outputs=(drone.state.body_f,),
         )
 
-        self.solver.step(
-            # drone.model,
+        solver.step(
             drone.state,
             drone.next_state,
             None,
@@ -626,7 +626,7 @@ class Example:
 
         for i in range(self.rollout_step_count):
             for _ in range(self.sim_substeps):
-                self.update_drone(self.rollouts)
+                self.update_drone(self.rollouts, self.solver_rollouts)
 
             wp.launch(
                 drone_cost,
@@ -740,7 +740,7 @@ class Example:
         # Simulate the drone.
         self.drone.sim_tick = 0
         for _ in range(self.sim_substeps):
-            self.update_drone(self.drone)
+            self.update_drone(self.drone, self.solver_drone)
 
             # Swap the drone's states.
             (self.drone.states[0], self.drone.states[1]) = (self.drone.states[1], self.drone.states[0])
