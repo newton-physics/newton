@@ -14,7 +14,7 @@ Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](h
 Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
 [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
 
-Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. It is permissively licensed under the [Apache-2.0 license](LICENSE.md).
+Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. It is permissively licensed under the [Apache-2.0 license](https://github.com/newton-physics/newton/blob/main/LICENSE.md).
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
@@ -45,18 +45,18 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_pendulum.py">
-        <img src="docs/images/examples/example_basic_pendulum.jpg" alt="Pendulum">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_pendulum.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_pendulum.jpg" alt="Pendulum">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_urdf.py">
-        <img src="docs/images/examples/example_basic_urdf.jpg" alt="URDF">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_urdf.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_urdf.jpg" alt="URDF">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_viewer.py">
-        <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_viewer.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
       </a>
     </td>
   </tr>
@@ -73,18 +73,18 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_shapes.py">
-        <img src="docs/images/examples/example_basic_shapes.jpg" alt="Shapes">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_shapes.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_shapes.jpg" alt="Shapes">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/basic/example_basic_joints.py">
-        <img src="docs/images/examples/example_basic_joints.jpg" alt="Joints">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_joints.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_joints.jpg" alt="Joints">
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- <a href="newton/examples/basic/example_basic_viewer.py">
-        <img src="docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
+      <!-- <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_viewer.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
       </a> -->
     </td>
   </tr>
@@ -106,18 +106,18 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/cloth/example_cloth_bending.py">
-        <img src="docs/images/examples/example_cloth_bending.jpg" alt="Cloth Bending">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_bending.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_bending.jpg" alt="Cloth Bending">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/cloth/example_cloth_hanging.py">
-        <img src="docs/images/examples/example_cloth_hanging.jpg" alt="Cloth Hanging">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_hanging.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_hanging.jpg" alt="Cloth Hanging">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/cloth/example_cloth_style3d.py">
-        <img src="docs/images/examples/example_cloth_style3d.jpg" alt="Cloth Style3D">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_style3d.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_style3d.jpg" alt="Cloth Style3D">
       </a>
     </td>
   </tr>
@@ -139,8 +139,8 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/mpm/example_mpm_granular.py">
-        <img src="docs/images/examples/example_mpm_granular.jpg" alt="MPM Granular">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_granular.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_granular.jpg" alt="MPM Granular">
       </a>
     </td>
     <td align="center" width="33%">
@@ -169,18 +169,18 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/selection/example_selection_cartpole.py">
-        <img src="docs/images/examples/example_selection_cartpole.jpg" alt="Selection Cartpole">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/selection/example_selection_cartpole.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_selection_cartpole.jpg" alt="Selection Cartpole">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/selection/example_selection_materials.py">
-        <img src="docs/images/examples/example_selection_materials.jpg" alt="Selection Materials">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/selection/example_selection_materials.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_selection_materials.jpg" alt="Selection Materials">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/selection/example_selection_articulations.py">
-        <img src="docs/images/examples/example_selection_articulations.jpg" alt="Selection Articulations">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/selection/example_selection_articulations.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_selection_articulations.jpg" alt="Selection Articulations">
       </a>
     </td>
   </tr>
