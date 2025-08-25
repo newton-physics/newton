@@ -775,7 +775,7 @@ def parse_usd(
         if verbose:
             print(physics_utils_results[key])
 
-        yield from zip(*physics_utils_results[key])
+        yield from zip(*physics_utils_results[key], strict=False)
 
     # Setting up the default material
     material_specs[""] = PhysicsMaterial()
@@ -792,7 +792,7 @@ def parse_usd(
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs):
+        for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs, strict=False):
             body_path = str(prim_path)
             body_specs[body_path] = rigid_body_desc
             body_density[body_path] = default_shape_density
@@ -823,7 +823,7 @@ def parse_usd(
                 UsdPhysics.ObjectType.DistanceJoint,
             }:
                 paths, joint_specs = value
-                for path, joint_spec in zip(paths, joint_specs):
+                for path, joint_spec in zip(paths, joint_specs, strict=False):
                     joint_descriptions[str(path)] = joint_spec
 
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
@@ -832,7 +832,7 @@ def parse_usd(
 
         articulation_id = builder.articulation_count
         body_data = {}
-        for path, desc in zip(paths, articulation_descs):
+        for path, desc in zip(paths, articulation_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             builder.add_articulation(str(path))
             body_ids = {}
@@ -970,7 +970,7 @@ def parse_usd(
             UsdPhysics.ObjectType.PlaneShape,
         }:
             paths, shape_specs = value
-            for xpath, shape_spec in zip(paths, shape_specs):
+            for xpath, shape_spec in zip(paths, shape_specs, strict=False):
                 prim = stage.GetPrimAtPath(xpath)
                 # print(prim)
                 # print(shape_spec)
@@ -1168,7 +1168,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs):
+        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -1236,7 +1236,7 @@ def parse_usd(
             shape_key = builder.shape_key
             joint_key = builder.joint_key
             body_key = builder.body_key
-            for env_path, env_xform in zip(cloned_env_paths, cloned_env_xforms):
+            for env_path, env_xform in zip(cloned_env_paths, cloned_env_xforms, strict=False):
                 shape_count = multi_env_builder.shape_count
                 body_count = multi_env_builder.body_count
                 original_body_count = multi_env_builder.body_count

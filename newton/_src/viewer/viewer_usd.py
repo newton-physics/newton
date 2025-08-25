@@ -380,7 +380,7 @@ class ViewerUSD(ViewerBase):
         if colors is not None:
             if isinstance(colors, wp.array):
                 colors = colors.numpy()
-            elif isinstance(colors, (list, tuple)) and len(colors) == 3:
+            elif isinstance(colors, list | tuple) and len(colors) == 3:
                 colors = (colors,)
 
             instancer.GetDisplayColorAttr().Set(colors, self._frame_index)
@@ -421,7 +421,7 @@ class ViewerUSD(ViewerBase):
         if isinstance(colors, wp.array):
             # Convert warp array to numpy
             return colors.numpy()
-        elif isinstance(colors, (list, tuple)) and len(colors) == 3 and all(np.isscalar(x) for x in colors):
+        elif isinstance(colors, list | tuple) and len(colors) == 3 and all(np.isscalar(x) for x in colors):
             # Single color (list/tuple of 3 floats) - promote to array with one value per item
             return np.tile(colors, (num_items, 1))
         elif isinstance(colors, np.ndarray):

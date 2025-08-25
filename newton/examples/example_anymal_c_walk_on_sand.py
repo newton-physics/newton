@@ -313,7 +313,7 @@ def _merge_meshes(
 
     mesh_id = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
 
-    merged_points = np.vstack([pts * scale for pts, scale in zip(points, scales)])
+    merged_points = np.vstack([pts * scale for pts, scale in zip(points, scales, strict=False)])
 
     merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
 

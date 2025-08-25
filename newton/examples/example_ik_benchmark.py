@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import warp as wp
@@ -373,7 +373,7 @@ class Example:
 
         def _row(cells, widths, aligns):
             pad = {"l": str.ljust, "r": str.rjust}
-            padded = [f" {pad[a](txt, w - 2)} " for txt, w, a in zip(cells, widths, aligns)]
+            padded = [f" {pad[a](txt, w - 2)} " for txt, w, a in zip(cells, widths, aligns, strict=False)]
             return "|" + "|".join(padded) + "|"
 
         header = (
@@ -398,7 +398,7 @@ class Example:
             for i, (r, b, t, s, pe, oe) in enumerate(self.results)
         ]
 
-        widths = [max(len(cell) for cell in col) + 2 for col in zip(*([header, *rows]))]
+        widths = [max(len(cell) for cell in col) + 2 for col in zip(*([header, *rows]), strict=False)]
 
         print("\nReported errors are 98-percentile of successful solves\n")
         print(_border(widths))
