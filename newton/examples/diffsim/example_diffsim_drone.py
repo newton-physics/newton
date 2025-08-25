@@ -748,6 +748,9 @@ class Example:
         loss = np.min(self.rollout_costs.numpy())
         print(f"[{(self.frame + 1):3d}/{self.sim_steps}] loss={loss:.8f}")
 
+    def test(self):
+        pass
+
     def render(self):
         self.viewer.begin_frame(self.frame * self.frame_dt)
         self.viewer.log_state(self.drone.state)
