@@ -43,16 +43,6 @@ Joint types
      - 7 (3D position + 4D quaternion)
      - 6 (see :ref:`Twist conventions in Newton <Twist conventions>`)
      - 0
-   * - ``JOINT_COMPOUND``
-     - Compound joint with 3 rotational degrees of freedom
-     - 3
-     - 3
-     - 3
-   * - ``JOINT_UNIVERSAL``
-     - Universal joint with 2 rotational degrees of freedom
-     - 2
-     - 2
-     - 2
    * - ``JointType.DISTANCE``
      - Distance joint that keeps two bodies at a distance within its joint limits
      - 7
@@ -65,7 +55,7 @@ Joint types
      - up to 6
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
-Prismatic, revolute, planar, universal, and compound joints can be seen as special cases of the D6 joint.
+Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^

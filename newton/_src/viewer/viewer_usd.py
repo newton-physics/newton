@@ -12,20 +12,27 @@ from .viewer import ViewerBase
 
 
 class ViewerUSD(ViewerBase):
-    """USD viewer backend for Newton physics simulations.
+    """
+    USD viewer backend for Newton physics simulations.
 
-    Creates a USD stage with meshes as prototypes and uses PointInstancers
-    for efficient instanced rendering with time-sampled transforms.
-
-    Args:
-        output_path: Path for the output USD file
-        fps: Frames per second for time sampling (default: 24)
-        up_axis: USD up axis, one of 'Y', 'Z' (default: 'Z')
-        num_frames: Maximum number of frames to record before stopping
-            (default: None for unlimited)
+    This backend creates a USD stage and manages mesh prototypes and instanced rendering
+    using PointInstancers. It supports time-sampled transforms for efficient playback
+    and visualization of simulation data.
     """
 
     def __init__(self, output_path, fps=60, up_axis="Z", num_frames=None):
+        """
+        Initialize the USD viewer backend for Newton physics simulations.
+
+        Args:
+            output_path (str): Path to the output USD file.
+            fps (int, optional): Frames per second for time sampling. Default is 60.
+            up_axis (str, optional): USD up axis, either 'Y' or 'Z'. Default is 'Z'.
+            num_frames (int, optional): Maximum number of frames to record. If None, recording is unlimited.
+
+        Raises:
+            ImportError: If the usd-core package is not installed.
+        """
         if Usd is None:
             raise ImportError("usd-core package is required for ViewerUSD. Install with: pip install usd-core")
 
@@ -67,14 +74,20 @@ class ViewerUSD(ViewerBase):
         hidden=False,
         backface_culling=True,
     ):
-        """Create a USD mesh prototype from vertex/index data.
+        """
+        Create a USD mesh prototype from vertex and index data.
 
-        Args:
-            name: Mesh name/path
-            points: Vertex positions (wp.array of wp.vec3)
-            indices: Triangle indices (wp.array of wp.uint32)
-            normals: Vertex normals (optional, wp.array of wp.vec3)
-            uvs: UV coordinates (optional, wp.array of wp.vec2)
+        Parameters:
+            name (str): Mesh name or Sdf.Path string.
+            points (wp.array): Vertex positions as a warp array of wp.vec3.
+            indices (wp.array): Triangle indices as a warp array of wp.uint32.
+            normals (wp.array, optional): Vertex normals as a warp array of wp.vec3.
+            uvs (wp.array, optional): UV coordinates as a warp array of wp.vec2.
+            hidden (bool, optional): If True, mesh will be hidden. Default is False.
+            backface_culling (bool, optional): If True, enable backface culling. Default is True.
+
+        Returns:
+            str: The mesh prototype path.
         """
 
         self._ensure_scopes_for_path(self.stage, name)
@@ -115,15 +128,19 @@ class ViewerUSD(ViewerBase):
         return mesh_path
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials):
-        """Create or update a PointInstancer for mesh instances.
+        """
+        Create or update a PointInstancer for mesh instances.
 
-        Args:
-            name: Instancer name/path
-            mesh: Mesh prototype name
-            xforms: Instance transforms (wp.array of wp.transform)
-            scales: Instance scales (wp.array of wp.vec3)
-            colors: Instance colors (wp.array of wp.vec3)
-            materials: Instance materials (wp.array of wp.vec4)
+        Parameters:
+            name (str): Instancer name or Sdf.Path string.
+            mesh (str): Mesh prototype name (must be previously logged).
+            xforms (wp.array): Instance transforms as a warp array of wp.transform.
+            scales (wp.array): Instance scales as a warp array of wp.vec3.
+            colors (wp.array): Instance colors as a warp array of wp.vec3.
+            materials (wp.array): Instance materials as a warp array of wp.vec4.
+
+        Raises:
+            RuntimeError: If the mesh prototype is not found.
         """
         # Get prototype path
         if mesh not in self._meshes:
@@ -241,7 +258,12 @@ class ViewerUSD(ViewerBase):
                     pass
 
     def begin_frame(self, time):
-        """Begin a new frame at the given time."""
+        """
+        Begin a new frame at the given simulation time.
+
+        Parameters:
+            time (float): The simulation time for the new frame.
+        """
         super().begin_frame(time)
         self._frame_time = time
         self._current_frame = int(time * self.fps)
@@ -252,47 +274,77 @@ class ViewerUSD(ViewerBase):
             self.stage.SetEndTimeCode(self._current_frame)
 
     def end_frame(self):
-        """End the current frame."""
+        """
+        End the current frame.
+
+        This method is a placeholder for any end-of-frame logic required by the backend.
+        """
         pass
 
     def is_running(self):
-        """Return False when frame limit is exceeded, otherwise True."""
+        """
+        Check if the viewer is still running.
+
+        Returns:
+            bool: False if the frame limit is exceeded, True otherwise.
+        """
         if self.num_frames is not None:
             return self._frame_count < self.num_frames
         return True
 
     def close(self):
-        """Finalize and save the USD stage."""
+        """
+        Finalize and save the USD stage.
+
+        This should be called when all logging is complete to ensure the USD file is written.
+        """
         self.stage.GetRootLayer().Save()
         self.stage = None
 
     # Abstract methods that need basic implementations
     def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
-        """Log lines (not implemented for USD backend)."""
+        """
+        Log lines (not implemented for USD backend).
+
+        This method is a placeholder and does not log lines in the USD backend.
+        """
         pass
 
     def log_points(self, name, points, widths, colors, hidden=False):
-        """Log points (not implemented for USD backend)."""
+        """
+        Log points (not implemented for USD backend).
+
+        This method is a placeholder and does not log points in the USD backend.
+        """
         pass
 
     def log_array(self, name, array):
-        """Log array data (not implemented for USD backend)."""
+        """
+        Log array data (not implemented for USD backend).
+
+        This method is a placeholder and does not log array data in the USD backend.
+        """
         pass
 
     def log_scalar(self, name, value):
-        """Log scalar value (not implemented for USD backend)."""
+        """
+        Log scalar value (not implemented for USD backend).
+
+        This method is a placeholder and does not log scalar values in the USD backend.
+        """
         pass
 
     @staticmethod
     def _ensure_scopes_for_path(stage: Usd.Stage, prim_path_str: str):
         """
-        Checks if a prim exists at the given path. If not, it creates all
-        non-existent parent prims in its hierarchy as 'Scope' prims.
+        Ensure that all parent prims in the hierarchy exist as 'Scope' prims.
 
-        This is useful for ensuring a valid hierarchy before defining a prim.
+        If a prim does not exist at the given path, this method creates all
+        non-existent parent prims in its hierarchy as 'Scope' prims. This is
+        useful for ensuring a valid hierarchy before defining a prim.
 
-        Args:
-            stage (Usd.Stage): The stage to operate on.
+        Parameters:
+            stage (Usd.Stage): The USD stage to operate on.
             prim_path_str (str): The Sdf.Path string for the target prim.
         """
         # Convert the string to an Sdf.Path object for robust manipulation

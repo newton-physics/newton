@@ -30,14 +30,19 @@ from .model import Model
 from .state import State
 
 
-def count_rigid_contact_points(model: Model):
+def count_rigid_contact_points(model: Model) -> int:
     """
-    Counts the maximum number of rigid contact points that need to be allocated.
+    Counts the maximum number of rigid contact points that need to be allocated for a given model.
 
-    :returns:
-        - count (int): Potential number of rigid contact points
+    This function estimates the upper bound on the number of rigid contact points that may be generated
+    during collision detection, based on the current set of shape contact pairs and their geometry.
+
+    Args:
+        model (Model): The simulation model containing shape and geometry information.
+
+    Returns:
+        int: The potential number of rigid contact points that may need to be allocated.
     """
-
     # calculate the potential number of shape pair contact points
     contact_count = wp.zeros(1, dtype=wp.int32, device=model.device)
     wp.launch(
@@ -58,6 +63,14 @@ def count_rigid_contact_points(model: Model):
 
 
 class CollisionPipeline:
+    """
+    CollisionPipeline manages collision detection and contact generation for a simulation.
+
+    This class is responsible for allocating and managing buffers for collision detection,
+    generating rigid and soft contacts between shapes and particles, and providing an interface
+    for running the collision pipeline on a given simulation state.
+    """
+
     def __init__(
         self,
         shape_count: int,
@@ -73,6 +86,25 @@ class CollisionPipeline:
         requires_grad: bool = False,
         device: Devicelike = None,
     ):
+        """
+        Initialize the CollisionPipeline.
+
+        Args:
+            shape_count (int): Number of shapes in the simulation.
+            particle_count (int): Number of particles in the simulation.
+            shape_pairs_filtered (wp.array): Array of filtered shape pairs to consider for collision.
+            rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
+                If None, computed as shape_pairs_max * rigid_contact_max_per_pair.
+            rigid_contact_max_per_pair (int, optional): Maximum number of contact points per shape pair. Defaults to 10.
+            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
+            soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
+                If None, computed as shape_count * particle_count.
+            soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
+            edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
+            iterate_mesh_vertices (bool, optional): Whether to iterate mesh vertices for collision. Defaults to True.
+            requires_grad (bool, optional): Whether to enable gradient computation. Defaults to False.
+            device (Devicelike, optional): The device on which to allocate arrays and perform computation.
+        """
         # will be allocated during collide
         self.contacts = None
 
@@ -86,7 +118,7 @@ class CollisionPipeline:
         else:
             self.rigid_contact_max = self.shape_pairs_max * rigid_contact_max_per_pair
 
-        # used during broadphase collision handling
+        # Allocate buffers for broadphase collision handling
         with wp.ScopedDevice(device):
             self.rigid_pair_shape0 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
             self.rigid_pair_shape1 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
@@ -115,9 +147,25 @@ class CollisionPipeline:
         iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
     ) -> CollisionPipeline:
+        """
+        Create a CollisionPipeline instance from a Model.
+
+        Args:
+            model (Model): The simulation model.
+            rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
+                If None, uses model.rigid_contact_max and sets per-pair to 0.
+            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
+            soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
+            soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
+            edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
+            iterate_mesh_vertices (bool, optional): Whether to iterate mesh vertices for collision. Defaults to True.
+            requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
+
+        Returns:
+            CollisionPipeline: The constructed collision pipeline.
+        """
         rigid_contact_max = None
         if rigid_contact_max_per_pair is None:
-            # count the number of contacts
             rigid_contact_max = model.rigid_contact_max
             rigid_contact_max_per_pair = 0
         if requires_grad is None:
@@ -138,7 +186,20 @@ class CollisionPipeline:
         )
 
     def collide(self, model: Model, state: State) -> Contacts:
-        # allocate new contact memory for contacts if we need gradients
+        """
+        Run the collision pipeline for the given model and state, generating contacts.
+
+        This method allocates or clears the contact buffer as needed, then generates
+        soft and rigid contacts using the current simulation state.
+
+        Args:
+            model (Model): The simulation model.
+            state (State): The current simulation state.
+
+        Returns:
+            Contacts: The generated contacts for the current state.
+        """
+        # Allocate new contact memory for contacts if needed (e.g., for gradients)
         if self.contacts is None or self.requires_grad:
             self.contacts = Contacts(
                 self.rigid_contact_max,
@@ -266,6 +327,12 @@ class CollisionPipeline:
 
     @property
     def device(self):
+        """
+        Returns the device on which the collision pipeline's buffers are allocated.
+
+        Returns:
+            The device associated with the pipeline's buffers.
+        """
         return self.rigid_pair_shape0.device
 
 

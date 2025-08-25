@@ -117,11 +117,12 @@ def populate_contacts(
     contacts: Contacts,
     solver: SolverBase,
 ):
-    """Populate a Contacts object with the latest contact data from a solver.
+    """
+    Populate a Contacts object with the latest contact data from a solver.
 
-    This function updates the given `contacts` object in-place using the contact information from the provided
-    `solver`. It is typically called after a simulation step to refresh the contact data for use in sensors or
-    analysis.
+    This function updates the given `contacts` object in-place using the contact information
+    from the provided `solver`. It is typically called after a simulation step to refresh
+    the contact data for use in sensors or analysis.
 
     Args:
         contacts (Contacts): The Contacts object to be populated or updated.
@@ -159,6 +160,9 @@ class ContactSensor:
     - **Counterpart**: The other body or shape involved in a contact interaction with a sensing object.
     - **Force Matrix**: The matrix organizing the force data by rows of sensing objects and columns of counterparts.
     - **Force Reading**: An individual force measurement within the matrix.
+
+    Raises:
+        ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
     def __init__(
@@ -276,7 +280,7 @@ class ContactSensor:
         """Get the total net force measured by the contact sensor.
 
         Returns:
-            The net force array.
+            The net force array, shaped according to the sensor configuration.
         """
         return self.net_force
 
