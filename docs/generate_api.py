@@ -96,7 +96,7 @@ def write_module_page(mod_name: str) -> None:
         # ------------------------------------------------------------------
         # Constants / simple values
         # ------------------------------------------------------------------
-        if wp.types.type_is_value(type(attr)):
+        if wp.types.type_is_value(type(attr)) or isinstance(attr, str):
             constants.append(name)
             continue
 

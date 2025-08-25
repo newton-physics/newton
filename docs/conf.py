@@ -116,7 +116,7 @@ autodoc_typehints_description_target = "documented"
 
 autodoc_default_options = {
     "members": True,
-    "member-order": "bysource",
+    "member-order": "groupwise",
     "special-members": "__init__",
     "undoc-members": False,
     "exclude-members": "__weakref__",

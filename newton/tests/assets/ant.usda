@@ -128,7 +128,7 @@ def Xform "ant" (
         float physics:density = 1
         custom string physics:engine = "warp"
         vector3f physics:velocity = (0, 0, 0)
-        custom uint physics:warp:articulationIndex = 0
+        custom uint physics:newton:articulation_index = 0
         float warpSim:armature = 0.01
         def "collisions"
         {

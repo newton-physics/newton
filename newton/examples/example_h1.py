@@ -44,7 +44,7 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("h1_description")
+        asset_path = newton.utils.download_asset("unitree_h1")
         asset_file = str(asset_path / "usd" / "h1_minimal.usd")
         newton.utils.parse_usd(
             asset_file,

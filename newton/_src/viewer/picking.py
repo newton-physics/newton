@@ -53,6 +53,8 @@ class Picking:
         self.pick_state = wp.array(pick_state_np, dtype=float, device=model.device if model else "cpu")
 
         self.pick_dist = 0.0
+        self.picking_active = False
+
         self._default_on_mouse_drag = None
 
     def _apply_picking_force(self, state: newton.State):
@@ -60,6 +62,9 @@ class Picking:
         Args:
             state (newton.State): The simulation state.
         """
+        if self.model is None:
+            return
+
         # Launch kernel always because of graph capture
         wp.launch(
             kernel=apply_picking_force_kernel,
@@ -75,10 +80,11 @@ class Picking:
         )
 
     def is_picking(self):
-        return self.pick_body.numpy()[0] >= 0
+        return self.picking_active
 
     def release(self):
         self.pick_body.fill_(-1)
+        self.picking_active = False
 
     def update(self, ray_start, ray_dir):
         if not self.is_picking():
@@ -96,6 +102,9 @@ class Picking:
         )
 
     def pick(self, state, ray_start, ray_dir):
+        if self.model is None:
+            return
+
         p, d = ray_start, ray_dir
 
         num_geoms = self.model.shape_count
@@ -149,6 +158,8 @@ class Picking:
                 device=self.model.device,
             )
             wp.synchronize()
+
+        self.picking_active = self.pick_body.numpy()[0] >= 0
 
         if self._debug:
             if dist < 1.0e10:

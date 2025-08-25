@@ -23,17 +23,45 @@ from ..core.types import Devicelike, Vec2, Vec3, nparray, override
 
 
 class GeoType(enum.IntEnum):
+    """
+    Enumeration of geometric shape types supported in Newton.
+
+    Each member represents a different primitive or mesh-based geometry
+    that can be used for collision, rendering, or simulation.
+    """
+
     PLANE = 0
+    """Infinite plane."""
+
     HFIELD = 1
+    """Height field (terrain)."""
+
     SPHERE = 2
+    """Sphere."""
+
     CAPSULE = 3
+    """Capsule (cylinder with hemispherical ends)."""
+
     ELLIPSOID = 4
+    """Ellipsoid."""
+
     CYLINDER = 5
+    """Cylinder."""
+
     BOX = 6
+    """Axis-aligned box."""
+
     MESH = 7
+    """Triangle mesh."""
+
     SDF = 8
+    """Signed distance field."""
+
     CONE = 9
+    """Cone."""
+
     NONE = 10
+    """No geometry (placeholder)."""
 
 
 # Default maximum vertices for convex hull approximation
@@ -41,17 +69,24 @@ MESH_MAXHULLVERT = 64
 
 
 class SDF:
-    """Describes a signed distance field for simulation
+    """
+    Represents a signed distance field (SDF) for simulation.
 
-    Attributes:
-
-        volume (Volume): The volume defining the SDF
-        I (Mat33): 3x3 inertia matrix of the SDF
-        mass (float): The total mass of the SDF
-        com (Vec3): The center of mass of the SDF
+    An SDF is a volumetric representation of a shape, where each point in the volume
+    stores the signed distance to the closest surface. This class encapsulates the
+    SDF volume and its physical properties for use in simulation.
     """
 
     def __init__(self, volume: wp.Volume | None = None, I=None, mass=1.0, com=None):
+        """
+        Initialize an SDF object.
+
+        Args:
+            volume (wp.Volume | None): The Warp volume object representing the SDF.
+            I (Mat33, optional): 3x3 inertia matrix. Defaults to identity.
+            mass (float, optional): Total mass. Defaults to 1.0.
+            com (Vec3, optional): Center of mass. Defaults to zero vector.
+        """
         self.volume = volume
         self.I = I if I is not None else wp.mat33(np.eye(3))
         self.mass = mass
@@ -62,7 +97,12 @@ class SDF:
         self.is_solid = True
 
     def finalize(self) -> wp.uint64:
-        """Returns the volume pointer of the SDF volume"""
+        """
+        Returns the ID of the underlying SDF volume.
+
+        Returns:
+            wp.uint64: The unique identifier of the SDF volume.
+        """
         return self.volume.id
 
     @override
@@ -71,34 +111,26 @@ class SDF:
 
 
 class Mesh:
-    """Describes a triangle collision mesh for simulation
+    """
+    Represents a triangle mesh for collision and simulation.
 
-    Example mesh creation from a triangle OBJ mesh file:
-    ====================================================
+    This class encapsulates a triangle mesh, including its geometry, physical properties,
+    and utility methods for simulation. Meshes are typically used for collision detection,
+    visualization, and inertia computation in physics simulation.
 
-    See :func:`load_mesh` which is provided as a utility function.
+    Example:
+        Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:
 
-    .. code-block:: python
+        .. code-block:: python
 
-        import numpy as np
-        import warp as wp
-        import newton
-        import openmesh
+            import numpy as np
+            import newton
+            import openmesh
 
-        m = openmesh.read_trimesh("mesh.obj")
-        mesh_points = np.array(m.points())
-        mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32).flatten()
-        mesh = newton.Mesh(mesh_points, mesh_indices)
-
-    Attributes:
-
-        vertices (List[Vec3]): Mesh 3D vertices points
-        indices (List[int]): Mesh indices as a flattened list of vertex indices describing triangles
-        I (Mat33): 3x3 inertia matrix of the mesh assuming density of 1.0 (around the center of mass)
-        mass (float): The total mass of the body assuming density of 1.0
-        com (Vec3): The center of mass of the body
-        maxhullvert (int): Maximum number of vertices for convex hull approximation (used by MuJoCo solver)
-        convex_hull (Mesh): Pre-computed convex hull of the mesh (optional)
+            m = openmesh.read_trimesh("mesh.obj")
+            mesh_points = np.array(m.points())
+            mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32).flatten()
+            mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
     def __init__(
@@ -112,23 +144,23 @@ class Mesh:
         maxhullvert: int = MESH_MAXHULLVERT,
         color: Vec3 | None = None,
     ):
-        """Construct a Mesh object from a triangle mesh
+        """
+        Construct a Mesh object from a triangle mesh.
 
-        The mesh center of mass and inertia tensor will automatically be
-        calculated using a density of 1.0. This computation is only valid
+        The mesh's center of mass and inertia tensor are automatically calculated
+        using a density of 1.0 if `compute_inertia` is True. This computation is only valid
         if the mesh is closed (two-manifold).
 
         Args:
-            vertices: List of vertices in the mesh
-            indices: List of triangle indices, 3 per-element
-            normals: Optional per-vertex normals (len == len(vertices)), shape (N, 3)
-            uvs: Optional per-vertex texture coordinates (len == len(vertices)), shape (N, 2)
-            compute_inertia: If True, the mass, inertia tensor and center of mass will be computed assuming density of 1.0
-            is_solid: If True, the mesh is assumed to be a solid during inertia computation, otherwise it is assumed to be a hollow surface
-            maxhullvert: Maximum number of vertices for convex hull approximation (default: 64)
-            color: Optional per-mesh base color (Vec3 in [0, 1])
+            vertices (Sequence[Vec3] | nparray): List or array of mesh vertices, shape (N, 3).
+            indices (Sequence[int] | nparray): Flattened list or array of triangle indices (3 per triangle).
+            normals (Sequence[Vec3] | nparray | None, optional): Optional per-vertex normals, shape (N, 3).
+            uvs (Sequence[Vec2] | nparray | None, optional): Optional per-vertex UVs, shape (N, 2).
+            compute_inertia (bool, optional): If True, compute mass, inertia tensor, and center of mass (default: True).
+            is_solid (bool, optional): If True, mesh is assumed solid for inertia computation (default: True).
+            maxhullvert (int, optional): Max vertices for convex hull approximation (default: 64).
+            color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
         """
-
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
         self._vertices = np.array(vertices).reshape(-1, 3)
@@ -155,6 +187,17 @@ class Mesh:
         indices: Sequence[int] | nparray | None = None,
         recompute_inertia: bool = False,
     ):
+        """
+        Create a copy of this mesh, optionally with new vertices or indices.
+
+        Args:
+            vertices (Sequence[Vec3] | nparray | None, optional): New vertices to use (default: current vertices).
+            indices (Sequence[int] | nparray | None, optional): New indices to use (default: current indices).
+            recompute_inertia (bool, optional): If True, recompute inertia properties (default: False).
+
+        Returns:
+            Mesh: A new Mesh object with the specified properties.
+        """
         if vertices is None:
             vertices = self.vertices
         if indices is None:
@@ -190,14 +233,15 @@ class Mesh:
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
         """
-        Constructs a simulation-ready :class:`Mesh` object from the mesh data and returns its ID.
+        Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
-            device: The device on which to allocate the mesh buffers
-            requires_grad: If True, the mesh points and velocity arrays will be allocated with gradient tracking enabled
+            device (Devicelike, optional): Device on which to allocate mesh buffers.
+            requires_grad (bool, optional): If True, mesh points and velocities are allocated with gradient tracking.
 
         Returns:
-            The ID of the simulation-ready :class:`Mesh`"""
+            wp.uint64: The ID of the simulation-ready Warp Mesh.
+        """
         with wp.ScopedDevice(device):
             pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
             vel = wp.zeros_like(pos)
@@ -208,10 +252,14 @@ class Mesh:
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
         """
-        Computes and returns the convex hull of this mesh.
+        Compute and return the convex hull of this mesh.
+
+        Args:
+            replace (bool, optional): If True, replace this mesh's vertices/indices with the convex hull (in-place).
+                                      If False, return a new Mesh for the convex hull.
 
         Returns:
-            A new Mesh object representing the convex hull
+            Mesh: The convex hull mesh (either new or self, depending on `replace`).
         """
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
@@ -234,8 +282,13 @@ class Mesh:
     @override
     def __hash__(self) -> int:
         """
-        Computes a hash of the mesh data for use in caching. The hash considers the mesh vertices, indices, and whether the mesh is solid or not.
-        Uses cached hash if available, otherwise computes and caches the hash.
+        Compute a hash of the mesh data for use in caching.
+
+        The hash considers the mesh vertices, indices, and whether the mesh is solid.
+        Uses a cached hash if available, otherwise computes and caches the hash.
+
+        Returns:
+            int: The hash value for the mesh.
         """
         if self._cached_hash is None:
             self._cached_hash = hash(

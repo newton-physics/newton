@@ -46,8 +46,8 @@ class Example:
         articulation_builder.default_shape_cfg.kf = 1.0e3
         articulation_builder.default_shape_cfg.mu = 0.75
 
-        asset_path = newton.utils.download_asset("anymal_usd")
-        asset_file = str(asset_path / "anymal_d.usda")
+        asset_path = newton.utils.download_asset("anybotics_anymal_d")
+        asset_file = str(asset_path / "usd" / "anymal_d.usda")
         newton.utils.parse_usd(
             asset_file,
             articulation_builder,

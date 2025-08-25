@@ -1,3 +1,6 @@
+.. note::
+   Newton is in active development. APIs and features may change without notice or backwards compatibility.
+
 Newton Physics Documentation
 ============================
 
@@ -55,12 +58,8 @@ High-Level Architecture
 Quick Links
 -----------
 
-- :doc:`quickstart` — Get started in minutes
-- :doc:`../changelog` — Full release notes
+- :doc:`installation` — Setup Newton and run a first example in a couple of minutes
 - :doc:`../faq` — Frequently asked questions
-- :doc:`../development-guide` — For developers and code contributors
-
-.. note::
-   Newton is in active development. APIs and features may change. See the :doc:`../changelog` for updates. 
+- :doc:`development` — For developers and code contributors
 
 :ref:`Full Index <genindex>`

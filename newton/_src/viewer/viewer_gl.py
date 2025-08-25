@@ -22,25 +22,55 @@ import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
+from newton.utils import create_sphere_mesh
 
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
+from .wind import Wind
 
 
 class ViewerGL(ViewerBase):
-    def __init__(self, model):
-        super().__init__(model)
+    """
+    OpenGL-based interactive viewer for Newton physics models.
+
+    This class provides a graphical interface for visualizing and interacting with
+    Newton models using OpenGL rendering. It supports real-time simulation control,
+    camera navigation, object picking, wind effects, and a rich ImGui-based UI for
+    model introspection and visualization options.
+
+    Key Features:
+        - Real-time 3D rendering of Newton models and simulation states.
+        - Camera navigation with WASD and mouse controls.
+        - Object picking and manipulation via mouse.
+        - Visualization toggles for joints, contacts, particles, springs, etc.
+        - Wind force controls and visualization.
+        - Performance statistics overlay (FPS, object counts, etc.).
+        - Selection panel for introspecting and filtering model attributes.
+        - Extensible logging of meshes, lines, points, and arrays for custom visualization.
+    """
+
+    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
+        """
+        Initialize the OpenGL viewer and UI.
+
+        Args:
+            width (int): Window width in pixels.
+            height (int): Window height in pixels.
+            vsync (bool): Enable vertical sync.
+            headless (bool): Run in headless mode (no window).
+        """
+        super().__init__()
 
         # map from path to any object type
         self.objects = {}
         self.lines = {}
-        self.renderer = RendererGL()
+        self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = False
+        self._paused = True
 
         # State caching for selection panel
         self._last_state = None
@@ -61,8 +91,6 @@ class ViewerGL(ViewerBase):
             "error_message": "",
         }
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
-
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
         self.renderer.register_mouse_press(self.on_mouse_press)
@@ -77,11 +105,6 @@ class ViewerGL(ViewerBase):
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
 
-        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
-        self.camera = Camera(up_axis=model.up_axis, width=fb_w, height=fb_h)
-
-        self._populate(model)
-
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
@@ -93,8 +116,43 @@ class ViewerGL(ViewerBase):
         self._frame_count = 0
         self._current_fps = 0.0
 
+        # a low resolution sphere mesh for point rendering
+        self._point_mesh = None
+
         # UI visibility toggle
         self.show_ui = True
+
+        self.set_model(None)
+
+    # helper function to create a low resolution sphere mesh for point rendering
+    def _create_point_mesh(self):
+        """
+        Create a low-resolution sphere mesh for point rendering.
+        """
+        vertices, indices = create_sphere_mesh(1.0, 6, 6)
+        self._point_mesh = MeshGL(len(vertices), len(indices), self.device)
+
+        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
+        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
+        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
+        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+
+        self._point_mesh.update(points, indices, normals, uvs)
+
+    def set_model(self, model):
+        """
+        Set the Newton model to visualize.
+
+        Args:
+            model: The Newton model instance.
+        """
+        super().set_model(model)
+
+        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+        self.wind = Wind(model)
+
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
     def log_mesh(
         self,
@@ -106,6 +164,18 @@ class ViewerGL(ViewerBase):
         hidden=False,
         backface_culling=True,
     ):
+        """
+        Log a mesh for rendering.
+
+        Args:
+            name (str): Unique name for the mesh.
+            points (wp.array): Vertex positions.
+            indices (wp.array): Triangle indices.
+            normals (wp.array, optional): Vertex normals.
+            uvs (wp.array, optional): Vertex UVs.
+            hidden (bool): Whether the mesh is hidden.
+            backface_culling (bool): Enable backface culling.
+        """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -117,9 +187,21 @@ class ViewerGL(ViewerBase):
             )
 
         self.objects[name].update(points, indices, normals, uvs)
+        self.objects[name].hidden = hidden
+        self.objects[name].backface_culling = backface_culling
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials):
-        # check that mesh exists
+        """
+        Log a batch of mesh instances for rendering.
+
+        Args:
+            name (str): Unique name for the instancer.
+            mesh (str): Name of the base mesh.
+            xforms: Array of transforms.
+            scales: Array of scales.
+            colors: Array of colors.
+            materials: Array of materials.
+        """
         if mesh not in self.objects:
             raise RuntimeError(f"Path {mesh} not found")
 
@@ -130,7 +212,7 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             self.objects[name] = MeshInstancerGL(len(xforms), self.objects[mesh])
 
-        self.objects[name].update(xforms, scales, colors, materials)
+        self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
     def log_lines(
         self,
@@ -140,14 +222,15 @@ class ViewerGL(ViewerBase):
         line_colors,
         hidden=False,
     ):
-        """Log line data for rendering.
+        """
+        Log line data for rendering.
 
         Args:
-            name: Unique identifier for the line batch
-            line_begins: Array of line start positions (shape: [N, 3]) or None for empty
-            line_ends: Array of line end positions (shape: [N, 3]) or None for empty
-            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty
-            hidden: Whether the lines are initially hidden
+            name (str): Unique identifier for the line batch.
+            line_begins (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
+            line_ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
+            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            hidden (bool): Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
         if line_begins is None or line_ends is None or line_colors is None:
@@ -186,17 +269,45 @@ class ViewerGL(ViewerBase):
 
         self.lines[name].update(line_begins, line_ends, line_colors)
 
-    def log_points(self, name, state):
-        pass
+    def log_points(self, name, points, widths, colors, hidden=False):
+        """
+        Log a batch of points for rendering as spheres.
+
+        Args:
+            name (str): Unique name for the point batch.
+            points: Array of point positions.
+            widths: Array of point radii.
+            colors: Array of point colors.
+            hidden (bool): Whether the points are hidden.
+        """
+        if self._point_mesh is None:
+            self._create_point_mesh()
+
+        if name not in self.objects:
+            self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
+
+        self.objects[name].update_from_points(points, widths, colors)
+        self.objects[name].hidden = hidden
 
     def log_array(self, name, array):
+        """
+        Log a generic array for visualization (not implemented).
+        """
         pass
 
     def log_scalar(self, name, value):
+        """
+        Log a scalar value for visualization (not implemented).
+        """
         pass
 
     def log_state(self, state):
-        """Override log_state to cache the state for the selection panel."""
+        """
+        Cache the simulation state for UI panels and call parent log_state.
+
+        Args:
+            state: The current simulation state.
+        """
         # Cache the state for selection panel use
         self._last_state = state
         # Call parent implementation
@@ -205,7 +316,12 @@ class ViewerGL(ViewerBase):
         self._render_picking_line(state)
 
     def _render_picking_line(self, state):
-        """Render a line from the mouse cursor to the COM of the picked body."""
+        """
+        Render a line from the mouse cursor to the center of mass of the picked body.
+
+        Args:
+            state: The current simulation state.
+        """
         if not self.picking.is_picking():
             # Clear the picking line if not picking
             self.log_lines("picking_line", None, None, None)
@@ -238,10 +354,17 @@ class ViewerGL(ViewerBase):
         self.log_lines("picking_line", line_begins, line_ends, line_colors, hidden=False)
 
     def begin_frame(self, time):
-        pass
+        """
+        Begin a new frame (calls parent implementation).
+
+        Args:
+            time: Current simulation time.
+        """
+        super().begin_frame(time)
 
     def end_frame(self):
-        """Finish rendering the current frame.
+        """
+        Finish rendering the current frame and process window events.
 
         This method first updates the renderer which will poll and process
         window events.  It is possible that the user closes the window during
@@ -257,11 +380,21 @@ class ViewerGL(ViewerBase):
             self._update()
 
     def apply_forces(self, state):
-        """Apply viewer-driven forces to the model."""
+        """
+        Apply viewer-driven forces (picking, wind) to the model.
+
+        Args:
+            state: The current simulation state.
+        """
         self.picking._apply_picking_force(state)
 
+        # Apply wind forces
+        self.wind._apply_wind_force(state)
+
     def _update(self):
-        # Process events and update the internal state
+        """
+        Internal update: process events, update camera, wind, render scene and UI.
+        """
         self.renderer.update()
 
         # Integrate camera motion with viewer-owned timing
@@ -269,6 +402,8 @@ class ViewerGL(ViewerBase):
         dt = max(0.0, min(0.1, now - self._last_time))
         self._last_time = now
         self._update_camera(dt)
+
+        self.wind.update(dt)
 
         # If the window was closed during event processing, skip rendering
         if self.renderer.has_exit():
@@ -292,25 +427,58 @@ class ViewerGL(ViewerBase):
         self.renderer.present()
 
     def is_running(self) -> bool:
-        """Check if the viewer is still running."""
+        """
+        Check if the viewer is still running.
+
+        Returns:
+            bool: True if the window is open, False if closed.
+        """
         return not self.renderer.has_exit()
 
     def is_paused(self) -> bool:
-        """Check if the simulation is paused."""
+        """
+        Check if the simulation is paused.
+
+        Returns:
+            bool: True if paused, False otherwise.
+        """
         return self._paused
 
     def close(self):
-        """Close the viewer and clean up resources."""
+        """
+        Close the viewer and clean up resources.
+        """
         self.renderer.close()
 
+    @property
+    def vsync(self) -> bool:
+        """
+        Get the current vsync state.
+
+        Returns:
+            bool: True if vsync is enabled, False otherwise.
+        """
+        return self.renderer.get_vsync()
+
+    @vsync.setter
+    def vsync(self, enabled: bool):
+        """
+        Set the vsync state.
+
+        Args:
+            enabled (bool): Enable or disable vsync.
+        """
+        self.renderer.set_vsync(enabled)
+
     def is_key_down(self, key):
-        """Check if a key is currently pressed.
+        """
+        Check if a key is currently pressed.
 
         Args:
             key: Either a string representing a character/key name, or an int
                  representing a pyglet key constant.
 
-                 String examples: 'w', 'a', 's', 'd', 'space', 'escape', 'ent
+                 String examples: 'w', 'a', 's', 'd', 'space', 'escape', 'enter'
                  Int examples: pyglet.window.key.W, pyglet.window.key.SPACE
 
         Returns:
@@ -362,7 +530,13 @@ class ViewerGL(ViewerBase):
     # events
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-        """Handle mouse scroll for zooming (FOV adjustment)."""
+        """
+        Handle mouse scroll for zooming (FOV adjustment).
+
+        Args:
+            x, y: Mouse position.
+            scroll_x, scroll_y: Scroll deltas.
+        """
         if self.ui.is_capturing():
             return
 
@@ -371,6 +545,14 @@ class ViewerGL(ViewerBase):
         self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
 
     def on_mouse_press(self, x, y, button, modifiers):
+        """
+        Handle mouse press events (object picking).
+
+        Args:
+            x, y: Mouse position.
+            button: Mouse button pressed.
+            modifiers: Modifier keys.
+        """
         if self.ui.is_capturing():
             return
 
@@ -379,14 +561,30 @@ class ViewerGL(ViewerBase):
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT:
             ray_start, ray_dir = self.camera.get_world_ray(x, y)
-            print(f"ray: start {ray_start}, dir {ray_dir}")
-            self.picking.pick(self._last_state, ray_start, ray_dir)
+            if self._last_state is not None:
+                self.picking.pick(self._last_state, ray_start, ray_dir)
 
     def on_mouse_release(self, x, y, button, modifiers):
-        """Handle mouse release events to stop dragging."""
+        """
+        Handle mouse release events to stop dragging.
+
+        Args:
+            x, y: Mouse position.
+            button: Mouse button released.
+            modifiers: Modifier keys.
+        """
         self.picking.release()
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        """
+        Handle mouse drag events for camera and picking.
+
+        Args:
+            x, y: Mouse position.
+            dx, dy: Mouse movement deltas.
+            buttons: Mouse buttons pressed.
+            modifiers: Modifier keys.
+        """
         if self.ui.is_capturing():
             return
 
@@ -409,9 +607,19 @@ class ViewerGL(ViewerBase):
                 self.picking.update(ray_start, ray_dir)
 
     def on_mouse_motion(self, x, y, dx, dy):
+        """
+        Handle mouse motion events (not used).
+        """
         pass
 
     def on_key_press(self, symbol, modifiers):
+        """
+        Handle key press events for UI and simulation control.
+
+        Args:
+            symbol: Key symbol.
+            modifiers: Modifier keys.
+        """
         if self.ui.is_capturing():
             return
 
@@ -430,9 +638,18 @@ class ViewerGL(ViewerBase):
             self.renderer.close()
 
     def on_key_release(self, symbol, modifiers):
+        """
+        Handle key release events (not used).
+        """
         pass
 
     def _update_camera(self, dt: float):
+        """
+        Update the camera position and orientation based on user input.
+
+        Args:
+            dt (float): Time delta since last update.
+        """
         if self.ui.is_capturing():
             return
 
@@ -478,13 +695,22 @@ class ViewerGL(ViewerBase):
         self.camera.pos += dv * dt
 
     def on_resize(self, width, height):
+        """
+        Handle window resize events.
+
+        Args:
+            width (int): New window width.
+            height (int): New window height.
+        """
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
 
         self.ui.resize(width, height)
 
     def _update_fps(self):
-        """Update FPS calculation."""
+        """
+        Update FPS calculation and statistics.
+        """
         current_time = time.perf_counter()
         self._frame_count += 1
 
@@ -502,8 +728,9 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_ui(self):
-        """Render the complete ImGui interface."""
-
+        """
+        Render the complete ImGui interface (left panel and stats overlay).
+        """
         if not self.ui.is_available:
             return
 
@@ -514,7 +741,9 @@ class ViewerGL(ViewerBase):
         self._render_stats_overlay()
 
     def _render_left_panel(self):
-        """Render the left panel with model info and visualization controls."""
+        """
+        Render the left panel with model info and visualization controls.
+        """
         imgui = self.ui.imgui
 
         # Use theme colors directly
@@ -534,67 +763,68 @@ class ViewerGL(ViewerBase):
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
 
-            cond = getattr(imgui, "COND_APPEARING", getattr(imgui, "COND_FIRST_USE_EVER", 0))
-
             # Model Information section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
-            _open = imgui.collapsing_header("Model Information", flags=header_flags)
-            if isinstance(_open, tuple):
-                _open = _open[0]
-            if _open:
-                imgui.separator()
-                imgui.text(f"Environments: {self.model.num_envs}")
-                axis_names = ["X", "Y", "Z"]
-                imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
-                gravity = self.model.gravity
-                gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
-                imgui.text(gravity_text)
+            if self.model is not None:
+                imgui.set_next_item_open(True, imgui.APPEARING)
+                _open = imgui.collapsing_header("Model Information", flags=header_flags)
+                if isinstance(_open, tuple):
+                    _open = _open[0]
+                if _open:
+                    imgui.separator()
+                    imgui.text(f"Environments: {self.model.num_envs}")
+                    axis_names = ["X", "Y", "Z"]
+                    imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
+                    gravity = self.model.gravity
+                    gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
+                    imgui.text(gravity_text)
 
-                # Pause simulation checkbox
-                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                    # Pause simulation checkbox
+                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
-            # Visualization Controls section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
-            _open = imgui.collapsing_header("Visualization", flags=header_flags)
-            if isinstance(_open, tuple):
-                _open = _open[0]
-            if _open:
-                imgui.separator()
+                # Visualization Controls section
+                imgui.set_next_item_open(True, imgui.APPEARING)
+                _open = imgui.collapsing_header("Visualization", flags=header_flags)
+                if isinstance(_open, tuple):
+                    _open = _open[0]
+                if _open:
+                    imgui.separator()
 
-                # Joint visualization
-                show_joints = self.options["show_joints"]
-                changed, self.options["show_joints"] = imgui.checkbox("Show Joints", show_joints)
+                    # Joint visualization
+                    show_joints = self.show_joints
+                    changed, self.show_joints = imgui.checkbox("Show Joints", show_joints)
 
-                # Contact visualization
-                show_contacts = self.options["show_contacts"]
-                changed, self.options["show_contacts"] = imgui.checkbox("Show Contacts", show_contacts)
+                    # Contact visualization
+                    show_contacts = self.show_contacts
+                    changed, self.show_contacts = imgui.checkbox("Show Contacts", show_contacts)
 
-                # Particle visualization
-                show_particles = self.options["show_particles"]
-                changed, self.options["show_particles"] = imgui.checkbox("Show Particles", show_particles)
+                    # Particle visualization
+                    show_particles = self.show_particles
+                    changed, self.show_particles = imgui.checkbox("Show Particles", show_particles)
 
-                # Spring visualization
-                show_springs = self.options["show_springs"]
-                changed, self.options["show_springs"] = imgui.checkbox("Show Springs", show_springs)
+                    # Spring visualization
+                    show_springs = self.show_springs
+                    changed, self.show_springs = imgui.checkbox("Show Springs", show_springs)
 
-                # Center of mass visualization
-                show_com = self.options["show_com"]
-                changed, self.options["show_com"] = imgui.checkbox("Show Center of Mass", show_com)
+                    # Center of mass visualization
+                    show_com = self.show_com
+                    changed, self.show_com = imgui.checkbox("Show Center of Mass", show_com)
 
-                # Triangle mesh visualization
-                show_triangles = self.options["show_triangles"]
-                changed, self.options["show_triangles"] = imgui.checkbox("Show Triangles", show_triangles)
+                    # Triangle mesh visualization
+                    show_triangles = self.show_triangles
+                    changed, self.show_triangles = imgui.checkbox("Show Cloth", show_triangles)
 
             # Rendering Options section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
+            imgui.set_next_item_open(True, imgui.APPEARING)
             _open = imgui.collapsing_header("Rendering Options")
             if isinstance(_open, tuple):
                 _open = _open[0]
             if _open:
                 imgui.separator()
+
+                # VSync
+                changed, vsync = imgui.checkbox("VSync", self.vsync)
+                if changed:
+                    self.vsync = vsync
 
                 # Sky rendering
                 changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
@@ -612,9 +842,37 @@ class ViewerGL(ViewerBase):
                 # Ground color
                 changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
 
+            # Wind Effects section
+            imgui.set_next_item_open(False, imgui.ONCE)
+            _open = imgui.collapsing_header("Wind")
+            if isinstance(_open, tuple):
+                _open = _open[0]
+            if _open:
+                imgui.separator()
+
+                # Wind amplitude slider
+                changed, amplitude = imgui.slider_float("Wind Amplitude", self.wind.amplitude, -2.0, 2.0, "%.2f")
+                if changed:
+                    self.wind.amplitude = amplitude
+
+                # Wind period slider
+                changed, period = imgui.slider_float("Wind Period", self.wind.period, 1.0, 30.0, "%.2f")
+                if changed:
+                    self.wind.period = period
+
+                # Wind frequency slider
+                changed, frequency = imgui.slider_float("Wind Frequency", self.wind.frequency, 0.1, 5.0, "%.2f")
+                if changed:
+                    self.wind.frequency = frequency
+
+                # Wind direction sliders
+                direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
+                changed, direction = imgui.slider_float3("Wind Direction", *direction, -1.0, 1.0, "%.2f")
+                if changed:
+                    self.wind.direction = direction
+
             # Camera Information section
-            if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-                imgui.set_next_item_open(True, cond)
+            imgui.set_next_item_open(True, imgui.APPEARING)
             _open = imgui.collapsing_header("Camera")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -634,20 +892,21 @@ class ViewerGL(ViewerBase):
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
-                imgui.text("Mouse - Look around")
+                imgui.text("Left Click - Look around")
+                imgui.text("Right Click - Pick objects")
                 imgui.text("Scroll - Zoom")
+                imgui.text("Space - Pause/Resume")
+                imgui.text("H - Toggle UI")
 
             # Selection API section
             self._render_selection_panel()
 
         imgui.end()
 
-        # Mark headers as initialized so user can collapse in subsequent frames
-        if not getattr(self, "_ui_headers_init", False):
-            self._ui_headers_init = True
-
     def _render_stats_overlay(self):
-        """Render performance stats overlay in the top-right corner."""
+        """
+        Render performance stats overlay in the top-right corner.
+        """
         imgui = self.ui.imgui
         io = self.ui.io
 
@@ -695,15 +954,16 @@ class ViewerGL(ViewerBase):
             imgui.pop_style_color()
 
             # Model stats
-            imgui.separator()
-            imgui.text(f"Bodies: {self.model.body_count}")
-            imgui.text(f"Shapes: {self.model.shape_count}")
-            imgui.text(f"Joints: {self.model.joint_count}")
-            imgui.text(f"Particles: {self.model.particle_count}")
-            imgui.text(f"Springs: {self.model.spring_count}")
-            imgui.text(f"Triangles: {self.model.tri_count}")
-            imgui.text(f"Edges: {self.model.edge_count}")
-            imgui.text(f"Tetrahedra: {self.model.tet_count}")
+            if self.model is not None:
+                imgui.separator()
+                imgui.text(f"Bodies: {self.model.body_count}")
+                imgui.text(f"Shapes: {self.model.shape_count}")
+                imgui.text(f"Joints: {self.model.joint_count}")
+                imgui.text(f"Particles: {self.model.particle_count}")
+                imgui.text(f"Springs: {self.model.spring_count}")
+                imgui.text(f"Triangles: {self.model.tri_count}")
+                imgui.text(f"Edges: {self.model.edge_count}")
+                imgui.text(f"Tetrahedra: {self.model.tet_count}")
 
             # Rendered objects count
             imgui.separator()
@@ -716,14 +976,14 @@ class ViewerGL(ViewerBase):
             imgui.pop_style_color()
 
     def _render_selection_panel(self):
-        """Render the selection panel for Newton Model introspection."""
+        """
+        Render the selection panel for Newton Model introspection.
+        """
         imgui = self.ui.imgui
 
         # Selection Panel section
         header_flags = 0
-        cond = getattr(imgui, "COND_APPEARING", getattr(imgui, "COND_FIRST_USE_EVER", 0))
-        if hasattr(imgui, "set_next_item_open") and not getattr(self, "_ui_headers_init", False):
-            imgui.set_next_item_open(False, cond)  # Default to closed
+        imgui.set_next_item_open(False, imgui.APPEARING)  # Default to closed
         _open = imgui.collapsing_header("Selection API", flags=header_flags)
         if isinstance(_open, tuple):
             _open = _open[0]
@@ -826,7 +1086,9 @@ class ViewerGL(ViewerBase):
                     self._render_attribute_values(view, state["selected_attribute"])
 
     def _create_articulation_view(self):
-        """Create an ArticulationView based on current UI state."""
+        """
+        Create an ArticulationView based on current UI state.
+        """
         state = self._selection_ui_state
 
         try:
@@ -870,7 +1132,13 @@ class ViewerGL(ViewerBase):
             state["selected_articulation_view"] = None
 
     def _render_attribute_values(self, view: ArticulationView, attribute_name: str):
-        """Render the values of the selected attribute."""
+        """
+        Render the values of the selected attribute in the selection panel.
+
+        Args:
+            view (ArticulationView): The current articulation view.
+            attribute_name (str): The attribute to display.
+        """
         imgui = self.ui.imgui
         state = self._selection_ui_state
 
@@ -961,7 +1229,16 @@ class ViewerGL(ViewerBase):
             imgui.text(f"Error getting attribute: {e!s}")
 
     def _get_attribute_names(self, view: ArticulationView, attribute_name: str):
-        """Get the names associated with an attribute (joint names, link names, etc.)."""
+        """
+        Get the names associated with an attribute (joint names, link names, etc.).
+
+        Args:
+            view (ArticulationView): The current articulation view.
+            attribute_name (str): The attribute to get names for.
+
+        Returns:
+            list or None: List of names or None if not available.
+        """
         try:
             if attribute_name.startswith("joint_q") or attribute_name.startswith("joint_f"):
                 # For joint positions/velocities/forces, return DOF names or coord names
@@ -978,7 +1255,15 @@ class ViewerGL(ViewerBase):
             return None
 
     def _render_value_sliders(self, values, names, attribute_name: str, state):
-        """Render values as individual sliders for each DOF."""
+        """
+        Render values as individual sliders for each DOF.
+
+        Args:
+            values: Array of values to display.
+            names: List of names for each value.
+            attribute_name (str): The attribute being displayed.
+            state (dict): UI state dictionary.
+        """
         imgui = self.ui.imgui
 
         # Determine appropriate slider ranges based on attribute type
