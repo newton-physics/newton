@@ -3,28 +3,45 @@
 [![codecov](https://codecov.io/gh/newton-physics/newton/graph/badge.svg?token=V6ZXNPAWVG)](https://codecov.io/gh/newton-physics/newton)
 [![Push Events - AWS GPU Tests](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu_tests.yml/badge.svg)](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu_tests.yml)
 
-# Newton
-
 **⚠️ Prerelease Software ⚠️**
 
-**This project is in active alpha development.** This means the API is unstable, features may be added or removed, and
-breaking changes are likely to occur frequently and without notice as the design is refined.
+**This project is in active alpha development.** This means the API is unstable, features may be added or removed, and breaking changes are likely to occur frequently and without notice as the design is refined.
 
-Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](https://github.com/NVIDIA/warp),
-specifically targeting roboticists and simulation researchers.
-It extends and generalizes Warp's existing `warp.sim` module, integrating
-[MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as a primary backend.
-Newton emphasizes GPU-based computation, differentiability, and user-defined extensibility, facilitating rapid iteration
-and scalable robotics simulation.
+# Newton
 
-Newton is maintained by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/),
-and [NVIDIA](https://www.nvidia.com/).
+Newton is a GPU-accelerated physics simulation engine built upon [NVIDIA Warp](https://github.com/NVIDIA/warp), specifically targeting roboticists and simulation researchers.
 
-## Development
+Newton extends and generalizes Warp's ([deprecated](https://github.com/NVIDIA/warp/discussions/735)) `warp.sim` module, and integrates
+[MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) as its primary backend. Newton emphasizes GPU-based computation, [OpenUSD](https://openusd.org/) support, differentiability, and user-defined extensibility, facilitating rapid iteration and scalable robotics simulation.
 
-See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for instructions on how to set up and get started.
+Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is community-built and maintained. It is permissively licensed under the [Apache-2.0 license](LICENSE.md).
 
-## Examples
+Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
+
+# Quickstart
+
+During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager.
+
+Install on Linux:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Install on Windows (PowerShell):
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then restart your terminal (or update paths) and run an example:
+```bash
+uv run --extra examples -m newton.examples basic_urdf
+```
+
+See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include instructions for how to setup Newton in a virtual environment.
+
+# Examples
+
+For running the below example commands with [uv](https://docs.astral.sh/uv/), replace the `python` command with `uv run --extra examples`, analogous to the above.
 
 ## Basic Examples
 
@@ -202,7 +219,7 @@ Some examples may add additional arguments (see their respective source files fo
     python -m newton.examples basic_pendulum
 
     # With uv
-    uv run python -m newton.examples basic_pendulum
+    uv run --extra examples -m newton.examples basic_pendulum
 
     # With viewer options
     python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
@@ -212,3 +229,19 @@ Some examples may add additional arguments (see their respective source files fo
 
     # Multiple arguments
     python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
+
+# Contributing and Development
+
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/development-guide.html) for instructions on how to contribute to Newton.
+
+# Support and Community Discussion
+
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions). 
+
+# Code of Conduct
+
+By participating in this community, you agree to abide by the Linux Foundation [Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
+
+# Project Governance, Legal, and Members
+
+Please see the [newton-governance repository](https://github.com/newton-physics/newton-governance) for more information about project governance.
