@@ -470,12 +470,12 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_steps = 360  # 6.0 seconds
         self.sim_substeps = 1
-        self.sim_substeps_count = self.sim_steps * self.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.verbose = verbose
         self.rollout_count = num_rollouts
         self.render_rollouts = render_rollouts
+        # TODO: Use drone path to load USD asset and draw it
         self.drone_path = drone_path
 
         # setup rendering
