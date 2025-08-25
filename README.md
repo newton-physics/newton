@@ -43,6 +43,8 @@ See the [installation guide](https://newton-physics.github.io/newton/guide/insta
 
 For running the below example commands with [uv](https://docs.astral.sh/uv/), replace the `python` command with `uv run --extra examples`, analogous to the above.
 
+Without UV as shown below, you need to setup a virtual environment, see the [installation guide](https://newton-physics.github.io/newton/guide/installation.html#method-3-manual-setup-using-pip-in-a-virtual-environment).
+
 ## Basic Examples
 
 <table>
