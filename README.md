@@ -150,8 +150,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/mpm/example_anymal_c_walk_on_sand.py">
-        <img src="docs/images/examples/example_anymal_c_walk_on_sand.jpg" alt="Anymal-C Walk on Sand">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_anymal_c_walk_on_sand.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_c_walk_on_sand.jpg" alt="Anymal-C Walk on Sand">
       </a>
     </td>
     <td align="center" width="33%">
