@@ -116,9 +116,9 @@ def normalize_normals(
 
 @wp.kernel
 def fill_line_vertex_data(
-    line_begins: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    starts: wp.array(dtype=wp.vec3),
+    ends: wp.array(dtype=wp.vec3),
+    colors: wp.array(dtype=wp.vec3),
     vertices: wp.array(dtype=LineVertex),
 ):
     tid = wp.tid()
@@ -127,12 +127,12 @@ def fill_line_vertex_data(
     vertex_idx = tid * 2
 
     # First vertex (line begin)
-    vertices[vertex_idx].pos = line_begins[tid]
-    vertices[vertex_idx].color = line_colors[tid]
+    vertices[vertex_idx].pos = starts[tid]
+    vertices[vertex_idx].color = colors[tid]
 
     # Second vertex (line end)
-    vertices[vertex_idx + 1].pos = line_ends[tid]
-    vertices[vertex_idx + 1].color = line_colors[tid]
+    vertices[vertex_idx + 1].pos = ends[tid]
+    vertices[vertex_idx + 1].color = colors[tid]
 
 
 class MeshGL:
@@ -379,29 +379,29 @@ class LinesGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, line_begins, line_ends, line_colors):
+    def update(self, starts, ends, colors):
         """Update line data in the VBO.
 
         Args:
-            line_begins: Array of line start positions (warp array of vec3) or None
-            line_ends: Array of line end positions (warp array of vec3) or None
-            line_colors: Array of line colors (warp array of vec3) or None
+            starts: Array of line start positions (warp array of vec3) or None
+            ends: Array of line end positions (warp array of vec3) or None
+            colors: Array of line colors (warp array of vec3) or None
         """
         gl = RendererGL.gl
 
         # Handle None values by setting line count to zero
-        if line_begins is None or line_ends is None or line_colors is None:
+        if starts is None or ends is None or colors is None:
             self.num_lines = 0
             return
 
         # Update current line count
-        self.num_lines = len(line_begins)
+        self.num_lines = len(starts)
 
         if self.num_lines > self.max_lines:
             raise RuntimeError(f"Number of lines ({self.num_lines}) exceeds maximum ({self.max_lines})")
-        if len(line_ends) != self.num_lines:
+        if len(ends) != self.num_lines:
             raise RuntimeError("Number of line ends does not match line begins")
-        if len(line_colors) != self.num_lines:
+        if len(colors) != self.num_lines:
             raise RuntimeError("Number of line colors does not match line begins")
 
         # Only update vertex data if we have lines to render
@@ -410,7 +410,7 @@ class LinesGL:
             wp.launch(
                 fill_line_vertex_data,
                 dim=self.num_lines,
-                inputs=[line_begins, line_ends, line_colors],
+                inputs=[starts, ends, colors],
                 outputs=[self.vertices],
                 device=self.device,
             )
