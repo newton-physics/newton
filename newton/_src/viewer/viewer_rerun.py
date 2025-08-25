@@ -262,27 +262,27 @@ class ViewerRerun(ViewerBase):
             pass
 
     # Not implemented yet - placeholder methods from ViewerBase
-    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
+    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
         Placeholder for logging lines to rerun.
 
         Args:
             name (str): Name of the line batch.
-            line_begins: Line start points.
-            line_ends: Line end points.
-            line_colors: Line colors.
+            starts: Line start points.
+            ends: Line end points.
+            colors: Line colors.
             hidden (bool): Whether the lines are hidden.
         """
         pass
 
-    def log_points(self, name, points, widths, colors, hidden=False):
+    def log_points(self, name, points, radii, colors, width: float = 0.01, hidden=False):
         """
         Placeholder for logging points to rerun.
 
         Args:
             name (str): Name of the point batch.
             points: Point positions.
-            widths: Point radii.
+            radius: Point radii.
             colors: Point colors.
             hidden (bool): Whether the points are hidden.
         """

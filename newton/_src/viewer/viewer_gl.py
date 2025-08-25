@@ -217,9 +217,10 @@ class ViewerGL(ViewerBase):
     def log_lines(
         self,
         name,
-        line_begins: wp.array,
-        line_ends: wp.array,
-        line_colors,
+        starts: wp.array,
+        ends: wp.array,
+        colors,
+        width: float = 0.01,
         hidden=False,
     ):
         """
@@ -227,34 +228,34 @@ class ViewerGL(ViewerBase):
 
         Args:
             name (str): Unique identifier for the line batch.
-            line_begins (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
-            line_ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
-            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
+            ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
+            colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
             hidden (bool): Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
-        if line_begins is None or line_ends is None or line_colors is None:
+        if starts is None or ends is None or colors is None:
             if name in self.lines:
                 self.lines[name].update(None, None, None)
             return
 
-        assert isinstance(line_begins, wp.array)
-        assert isinstance(line_ends, wp.array)
-        num_lines = len(line_begins)
-        assert len(line_ends) == num_lines, "Number of line ends must match line begins"
+        assert isinstance(starts, wp.array)
+        assert isinstance(ends, wp.array)
+        num_lines = len(starts)
+        assert len(ends) == num_lines, "Number of line ends must match line begins"
 
         # Handle tuple/list colors by expanding to array (only if not already converted above)
-        if isinstance(line_colors, (tuple, list)):
+        if isinstance(colors, (tuple, list)):
             if num_lines > 0:
-                color_vec = wp.vec3(*line_colors)
-                line_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
-                line_colors.fill_(color_vec)  # Efficiently fill on GPU
+                color_vec = wp.vec3(*colors)
+                colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+                colors.fill_(color_vec)  # Efficiently fill on GPU
             else:
                 # Handle zero lines case
-                line_colors = wp.array([], dtype=wp.vec3, device=self.device)
+                colors = wp.array([], dtype=wp.vec3, device=self.device)
 
-        assert isinstance(line_colors, wp.array)
-        assert len(line_colors) == num_lines, "Number of line colors must match line begins"
+        assert isinstance(colors, wp.array)
+        assert len(colors) == num_lines, "Number of line colors must match line begins"
 
         # Create or resize LinesGL object based on current requirements
         if name not in self.lines:
@@ -267,16 +268,16 @@ class ViewerGL(ViewerBase):
             max_lines = max(num_lines, self.lines[name].max_lines * 2)
             self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
 
-        self.lines[name].update(line_begins, line_ends, line_colors)
+        self.lines[name].update(starts, ends, colors)
 
-    def log_points(self, name, points, widths, colors, hidden=False):
+    def log_points(self, name, points, radii, colors, hidden=False):
         """
         Log a batch of points for rendering as spheres.
 
         Args:
             name (str): Unique name for the point batch.
             points: Array of point positions.
-            widths: Array of point radii.
+            radii: Array of point radius values.
             colors: Array of point colors.
             hidden (bool): Whether the points are hidden.
         """
@@ -286,7 +287,7 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
 
-        self.objects[name].update_from_points(points, widths, colors)
+        self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
     def log_array(self, name, array):
@@ -346,12 +347,12 @@ class ViewerGL(ViewerBase):
         com_position = wp.vec3(body_transform[0], body_transform[1], body_transform[2])
 
         # Create line data
-        line_begins = wp.array([com_position], dtype=wp.vec3, device=self.device)
-        line_ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
-        line_colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
+        starts = wp.array([com_position], dtype=wp.vec3, device=self.device)
+        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
 
         # Render the line
-        self.log_lines("picking_line", line_begins, line_ends, line_colors, hidden=False)
+        self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
     def begin_frame(self, time):
         """
