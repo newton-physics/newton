@@ -161,7 +161,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             # renderer.render(state_1)
             # renderer.end_frame()
 
-        if not isinstance(solver, (newton.solvers.SolverMuJoCo, newton.solvers.SolverFeatherstone)):
+        if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
             # need to compute joint_qd from body_qd
             newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 

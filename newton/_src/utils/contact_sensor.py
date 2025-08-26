@@ -305,7 +305,7 @@ class ContactSensor:
             )
             entities = [MatchAny] * has_matchany + body + shape
             indices = [MatchAny] * has_matchany + body_idx + shape_idx
-            return list(zip(indices, match_kind)), entities
+            return list(zip(indices, match_kind, strict=False)), entities
 
         def get_colliding_sps(a, b) -> dict[tuple[int, int], bool]:
             all_pairs_flip = {

@@ -1917,7 +1917,7 @@ class SolverMuJoCo(SolverBase):
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
-        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints]))
+        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints], strict=False))
         joint_order = topological_sort(joints_simple, use_dfs=True)
         if any(joint_order != np.arange(len(joints_simple))):
             warnings.warn(

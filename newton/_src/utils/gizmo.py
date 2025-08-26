@@ -481,7 +481,7 @@ class GizmoInstancer:
         self.instance_ids = wp.array(np.arange(self.num_instances), dtype=wp.int32, device=self.device)
 
         self.instance_transforms = wp.array(
-            [(*pos, *rot) for pos, rot in zip(all_data["positions"], all_data["rotations"])],
+            [(*pos, *rot) for pos, rot in zip(all_data["positions"], all_data["rotations"], strict=False)],
             dtype=wp.transform,
             device=self.device,
         )

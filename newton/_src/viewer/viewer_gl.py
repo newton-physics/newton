@@ -245,7 +245,7 @@ class ViewerGL(ViewerBase):
         assert len(ends) == num_lines, "Number of line ends must match line begins"
 
         # Handle tuple/list colors by expanding to array (only if not already converted above)
-        if isinstance(colors, (tuple, list)):
+        if isinstance(colors, tuple | list):
             if num_lines > 0:
                 color_vec = wp.vec3(*colors)
                 colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
@@ -1317,7 +1317,7 @@ class ViewerGL(ViewerBase):
         for i, val in enumerate(values):
             name = names[i] if names and i < len(names) else f"[{i}]"
 
-            if isinstance(val, (int, float)) or hasattr(val, "dtype"):
+            if isinstance(val, int | float) or hasattr(val, "dtype"):
                 # shorten floating base key for ui
                 # todo: consider doing this in the importers
                 if name.startswith("floating_base"):
