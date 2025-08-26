@@ -46,6 +46,12 @@ Before running the examples below, set up the uv environment with:
 uv sync --extra examples
 ```
 
+Some examples involve running a RL policy require pytorch, which uv can set up via:
+
+```bash
+uv sync --extra torch-cu12
+```
+
 ## Basic Examples
 
 <table>
@@ -103,6 +109,67 @@ uv sync --extra examples
     </td>
     <td align="center">
       <!-- <code>python -m newton.examples basic_viewer</code> -->
+    </td>
+  </tr>
+</table>
+
+## Robot Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_cartpole.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cartpole.jpg" alt="Cartpole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_humanoid.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_humanoid.jpg" alt="Humanoid">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_g1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_g1.jpg" alt="G1">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_cartpole</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_humanoid</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_g1</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_h1.jpg" alt="H1">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_anymal_d.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_d.jpg" alt="Anymal D">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_anymal_c_walk.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_c_walk.jpg" alt="Anymal C Walk">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_anymal_d</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_anymal_c_walk</code>
     </td>
   </tr>
 </table>
