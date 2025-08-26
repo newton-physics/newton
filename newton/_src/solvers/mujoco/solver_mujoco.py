@@ -580,8 +580,8 @@ def apply_mjc_body_f_kernel(
     mj_body_id = to_mjc_body_index[bodyid]
     if mj_body_id != -1:
         f = body_f[worldid * bodies_per_env + bodyid]
-        v = wp.vec3(f[0], f[1], f[2])  # linear force (first 3 components)
-        w = wp.vec3(f[3], f[4], f[5])  # angular torque (last 3 components)
+        v = wp.vec3(f[0], f[1], f[2])
+        w = wp.vec3(f[3], f[4], f[5])
         xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
 
 
@@ -672,8 +672,8 @@ def eval_single_articulation_fk(
             r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
 
             v_wp = body_qd[parent]
-            w_p = wp.spatial_bottom(v_wp)                        # angular velocity
-            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)     # linear velocity
+            w_p = wp.spatial_bottom(v_wp)
+            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
             v_wpj = wp.spatial_vector(v_p, w_p)
 
         q_start = joint_q_start[i]
