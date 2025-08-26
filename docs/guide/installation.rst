@@ -87,19 +87,25 @@ Run an example with minimal dependencies:
 
 .. code-block:: console
 
-    uv run newton/examples/basic/example_basic_pendulum.py --viewer null
+    uv run -m newton.examples basic_pendulum --viewer null
 
 Run an example with additional dependencies:
 
 .. code-block:: console
 
-    uv run --extra examples newton/examples/robot/example_robot_humanoid.py
+    uv run --extra examples -m newton.examples robot_humanoid --num-envs 16
 
 Run an example that inferences an RL policy:
 
 .. code-block:: console
 
-    uv run --extra examples --extra torch-cu12 newton/examples/robot/example_robot_anymal_c_walk.py
+    uv run --extra examples --extra torch-cu12 -m newton.examples robot_anymal_c_walk
+
+See a list of all available examples with:
+
+.. code-block:: console
+
+    uv run -m newton.examples
 
 Method 2: Using a Virtual Environment Setup by uv
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
