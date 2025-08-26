@@ -297,6 +297,65 @@ uv sync --extra examples
   </tr>
 </table>
 
+## DiffSim Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_ball.py">
+        <img src="docs/images/examples/example_diffsim_ball.jpg" alt="DiffSim Ball">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_cloth.py">
+        <img src="docs/images/examples/example_diffsim_cloth.jpg" alt="DiffSim Cloth">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_drone.py">
+        <img src="docs/images/examples/example_diffsim_drone.jpg" alt="DiffSim Drone">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples diffsim_ball</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples diffsim_cloth</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples diffsim_drone</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_spring_cage.py">
+        <img src="docs/images/examples/example_diffsim_spring_cage.jpg" alt="DiffSim Spring Cage">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_soft_body.py">
+        <img src="docs/images/examples/example_diffsim_soft_body.jpg" alt="DiffSim Soft Body">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future diffsim example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples diffsim_spring_cage</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples diffsim_soft_body</code>
+    </td>
+    <td align="center">
+      <!-- Future MPM example -->
+    </td>
+  </tr>
+</table>
+
 ## Example Options
 
 The examples support the following command-line arguments:

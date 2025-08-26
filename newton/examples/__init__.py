@@ -199,6 +199,11 @@ def main():
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",
+        "diffsim_ball": "newton.examples.diffsim.example_diffsim_ball",
+        "diffsim_cloth": "newton.examples.diffsim.example_diffsim_cloth",
+        "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
+        "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
+        "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
     }
 
     if len(sys.argv) < 2:
