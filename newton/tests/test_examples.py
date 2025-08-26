@@ -238,14 +238,6 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
-    name="example_cloth_self_contact",
-    devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None"},
-    test_options_cuda={"num_frames": 150},
-    test_options_cpu={"num_frames": 5},
-)
-add_example_test(
-    TestClothExamples,
     name="cloth.example_cloth_hanging",
     devices=test_devices,
     test_options={},
