@@ -46,12 +46,6 @@ Before running the examples below, set up the uv environment with:
 uv sync --extra examples
 ```
 
-Some examples involve running a RL policy require pytorch, which uv can set up via:
-
-```bash
-uv sync --extra torch-cu12
-```
-
 ## Basic Examples
 
 <table>
@@ -169,7 +163,7 @@ uv sync --extra torch-cu12
       <code>uv run -m newton.examples robot_anymal_d</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples robot_anymal_c_walk</code>
+      <code>uv run --extra torch-cu12 -m newton.examples robot_anymal_c_walk</code>
     </td>
   </tr>
 </table>
@@ -230,7 +224,7 @@ uv sync --extra torch-cu12
       <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples anymal_c_walk_on_sand</code>
+      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal_c_walk_on_sand</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
