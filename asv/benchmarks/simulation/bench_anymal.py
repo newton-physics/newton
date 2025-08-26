@@ -17,7 +17,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 import newton
-from newton.examples.robot.example_anymal_c_walk import Example
+from newton.examples.robot.example_robot_anymal_c_walk import Example
 
 
 class FastExampleAnymalPretrained:

@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C Walk
+# Example Robot Anymal C Walk
 #
 # Shows how to simulate Anymal C using SolverMuJoCo and control it with a
 # policy trained in PhysX.
 #
-# Command: python -m newton.examples anymal_c_walk
+# Command: python -m newton.examples robot_anymal_c_walk
 #
 ###########################################################################
 
@@ -150,7 +150,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")

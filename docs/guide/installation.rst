@@ -93,13 +93,13 @@ Run an example with additional dependencies:
 
 .. code-block:: console
 
-    uv run --extra examples newton/examples/example_humanoid.py
+    uv run --extra examples newton/examples/robot/example_robot_humanoid.py
 
 Run an example that inferences an RL policy:
 
 .. code-block:: console
 
-    uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk.py
+    uv run --extra examples --extra torch-cu12 newton/examples/robot/example_robot_anymal_c_walk.py
 
 Method 2: Using a Virtual Environment Setup by uv
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -122,7 +122,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             source .venv/bin/activate
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
     .. tab-item:: Windows (console)
         :sync: windows
@@ -130,7 +130,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             .venv\Scripts\activate.bat
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
     .. tab-item:: Windows (PowerShell)
         :sync: windows-ps
@@ -138,7 +138,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             .venv\Scripts\Activate.ps1
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
 Method 3: Manual Setup Using Pip in a Virtual Environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -185,7 +185,7 @@ Test the installation by running an example:
 
 .. code-block:: console
 
-    python newton/examples/example_humanoid.py
+    python newton/examples/robot/example_robot_humanoid.py
 
 Next Steps
 ----------

@@ -37,7 +37,7 @@ class SlowExampleAnymalMuJoCo:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.robot.example_anymal_c_walk",
+            "newton.examples.robot.example_robot_anymal_c_walk",
             "--stage-path",
             "None",
             "--num-frames",
@@ -68,7 +68,7 @@ class SlowExampleCartpoleMuJoCo:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.robot.example_cartpole",
+            "newton.examples.robot.example_robot_cartpole",
             "--stage-path",
             "None",
             "--num-frames",
@@ -157,7 +157,7 @@ class SlowExampleHumanoidMuJoCo:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.robot.example_humanoid",
+            "newton.examples.robot.example_robot_humanoid",
             "--stage-path",
             "None",
             "--num-frames",

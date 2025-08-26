@@ -269,7 +269,7 @@ class TestRobotExamples(unittest.TestCase):
 
 add_example_test(
     TestRobotExamples,
-    name="robot.example_cartpole",
+    name="robot.example_robot_cartpole",
     devices=test_devices,
     test_options={"usd_required": True, "stage_path": "None", "num_frames": 100},
     test_options_cpu={"num_frames": 10},
@@ -277,7 +277,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_anymal_c_walk",
+    name="robot.example_robot_anymal_c_walk",
     devices=test_devices,
     test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
@@ -285,7 +285,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_anymal_d",
+    name="robot.example_robot_anymal_d",
     devices=test_devices,
     test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
@@ -293,7 +293,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_g1",
+    name="robot.example_robot_g1",
     devices=test_devices,
     test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
@@ -301,7 +301,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_h1",
+    name="robot.example_robot_h1",
     devices=test_devices,
     test_options={"usd_required": True, "num_frames": 500, "headless": True},
     test_options_cpu={"num_frames": 10},
@@ -309,7 +309,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_humanoid",
+    name="robot.example_robot_humanoid",
     devices=test_devices,
     test_options={"stage_path": "None", "num_frames": 500},
     test_options_cpu={"num_frames": 10},

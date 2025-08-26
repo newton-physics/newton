@@ -112,18 +112,18 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_cartpole.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cartpole.jpg" alt="Cartpole">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_cartpole.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_cartpole.jpg" alt="Cartpole">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_humanoid.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_humanoid.jpg" alt="Humanoid">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_humanoid.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_humanoid.jpg" alt="Humanoid">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_g1.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_g1.jpg" alt="G1">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_g1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_g1.jpg" alt="G1">
       </a>
     </td>
   </tr>
@@ -140,18 +140,18 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_h1.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_h1.jpg" alt="H1">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_h1.jpg" alt="H1">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_anymal_d.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_d.jpg" alt="Anymal D">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_d.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_d.jpg" alt="Anymal D">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_anymal_c_walk.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_c_walk.jpg" alt="Anymal C Walk">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_c_walk.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
       </a>
     </td>
   </tr>

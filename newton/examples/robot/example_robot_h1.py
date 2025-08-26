@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Cartpole
+# Example Robot H1
 #
-# Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
+# Shows how to set up a simulation of a H1 articulation
+# from a USD file using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples cartpole --num-envs 100
+# Command: python -m newton.examples robot_h1 --num-envs 16
 #
 ###########################################################################
 
@@ -27,50 +27,61 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_envs=8):
-        self.fps = 60
+    def __init__(self, viewer, num_envs=4):
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
+
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_envs = num_envs
 
         self.viewer = viewer
 
-        cartpole = newton.ModelBuilder()
-        cartpole.default_shape_cfg.density = 100.0
-        cartpole.default_joint_cfg.armature = 0.1
-        cartpole.default_body_armature = 0.1
+        self.device = wp.get_device()
 
-        cartpole.add_usd(
-            newton.examples.get_asset("cartpole.usda"),
+        h1 = newton.ModelBuilder()
+        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        h1.default_shape_cfg.ke = 5.0e4
+        h1.default_shape_cfg.kd = 5.0e2
+        h1.default_shape_cfg.kf = 1.0e3
+        h1.default_shape_cfg.mu = 0.75
+
+        asset_path = newton.utils.download_asset("unitree_h1")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
+        h1.add_usd(
+            asset_file,
+            ignore_paths=["/GroundPlane"],
+            collapse_fixed_joints=False,
             enable_self_collisions=False,
-            collapse_fixed_joints=True,
+            load_non_physics_prims=True,
+            hide_collision_shapes=True,
         )
-        # set initial joint positions
-        cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
+        # approximate meshes for faster collision detection
+        h1.approximate_meshes("bounding_box")
+
+        for i in range(len(h1.joint_dof_mode)):
+            h1.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+            h1.joint_target_ke[i] = 150
+            h1.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
-        builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
+        builder.replicate(h1, self.num_envs, spacing=(3, 3, 0))
 
-        # finalize model
+        builder.add_ground_plane()
+
         self.model = builder.finalize()
-
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
-        # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
-        # self.solver = newton.solvers.SolverFeatherstone(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        # we do not need to evaluate contacts for this example
-        self.contacts = None
-
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
 
@@ -84,6 +95,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
+        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -106,6 +118,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test(self):
@@ -114,7 +127,8 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
+
     viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args.num_envs)

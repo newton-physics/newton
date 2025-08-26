@@ -14,11 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal D
+# Example Robot Anymal D
 #
 # Shows how to simulate Anymal D with multiple environments using SolverMuJoCo.
 #
-# Command: python -m newton.examples anymal_d --num-envs 16
+# Command: python -m newton.examples robot_anymal_d --num-envs 16
 #
 ###########################################################################
 
@@ -91,9 +91,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
-
-        # ensure FK evaluation (for non-MuJoCo solvers):
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)

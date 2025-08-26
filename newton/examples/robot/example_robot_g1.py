@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Humanoid
+# Example Robot G1
 #
-# Shows how to set up a simulation of a humanoid articulation
-# from MJCF using newton.ModelBuilder.add_mjcf().
+# Shows how to set up a simulation of a G1 robot articulation
+# from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples humanoid --num-envs 16
+# Command: python -m newton.examples robot_g1 --num-envs 16
 #
 ###########################################################################
 
@@ -27,6 +27,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.utils
 
 
 class Example:
@@ -34,48 +35,56 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_envs = num_envs
 
         self.viewer = viewer
 
-        humanoid = newton.ModelBuilder()
-        humanoid.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        humanoid.default_shape_cfg.ke = 5.0e4
-        humanoid.default_shape_cfg.kd = 5.0e2
-        humanoid.default_shape_cfg.kf = 1.0e3
-        humanoid.default_shape_cfg.mu = 0.75
+        g1 = newton.ModelBuilder()
+        g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        g1.default_shape_cfg.ke = 5.0e4
+        g1.default_shape_cfg.kd = 5.0e2
+        g1.default_shape_cfg.kf = 1.0e3
+        g1.default_shape_cfg.mu = 0.75
 
-        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+        asset_path = newton.utils.download_asset("unitree_g1")
 
-        humanoid.add_mjcf(
-            mjcf_filename,
-            ignore_names=["floor", "ground"],
-            xform=wp.transform(wp.vec3(0, 0, 1.3)),
+        g1.add_usd(
+            str(asset_path / "usd" / "g1_isaac.usd"),
+            xform=wp.transform(wp.vec3(0, 0, 0.8)),
+            collapse_fixed_joints=True,
+            enable_self_collisions=False,
+            hide_collision_shapes=True,
         )
 
-        for i in range(len(humanoid.joint_dof_mode)):
-            humanoid.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-            humanoid.joint_target_ke[i] = 150
-            humanoid.joint_target_kd[i] = 5
+        # approximate meshes for faster collision detection
+        g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        builder.replicate(humanoid, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
 
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            use_mujoco_cpu=False,
+            solver="newton",
+            integrator="euler",
+            nefc_per_env=300,
+            ncon_per_env=150,
+            cone="elliptic",
+            impratio=100,
+            iterations=100,
+            ls_iterations=50,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
-
-        # ensure FK evaluation (for non-MuJoCo solvers):
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
 
