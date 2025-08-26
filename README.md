@@ -102,7 +102,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples basic_joints</code>
     </td>
     <td align="center">
-      <!-- <code>python -m newton.examples basic_viewer</code> -->
+      <!-- <code>uv run -m newton.examples basic_viewer</code> -->
     </td>
   </tr>
 </table>
@@ -222,13 +222,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples ik_franka</code>
+      <code>uv run -m newton.examples ik_franka</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples ik_h1</code>
+      <code>uv run -m newton.examples ik_h1</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples ik_benchmark</code>
+      <code>uv run -m newton.examples ik_benchmark</code>
     </td>
   </tr>
 </table>
@@ -319,13 +319,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples diffsim_ball</code>
+      <code>uv run -m newton.examples diffsim_ball</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diffsim_cloth</code>
+      <code>uv run -m newton.examples diffsim_cloth</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diffsim_drone</code>
+      <code>uv run -m newton.examples diffsim_drone</code>
     </td>
   </tr>
   <tr>
@@ -345,13 +345,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples diffsim_spring_cage</code>
+      <code>uv run -m newton.examples diffsim_spring_cage</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diffsim_soft_body</code>
+      <code>uv run -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <!-- Future MPM example -->
+      <!-- Future diffsim example -->
     </td>
   </tr>
 </table>
