@@ -139,19 +139,16 @@ class Example:
         self,
         viewer,
     ):
-        self.viewer = viewer
-        self.graph = None
-        self.add_cloth = True
-        self.add_robot = True
-
         # parameters
         #   simulation
+        self.add_cloth = True
+        self.add_robot = True
         self.sim_substeps = 15
         self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.up_axis = "Z"
+        self.sim_time = 0.0
 
         #   contact
         #       body-cloth contact
@@ -159,7 +156,7 @@ class Example:
         self.cloth_body_contact_margin = 0.01
         #       self-contact
         self.self_contact_radius = 0.002
-        self.self_contact_margin = 0.002
+        self.self_contact_margin = 0.003
 
         self.soft_contact_ke = 100
         self.soft_contact_kd = 2e-3
@@ -178,11 +175,13 @@ class Example:
 
         self.gravity = -10.0  # cm/s^2
 
-        self.scene = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
+        self.scene = ModelBuilder(gravity=self.gravity)
         self.soft_contact_max = 1000000
 
+        self.viewer = viewer
+
         if self.add_robot:
-            franka = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
+            franka = ModelBuilder(gravity=self.gravity)
             self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
@@ -239,18 +238,6 @@ class Example:
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
-
-        if self.add_robot:
-            episode_duration = np.sum(self.transition_duration)
-        else:
-            episode_duration = 10.0
-
-        self.num_frames = int(episode_duration / self.frame_dt)
-
-        self.sim_dt = self.frame_dt / max(1, self.sim_substeps)
-        self.sim_steps = self.num_frames * self.sim_substeps
-        self.sim_step = 0
-        self.sim_time = 0.0
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -328,9 +315,10 @@ class Example:
 
     def capture(self):
         if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+            with wp.ScopedTimer("capture", detailed=True):
+                with wp.ScopedCapture() as capture:
+                    self.simulate()
+                self.graph = capture.graph
         else:
             self.graph = None
 
@@ -339,7 +327,7 @@ class Example:
 
         builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            up_axis=self.up_axis,
+            builder,
             xform=wp.transform(
                 (-0.5, -0.5, -0.2),
                 # (-0.5, -0.2, 0.5),
@@ -570,7 +558,9 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.set_defaults(num_frames=3850)
+    viewer, args = newton.examples.init(parser)
 
     # Create example and run
     example = Example(viewer)
