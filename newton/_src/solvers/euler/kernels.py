@@ -1038,9 +1038,6 @@ def eval_body_joints(
 
     qd_start = joint_qd_start[tid]
     if type == JointType.FREE or type == JointType.DISTANCE:
-        # FREE joints use (linear, angular) ordering to match body_f
-        # joint_f[0,1,2] = linear, joint_f[3,4,5] = angular
-        # spatial_vector expects (linear, angular) ordering - direct mapping
         wrench = wp.spatial_vector(
             joint_f[qd_start + 0],
             joint_f[qd_start + 1],

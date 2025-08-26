@@ -54,8 +54,6 @@ def transform_inertia(t: wp.transform, I: wp.spatial_matrix):
     R = wp.matrix_from_cols(r1, r2, r3)
     S = wp.mul(wp.skew(p), R)
 
-    # T = [ R   S ]  instead of the old [ R   0 ]
-    #     [ 0   R ]                      [ S   R ]
     T = wp.spatial_matrix(
         R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
         R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
