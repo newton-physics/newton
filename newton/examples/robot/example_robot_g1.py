@@ -59,6 +59,10 @@ class Example:
             hide_collision_shapes=True,
         )
 
+        for i in range(6, g1.joint_dof_count):
+            g1.joint_target_ke[i] = 1000.0
+            g1.joint_target_kd[i] = 5.0
+
         # approximate meshes for faster collision detection
         g1.approximate_meshes("bounding_box")
 
