@@ -111,7 +111,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
             solver.step(state_0, state_1, control, None, sim_dt)
             state_0, state_1 = state_1, state_0
 
-        if not isinstance(solver, (newton.solvers.SolverMuJoCo, newton.solvers.SolverFeatherstone)):
+        if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
             # need to compute joint_qd from body_qd
             newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 

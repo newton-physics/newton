@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import warp as wp
@@ -209,7 +209,7 @@ class Example:
         ]
 
         joint_q_offset = 0 if floating else -7
-        for joint_idx, value in zip(joint_mapping, initial_joint_positions):
+        for joint_idx, value in zip(joint_mapping, initial_joint_positions, strict=False):
             articulation_builder.joint_q[joint_idx + joint_q_offset] = value
 
         articulation_builder.joint_q[22 + joint_q_offset] = 0.0  # left_hand_joint
@@ -291,7 +291,7 @@ class Example:
             self.rotation_target_arrays.append(rot_wp)
 
         # position objectives -----------------------------------------
-        for ee_idx, (link_idx, offset) in enumerate(zip(self.ee_link_indices, self.ee_link_offsets)):
+        for ee_idx, (link_idx, offset) in enumerate(zip(self.ee_link_indices, self.ee_link_offsets, strict=False)):
             obj = ik.IKPositionObjective(
                 link_index=link_idx,
                 link_offset=offset,

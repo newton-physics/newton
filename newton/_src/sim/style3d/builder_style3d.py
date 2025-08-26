@@ -92,6 +92,13 @@ class Style3DModelBuilder(ModelBuilder):
     """
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+        """
+        Initializes a new Style3DModelBuilder.
+
+        Args:
+            up_axis (AxisType, optional): The up axis for the simulation. Defaults to Axis.Z.
+            gravity (float, optional): The gravitational acceleration. Defaults to -9.81.
+        """
         super().__init__(up_axis=up_axis, gravity=gravity)
 
         # triangles
@@ -107,7 +114,7 @@ class Style3DModelBuilder(ModelBuilder):
         update_num_env_count: bool = True,
         separate_collision_group: bool = True,
     ):
-        """Copies the data from `builder`, another `Style3DModelBuilder` to this `Style3DModelBuilder`.
+        """Copies the data from another `Style3DModelBuilder` to this `Style3DModelBuilder`.
 
         Args:
             builder (ModelBuilder): a model builder to add model data from.
@@ -217,6 +224,7 @@ class Style3DModelBuilder(ModelBuilder):
                 np.array(tri_kd)[valid_inds],
                 np.array(tri_drag)[valid_inds],
                 np.array(tri_lift)[valid_inds],
+                strict=False,
             )
         )
         self.tri_aniso_ke.extend(np.array(tri_aniso_ke)[valid_inds])
@@ -348,7 +356,7 @@ class Style3DModelBuilder(ModelBuilder):
             aniso_ke = np.array(edge_aniso_ke).reshape(-1, 3)
             edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
-        self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
+        self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
 
         # compute edge area
         edge_area = (
@@ -371,7 +379,7 @@ class Style3DModelBuilder(ModelBuilder):
         cot2 = cot2d(panel_x3_f1, panel_x4_f1, panel_x2_f1)
         cot3 = cot2d(panel_x4_f0, panel_x3_f0, panel_x1_f0)
         cot4 = cot2d(panel_x4_f1, panel_x3_f1, panel_x2_f1)
-        self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4))
+        self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4, strict=False))
 
     def add_aniso_cloth_grid(
         self,

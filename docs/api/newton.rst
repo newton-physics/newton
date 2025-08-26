@@ -44,8 +44,17 @@ newton
    :signatures: long
 
    AxisType
-   __version__
    count_rigid_contact_points
    eval_fk
    eval_ik
    get_joint_dof_count
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - __version__
+     - 0.1.1.a2

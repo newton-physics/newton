@@ -37,7 +37,6 @@ def integrate_particles(
 
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
         x_new[tid] = x0
-        v_new[tid] = wp.vec3(0.0)
         return
 
     v0 = v[tid]

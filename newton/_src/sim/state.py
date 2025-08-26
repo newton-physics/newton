@@ -19,51 +19,54 @@ import warp as wp
 
 
 class State:
-    """Time-varying state data for a :class:`Model`.
+    """
+    Represents the time-varying state of a :class:`Model` in a simulation.
 
-    Time-varying state data includes particle positions, velocities, rigid body states, and
-    anything that is output from the solver as derived data, e.g.: forces.
+    The State object holds all dynamic quantities that change over time during simulation,
+    such as particle and rigid body positions, velocities, and forces, as well as joint coordinates.
 
-    The exact attributes depend on the contents of the model. State objects should
-    generally be created using the :func:`newton.Model.state()` function.
+    State objects are typically created via :meth:`newton.Model.state()` and are used to
+    store and update the simulation's current configuration and derived data.
     """
 
     def __init__(self) -> None:
         self.particle_q: wp.array | None = None
-        """Array of 3D particle positions with shape ``(particle_count,)`` and type :class:`vec3`."""
+        """3D positions of particles, shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_qd: wp.array | None = None
-        """Array of 3D particle velocities with shape ``(particle_count,)`` and type :class:`vec3`."""
+        """3D velocities of particles, shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_f: wp.array | None = None
-        """Array of 3D particle forces with shape ``(particle_count,)`` and type :class:`vec3`."""
+        """3D forces on particles, shape (particle_count,), dtype :class:`vec3`."""
 
         self.body_q: wp.array | None = None
-        """Array of body coordinates (7-dof transforms) in maximal coordinates with shape ``(body_count,)`` and type :class:`transform`."""
+        """Rigid body transforms (7-DOF), shape (body_count,), dtype :class:`transform`."""
 
         self.body_qd: wp.array | None = None
-        """Array of body velocities in maximal coordinates (first three entries represent angular velocity,
-        last three entries represent linear velocity) with shape ``(body_count,)`` and type :class:`spatial_vector`.
-        """
+        """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: angular velocity; last three: linear velocity."""
 
         self.body_f: wp.array | None = None
-        """Array of body forces in maximal coordinates (first three entries represent torque, last three
-        entries represent linear force) with shape ``(body_count,)`` and type :class:`spatial_vector`.
+        """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: torque; last three: linear force.
 
-        .. note::
-            :attr:`body_f` represents external wrenches in world frame and denotes wrenches measured w.r.t.
-            to the body's center of mass for all solvers except :class:`~newton.solvers.SolverFeatherstone`, which
-            assumes the wrenches are measured w.r.t. world origin.
+        Note:
+            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass
+            for all solvers except :class:`~newton.solvers.SolverFeatherstone`, which expects wrenches at the world origin.
         """
 
         self.joint_q: wp.array | None = None
-        """Array of generalized joint coordinates with shape ``(joint_coord_count,)`` and type ``float``."""
+        """Generalized joint position coordinates, shape (joint_coord_count,), dtype float."""
 
         self.joint_qd: wp.array | None = None
-        """Array of generalized joint velocities with shape ``(joint_dof_count,)`` and type ``float``."""
+        """Generalized joint velocity coordinates, shape (joint_dof_count,), dtype float."""
 
     def clear_forces(self) -> None:
-        """Clear all forces (for particles and bodies) in the state object."""
+        """
+        Clear all force arrays (for particles and bodies) in the state object.
+
+        Sets all entries of :attr:`particle_f` and :attr:`body_f` to zero, if present.
+        """
         with wp.ScopedTimer("clear_forces", False):
             if self.particle_count:
                 self.particle_f.zero_()

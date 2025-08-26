@@ -21,11 +21,15 @@ from warp.context import Devicelike
 
 
 class Contacts:
-    """Provides contact information to be consumed by a solver.
-    Stores the contact distance, position, frame, and geometry for each contact point.
+    """
+    Stores contact information for rigid and soft body collisions, to be consumed by a solver.
+
+    This class manages buffers for contact data such as positions, normals, thicknesses, and shape indices
+    for both rigid-rigid and soft-rigid contacts. The buffers are allocated on the specified device and can
+    optionally require gradients for differentiable simulation.
 
     .. note::
-        This class definition is only a temporary solution and will change significantly in the future.
+        This class is a temporary solution and its interface may change in the future.
     """
 
     def __init__(
@@ -67,7 +71,9 @@ class Contacts:
         self.soft_contact_max = soft_contact_max
 
     def clear(self):
-        """Clear all contacts."""
+        """
+        Clear all contact data, resetting counts and filling indices with -1.
+        """
         self.rigid_contact_count.zero_()
         self.rigid_contact_shape0.fill_(-1)
         self.rigid_contact_shape1.fill_(-1)
@@ -81,4 +87,7 @@ class Contacts:
 
     @property
     def device(self):
+        """
+        Returns the device on which the contact buffers are allocated.
+        """
         return self.rigid_contact_count.device
