@@ -340,6 +340,14 @@ class ViewerBase:
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
 
+    def log_gizmo(
+        self,
+        gid,
+        transform,
+    ):
+        # Optional: for interactive viewers
+        pass
+
     @abstractmethod
     def log_mesh(
         self,

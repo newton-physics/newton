@@ -47,9 +47,8 @@ class TestAnymalReset(unittest.TestCase):
 
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         stage_path = str(asset_path / "usd" / "anymal_d.usda")
-        newton.utils.parse_usd(
+        builder.add_usd(
             stage_path,
-            builder,
             enable_self_collisions=False,
             collapse_fixed_joints=False,
         )

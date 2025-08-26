@@ -59,9 +59,8 @@ class Example:
         quadruped.default_shape_cfg.mu = 1.0
 
         # parse the URDF file
-        newton.utils.parse_urdf(
+        quadruped.add_urdf(
             newton.examples.get_asset("quadruped.urdf"),
-            quadruped,
             xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,

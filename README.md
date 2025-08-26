@@ -102,7 +102,68 @@ uv sync --extra examples
       <code>uv run -m newton.examples basic_joints</code>
     </td>
     <td align="center">
-      <!-- <code>python -m newton.examples basic_viewer</code> -->
+      <!-- <code>uv run -m newton.examples basic_viewer</code> -->
+    </td>
+  </tr>
+</table>
+
+## Robot Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_cartpole.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_cartpole.jpg" alt="Cartpole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_humanoid.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_humanoid.jpg" alt="Humanoid">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_g1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_g1.jpg" alt="G1">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_cartpole</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_humanoid</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_g1</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_h1.jpg" alt="H1">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_d.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_d.jpg" alt="Anymal D">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_c_walk.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_anymal_d</code>
+    </td>
+    <td align="center">
+      <code>uv run --extra torch-cu12 -m newton.examples robot_anymal_c_walk</code>
     </td>
   </tr>
 </table>
@@ -140,6 +201,38 @@ uv sync --extra examples
   </tr>
 </table>
 
+## Inverse Kinematics Examples
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_franka.py">
+        <img src="docs/images/examples/example_ik_franka.jpg" alt="IK Franka">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_h1.py">
+        <img src="docs/images/examples/example_ik_h1.jpg" alt="IK H1">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_benchmark.py">
+        <img src="docs/images/examples/example_ik_benchmark.jpg" alt="IK Benchmark">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples ik_franka</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples ik_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples ik_benchmark</code>
+    </td>
+  </tr>
+</table>
+
 ## MPM Examples
 
 <table>
@@ -150,7 +243,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future MPM example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_anymal.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_anymal.jpg" alt="MPM Anymal">
+      </a>
     </td>
     <td align="center" width="33%">
       <!-- Future MPM example -->
@@ -161,7 +256,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <!-- Future MPM example -->
+      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
@@ -198,6 +293,65 @@ uv sync --extra examples
     </td>
     <td align="center">
       <code>uv run -m newton.examples selection_articulations</code>
+    </td>
+  </tr>
+</table>
+
+## DiffSim Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_ball.py">
+        <img src="docs/images/examples/example_diffsim_ball.jpg" alt="DiffSim Ball">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_cloth.py">
+        <img src="docs/images/examples/example_diffsim_cloth.jpg" alt="DiffSim Cloth">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_drone.py">
+        <img src="docs/images/examples/example_diffsim_drone.jpg" alt="DiffSim Drone">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples diffsim_ball</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples diffsim_cloth</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples diffsim_drone</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_spring_cage.py">
+        <img src="docs/images/examples/example_diffsim_spring_cage.jpg" alt="DiffSim Spring Cage">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/diffsim/example_diffsim_soft_body.py">
+        <img src="docs/images/examples/example_diffsim_soft_body.jpg" alt="DiffSim Soft Body">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future diffsim example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples diffsim_spring_cage</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples diffsim_soft_body</code>
+    </td>
+    <td align="center">
+      <!-- Future diffsim example -->
     </td>
   </tr>
 </table>

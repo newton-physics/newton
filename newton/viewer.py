@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._src.utils.gizmo import GizmoSystem
 from ._src.utils.recorder_gui import RecorderImGuiManager
 from ._src.utils.render import RendererOpenGL, RendererUsd
 
@@ -21,7 +20,6 @@ from ._src.utils.render import RendererOpenGL, RendererUsd
 from ._src.viewer import ViewerGL, ViewerNull, ViewerRerun, ViewerUSD
 
 __all__ = [
-    "GizmoSystem",
     "RecorderImGuiManager",
     "RendererOpenGL",  # deprecated
     "RendererUsd",  # deprecated

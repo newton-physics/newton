@@ -14,21 +14,23 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C walk
+# Example Robot Anymal C Walk
 #
-# Shows how to control Anymal C with a policy pretrained in physx.
+# Shows how to simulate Anymal C using SolverMuJoCo and control it with a
+# policy trained in PhysX.
 #
-# Example usage:
-# uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk_physx_policy.py
+# Command: python -m newton.examples robot_anymal_c_walk
 #
 ###########################################################################
 
 import torch
 import warp as wp
+from warp.torch import device_to_torch
 
 wp.config.enable_backward = False
 
 import newton
+import newton.examples
 import newton.utils
 from newton import State
 
@@ -73,12 +75,12 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, stage_path=None, headless=False):
+    def __init__(self, viewer):
+        self.viewer = viewer
         self.device = wp.get_device()
-        # Convert Warp device to PyTorch device string
-        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
+        self.torch_device = device_to_torch(self.device)
 
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder()
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,
@@ -89,12 +91,10 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        if stage_path is None:
-            asset_path = newton.utils.download_asset("anybotics_anymal_c")
-            stage_path = str(asset_path / "urdf" / "anymal.urdf")
-        newton.utils.parse_urdf(
+        asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        stage_path = str(asset_path / "urdf" / "anymal.urdf")
+        builder.add_urdf(
             stage_path,
-            builder,
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
@@ -144,13 +144,24 @@ class Example:
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.renderer = None if headless else newton.viewer.RendererOpenGL(self.model, stage_path)
+        self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Download the policy from the newton-assets repository
+        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
+
+        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        self.joint_pos_initial = torch.tensor(
+            self.state_0.joint_q[7:], device=self.torch_device, dtype=torch.float32
+        ).unsqueeze(0)
+        self.joint_vel_initial = torch.tensor(self.state_0.joint_qd[6:], device=self.torch_device, dtype=torch.float32)
+        self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+        self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
 
         # Pre-compute tensors that don't change during simulation
         self.lab_to_mujoco_indices = torch.tensor(
@@ -163,8 +174,10 @@ class Example:
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self.command[0, 0] = 1
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if self.use_cuda_graph:
+        self.capture()
+
+    def capture(self):
+        if self.device.is_cuda:
             torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
             self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
@@ -177,7 +190,14 @@ class Example:
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
+
+            self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -200,57 +220,22 @@ class Example:
                 wp.copy(
                     self.control.joint_target, a_wp
                 )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
-            if self.use_cuda_graph:
+            if self.graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
-            return
-
-        with wp.ScopedTimer("render"):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    viewer, args = newton.examples.init()
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        help="Path to the output URDF file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
+    example = Example(viewer)
 
-    args = parser.parse_known_args()[0]
-
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, headless=args.headless)
-
-        # Download the policy from the newton-assets repository
-        policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
-        policy_path = str(policy_asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
-
-        example.policy = torch.jit.load(policy_path, map_location=example.torch_device)
-        example.joint_pos_initial = torch.tensor(
-            example.state_0.joint_q[7:], device=example.torch_device, dtype=torch.float32
-        ).unsqueeze(0)
-        example.joint_vel_initial = torch.tensor(
-            example.state_0.joint_qd[6:], device=example.torch_device, dtype=torch.float32
-        )
-        example.act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
-        example.rearranged_act = torch.zeros(1, 12, device=example.torch_device, dtype=torch.float32)
-
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

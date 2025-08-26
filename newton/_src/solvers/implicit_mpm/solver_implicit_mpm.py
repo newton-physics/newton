@@ -1067,21 +1067,21 @@ class SolverImplicitMPM(SolverBase):
         # Compute density from particle mass and radius
         # TODO support for varying properties
         if len(model.particle_mass) > 0 and len(model.particle_radius) > 0:
-            self.density = model.particle_mass[:1].numpy()[0] / (
-                4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
+            self.density = float(
+                model.particle_mass[:1].numpy()[0] / (4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3)
             )
         else:
             self.density = 1.0
 
-        self.friction_coeff = model.particle_mu
-        self.yield_stresses = options.yield_stresses
+        self.friction_coeff = float(model.particle_mu)
+        self.yield_stresses = wp.vec3f(options.yield_stresses)
         self.unilateral = options.unilateral
-        self.max_fraction = options.max_fraction
+        self.max_fraction = float(options.max_fraction)
 
         self.max_iterations = options.max_iterations
-        self.tolerance = options.tolerance
+        self.tolerance = float(options.tolerance)
 
-        self.voxel_size = options.voxel_size
+        self.voxel_size = float(options.voxel_size)
         self.degree = 1 if options.unilateral else 0
 
         self.grid_padding = options.grid_padding
