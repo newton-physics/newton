@@ -653,7 +653,7 @@ class ModelBuilder:
     # region importers
     def add_urdf(
         self,
-        urdf_filename: str,
+        source: str,
         xform: Transform | None = None,
         floating: bool = False,
         base_joint: dict | str | None = None,
@@ -673,7 +673,7 @@ class ModelBuilder:
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            urdf_filename (str): The filename of the URDF file to parse.
+            source (str): The filename of the URDF file to parse.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
             floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -693,7 +693,7 @@ class ModelBuilder:
 
         return parse_urdf(
             self,
-            urdf_filename,
+            source,
             xform,
             floating,
             base_joint,
