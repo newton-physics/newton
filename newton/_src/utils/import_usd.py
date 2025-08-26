@@ -314,7 +314,10 @@ def parse_usd(
         if prim.IsInstance():
             proto = prim.GetPrototype()
             for child in proto.GetChildren():
-                load_visual_shapes(parent_body_id, child, xform)
+                # remap prototype child path to this instance's path (instance proxy)
+                inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
+                inst_child = stage.GetPrimAtPath(inst_path)
+                load_visual_shapes(parent_body_id, inst_child, xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
