@@ -326,7 +326,6 @@ class Example:
 
         builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            builder,
             xform=wp.transform(
                 (-0.5, -0.5, -0.1),
                 # (-0.5, -0.2, 0.5),
