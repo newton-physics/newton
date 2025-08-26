@@ -1524,8 +1524,8 @@ def solve_body_joints(
     com_c = body_com[id_c]
     m_inv_c = body_inv_m[id_c]
     I_inv_c = body_inv_I[id_c]
-    vel_c = wp.spatial_top(body_qd[id_c])      # linear velocity (now in top)
-    omega_c = wp.spatial_bottom(body_qd[id_c])  # angular velocity (now in bottom)
+    vel_c = wp.spatial_top(body_qd[id_c])
+    omega_c = wp.spatial_bottom(body_qd[id_c])
 
     if m_inv_p == 0.0 and m_inv_c == 0.0:
         # connection between two immovable bodies

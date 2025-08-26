@@ -35,9 +35,6 @@ def compute_spatial_inertia(
     I = body_inertia[tid]
     m = body_mass[tid]
     # fmt: off
-    # With new spatial vector ordering (linear, angular), the spatial inertia matrix is:
-    # [ m*I   0  ]  where m is mass, I is 3x3 inertia tensor
-    # [  0    I  ]
     body_I_m[tid] = wp.spatial_matrix(
         m,   0.0, 0.0, 0.0,     0.0,     0.0,
         0.0, m,   0.0, 0.0,     0.0,     0.0,
@@ -93,8 +90,6 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
     R = wp.matrix_from_cols(r1, r2, r3)
     S = wp.skew(p) @ R
 
-    # T = [ R   S ]  instead of the old [ R   0 ]
-    #     [ 0   R ]                      [ S   R ]
     T = wp.spatial_matrix(
         R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
         R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
@@ -222,7 +217,6 @@ def jcalc_motion(
 ):
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        # prismatic: linear along axis (v, w)
         S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
@@ -230,7 +224,6 @@ def jcalc_motion(
 
     if type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        # revolute: angular about axis (v, w)
         S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
@@ -240,7 +233,6 @@ def jcalc_motion(
         v_j_s = wp.spatial_vector()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            # linear axes first
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 0]
             joint_S_s[qd_start + 0] = S_s
@@ -256,7 +248,6 @@ def jcalc_motion(
             joint_S_s[qd_start + 2] = S_s
         if ang_axis_count > 0:
             axis = joint_axis[qd_start + lin_axis_count + 0]
-            # angular axes next
             S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 0]
             joint_S_s[qd_start + lin_axis_count + 0] = S_s
@@ -274,7 +265,6 @@ def jcalc_motion(
         return v_j_s
 
     if type == JointType.BALL:
-        # ball joint: angular-only axes (linear part zero)
         S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
         S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
         S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
@@ -289,26 +279,24 @@ def jcalc_motion(
         return wp.spatial_vector()
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        # FREE joints use (linear, angular) ordering, same as spatial_vector
         v_j_s = transform_twist(
             X_sc,
             wp.spatial_vector(
-                joint_qd[qd_start + 0],  # linear_x
-                joint_qd[qd_start + 1],  # linear_y
-                joint_qd[qd_start + 2],  # linear_z
-                joint_qd[qd_start + 3],  # angular_x
-                joint_qd[qd_start + 4],  # angular_y
-                joint_qd[qd_start + 5],  # angular_z
+                joint_qd[qd_start + 0],
+                joint_qd[qd_start + 1],
+                joint_qd[qd_start + 2],
+                joint_qd[qd_start + 3],
+                joint_qd[qd_start + 4],
+                joint_qd[qd_start + 5],
             ),
         )
 
-        # FREE joints motion subspace: (linear, angular) ordering
-        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))  # linear_x
-        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))  # linear_y
-        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))  # linear_z
-        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))  # angular_x
-        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))  # angular_y
-        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))  # angular_z
+        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
 
         return v_j_s
 
@@ -455,16 +443,10 @@ def jcalc_integrate(
 
         return
 
-    # free joint
     if type == JointType.FREE or type == JointType.DISTANCE:
-        # dofs: qd = (vel_x, vel_y, vel_z, omega_x, omega_y, omega_z) - (linear, angular)
-        # coords: q = (trans_x, trans_y, trans_z, quat_x, quat_y, quat_z, quat_w)
-
-        # linear and angular acceleration
         a_s = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
         m_s = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
 
-        # linear and angular velocity
         v_s = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
         w_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
 
@@ -472,14 +454,9 @@ def jcalc_integrate(
         w_s = w_s + m_s * dt
         v_s = v_s + a_s * dt
 
-        # translation of origin
         p_s = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
 
-        # linear vel of origin (note q/qd switch order of linear angular elements)
-        # note we are converting the body twist in the space frame (w_s, v_s) to compute center of mass velocity
         dpdt_s = v_s + wp.cross(w_s, p_s)
-
-        # quat and quat derivative
         r_s = wp.quat(
             joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
         )
@@ -500,7 +477,6 @@ def jcalc_integrate(
         joint_q_new[coord_start + 5] = r_s_new[2]
         joint_q_new[coord_start + 6] = r_s_new[3]
 
-        # update joint_twist: (linear, angular) ordering
         joint_qd_new[dof_start + 0] = v_s[0]
         joint_qd_new[dof_start + 1] = v_s[1]
         joint_qd_new[dof_start + 2] = v_s[2]
@@ -627,11 +603,11 @@ def eval_rigid_fk(
 
 @wp.func
 def spatial_cross(a: wp.spatial_vector, b: wp.spatial_vector):
-    w_a = wp.spatial_bottom(a)  # angular velocity (now in bottom)
-    v_a = wp.spatial_top(a)     # linear velocity (now in top)
+    w_a = wp.spatial_bottom(a)
+    v_a = wp.spatial_top(a)
 
-    w_b = wp.spatial_bottom(b)  # angular velocity (now in bottom)
-    v_b = wp.spatial_top(b)     # linear velocity (now in top)
+    w_b = wp.spatial_bottom(b)
+    v_b = wp.spatial_top(b)
 
     w = wp.cross(w_a, w_b)
     v = wp.cross(w_a, v_b) + wp.cross(v_a, w_b)
@@ -641,11 +617,11 @@ def spatial_cross(a: wp.spatial_vector, b: wp.spatial_vector):
 
 @wp.func
 def spatial_cross_dual(a: wp.spatial_vector, b: wp.spatial_vector):
-    w_a = wp.spatial_bottom(a)  # angular velocity (now in bottom)
-    v_a = wp.spatial_top(a)     # linear velocity (now in top)
+    w_a = wp.spatial_bottom(a)
+    v_a = wp.spatial_top(a)
 
-    w_b = wp.spatial_bottom(b)  # angular velocity (now in bottom)
-    v_b = wp.spatial_top(b)     # linear velocity (now in top)
+    w_b = wp.spatial_bottom(b)
+    v_b = wp.spatial_top(b)
 
     w = wp.cross(w_a, w_b) + wp.cross(v_a, v_b)
     v = wp.cross(w_a, v_b)
@@ -725,7 +701,7 @@ def compute_link_velocity(
     I_m = body_I_m[child]
 
     # gravity and external forces (expressed in frame aligned with s but centered at body mass)
-    m = I_m[0, 0]  # With new spatial inertia structure, mass is at [0,0], [1,1], [2,2]
+    m = I_m[0, 0]
 
     f_g = m * gravity
     r_com = wp.transform_get_translation(X_sm)
