@@ -48,7 +48,7 @@ class State:
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force; last three: torque.
+        First three entries: torque; last three: linear force.
 
         Note:
             :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass
