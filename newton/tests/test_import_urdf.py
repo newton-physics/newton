@@ -151,7 +151,7 @@ class TestImportUrdf(unittest.TestCase):
 
             # Parse the URDF file
             urdf_path = Path(temp_dir) / urdf_filename
-            builder.add_urdf(urdf_filename=str(urdf_path), up_axis="Y", **kwargs)
+            builder.add_urdf(str(urdf_path), up_axis="Y", **kwargs)
 
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
