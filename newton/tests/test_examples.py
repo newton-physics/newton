@@ -338,6 +338,23 @@ add_example_test(
 )
 
 
+class TestIKExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devices, use_viewer=True)
+
+add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
+
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_benchmark",
+    devices=test_devices,
+    test_options_cpu={"batch_sizes": [1, 10]},
+    use_viewer=True,
+)
+
+
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
 
@@ -385,13 +402,6 @@ add_example_test(
     name="example_rigid_force",
     devices=test_devices,
     test_options={"headless": True},
-)
-add_example_test(
-    TestOtherExamples,
-    name="example_ik_benchmark",
-    devices=test_devices,
-    test_options={"stage_path": "None"},
-    test_options_cpu={"batch_sizes": [1, 10]},
 )
 
 add_example_test(

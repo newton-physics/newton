@@ -201,6 +201,38 @@ uv sync --extra examples
   </tr>
 </table>
 
+## Inverse Kinematics Examples
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_franka.py">
+        <img src="docs/images/examples/example_ik_franka.jpg" alt="IK Franka">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_h1.py">
+        <img src="docs/images/examples/example_ik_h1.jpg" alt="IK H1">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/ik/example_ik_benchmark.py">
+        <img src="docs/images/examples/example_ik_benchmark.jpg" alt="IK Benchmark">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples ik_franka</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples ik_h1</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples ik_benchmark</code>
+    </td>
+  </tr>
+</table>
+
 ## MPM Examples
 
 <table>
