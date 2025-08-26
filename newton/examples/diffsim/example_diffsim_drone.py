@@ -25,7 +25,6 @@
 ###########################################################################
 
 import os
-from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -327,7 +326,7 @@ class Drone:
         variation_count: int = 1,
         size: float = 1.0,
         requires_grad: bool = False,
-        state_count: Optional[int] = None,
+        state_count: int | None = None,
     ) -> None:
         self.variation_count = variation_count
         self.requires_grad = requires_grad
