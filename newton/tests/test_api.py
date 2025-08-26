@@ -27,7 +27,7 @@ def _param_list(sig: inspect.Signature):
     return list(sig.parameters.values())[1:]
 
 
-def _check_function_signature_matches_method_signature(func, method):
+def _check_builder_method_matches_importer_function_signature(func, method):
     func_name = func.__name__
     method_name = method.__name__
     sig_func = inspect.signature(func)
@@ -83,8 +83,14 @@ def _check_function_signature_matches_method_signature(func, method):
         )
 
     # Docstrings must match (ignoring surrounding whitespace and indentation)
-    doc_func = "\n".join(line.strip() for line in (func.__doc__ or "").splitlines()).strip()
+    lines_doc_func = [line.strip() for line in (func.__doc__ or "").splitlines()]
+    # Remove line that contains the docstring for the ModelBuilder argument
+    # because this argument does not exist in the method
+    doc_func = "\n".join(line for line in lines_doc_func if "builder (ModelBuilder)" not in line).strip()
     doc_method = "\n".join(line.strip() for line in (method.__doc__ or "").splitlines()).strip()
+    assert "builder (ModelBuilder)" not in doc_method, (
+        f"Docstring for {method_name} must not contain 'builder (ModelBuilder)'"
+    )
     assert doc_func == doc_method, f"Docstring mismatch between {func_name} and {method_name}"
 
 
@@ -93,19 +99,19 @@ class TestApi(unittest.TestCase):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_urdf import parse_urdf  # noqa: PLC0415
 
-        _check_function_signature_matches_method_signature(parse_urdf, ModelBuilder.add_urdf)
+        _check_builder_method_matches_importer_function_signature(parse_urdf, ModelBuilder.add_urdf)
 
     def test_builder_mjcf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
-        _check_function_signature_matches_method_signature(parse_mjcf, ModelBuilder.add_mjcf)
+        _check_builder_method_matches_importer_function_signature(parse_mjcf, ModelBuilder.add_mjcf)
 
     def test_builder_usd_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_usd import parse_usd  # noqa: PLC0415
 
-        _check_function_signature_matches_method_signature(parse_usd, ModelBuilder.add_usd)
+        _check_builder_method_matches_importer_function_signature(parse_usd, ModelBuilder.add_usd)
 
 
 if __name__ == "__main__":

@@ -673,7 +673,6 @@ class ModelBuilder:
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
             urdf_filename (str): The filename of the URDF file to parse.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
             floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
@@ -719,7 +718,7 @@ class ModelBuilder:
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
         invert_rotations: bool = True,
-        verbose: bool = wp.config.verbose,
+        verbose: bool = False,
         ignore_paths: list[str] | None = None,
         cloned_env: str | None = None,
         collapse_fixed_joints: bool = False,
@@ -739,7 +738,6 @@ class ModelBuilder:
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
         Args:
-            builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
             default_density (float): The default density to use for bodies without a density attribute.
@@ -747,10 +745,10 @@ class ModelBuilder:
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
-            verbose (bool): If True, print additional information about the parsed USD file.
+            verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
-            collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "newton:collapse_fixed_joints".
+            collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path (str): The USD path to import, defaults to "/".
@@ -768,25 +766,25 @@ class ModelBuilder:
                 :widths: 25 75
 
                 * - "fps"
-                  - USD stage frames per second
+                - USD stage frames per second
                 * - "duration"
-                  - Difference between end time code and start time code of the USD stage
+                - Difference between end time code and start time code of the USD stage
                 * - "up_axis"
-                  - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
+                - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
                 * - "path_shape_map"
-                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
+                - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
                 * - "path_body_map"
-                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
+                - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
                 * - "path_shape_scale"
-                  - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - "mass_unit"
-                  - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
+                - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - "linear_unit"
-                  - The stage's Meters Per Unit (MPU) definition (1.0 by default)
+                - The stage's Meters Per Unit (MPU) definition (1.0 by default)
                 * - "scene_attributes"
-                  - Dictionary of all attributes applied to the PhysicsScene prim
+                - Dictionary of all attributes applied to the PhysicsScene prim
                 * - "collapse_results"
-                  - Dictionary returned by :math:`ModelBuilder.collapse_fixed_joints()` if `collapse_fixed_joints` is True, otherwise None.
+                - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
@@ -815,7 +813,7 @@ class ModelBuilder:
 
     def add_mjcf(
         self,
-        mjcf_filename_or_string: str,
+        source: str,
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
@@ -844,8 +842,7 @@ class ModelBuilder:
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-            mjcf_filename_or_string (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
+            source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
             floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -874,7 +871,7 @@ class ModelBuilder:
 
         return parse_mjcf(
             self,
-            mjcf_filename_or_string,
+            source,
             xform,
             floating,
             base_joint,
