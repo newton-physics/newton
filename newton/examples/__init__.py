@@ -189,6 +189,8 @@ def main():
         "ik_benchmark": "newton.examples.ik.example_ik_benchmark",
         "ik_franka": "newton.examples.ik.example_ik_franka",
         "ik_h1": "newton.examples.ik.example_ik_h1",
+        "cloth_twist": "newton.examples.cloth.example_cloth_twist",
+        "cloth_example": "newton.examples.cloth.example_cloth_example",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
         "mpm_anymal": "newton.examples.mpm.example_mpm_anymal",
         "robot_anymal_c_walk": "newton.examples.robot.example_robot_anymal_c_walk",
