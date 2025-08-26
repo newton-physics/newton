@@ -221,7 +221,7 @@ def solve_particle_shape_contacts(
 
     if body_index >= 0:
         delta_t = wp.cross(r, delta_total)
-        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_t, delta_total))
+        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_total, delta_t))
 
 
 @wp.kernel
