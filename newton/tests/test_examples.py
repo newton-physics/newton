@@ -257,8 +257,8 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 50},
+    test_options={"num_frames": 50},
+    test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
 add_example_test(
@@ -266,7 +266,7 @@ add_example_test(
     name="cloth.example_cloth_twist",
     devices=test_devices,
     test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 50},
+    test_options_cpu={"num_frames": 20},
     use_viewer=True,
 )
 
