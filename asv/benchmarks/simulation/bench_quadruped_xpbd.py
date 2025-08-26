@@ -16,7 +16,7 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_quadruped import Example
+from newton.examples.basic.example_basic_urdf import Example
 
 
 class FastExampleQuadrupedXPBD:

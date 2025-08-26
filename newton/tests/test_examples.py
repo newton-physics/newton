@@ -315,14 +315,6 @@ add_example_test(
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
-add_example_test(
-    TestRobotExamples,
-    name="robot.example_quadruped",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 1000},
-    test_options_cpu={"num_envs": 10},
-    use_viewer=True,
-)
 
 
 class TestAdvancedRobotExamples(unittest.TestCase):
