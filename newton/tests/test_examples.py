@@ -271,7 +271,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_cartpole",
     devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None", "num_frames": 100},
+    test_options={"usd_required": True, "num_frames": 100},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -279,7 +279,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True, "torch_required": True},
+    test_options={"usd_required": True, "num_frames": 500, "torch_required": True},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -287,7 +287,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options={"usd_required": True, "num_frames": 500},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -295,7 +295,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options={"usd_required": True, "num_frames": 500},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -303,7 +303,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options={"usd_required": True, "num_frames": 500},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -311,7 +311,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_humanoid",
     devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 500},
+    test_options={"num_frames": 500},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
@@ -333,7 +333,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
+    test_options={"num_frames": 100, "torch_required": True},
     use_viewer=True,
 )
 

@@ -98,7 +98,7 @@ class Example:
         self.robot_name = "franka"
         self.asset_name = "franka_emika_panda"
         self.asset_file = Path("urdf/fr3.urdf")
-        self.parser = partial(newton.utils.parse_urdf, scale=1.0)
+        self.parser = partial(newton.ModelBuilder.add_urdf, scale=1.0)
         self.ee_names = ("ee",)
         self.ee_links = (9,)
         self.seeds = 64
