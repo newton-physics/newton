@@ -53,7 +53,7 @@ def _check_builder_method_matches_importer_function_signature(func, method):
             return hints_dict.get(name, inspect._empty)
         return inspect._empty
 
-    for i, (pf, pm) in enumerate(zip(func_params, method_params), start=1):
+    for i, (pf, pm) in enumerate(zip(func_params, method_params, strict=False), start=1):
         # Names must match 1:1 (beyond builder/self)
         assert pf.name == pm.name, f"Param #{i} name mismatch: {pf.name!r} ({func_name}) != {pm.name!r} ({method_name})"
         # Kinds must match (*, /, positional-only, var-positional, keyword-only)
