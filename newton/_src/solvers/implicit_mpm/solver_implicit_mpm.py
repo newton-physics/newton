@@ -16,7 +16,6 @@
 """Implicit MPM solver."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -1136,11 +1135,11 @@ class SolverImplicitMPM(SolverBase):
         self,
         model: Model,
         # TODO: read colliders from model
-        colliders: Optional[list[wp.Mesh]] = None,
-        collider_thicknesses: Optional[list[float]] = None,
-        collider_projection_threshold: Optional[list[float]] = None,
-        collider_masses: Optional[list[float]] = None,
-        collider_friction: Optional[list[float]] = None,
+        colliders: list[wp.Mesh] | None = None,
+        collider_thicknesses: list[float] | None = None,
+        collider_projection_threshold: list[float] | None = None,
+        collider_masses: list[float] | None = None,
+        collider_friction: list[float] | None = None,
     ):
         """Setups the collision geometry for the implicit MPM solver.
 

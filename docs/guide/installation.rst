@@ -6,7 +6,7 @@ This guide will help you install Newton and set up your Python environment.
 System Requirements
 -------------------
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon)
 - NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
 
