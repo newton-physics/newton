@@ -37,35 +37,37 @@ class Example:
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
+        colliders = []
         if options.collider is not None:
             collider = _create_collider_mesh(options.collider)
-            builder.add_shape_mesh(
-                body=-1,
-                mesh=newton.Mesh(collider.points.numpy(), collider.indices.numpy()),
-            )
-            colliders = [collider]
-        else:
-            colliders = []
+            if collider is not None:
+                builder.add_shape_mesh(
+                    body=-1,
+                    mesh=newton.Mesh(collider.points.numpy(), collider.indices.numpy()),
+                )
+                colliders.append(collider)
 
         builder.add_ground_plane()
 
         builder.gravity = wp.vec3(options.gravity)
 
-        options.grid_padding = 0 if options.dynamic_grid else 5
-        options.yield_stresses = wp.vec3(
-            options.yield_stress,
-            -options.stretching_yield_stress,
-            options.compression_yield_stress,
-        )
+        options.grid_padding = 5 if options.grid_type == "fixed" else 0
 
         self.model = builder.finalize()
+
         self.model.particle_mu = options.friction_coeff
+        self.model.particle_ke = None
+        self.model.particle_kd = None
+        self.model.particle_cohesion = None
+        self.model.particle_adhesion = None
+
+        mpm_model = SolverImplicitMPM.Model(self.model, options)
+        mpm_model.setup_collider(colliders)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.solver = SolverImplicitMPM(self.model, options)
-        self.solver.setup_collider(self.model, colliders=colliders)
+        self.solver = SolverImplicitMPM(mpm_model, options)
 
         self.solver.enrich_state(self.state_0)
         self.solver.enrich_state(self.state_1)
@@ -77,6 +79,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
+            self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -93,7 +96,7 @@ class Example:
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
-        max_fraction = args.max_fraction
+        density = args.density
         voxel_size = args.voxel_size
 
         particles_per_cell = 3
@@ -104,7 +107,7 @@ class Example:
             dtype=int,
         )
 
-        Example._spawn_particles(builder, particle_res, particle_lo, particle_hi, max_fraction)
+        Example._spawn_particles(builder, particle_res, particle_lo, particle_hi, density)
 
     @staticmethod
     def _spawn_particles(
@@ -112,7 +115,7 @@ class Example:
         res,
         bounds_lo,
         bounds_hi,
-        packing_fraction,
+        density,
     ):
         Nx = res[0]
         Ny = res[1]
@@ -128,17 +131,18 @@ class Example:
         cell_volume = np.prod(cell_size)
 
         radius = np.max(cell_size) * 0.5
-        volume = np.prod(cell_volume) * packing_fraction
+        mass = np.prod(cell_volume) * density
 
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(42)
         points += 2.0 * radius * (rng.random(points.shape) - 0.5)
         vel = np.zeros_like(points)
 
         builder.particle_q = points
         builder.particle_qd = vel
-        builder.particle_mass = np.full(points.shape[0], volume)
+        builder.particle_mass = np.full(points.shape[0], mass)
         builder.particle_radius = np.full(points.shape[0], radius)
-        builder.particle_flags = np.zeros(points.shape[0], dtype=int)
+
+        builder.particle_flags = np.ones(points.shape[0], dtype=int)
 
 
 def _create_collider_mesh(collider: str):
@@ -148,7 +152,22 @@ def _create_collider_mesh(collider: str):
         cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
 
         return wp.Mesh(
-            wp.array(cube_points[:, 0:3] + [0, 0, 0.5], dtype=wp.vec3),
+            wp.array(cube_points[:, 0:3] + [0.75, 0, 0.5], dtype=wp.vec3),
+            wp.array(cube_indices, dtype=int),
+        )
+    elif collider == "wedge":
+        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
+
+        cube_points = cube_points[:, 0:3] @ np.array(
+            [
+                [np.cos(np.pi / 4), 0, -np.sin(np.pi / 4)],
+                [0, 1, 0],
+                [np.sin(np.pi / 4), 0, np.cos(np.pi / 4)],
+            ]
+        )
+
+        return wp.Mesh(
+            wp.array(cube_points + np.array([0.0, 0, 0.25]), dtype=wp.vec3),
             wp.array(cube_indices, dtype=int),
         )
     else:
@@ -162,7 +181,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
 
     # Add MPM-specific arguments
-    parser.add_argument("--collider", default="cube", type=str)
+    parser.add_argument("--collider", default="wedge", type=str)
 
     parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
     parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])
@@ -170,20 +189,28 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
 
-    parser.add_argument("--max-fraction", type=float, default=1.0)
+    parser.add_argument("--density", type=float, default=1000.0)
+    parser.add_argument("--air-drag", type=float, default=1.0)
+    parser.add_argument("--critical-fraction", "-cf", type=float, default=0.0)
 
-    parser.add_argument("--compliance", type=float, default=0.0)
+    parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
     parser.add_argument("--friction-coeff", "-mu", type=float, default=0.68)
+    parser.add_argument("--damping", type=float, default=0.0)
+    parser.add_argument("--yield-pressure", "-yp", type=float, default=1.0e12)
+    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)
     parser.add_argument("--yield-stress", "-ys", type=float, default=0.0)
-    parser.add_argument("--compression-yield-stress", "-cys", type=float, default=1.0e8)
-    parser.add_argument("--stretching-yield-stress", "-sys", type=float, default=1.0e8)
+    parser.add_argument("--hardening", type=float, default=0.0)
     parser.add_argument("--unilateral", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--dynamic-grid", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--gauss-seidel", "-gs", action=argparse.BooleanOptionalAction, default=True)
+
+    parser.add_argument("--grid-type", "-gt", type=str, default="sparse")
+    parser.add_argument("--solver", "-s", type=str, default="gauss-seidel")
+    parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic")
+
+    parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
+    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
 
     # Parse arguments and initialize viewer

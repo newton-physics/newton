@@ -703,7 +703,9 @@ class ViewerBase:
         if self.model.particle_count:
             # just set colors on first frame
             if self.model_changed:
-                colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
+                colors = getattr(self.model, "particle_colors", None)
+                if not isinstance(colors, wp.array) or colors.dtype != wp.vec3:
+                    colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
             else:
                 colors = None
 
