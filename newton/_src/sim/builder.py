@@ -766,25 +766,25 @@ class ModelBuilder:
                 :widths: 25 75
 
                 * - "fps"
-                - USD stage frames per second
+                  - USD stage frames per second
                 * - "duration"
-                - Difference between end time code and start time code of the USD stage
+                  - Difference between end time code and start time code of the USD stage
                 * - "up_axis"
-                - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
+                  - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
                 * - "path_shape_map"
-                - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
                 * - "path_body_map"
-                - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
                 * - "path_shape_scale"
-                - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                  - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - "mass_unit"
-                - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
+                  - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - "linear_unit"
-                - The stage's Meters Per Unit (MPU) definition (1.0 by default)
+                  - The stage's Meters Per Unit (MPU) definition (1.0 by default)
                 * - "scene_attributes"
-                - Dictionary of all attributes applied to the PhysicsScene prim
+                  - Dictionary of all attributes applied to the PhysicsScene prim
                 * - "collapse_results"
-                - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
