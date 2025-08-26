@@ -21,6 +21,7 @@
 # - Gizmo controls the TCP target (with ViewerGL.log_gizmo)
 #
 # Command: python -m newton.examples ik_franka
+###########################################################################
 
 import warp as wp
 
@@ -43,9 +44,8 @@ class Example:
         # Build a single FR3 (fixed base) + ground
         # ------------------------------------------------------------------
         franka = newton.ModelBuilder()
-        newton.utils.parse_urdf(
+        franka.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
-            franka,
             floating=False,
         )
         franka.add_ground_plane()

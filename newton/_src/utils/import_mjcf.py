@@ -30,8 +30,8 @@ from ..sim import JointType, ModelBuilder
 
 
 def parse_mjcf(
-    mjcf_filename_or_string: str,
     builder: ModelBuilder,
+    source: str,
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
@@ -60,8 +60,8 @@ def parse_mjcf(
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        mjcf_filename_or_string (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
         floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -92,15 +92,15 @@ def parse_mjcf(
         xform = wp.transform(*xform)
 
     # Check if input is a file path first
-    if os.path.isfile(mjcf_filename_or_string):
+    if os.path.isfile(source):
         # It's a file path
-        mjcf_dirname = os.path.dirname(mjcf_filename_or_string)
-        file = ET.parse(mjcf_filename_or_string)
+        mjcf_dirname = os.path.dirname(source)
+        file = ET.parse(source)
         root = file.getroot()
     else:
         # It's XML string content
         # Strip leading whitespace and byte-order marks
-        xml_content = mjcf_filename_or_string.strip()
+        xml_content = source.strip()
         # Remove BOM if present
         if xml_content.startswith("\ufeff"):
             xml_content = xml_content[1:]

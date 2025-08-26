@@ -76,9 +76,8 @@ ROBOT_CONFIGS = {
 
 
 def _setup_humanoid(articulation_builder):
-    newton.utils.parse_mjcf(
+    articulation_builder.add_mjcf(
         newton.examples.get_asset("nv_humanoid.xml"),
-        articulation_builder,
         ignore_names=["floor", "ground"],
         up_axis="Z",
     )
@@ -93,9 +92,8 @@ def _setup_humanoid(articulation_builder):
 def _setup_g1(articulation_builder):
     asset_path = newton.utils.download_asset("unitree_g1")
 
-    newton.utils.parse_mjcf(
+    articulation_builder.add_mjcf(
         str(asset_path / "mjcf" / "g1_29dof_with_hand_rev_1_0.xml"),
-        articulation_builder,
         collapse_fixed_joints=True,
         up_axis="Z",
         enable_self_collisions=False,
@@ -128,9 +126,8 @@ def _setup_h1(articulation_builder):
     articulation_builder.default_body_armature = 0.1
 
     asset_path = newton.utils.download_asset("unitree_h1")
-    newton.utils.parse_mjcf(
+    articulation_builder.add_mjcf(
         str(asset_path / "mjcf" / "h1_with_hand.xml"),
-        articulation_builder,
         collapse_fixed_joints=True,
         up_axis="Z",
         enable_self_collisions=False,
@@ -145,9 +142,8 @@ def _setup_cartpole(articulation_builder):
     articulation_builder.default_joint_cfg.armature = 0.1
     articulation_builder.default_body_armature = 0.1
 
-    newton.utils.parse_urdf(
+    articulation_builder.add_urdf(
         newton.examples.get_asset("cartpole.urdf"),
-        articulation_builder,
         floating=False,
         enable_self_collisions=False,
         collapse_fixed_joints=True,
@@ -161,9 +157,8 @@ def _setup_cartpole(articulation_builder):
 
 
 def _setup_ant(articulation_builder):
-    newton.utils.parse_usd(
+    articulation_builder.add_usd(
         newton.examples.get_asset("ant.usda"),
-        articulation_builder,
         collapse_fixed_joints=True,
     )
 
@@ -181,9 +176,8 @@ def _setup_quadruped(articulation_builder):
     articulation_builder.default_shape_cfg.kd = 1.0e2
     articulation_builder.default_shape_cfg.kf = 1.0e2
     articulation_builder.default_shape_cfg.mu = 1.0
-    newton.utils.parse_urdf(
+    articulation_builder.add_urdf(
         newton.examples.get_asset("quadruped.urdf"),
-        articulation_builder,
         xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
         floating=True,
         enable_self_collisions=False,
