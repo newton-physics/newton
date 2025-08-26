@@ -315,10 +315,9 @@ class Example:
 
     def capture(self):
         if wp.get_device().is_cuda:
-            with wp.ScopedTimer("capture", detailed=True):
-                with wp.ScopedCapture() as capture:
-                    self.simulate()
-                self.graph = capture.graph
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
         else:
             self.graph = None
 
