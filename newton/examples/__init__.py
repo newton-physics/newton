@@ -194,7 +194,6 @@ def main():
         "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
         "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
         "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
-        "diffsim_bear": "newton.examples.diffsim.example_diffsim_bear",
     }
 
     if len(sys.argv) < 2:

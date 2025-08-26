@@ -277,9 +277,7 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_bear.py">
-        <img src="docs/images/examples/example_diffsim_bear.jpg" alt="DiffSim Bear">
-      </a>
+      <!-- Future diffsim example -->
     </td>
   </tr>
   <tr>
@@ -290,7 +288,7 @@ uv sync --extra examples
       <code>python -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples diffsim_bear</code>
+      <!-- Future MPM example -->
     </td>
   </tr>
 </table>
