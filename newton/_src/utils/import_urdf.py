@@ -51,8 +51,8 @@ def download_asset_tmpfile(url: str):
 
 
 def parse_urdf(
-    urdf_filename: str,
     builder: ModelBuilder,
+    source: str,
     xform: Transform | None = None,
     floating: bool = False,
     base_joint: dict | str | None = None,
@@ -72,8 +72,8 @@ def parse_urdf(
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        urdf_filename (str): The filename of the URDF file to parse.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        source (str): The filename of the URDF file to parse.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
         floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -95,7 +95,7 @@ def parse_urdf(
     else:
         xform = wp.transform(*xform) * axis_xform
 
-    file = ET.parse(urdf_filename)
+    file = ET.parse(source)
     root = file.getroot()
 
     # load joint defaults
@@ -187,7 +187,7 @@ def parse_urdf(
                 if filename.startswith("package://"):
                     fn = filename.replace("package://", "")
                     package_name = fn.split("/")[0]
-                    urdf_folder = os.path.dirname(urdf_filename)
+                    urdf_folder = os.path.dirname(source)
                     # resolve file path from package name, i.e. find
                     # the package folder from the URDF folder
                     if package_name in urdf_folder:
@@ -203,7 +203,7 @@ def parse_urdf(
                     file_tmp = download_asset_tmpfile(filename)
                     filename = file_tmp.name
                 else:
-                    filename = os.path.join(os.path.dirname(urdf_filename), filename)
+                    filename = os.path.join(os.path.dirname(source), filename)
                 if not os.path.exists(filename):
                     warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
                     continue

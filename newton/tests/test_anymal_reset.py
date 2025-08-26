@@ -47,9 +47,8 @@ class TestAnymalReset(unittest.TestCase):
 
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         stage_path = str(asset_path / "usd" / "anymal_d.usda")
-        newton.utils.parse_usd(
+        builder.add_usd(
             stage_path,
-            builder,
             enable_self_collisions=False,
             collapse_fixed_joints=False,
         )
@@ -198,7 +197,7 @@ class TestAnymalReset(unittest.TestCase):
                 self.initial_mjw_data[attr_name] = attr_value.numpy().copy()
             elif isinstance(attr_value, np.ndarray):
                 self.initial_mjw_data[attr_name] = attr_value.copy()
-            elif isinstance(attr_value, (int, float, bool)):
+            elif isinstance(attr_value, int | float | bool):
                 self.initial_mjw_data[attr_name] = copy.deepcopy(attr_value)
 
     def compare_mjw_data_with_initial(self):

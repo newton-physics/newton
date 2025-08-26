@@ -224,6 +224,7 @@ class Style3DModelBuilder(ModelBuilder):
                 np.array(tri_kd)[valid_inds],
                 np.array(tri_drag)[valid_inds],
                 np.array(tri_lift)[valid_inds],
+                strict=False,
             )
         )
         self.tri_aniso_ke.extend(np.array(tri_aniso_ke)[valid_inds])
@@ -355,7 +356,7 @@ class Style3DModelBuilder(ModelBuilder):
             aniso_ke = np.array(edge_aniso_ke).reshape(-1, 3)
             edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
-        self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
+        self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
 
         # compute edge area
         edge_area = (
@@ -378,7 +379,7 @@ class Style3DModelBuilder(ModelBuilder):
         cot2 = cot2d(panel_x3_f1, panel_x4_f1, panel_x2_f1)
         cot3 = cot2d(panel_x4_f0, panel_x3_f0, panel_x1_f0)
         cot4 = cot2d(panel_x4_f1, panel_x3_f1, panel_x2_f1)
-        self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4))
+        self.edge_bending_cot.extend(zip(cot1, cot2, cot3, cot4, strict=False))
 
     def add_aniso_cloth_grid(
         self,

@@ -357,9 +357,8 @@ class Example:
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")
 
-        newton.utils.parse_urdf(
+        builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            builder,
             up_axis=self.up_axis,
             xform=wp.transform(
                 (-50, -20, 50),

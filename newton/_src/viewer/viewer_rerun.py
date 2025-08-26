@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import subprocess
-from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -41,7 +40,7 @@ class ViewerRerun(ViewerBase):
         server: bool = True,
         address: str = "127.0.0.1:9876",
         launch_viewer: bool = True,
-        app_id: Optional[str] = None,
+        app_id: str | None = None,
     ):
         """
         Initialize the ViewerRerun backend for Newton using the rerun visualization library.

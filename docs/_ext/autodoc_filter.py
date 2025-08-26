@@ -60,11 +60,7 @@ def _should_skip_member(
 
         is_callable = callable(obj) or isinstance(
             obj,
-            (
-                property,
-                staticmethod,
-                classmethod,
-            ),
+            property | staticmethod | classmethod,
         )
 
         if is_callable and what == "class":

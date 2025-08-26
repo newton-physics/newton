@@ -6,7 +6,7 @@ This guide will help you install Newton and set up your Python environment.
 System Requirements
 -------------------
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon)
 - NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
 
@@ -87,19 +87,25 @@ Run an example with minimal dependencies:
 
 .. code-block:: console
 
-    uv run newton/examples/basic/example_basic_pendulum.py --viewer null
+    uv run -m newton.examples basic_pendulum --viewer null
 
 Run an example with additional dependencies:
 
 .. code-block:: console
 
-    uv run --extra examples newton/examples/example_humanoid.py
+    uv run --extra examples -m newton.examples robot_humanoid --num-envs 16
 
 Run an example that inferences an RL policy:
 
 .. code-block:: console
 
-    uv run --extra examples --extra torch-cu12 newton/examples/example_anymal_c_walk.py
+    uv run --extra examples --extra torch-cu12 -m newton.examples robot_anymal_c_walk
+
+See a list of all available examples with:
+
+.. code-block:: console
+
+    uv run -m newton.examples
 
 Method 2: Using a Virtual Environment Setup by uv
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -122,7 +128,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             source .venv/bin/activate
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
     .. tab-item:: Windows (console)
         :sync: windows
@@ -130,7 +136,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             .venv\Scripts\activate.bat
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
     .. tab-item:: Windows (PowerShell)
         :sync: windows-ps
@@ -138,7 +144,7 @@ Then you can activate the virtual environment and run an example using the virtu
         .. code-block:: console
 
             .venv\Scripts\Activate.ps1
-            python newton/examples/example_humanoid.py
+            python newton/examples/robot/example_robot_humanoid.py
 
 Method 3: Manual Setup Using Pip in a Virtual Environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -185,7 +191,7 @@ Test the installation by running an example:
 
 .. code-block:: console
 
-    python newton/examples/example_humanoid.py
+    python newton/examples/robot/example_robot_humanoid.py
 
 Next Steps
 ----------

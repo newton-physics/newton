@@ -186,7 +186,7 @@ class Wind:
     @direction.setter
     def direction(self, value):
         """Set wind direction (will be normalized)."""
-        if isinstance(value, (list, tuple)) and len(value) == 3:
+        if isinstance(value, list | tuple) and len(value) == 3:
             # Normalize the direction vector
             import math  # noqa: PLC0415
 

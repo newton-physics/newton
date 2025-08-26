@@ -32,9 +32,8 @@ class TestImportMjcf(unittest.TestCase):
         builder.default_shape_cfg.mu = 789.0
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
-        newton.utils.parse_mjcf(
+        builder.add_mjcf(
             mjcf_filename,
-            builder,
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )
@@ -105,7 +104,7 @@ class TestImportMjcf(unittest.TestCase):
 
             # Parse MJCF
             builder = newton.ModelBuilder()
-            newton.utils.parse_mjcf(mjcf_path, builder, parse_meshes=True)
+            builder.add_mjcf(mjcf_path, parse_meshes=True)
             model = builder.finalize()
 
             # Check that meshes have correct maxhullvert values
@@ -146,7 +145,7 @@ class TestImportMjcf(unittest.TestCase):
 
         # Test diagonal inertia rotation
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_diagonal, builder, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf_diagonal, ignore_inertial_definitions=False)
         model = builder.finalize()
 
         # The quaternion (0.7071068, 0, 0, 0.7071068) in MuJoCo WXYZ format represents a 90-degree rotation around Z-axis
@@ -160,7 +159,7 @@ class TestImportMjcf(unittest.TestCase):
 
         # Test full inertia rotation
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_full, builder, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf_full, ignore_inertial_definitions=False)
         model = builder.finalize()
 
         # For full inertia, we need to compute the expected result manually
@@ -224,7 +223,7 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
+        builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
         # Expected: translation (1, 2, 3) + 90° rotation around Z
@@ -261,7 +260,7 @@ class TestImportMjcf(unittest.TestCase):
         custom_xform = wp.transform(wp.vec3(10.0, 20.0, 30.0), quat_xform)
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder, xform=custom_xform)
+        builder.add_mjcf(mjcf_content, xform=custom_xform)
         model = builder.finalize()
 
         # Compose transforms using warp
@@ -298,7 +297,7 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
+        builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
         # Get all body transforms at once
@@ -347,7 +346,7 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
+        builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
         # For floating base, joint_q should contain the body's world transform
@@ -396,7 +395,7 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
+        builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
         # Get all body transforms at once
@@ -453,7 +452,7 @@ class TestImportMjcf(unittest.TestCase):
 
         # Parse with scale=2.0
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder, scale=2.0)
+        builder.add_mjcf(mjcf_content, scale=2.0)
         model = builder.finalize()
 
         # Get all body transforms at once
@@ -497,7 +496,7 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.utils.parse_mjcf(mjcf_content, builder)
+        builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
         # Get all body transforms at once
@@ -569,5 +568,4 @@ class TestImportMjcf(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)
