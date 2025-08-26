@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal C Walk On Sand
+# Example MPM Anymal
 #
 # Shows Anymal C with a pretrained policy coupled with implicit MPM sand.
 #
 # Example usage (via unified runner):
-#   python -m newton.examples anymal_c_walk_on_sand --viewer gl
+#   python -m newton.examples mpm_anymal --viewer gl
 ###########################################################################
 
 import sys

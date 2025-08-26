@@ -331,7 +331,7 @@ add_example_test(
 )
 add_example_test(
     TestAdvancedRobotExamples,
-    name="mpm.example_anymal_c_walk_on_sand",
+    name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
     test_options={"stage_path": "None", "num_frames": 100, "headless": True, "torch_required": True},
     use_viewer=True,

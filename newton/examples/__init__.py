@@ -186,7 +186,7 @@ def main():
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
-        "mpm_anymal_c_walk_on_sand": "newton.examples.mpm.example_anymal_c_walk_on_sand",
+        "mpm_anymal": "newton.examples.mpm.example_mpm_anymal",
         "robot_anymal_c_walk": "newton.examples.robot.example_anymal_c_walk",
         "robot_anymal_d": "newton.examples.robot.example_anymal_d",
         "robot_cartpole": "newton.examples.robot.example_cartpole",

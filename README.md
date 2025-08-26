@@ -211,8 +211,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_anymal_c_walk_on_sand.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_anymal_c_walk_on_sand.jpg" alt="Anymal-C Walk on Sand">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_anymal.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_anymal.jpg" alt="MPM Anymal">
       </a>
     </td>
     <td align="center" width="33%">
@@ -224,7 +224,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal_c_walk_on_sand</code>
+      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->
