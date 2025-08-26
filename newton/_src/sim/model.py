@@ -290,6 +290,8 @@ class Model:
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_group = None
         """Environment group index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.max_joints_per_articulation = 0
+        """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
