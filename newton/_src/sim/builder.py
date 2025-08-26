@@ -3258,6 +3258,7 @@ class ModelBuilder:
                 np.array(tri_kd)[valid_inds],
                 np.array(tri_drag)[valid_inds],
                 np.array(tri_lift)[valid_inds],
+                strict=False,
             )
         )
         areas = areas.tolist()
@@ -3440,7 +3441,7 @@ class ModelBuilder:
         edge_ke = init_if_none(edge_ke, self.default_edge_ke)
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
 
-        self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
+        self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
 
     def add_cloth_grid(
         self,
