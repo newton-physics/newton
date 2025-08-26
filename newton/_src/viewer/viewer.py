@@ -193,7 +193,7 @@ class ViewerBase:
 
         # normalize geo_scale to a list for hashing + mesh creation
         def _as_float_list(value):
-            if isinstance(value, (tuple, list, np.ndarray)):
+            if isinstance(value, tuple | list | np.ndarray):
                 return [float(v) for v in value]
             else:
                 return [float(value)]
@@ -329,6 +329,14 @@ class ViewerBase:
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
 
+    def log_gizmo(
+        self,
+        gid,
+        transform,
+    ):
+        # Optional: for interactive viewers
+        pass
+
     @abstractmethod
     def log_mesh(
         self,
@@ -442,7 +450,7 @@ class ViewerBase:
         """
 
         # normalize
-        if isinstance(geo_scale, (list, tuple, np.ndarray)):
+        if isinstance(geo_scale, list | tuple | np.ndarray):
             scale_list = [float(v) for v in geo_scale]
         else:
             scale_list = [float(geo_scale)]

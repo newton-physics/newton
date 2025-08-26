@@ -195,7 +195,7 @@ class IKSolver:
             main = wp.get_stream(self.device)
             init_evt = main.record_event()
             for obj, offset, obj_stream, sync_event in zip(
-                self.objectives, self.residual_offsets, self.objective_streams, self.sync_events
+                self.objectives, self.residual_offsets, self.objective_streams, self.sync_events, strict=False
             ):
                 obj_stream.wait_event(init_evt)
                 with wp.ScopedStream(obj_stream):
@@ -204,7 +204,7 @@ class IKSolver:
             for sync_event in self.sync_events:
                 main.wait_event(sync_event)
         else:
-            for obj, offset in zip(self.objectives, self.residual_offsets):
+            for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
                 fn(obj, offset, *extra)
 
     def solve(self, iterations=10, step_size=1.0):
@@ -254,7 +254,7 @@ class IKSolver:
 
             self.tape.outputs = [current_residuals_wp]
 
-            for obj, offset in zip(self.objectives, self.residual_offsets):
+            for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
                 obj.compute_jacobian_autodiff(self.tape, self.model, self.jacobian, offset, self.dq_dof)
                 self.tape.zero()
 
@@ -288,7 +288,7 @@ class IKSolver:
             if need_analytic:
                 self._compute_motion_subspace()
 
-            for obj, offset in zip(self.objectives, self.residual_offsets):
+            for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
                 if obj.supports_analytic():
                     obj.compute_jacobian_analytic(
                         self.body_q, self.joint_q, self.model, self.jacobian, self.joint_S_s, offset

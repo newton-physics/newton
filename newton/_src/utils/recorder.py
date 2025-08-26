@@ -191,7 +191,7 @@ class ModelAndStateRecorder:
         if value is None:
             return None
 
-        if isinstance(value, (int, float, bool, str, list, dict, set, tuple)):
+        if isinstance(value, int | float | bool | str | list | dict | set | tuple):
             return value
         elif isinstance(value, np.ndarray):
             return value

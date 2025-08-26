@@ -28,18 +28,19 @@ import warp as wp
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
-from ..sim import JointMode, ModelBuilder
+from ..sim.builder import ModelBuilder
+from ..sim.joints import JointMode
 
 
 def parse_usd(
-    source,
     builder: ModelBuilder,
+    source,
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
     invert_rotations: bool = True,
-    verbose: bool = wp.config.verbose,
+    verbose: bool = False,
     ignore_paths: list[str] | None = None,
     cloned_env: str | None = None,
     collapse_fixed_joints: bool = False,
@@ -50,6 +51,7 @@ def parse_usd(
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
     load_non_physics_prims: bool = True,
+    hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ) -> dict[str, Any]:
     """
@@ -58,18 +60,17 @@ def parse_usd(
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
     Args:
-        source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
-        default_density (float): The default density to use for bodies without a density attribute.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
-        verbose (bool): If True, print additional information about the parsed USD file.
+        verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
-        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene with as "newton:collapse_fixed_joints".
+        collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
@@ -77,6 +78,7 @@ def parse_usd(
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+        hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
 
     Returns:
@@ -104,7 +106,7 @@ def parse_usd(
             * - "scene_attributes"
               - Dictionary of all attributes applied to the PhysicsScene prim
             * - "collapse_results"
-              - Dictionary returned by :math:`ModelBuilder.collapse_fixed_joints()` if `collapse_fixed_joints` is True, otherwise None.
+              - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
     """
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -308,6 +310,14 @@ def parse_usd(
         ):
             return
         xform = incoming_xform * parse_xform(prim)
+        if prim.IsInstance():
+            proto = prim.GetPrototype()
+            for child in proto.GetChildren():
+                # remap prototype child path to this instance's path (instance proxy)
+                inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
+                inst_child = stage.GetPrimAtPath(inst_path)
+                load_visual_shapes(parent_body_id, inst_child, xform)
+            return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
@@ -452,12 +462,6 @@ def parse_usd(
                 path_shape_scale[path_name] = scale
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
-
-        if type_name == "xform":
-            if prim.IsInstance():
-                proto = prim.GetPrototype()
-                for child in proto.GetChildren():
-                    load_visual_shapes(parent_body_id, child, xform)
 
         for child in prim.GetChildren():
             load_visual_shapes(parent_body_id, child, xform)
@@ -775,7 +779,7 @@ def parse_usd(
         if verbose:
             print(physics_utils_results[key])
 
-        yield from zip(*physics_utils_results[key])
+        yield from zip(*physics_utils_results[key], strict=False)
 
     # Setting up the default material
     material_specs[""] = PhysicsMaterial()
@@ -792,7 +796,7 @@ def parse_usd(
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs):
+        for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs, strict=False):
             body_path = str(prim_path)
             body_specs[body_path] = rigid_body_desc
             body_density[body_path] = default_shape_density
@@ -823,7 +827,7 @@ def parse_usd(
                 UsdPhysics.ObjectType.DistanceJoint,
             }:
                 paths, joint_specs = value
-                for path, joint_spec in zip(paths, joint_specs):
+                for path, joint_spec in zip(paths, joint_specs, strict=False):
                     joint_descriptions[str(path)] = joint_spec
 
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
@@ -832,7 +836,7 @@ def parse_usd(
 
         articulation_id = builder.articulation_count
         body_data = {}
-        for path, desc in zip(paths, articulation_descs):
+        for path, desc in zip(paths, articulation_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             builder.add_articulation(str(path))
             body_ids = {}
@@ -970,7 +974,7 @@ def parse_usd(
             UsdPhysics.ObjectType.PlaneShape,
         }:
             paths, shape_specs = value
-            for xpath, shape_spec in zip(paths, shape_specs):
+            for xpath, shape_spec in zip(paths, shape_specs, strict=False):
                 prim = stage.GetPrimAtPath(xpath)
                 # print(prim)
                 # print(shape_spec)
@@ -1022,6 +1026,7 @@ def parse_usd(
                         restitution=material.restitution,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
+                        is_visible=not hide_collision_shapes,
                     ),
                     "key": path,
                 }
@@ -1168,7 +1173,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs):
+        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -1236,7 +1241,7 @@ def parse_usd(
             shape_key = builder.shape_key
             joint_key = builder.joint_key
             body_key = builder.body_key
-            for env_path, env_xform in zip(cloned_env_paths, cloned_env_xforms):
+            for env_path, env_xform in zip(cloned_env_paths, cloned_env_xforms, strict=False):
                 shape_count = multi_env_builder.shape_count
                 body_count = multi_env_builder.body_count
                 original_body_count = multi_env_builder.body_count

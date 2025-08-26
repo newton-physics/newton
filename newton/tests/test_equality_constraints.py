@@ -17,7 +17,6 @@ import os
 import unittest
 
 import numpy as np
-import warp as wp
 
 import newton
 
@@ -30,9 +29,8 @@ class TestEqualityConstraints(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        newton.utils.parse_mjcf(
+        builder.add_mjcf(
             os.path.join(os.path.dirname(__file__), "assets", "constraints.xml"),
-            builder,
             ignore_names=["floor", "ground"],
             up_axis="Z",
             skip_equality_constraints=False,
@@ -82,5 +80,4 @@ class TestEqualityConstraints(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)
