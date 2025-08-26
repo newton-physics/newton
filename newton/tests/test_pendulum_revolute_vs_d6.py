@@ -20,7 +20,6 @@ import numpy as np
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
-from newton.utils import parse_usd
 
 
 class TestPendulumRevoluteVsD6(unittest.TestCase):
@@ -31,7 +30,7 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
 
         # Parse and build model
         builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
-        parse_usd(usd_path, builder, only_load_enabled_rigid_bodies=False)
+        builder.add_usd(usd_path, only_load_enabled_rigid_bodies=False)
         model = builder.finalize()
 
         # Check joint types

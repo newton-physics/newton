@@ -38,7 +38,6 @@ import newton.ik as ik
 import newton.utils
 
 
-# Helper for Roberts sequence generation
 @lru_cache(maxsize=64)
 def _roberts_root(dim: int) -> float:
     x = 1.5
@@ -99,7 +98,7 @@ class Example:
         self.robot_name = "franka"
         self.asset_name = "franka_emika_panda"
         self.asset_file = Path("urdf/fr3.urdf")
-        self.parser = partial(newton.utils.parse_urdf, scale=1.0)
+        self.parser = partial(newton.ModelBuilder.add_urdf, scale=1.0)
         self.ee_names = ("ee",)
         self.ee_links = (9,)
         self.seeds = 64
@@ -116,7 +115,7 @@ class Example:
         franka.num_rigid_contacts_per_env = 0
         franka.default_shape_cfg.density = 100.0
         asset_path = newton.utils.download_asset(self.asset_name) / self.asset_file
-        self.parser(asset_path, franka, floating=False)
+        self.parser(franka, asset_path, floating=False)
         model = franka.finalize(requires_grad=False)
         return model
 

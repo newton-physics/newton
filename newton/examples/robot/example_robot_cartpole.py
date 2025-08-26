@@ -14,15 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Basic URDF
+# Example Robot Cartpole
 #
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
+# Shows how to set up a simulation of a rigid-body cartpole articulation
+# from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Users can pick bodies by right-clicking and dragging with the mouse.
-#
-# Command: python -m newton.examples basic_urdf
+# Command: python -m newton.examples robot_cartpole --num-envs 100
 #
 ###########################################################################
 
@@ -33,9 +30,8 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs):
-        # setup simulation parameters first
-        self.fps = 100
+    def __init__(self, viewer, num_envs=8):
+        self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
@@ -45,72 +41,56 @@ class Example:
 
         self.viewer = viewer
 
-        quadruped = newton.ModelBuilder()
+        cartpole = newton.ModelBuilder()
+        cartpole.default_shape_cfg.density = 100.0
+        cartpole.default_joint_cfg.armature = 0.1
+        cartpole.default_body_armature = 0.1
 
-        # set default parameters for the quadruped
-        quadruped.default_body_armature = 0.01
-        quadruped.default_joint_cfg.armature = 0.01
-        quadruped.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
-        quadruped.default_joint_cfg.target_ke = 2000.0
-        quadruped.default_joint_cfg.target_kd = 1.0
-        quadruped.default_shape_cfg.ke = 1.0e4
-        quadruped.default_shape_cfg.kd = 1.0e2
-        quadruped.default_shape_cfg.kf = 1.0e2
-        quadruped.default_shape_cfg.mu = 1.0
-
-        # parse the URDF file
-        quadruped.add_urdf(
-            newton.examples.get_asset("quadruped.urdf"),
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
-            floating=True,
+        cartpole.add_usd(
+            newton.examples.get_asset("cartpole.usda"),
             enable_self_collisions=False,
+            collapse_fixed_joints=True,
         )
-
         # set initial joint positions
-        quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
+        cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
-        # use "scene" for the entire set of environments
-        scene = newton.ModelBuilder()
-
-        # use the builder.replicate() function to create N copies of the environment
-        scene.replicate(quadruped, self.num_envs)
-        scene.add_ground_plane()
+        builder = newton.ModelBuilder()
+        builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
 
         # finalize model
-        self.model = scene.finalize()
+        self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
+        # self.solver = newton.solvers.SolverFeatherstone(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        # we do not need to evaluate contacts for this example
+        self.contacts = None
+
+        # Evaluating forward kinematics is needed only for maximal-coordinate solvers
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
 
-        # not required for MuJoCo, but required for other solvers
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        # put graph capture into it's own function
         self.capture()
 
     def capture(self):
+        self.graph = None
         if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # apply forces to the model
+            # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -124,25 +104,20 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
-        pass
-
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
-
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create viewer and run
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)

@@ -111,11 +111,17 @@ __all__ += [
 
 # ==================================================================================
 # importers and asset management
-# TODO: move importers to ModelBuilder, e.g., parse_mjcf() -> ModelBuilder.load_mjcf()
+# TODO: move importers to ModelBuilder, e.g., parse_mjcf() -> ModelBuilder.add_mjcf()
 # ==================================================================================
 from ._src.utils.download_assets import download_asset  # noqa: E402
+
+# deprecated, use ModelBuilder.add_mjcf() instead
 from ._src.utils.import_mjcf import parse_mjcf  # noqa: E402
+
+# deprecated, use ModelBuilder.add_urdf() instead
 from ._src.utils.import_urdf import parse_urdf  # noqa: E402
+
+# deprecated, use ModelBuilder.add_usd() instead
 from ._src.utils.import_usd import parse_usd  # noqa: E402
 
 __all__ += [

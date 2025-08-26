@@ -16,7 +16,8 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_quadruped import Example
+import newton
+from newton.examples.basic.example_basic_urdf import Example
 
 
 class FastExampleQuadrupedXPBD:
@@ -25,7 +26,7 @@ class FastExampleQuadrupedXPBD:
 
     def setup(self):
         self.num_frames = 1000
-        self.example = Example(stage_path=None, num_envs=200)
+        self.example = Example(viewer=newton.viewer.ViewerNull(num_frames=self.num_frames), num_envs=200)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

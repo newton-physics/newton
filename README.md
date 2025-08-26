@@ -107,6 +107,67 @@ uv sync --extra examples
   </tr>
 </table>
 
+## Robot Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_cartpole.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_cartpole.jpg" alt="Cartpole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_humanoid.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_humanoid.jpg" alt="Humanoid">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_g1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_g1.jpg" alt="G1">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_cartpole</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_humanoid</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_g1</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_h1.jpg" alt="H1">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_d.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_d.jpg" alt="Anymal D">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_c_walk.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_anymal_d</code>
+    </td>
+    <td align="center">
+      <code>uv run --extra torch-cu12 -m newton.examples robot_anymal_c_walk</code>
+    </td>
+  </tr>
+</table>
+
 ## Cloth Examples
 
 <table>
@@ -182,7 +243,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future MPM example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_anymal.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_anymal.jpg" alt="MPM Anymal">
+      </a>
     </td>
     <td align="center" width="33%">
       <!-- Future MPM example -->
@@ -193,7 +256,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples mpm_granular</code>
     </td>
     <td align="center">
-      <!-- Future MPM example -->
+      <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal</code>
     </td>
     <td align="center">
       <!-- Future MPM example -->

@@ -60,6 +60,7 @@ examples = [
 
 # Extra dependency needed to run examples that inference an RL policy
 torch-cu12 = [
+    "newton-physics[examples]",      # include example dependencies
     "torch>=2.7.0",                  # Cuda 12 PyTorch
 ]
 

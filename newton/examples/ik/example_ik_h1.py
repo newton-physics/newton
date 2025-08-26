@@ -46,9 +46,8 @@ class Example:
         # Build a single H1 (fixed base for stability) + ground
         # ------------------------------------------------------------------
         h1 = newton.ModelBuilder()
-        newton.utils.parse_mjcf(
+        h1.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
-            h1,
             floating=False,
         )
         h1.add_ground_plane()

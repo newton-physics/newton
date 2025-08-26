@@ -20,7 +20,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
-class SlowExampleAnymalFeatherstone:
+class SlowExampleAnymalMuJoCo:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -37,7 +37,7 @@ class SlowExampleAnymalFeatherstone:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_anymal_c_walk",
+            "newton.examples.robot.example_robot_anymal_c_walk",
             "--stage-path",
             "None",
             "--num-frames",
@@ -68,7 +68,7 @@ class SlowExampleCartpoleMuJoCo:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_cartpole",
+            "newton.examples.robot.example_robot_cartpole",
             "--stage-path",
             "None",
             "--num-frames",
@@ -157,7 +157,7 @@ class SlowExampleHumanoidMuJoCo:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_humanoid",
+            "newton.examples.robot.example_robot_humanoid",
             "--stage-path",
             "None",
             "--num-frames",
@@ -189,7 +189,7 @@ class SlowExampleQuadrupedXPBD:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_quadruped",
+            "newton.examples.basic.example_basic_urdf",
             "--stage-path",
             "None",
             "--num-frames",
