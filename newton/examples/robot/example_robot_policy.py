@@ -232,13 +232,13 @@ class Example:
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
 
-        newton.utils.parse_usd(
+        builder.add_usd(
             newton.examples.get_asset(asset_directory + "/" + robot_config.asset_path),
-            builder,
-            joint_drive_gains_scaling=1.0,
+            xform=wp.transform(wp.vec3(0, 0, 0.8)),
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             joint_ordering="dfs",
+            hide_collision_shapes=True,
         )
         builder.approximate_meshes("convex_hull")
 
@@ -322,8 +322,8 @@ class Example:
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # # Apply forces to the model for picking, wind, etc
-            # self.viewer.apply_forces(self.state_0)
+            # Apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
