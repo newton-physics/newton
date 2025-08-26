@@ -279,7 +279,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "headless": True},
+    test_options={"usd_required": True, "num_frames": 500, "headless": True, "torch_required": True},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
