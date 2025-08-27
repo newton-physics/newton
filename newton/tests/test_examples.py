@@ -394,8 +394,9 @@ class TestRobotPolicyExamplesGo2(unittest.TestCase):
 add_example_test(
     TestRobotPolicyExamplesGo2,
     name="robot.example_robot_policy",
-    devices=test_devices,
-    test_options_cuda={"num_frames": 500, "torch_required": True, "robot": "go2"},
+    devices=cuda_test_devices,
+    test_options={"torch_required": True},
+    test_options_cuda={"num_frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
 )
 
@@ -407,8 +408,9 @@ class TestRobotPolicyExamplesGo2_Physx(unittest.TestCase):
 add_example_test(
     TestRobotPolicyExamplesGo2_Physx,
     name="robot.example_robot_policy",
-    devices=test_devices,
-    test_options_cuda={"num_frames": 500, "torch_required": True, "robot": "go2", "physx": True},
+    devices=cuda_test_devices,
+    test_options={"torch_required": True},
+    test_options_cuda={"num_frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
 )
 
