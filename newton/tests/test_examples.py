@@ -238,14 +238,6 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
-    name="example_cloth_self_contact",
-    devices=test_devices,
-    test_options={"usd_required": True, "stage_path": "None"},
-    test_options_cuda={"num_frames": 150},
-    test_options_cpu={"num_frames": 5},
-)
-add_example_test(
-    TestClothExamples,
     name="cloth.example_cloth_hanging",
     devices=test_devices,
     test_options={},
@@ -259,6 +251,22 @@ add_example_test(
     test_options={},
     test_options_cuda={"num_frames": 32},
     test_options_cpu={"num_frames": 2},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_cloth_franka",
+    devices=test_devices,
+    test_options={"num_frames": 50},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_cloth_twist",
+    devices=test_devices,
+    test_options={"num_frames": 100},
+    test_options_cpu={"num_frames": 20},
     use_viewer=True,
 )
 
@@ -321,14 +329,6 @@ class TestAdvancedRobotExamples(unittest.TestCase):
     pass
 
 
-add_example_test(
-    TestAdvancedRobotExamples,
-    name="example_robot_manipulating_cloth",
-    devices=cuda_test_devices,
-    test_options={"stage_path": "None", "num_frames": 300},
-    test_options_cpu={"num_frames": 2},
-    use_viewer=True,
-)
 add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
