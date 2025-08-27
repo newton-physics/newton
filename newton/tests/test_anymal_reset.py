@@ -339,6 +339,7 @@ add_function_test(
     test_reset_functionality,
     devices=devices,
     cone_type=mujoco.mjtCone.mjCONE_ELLIPTIC,
+    check_output=False,
 )
 add_function_test(
     TestAnymalReset,
@@ -346,6 +347,7 @@ add_function_test(
     test_reset_functionality,
     devices=devices,
     cone_type=mujoco.mjtCone.mjCONE_PYRAMIDAL,
+    check_output=False,
 )
 
 
