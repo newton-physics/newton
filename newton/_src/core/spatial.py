@@ -238,7 +238,7 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
 
     .. math::
 
-       x' = \begin{bmatrix} R & 0 \\ [p]_{\times} R & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & 0 \\\\ [p]_{\\times} R & R \\end{bmatrix} x
 
     where *R* and *p* are the rotation and translation components of ``t`` and
     ``[p]_x`` is the skew-symmetric matrix of *p*.
@@ -266,7 +266,7 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
 
 @wp.func
 def transform_wrench(t: wp.transform, x: wp.spatial_vector):
-    """Transform a spatial **wrench** between coordinate frames.
+    """Transform a spatial wrench between coordinate frames.
 
     A spatial wrench is the dual vector to a spatial twist and consists of a
     torque-force pair ``x = (τ, f)``.
@@ -277,7 +277,7 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
 
     .. math::
 
-       x' = \begin{bmatrix} R & [p]_{\times} R \\ 0 & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & [p]_{\\times} R \\\\ 0 & R \\end{bmatrix} x
 
     Args:
         t (transform): The transform from the **source** frame to the

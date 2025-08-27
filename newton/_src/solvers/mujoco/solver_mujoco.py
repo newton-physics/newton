@@ -1369,8 +1369,8 @@ class SolverMuJoCo(SolverBase):
             xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
-            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
-            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+            ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
+            qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_dof_count // nworld

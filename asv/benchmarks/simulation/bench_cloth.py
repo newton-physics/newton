@@ -16,8 +16,10 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_cloth_self_contact import Example as ExampleClothSelfContact
-from newton.examples.example_robot_manipulating_cloth import Example as ExampleClothManipulation
+import newton.examples
+from newton.examples.cloth.example_cloth_franka import Example as ExampleClothManipulation
+from newton.examples.cloth.example_cloth_twist import Example as ExampleClothSelfContact
+from newton.viewer import ViewerNull
 
 
 class FastExampleClothManipulation:
@@ -27,16 +29,11 @@ class FastExampleClothManipulation:
 
     def setup(self):
         self.num_frames = 30
-        self.example = ExampleClothManipulation(stage_path=None, num_frames=self.num_frames)
+        self.example = ExampleClothManipulation(ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        for frame_idx in range(self.num_frames):
-            self.example.step()
-
-            if self.example.cloth_solver and not (frame_idx % 10):
-                self.example.cloth_solver.rebuild_bvh(self.example.state_0)
-                self.example.capture_cuda_graph()
+        newton.examples.run(self.example)
 
         wp.synchronize_device()
 
@@ -47,22 +44,10 @@ class FastExampleClothSelfContactVBD:
 
     def setup(self):
         self.num_frames = 100
-        self.example = ExampleClothSelfContact(stage_path=None)
+        self.example = ExampleClothSelfContact(ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        for i in range(self.num_frames):
-            self.example.step()
-
-            if (
-                i != 0
-                and not i % self.example.bvh_rebuild_frames
-                and self.example.use_cuda_graph
-                and self.example.solver.handle_self_contact
-            ):
-                self.example.solver.rebuild_bvh(self.example.state_0)
-                with wp.ScopedCapture() as capture:
-                    self.example.simulate_substeps()
-                self.example.cuda_graph = capture.graph
+        newton.examples.run(self.example)
 
         wp.synchronize_device()

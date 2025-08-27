@@ -30,9 +30,8 @@ import warp as wp
 import warp.examples
 from pxr import Usd, UsdGeom
 
-wp.config.enable_backward = False
-
 import newton
+import newton.examples
 from newton import ParticleFlags
 
 
@@ -122,25 +121,27 @@ def apply_rotation(
 
 
 class Example:
-    def __init__(self, stage_path="example_cloth_self_contact.usd", num_frames=300):
-        fps = 60
-        self.frame_dt = 1.0 / fps
-        # must be an even number when using CUDA Graph
-        self.num_substeps = 10
+    def __init__(self, viewer):
+        # setup simulation parameters first
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+
+        # group related attributes by prefix
+        self.sim_time = 0.0
+        self.sim_substeps = 10  # must be an even number when using CUDA Graph
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
         self.iterations = 4
-        self.dt = self.frame_dt / self.num_substeps
         # the BVH used by SolverVBD will be rebuilt every self.bvh_rebuild_frames
         # When the simulated object deforms significantly, simply refitting the BVH can lead to deterioration of the BVH's
         # quality, in this case we need to completely rebuild the tree to achieve better query efficiency.
         self.bvh_rebuild_frames = 10
 
-        self.num_frames = num_frames
-        self.sim_time = 0.0
-        self.profiler = {}
-
         self.rot_angular_velocity = math.pi / 3
         self.rot_end_time = 10
-        self.use_cuda_graph = wp.get_device().is_cuda
+
+        # save a reference to the viewer
+        self.viewer = viewer
 
         usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "square_cloth.usd"))
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth/cloth"))
@@ -148,30 +149,28 @@ class Example:
         mesh_points = np.array(usd_geom.GetPointsAttr().Get())
         mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
 
-        self.input_scale_factor = 1.0
-        self.renderer_scale_factor = 0.01
-
-        vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
+        vertices = [wp.vec3(v) for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
 
-        builder = newton.ModelBuilder()
-        builder.add_cloth_mesh(
+        scene = newton.ModelBuilder(gravity=0)
+        scene.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
-            rot=wp.quat_identity(),
-            scale=1.0,
+            rot=wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2),
+            scale=0.01,
             vertices=vertices,
             indices=mesh_indices,
             vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.02,
-            tri_ke=1.0e5,
-            tri_ka=1.0e5,
-            tri_kd=2.0e-4,
-            edge_ke=10,
+            density=0.2,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            tri_kd=2.0e-7,
+            edge_ke=1e-3,
+            edge_kd=1e-4,
         )
-        builder.color()
-        self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 1.0e-6
+        scene.color()
+        self.model = scene.finalize()
+        self.model.soft_contact_ke = 1.0e3
+        self.model.soft_contact_kd = 1.0e-4
         self.model.soft_contact_mu = 0.2
 
         cloth_size = 50
@@ -190,15 +189,15 @@ class Example:
             self.model,
             self.iterations,
             handle_self_contact=True,
-            self_contact_radius=0.2,
-            self_contact_margin=0.35,
+            self_contact_radius=0.002,
+            self_contact_margin=0.0035,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
 
-        rot_axes = [[1, 0, 0]] * len(right_side) + [[-1, 0, 0]] * len(left_side)
+        rot_axes = [[0, 1, 0]] * len(right_side) + [[0, -1, 0]] * len(left_side)
 
         self.rot_point_indices = wp.array(rot_point_indices, dtype=int)
         self.t = wp.zeros((1,), dtype=float)
@@ -224,22 +223,27 @@ class Example:
             ],
         )
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(path=stage_path, model=self.model, scaling=0.05)
-            self.renderer.enable_backface_culling = False
-            self.renderer.draw_grid = False
-            self.renderer.render_wireframe = True
+        self.viewer.set_model(self.model)
 
-        self.cuda_graph = None
-        if self.use_cuda_graph:
+        # put graph capture into it's own function
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
-                self.simulate_substeps()
-            self.cuda_graph = capture.graph
+                self.simulate()
+            self.graph = capture.graph
 
-    def simulate_substeps(self):
+    def simulate(self):
         self.contacts = self.model.collide(self.state_0)
-        for _ in range(self.num_substeps):
+        self.solver.rebuild_bvh(self.state_0)
+        for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
+
             wp.launch(
                 kernel=apply_rotation,
                 dim=self.rot_point_indices.shape[0],
@@ -250,7 +254,7 @@ class Example:
                     self.roots_to_ps,
                     self.t,
                     self.rot_angular_velocity,
-                    self.dt,
+                    self.sim_dt,
                     self.rot_end_time,
                 ],
                 outputs=[
@@ -259,60 +263,42 @@ class Example:
                 ],
             )
 
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
-            (self.state_0, self.state_1) = (self.state_1, self.state_0)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
+            self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", print=False, dict=self.profiler):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.cuda_graph)
-            else:
-                self.simulate_substeps()
-            self.sim_time += self.frame_dt
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
 
-    def run(self):
-        for i in range(self.num_frames):
-            self.step()
-            self.render()
-            print(f"[{i:4d}/{self.num_frames}]")
+        self.sim_time += self.frame_dt
 
-            if i != 0 and not i % self.bvh_rebuild_frames and self.use_cuda_graph and self.solver.handle_self_contact:
-                self.solver.rebuild_bvh(self.state_0)
-                with wp.ScopedCapture() as capture:
-                    self.simulate_substeps()
-                self.cuda_graph = capture.graph
+    def test(self):
+        pass
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
-        self.renderer.end_frame()
+        # Begin frame with time
+        self.viewer.begin_frame(self.sim_time)
+
+        # Render model-driven content (ground plane)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Parse arguments and initialize viewer
+    parser = newton.examples.create_parser()
+    parser.set_defaults(num_frames=300)
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_cloth_self_contact.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=300, help="Total number of frames.")
+    viewer, args = newton.examples.init(parser)
 
-    args = parser.parse_known_args()[0]
+    # Create example and run
+    example = Example(viewer)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        example.run()
-
-        frame_times = example.profiler["step"]
-        print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

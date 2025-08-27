@@ -39,7 +39,6 @@ newton.utils
    quat_twist_angle
    smooth_max
    smooth_min
-   transform_inertia
    transform_twist
    transform_wrench
    vec_abs

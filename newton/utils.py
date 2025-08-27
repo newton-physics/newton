@@ -87,7 +87,6 @@ from ._src.utils import (  # noqa: E402
     leaky_min,
     smooth_max,
     smooth_min,
-    transform_inertia,
     vec_abs,
     vec_leaky_max,
     vec_leaky_min,
@@ -101,7 +100,6 @@ __all__ += [
     "leaky_min",
     "smooth_max",
     "smooth_min",
-    "transform_inertia",
     "vec_abs",
     "vec_leaky_max",
     "vec_leaky_min",
@@ -110,25 +108,12 @@ __all__ += [
 ]
 
 # ==================================================================================
-# importers and asset management
-# TODO: move importers to ModelBuilder, e.g., parse_mjcf() -> ModelBuilder.add_mjcf()
+# asset management
 # ==================================================================================
 from ._src.utils.download_assets import download_asset  # noqa: E402
 
-# deprecated, use ModelBuilder.add_mjcf() instead
-from ._src.utils.import_mjcf import parse_mjcf  # noqa: E402
-
-# deprecated, use ModelBuilder.add_urdf() instead
-from ._src.utils.import_urdf import parse_urdf  # noqa: E402
-
-# deprecated, use ModelBuilder.add_usd() instead
-from ._src.utils.import_usd import parse_usd  # noqa: E402
-
 __all__ += [
     "download_asset",
-    "parse_mjcf",
-    "parse_urdf",
-    "parse_usd",
 ]
 
 # ==================================================================================
