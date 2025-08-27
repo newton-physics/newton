@@ -8,7 +8,7 @@ env:
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-github-actions-role-Role-GbdM0RBoT4xW
-  AWS_ROLE_DURATION: 3600
+  AWS_ROLE_DURATION: 7200
   AWS_S3_BUCKET: newton-github-workflow-artifacts
 
 on:
@@ -69,7 +69,7 @@ jobs:
       name: ${{ needs.check-author-membership.outputs.membership_status != 'CONFIRMED_MEMBER' && 'external-pr-approval' || '' }}
       url: ${{ github.event.pull_request.html_url }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     permissions:
       id-token: write
       contents: read
@@ -216,7 +216,7 @@ jobs:
 
           echo "--- Waiting for command to complete... ---"
           final_status="Success"
-          TIMEOUT=3600
+          TIMEOUT=6600
           INTERVAL=30
           elapsed_time=0
 
