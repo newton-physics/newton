@@ -202,21 +202,22 @@ uv sync --extra examples
 </table>
 
 ## Inverse Kinematics Examples
+
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/ik/example_ik_franka.py">
-        <img src="docs/images/examples/example_ik_franka.jpg" alt="IK Franka">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_franka.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_franka.jpg" alt="IK Franka">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/ik/example_ik_h1.py">
-        <img src="docs/images/examples/example_ik_h1.jpg" alt="IK H1">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_h1.jpg" alt="IK H1">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/ik/example_ik_benchmark.py">
-        <img src="docs/images/examples/example_ik_benchmark.jpg" alt="IK Benchmark">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_benchmark.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_benchmark.jpg" alt="IK Benchmark">
       </a>
     </td>
   </tr>
@@ -230,26 +231,26 @@ uv sync --extra examples
     <td align="center">
       <code>uv run -m newton.examples ik_benchmark</code>
     </td>
-    
+
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/cloth/example_cloth_franka.py">
-        <img src="docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/cloth/example_cloth_twist.py">
-        <img src="docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_twist.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
       </a>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <code>python -m newton.examples cloth_franka</code>
+      <code>uv run -m newton.examples cloth_franka</code>
     </td>
     <td align="center">
-      <code>python -m newton.examples cloth_twist</code>
+      <code>uv run -m newton.examples cloth_twist</code>
     </td>
   </tr>
 
@@ -324,18 +325,18 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_ball.py">
-        <img src="docs/images/examples/example_diffsim_ball.jpg" alt="DiffSim Ball">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_ball.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_ball.jpg" alt="DiffSim Ball">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_cloth.py">
-        <img src="docs/images/examples/example_diffsim_cloth.jpg" alt="DiffSim Cloth">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_cloth.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_cloth.jpg" alt="DiffSim Cloth">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_drone.py">
-        <img src="docs/images/examples/example_diffsim_drone.jpg" alt="DiffSim Drone">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_drone.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_drone.jpg" alt="DiffSim Drone">
       </a>
     </td>
   </tr>
@@ -352,13 +353,13 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_spring_cage.py">
-        <img src="docs/images/examples/example_diffsim_spring_cage.jpg" alt="DiffSim Spring Cage">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_spring_cage.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_spring_cage.jpg" alt="DiffSim Spring Cage">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="newton/examples/diffsim/example_diffsim_soft_body.py">
-        <img src="docs/images/examples/example_diffsim_soft_body.jpg" alt="DiffSim Soft Body">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_soft_body.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_soft_body.jpg" alt="DiffSim Soft Body">
       </a>
     </td>
     <td align="center" width="33%">
