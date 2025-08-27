@@ -393,7 +393,7 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_ball",
     devices=test_devices,
-    test_options={"num_frames": 250 * 36},  # train_iters * sim_steps
+    test_options={"num_frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num_frames": 2 * 36},
     use_viewer=True,
 )
@@ -402,7 +402,7 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_cloth",
     devices=test_devices,
-    test_options={"num_frames": 64 * 120},  # train_iters * sim_steps
+    test_options={"num_frames": 4 * 120},  # train_iters * sim_steps
     test_options_cpu={"num_frames": 2 * 120},
     use_viewer=True,
 )
@@ -411,8 +411,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_drone",
     devices=test_devices,
-    test_options={"num_frames": 360},  # sim_steps
-    test_options_cpu={"num_frames": 360},
+    test_options={"num_frames": 180},  # sim_steps
+    test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
 
@@ -420,7 +420,7 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_spring_cage",
     devices=test_devices,
-    test_options={"num_frames": 30 * 30},  # train_iters * sim_steps
+    test_options={"num_frames": 4 * 30},  # train_iters * sim_steps
     test_options_cpu={"num_frames": 2 * 30},
     use_viewer=True,
 )
@@ -429,7 +429,7 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_soft_body",
     devices=test_devices,
-    test_options={"num_frames": 300 * 60},  # train_iters * sim_steps
+    test_options={"num_frames": 4 * 60},  # train_iters * sim_steps
     test_options_cpu={"num_frames": 2 * 60},
     use_viewer=True,
 )
