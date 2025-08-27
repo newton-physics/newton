@@ -279,7 +279,7 @@ def compute_prop_wrenches(
     torque += wp.cross(moment_arm, force)
     # Apply angular damping.
     torque *= 0.8
-    wp.atomic_add(body_f, prop.body, wp.spatial_vector(torque, force))
+    wp.atomic_add(body_f, prop.body, wp.spatial_vector(force, torque))
 
 
 def define_propeller(

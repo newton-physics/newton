@@ -58,10 +58,10 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # print("body_mass: ", model.body_mass)
     input = np.zeros(model.body_count * 6, dtype=np.float32)
     if test_angular:
-        test_index = 2
+        test_index = 5
         test_value = 0.96
     else:
-        test_index = 4
+        test_index = 1
         test_value = 0.1
 
     input[test_index] = 1000.0
@@ -140,10 +140,10 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
         state_0, state_1 = model.state(), model.state()
 
         if test_angular:
-            control_idx = control_dim
+            control_idx = control_dim + 3
             test_value = angular_values[control_dim]
         else:
-            control_idx = control_dim + 3
+            control_idx = control_dim
             test_value = 0.1
 
         input = np.zeros(model.body_count * 6, dtype=np.float32)

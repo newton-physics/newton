@@ -213,9 +213,9 @@ class Example:
         else:
             # flip velocities
             if self.reset_count % 2 == 0:
-                self.default_ant_root_velocities.fill_(wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 5.0, 0.0))
+                self.default_ant_root_velocities.fill_(wp.spatial_vector(0.0, 5.0, 0.0, 0.0, 0.0, 0.0))
             else:
-                self.default_ant_root_velocities.fill_(wp.spatial_vector(0.0, 0.0, 0.0, 0.0, -5.0, 0.0))
+                self.default_ant_root_velocities.fill_(wp.spatial_vector(0.0, -5.0, 0.0, 0.0, 0.0, 0.0))
 
             # randomize materials
             material_mu = self.ants.get_attribute("shape_material_mu", self.model)

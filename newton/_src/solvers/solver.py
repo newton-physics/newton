@@ -74,12 +74,12 @@ def integrate_rigid_body(
     r0 = wp.transform_get_rotation(q)
 
     # unpack spatial twist
-    w0 = wp.spatial_top(qd)
-    v0 = wp.spatial_bottom(qd)
+    w0 = wp.spatial_bottom(qd)
+    v0 = wp.spatial_top(qd)
 
     # unpack spatial wrench
-    t0 = wp.spatial_top(f)
-    f0 = wp.spatial_bottom(f)
+    t0 = wp.spatial_bottom(f)
+    f0 = wp.spatial_top(f)
 
     x_com = x0 + wp.quat_rotate(r0, com)
 
@@ -98,7 +98,7 @@ def integrate_rigid_body(
     w1 *= 1.0 - angular_damping * dt
 
     q_new = wp.transform(x1 - wp.quat_rotate(r1, com), r1)
-    qd_new = wp.spatial_vector(w1, v1)
+    qd_new = wp.spatial_vector(v1, w1)
 
     return q_new, qd_new
 
