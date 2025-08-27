@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "project": "newton-physics",
+  "project": "newton",
   "project_url": "https://github.com/newton-physics/newton",
   "repo": ".",
   "branches": ["main"],
