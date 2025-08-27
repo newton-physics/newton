@@ -25,7 +25,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestAnymalReset(unittest.TestCase):
@@ -284,11 +284,13 @@ class TestAnymalReset(unittest.TestCase):
 
     def _run_reset_test(self, cone_type):
         self._setup_simulation(cone_type)
-        for i in range(50):
+        num_steps = 50 if self.device.is_cuda else 5
+        check_interval = 10 if self.device.is_cuda else 4
+        for i in range(num_steps):
             self.step()
             if not self.headless:
                 self.render()
-            if i % 10 == 0:
+            if i % check_interval == 0:
                 current_iters = self.get_current_iterations()
                 max_iters = self.get_max_iterations()
                 self.assertLess(
@@ -302,11 +304,11 @@ class TestAnymalReset(unittest.TestCase):
         self.propagate_reset_state()
         mjw_data_matches = self.compare_mjw_data_with_initial()
 
-        for i in range(50):
+        for i in range(num_steps):
             self.step()
             if not self.headless:
                 self.render()
-            if i % 10 == 0:
+            if i % check_interval == 0:
                 current_iters = self.get_current_iterations()
                 max_iters = self.get_max_iterations()
                 self.assertLess(
@@ -330,7 +332,7 @@ def test_reset_functionality(test: TestAnymalReset, device, cone_type):
         test._run_reset_test(cone_type)
 
 
-devices = get_cuda_test_devices()
+devices = get_test_devices()
 add_function_test(
     TestAnymalReset,
     "test_reset_functionality_elliptic",
