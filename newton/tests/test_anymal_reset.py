@@ -25,6 +25,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.selection import ArticulationView
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
 class TestAnymalReset(unittest.TestCase):
@@ -322,13 +323,28 @@ class TestAnymalReset(unittest.TestCase):
         if self.renderer:
             self.renderer.save()
 
-    def test_reset_functionality_elliptic(self):
-        """Test reset functionality with ELLIPTIC cone"""
-        self._run_reset_test(mujoco.mjtCone.mjCONE_ELLIPTIC)
 
-    def test_reset_functionality_pyramidal(self):
-        """Test reset functionality with PYRAMIDAL cone"""
-        self._run_reset_test(mujoco.mjtCone.mjCONE_PYRAMIDAL)
+def test_reset_functionality(test: TestAnymalReset, device, cone_type):
+    test.device = device
+    with wp.ScopedDevice(device):
+        test._run_reset_test(cone_type)
+
+
+devices = get_cuda_test_devices()
+add_function_test(
+    TestAnymalReset,
+    "test_reset_functionality_elliptic",
+    test_reset_functionality,
+    devices=devices,
+    cone_type=mujoco.mjtCone.mjCONE_ELLIPTIC,
+)
+add_function_test(
+    TestAnymalReset,
+    "test_reset_functionality_pyramidal",
+    test_reset_functionality,
+    devices=devices,
+    cone_type=mujoco.mjtCone.mjCONE_PYRAMIDAL,
+)
 
 
 if __name__ == "__main__":
