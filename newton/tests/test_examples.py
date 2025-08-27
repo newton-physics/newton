@@ -317,6 +317,102 @@ add_example_test(
 )
 
 
+class TestRobotPolicyExamplesG1(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesG1,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_29dof"},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesG1_23dof(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesG1_23dof,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesG1_23dof_Physx(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesG1_23dof_Physx,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesAnymal(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesAnymal,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal"},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesAnymal_Physx(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesAnymal_Physx,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesGo2(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesGo2,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options_cuda={"num_frames": 500, "torch_required": True, "robot": "go2"},
+    use_viewer=True,
+)
+
+
+class TestRobotPolicyExamplesGo2_Physx(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamplesGo2_Physx,
+    name="robot.example_robot_policy",
+    devices=test_devices,
+    test_options_cuda={"num_frames": 500, "torch_required": True, "robot": "go2", "physx": True},
+    use_viewer=True,
+)
+
+
 class TestAdvancedRobotExamples(unittest.TestCase):
     pass
 
