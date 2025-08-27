@@ -384,11 +384,43 @@ def compute_mesh_inertia(
     return mass, wp.vec3(*com), wp.mat33(*I_com), V_tot
 
 
-def transform_inertia(m, I, p, q) -> wp.mat33:
+@wp.func
+def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33:
+    """
+    Compute a rigid body's inertia tensor expressed in a new coordinate frame.
+
+    The transformation applies (1) a rotation by quaternion ``q`` and
+    (2) a parallel-axis shift by vector ``p`` (Steiner's theorem).
+    Let ``R`` be the rotation matrix corresponding to ``q``. The returned
+    inertia tensor :math:`\\mathbf{I}'` is
+
+    .. math::
+
+        \\mathbf{I}' \\,=\\, \\mathbf{R}\\,\\mathbf{I}\\,\\mathbf{R}^\\top
+        \\, + \\, m\\big(\\lVert\\mathbf{p}\\rVert^2\\,\\mathbf{I}_3
+        \\, - \\, \\mathbf{p}\\,\\mathbf{p}^\\top\\big),
+
+    where :math:`\\mathbf{I}_3` is the :math:`3\\times3` identity matrix.
+
+    Args:
+        m (float): Mass of the rigid body.
+        I (wp.mat33): Inertia tensor expressed in the body's local frame, relative
+            to its center of mass.
+        p (wp.vec3): Position vector from the new frame's origin to the body's
+            center of mass.
+        q (wp.quat): Orientation of the body relative to the new frame, expressed
+            as a quaternion.
+
+    Returns:
+        wp.mat33: The transformed inertia tensor expressed in the new frame.
+    """
+
     R = wp.quat_to_matrix(q)
 
     # Steiner's theorem
-    return R @ I @ wp.transpose(R) + m * (wp.dot(p, p) * wp.mat33(np.eye(3)) - wp.outer(p, p))
+    return R @ I @ wp.transpose(R) + m * (
+        wp.dot(p, p) * wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0) - wp.outer(p, p)
+    )
 
 
 def compute_shape_inertia(
