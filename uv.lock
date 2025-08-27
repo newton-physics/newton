@@ -931,8 +931,8 @@ requires-dist = [
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'torch-cu12'", specifier = ">=25.5" },
-    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250625", index = "https://pypi.nvidia.com/" },
-    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250625" },
+    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250823", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250823" },
 ]
 provides-extras = ["dev", "docs", "examples", "importers", "sim", "torch-cu12"]
 
