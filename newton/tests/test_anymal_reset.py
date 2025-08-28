@@ -100,7 +100,7 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, nefc_per_env=200
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
         )
 
         self.renderer = None if self.headless else newton.viewer.RendererOpenGL(self.model, stage_path)

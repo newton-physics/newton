@@ -243,7 +243,7 @@ class Example:
             integrator=integrator,
             iterations=solver_iteration,
             ls_iterations=ls_iteration,
-            nefc_per_env=njmax,
+            njmax=njmax,
             ncon_per_env=nconmax,
         )
 
