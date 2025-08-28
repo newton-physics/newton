@@ -25,8 +25,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
@@ -45,25 +43,6 @@ def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
         and wp.abs(a[1] - b[1]) <= (atol + rtol * wp.abs(b[1]))
         and wp.abs(a[2] - b[2]) <= (atol + rtol * wp.abs(b[2]))
     )
-
-
-def vec_rotation(x: float, y: float, z: float) -> wp.transform:
-    """Convert plane coordinates given by the plane normal and its offset along the normal to a transform."""
-    normal = wp.normalize(wp.vec3(x, y, z))
-    if allclose(normal, wp.vec3(0.0, 0.0, 1.0)):
-        # no rotation necessary
-        return wp.quat(0.0, 0.0, 0.0, 1.0)
-    elif allclose(normal, wp.vec3(0.0, 0.0, -1.0)):
-        # 180 degree rotation around x-axis
-        return wp.quat(1.0, 0.0, 0.0, 0.0)
-    else:
-        c = wp.cross(wp.vec3(0.0, 0.0, 1.0), normal)
-        angle = wp.asin(wp.length(c))
-        # adjust for arcsin ambiguity
-        if wp.dot(normal, wp.vec3(0.0, 0.0, 1.0)) < 0:
-            angle = wp.pi - angle
-        axis = c / wp.length(c)
-        return wp.quat_from_axis_angle(axis, angle)
 
 
 @wp.kernel
@@ -158,34 +137,28 @@ def compute_body_jacobian(
 class Example:
     def __init__(
         self,
-        stage_path: str | None = "example_robot_manipulating_cloth.usd",
-        num_frames: int | None = None,
+        viewer,
     ):
-        self.stage_path = stage_path
-
-        self.cuda_graph = None
-        self.use_cuda_graph = wp.get_device().is_cuda
-        self.add_cloth = True
-        self.add_robot = True
-
         # parameters
         #   simulation
-        self.num_substeps = 15
+        self.add_cloth = True
+        self.add_robot = True
+        self.sim_substeps = 15
         self.iterations = 5
         self.fps = 60
         self.frame_dt = 1 / self.fps
-        self.sim_dt = self.frame_dt / self.num_substeps
-        self.up_axis = "Y"
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_time = 0.0
 
         #   contact
         #       body-cloth contact
-        self.cloth_particle_radius = 0.8
-        self.cloth_body_contact_margin = 1.0
+        self.cloth_particle_radius = 0.008
+        self.cloth_body_contact_margin = 0.01
         #       self-contact
-        self.self_contact_radius = 0.2
-        self.self_contact_margin = 0.2
+        self.self_contact_radius = 0.002
+        self.self_contact_margin = 0.003
 
-        self.soft_contact_ke = 1e4
+        self.soft_contact_ke = 100
         self.soft_contact_kd = 2e-3
 
         self.robot_friction = 1.0
@@ -193,30 +166,45 @@ class Example:
         self.self_contact_friction = 0.25
 
         #   elasticity
-        self.tri_ke = 1e3
-        self.tri_ka = 1e3
+        self.tri_ke = 1e2
+        self.tri_ka = 1e2
         self.tri_kd = 1.5e-6
 
-        self.bending_ke = 10
-        self.bending_kd = 1e-4
+        self.bending_ke = 1e-4
+        self.bending_kd = 1e-3
 
-        self.gravity = -1000.0  # cm/s^2
+        self.gravity = -10.0  # cm/s^2
 
-        self.builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
+        self.scene = ModelBuilder(gravity=self.gravity)
         self.soft_contact_max = 1000000
 
+        self.viewer = viewer
+
         if self.add_robot:
-            articulation_builder = ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
-            self.create_articulation(articulation_builder)
+            franka = ModelBuilder(gravity=self.gravity)
+            self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.builder.add_builder(articulation_builder, xform, separate_collision_group=False)
-            self.bodies_per_env = articulation_builder.body_count
-            self.dof_q_per_env = articulation_builder.joint_coord_count
-            self.dof_qd_per_env = articulation_builder.joint_dof_count
+            self.scene.add_builder(franka, xform, separate_collision_group=False)
+            self.bodies_per_env = franka.body_count
+            self.dof_q_per_env = franka.joint_coord_count
+            self.dof_qd_per_env = franka.joint_dof_count
 
         # add a table
-        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, 0, 50), wp.quat_identity()), hx=40, hy=10, hz=40)
+        self.scene.add_shape_box(
+            -1,
+            wp.transform(
+                wp.vec3(
+                    0,
+                    -0.5,
+                    0.1,
+                ),
+                wp.quat_identity(),
+            ),
+            hx=0.4,
+            hy=0.4,
+            hz=0.1,
+        )
 
         # add the T-shirt
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
@@ -226,14 +214,14 @@ class Example:
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
-            self.builder.add_cloth_mesh(
+            self.scene.add_cloth_mesh(
                 vertices=vertices,
                 indices=mesh_indices,
-                rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), np.pi / 2),
-                pos=wp.vec3(0.0, 18.0, -70.0),
+                rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi),
+                pos=wp.vec3(0.0, 0.70, 0.28),
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=0.02,
-                scale=1.0,
+                density=0.2,
+                scale=0.01,
                 tri_ke=self.tri_ke,
                 tri_ka=self.tri_ka,
                 tri_kd=self.tri_kd,
@@ -242,26 +230,14 @@ class Example:
                 particle_radius=self.cloth_particle_radius,
             )
 
-            self.builder.color()
-        self.model = self.builder.finalize(requires_grad=False)
+            self.scene.color()
+
+        self.scene.add_ground_plane()
+
+        self.model = self.scene.finalize(requires_grad=False)
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
-
-        if num_frames is None:
-            if self.add_robot:
-                episode_duration = np.sum(self.transition_duration)
-            else:
-                episode_duration = 10.0
-
-            self.num_frames = int(episode_duration / self.frame_dt)
-        else:
-            self.num_frames = num_frames
-
-        self.sim_dt = self.frame_dt / max(1, self.num_substeps)
-        self.sim_steps = self.num_frames * self.num_substeps
-        self.sim_step = 0
-        self.sim_time = 0.0
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -273,7 +249,7 @@ class Example:
         self.sim_time = 0.0
 
         # initialize robot solver
-        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.num_substeps)
+        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.sim_substeps)
         self.set_up_control()
 
         self.cloth_solver: SolverVBD | None = None
@@ -294,24 +270,14 @@ class Example:
                 collision_detection_interval=-1,
             )
 
-        if self.stage_path is not None:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=self.stage_path,
-                model=self.model,
-                scaling=0.05,
-                show_joints=False,
-                show_particles=False,
-                near_plane=0.01,
-                far_plane=100.0,
-                enable_backface_culling=False,
-            )
+        self.viewer.set_model(self.model)
 
-        else:
-            self.renderer = None
+        # Ensure FK evaluation (for non-MuJoCo solvers):
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # graph capture
         if self.add_cloth:
-            self.capture_cuda_graph()
+            self.capture()
 
     def set_up_control(self):
         self.control = self.model.control()
@@ -347,26 +313,26 @@ class Example:
         self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
         self.initial_pose = self.model.joint_q.numpy()
 
-    def capture_cuda_graph(self):
-        if self.use_cuda_graph:
+    def capture(self):
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
-                self.integrate_frame()
-
-            self.cuda_graph = capture.graph
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")
 
         builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            up_axis=self.up_axis,
             xform=wp.transform(
-                (-50, -20, 50),
+                (-0.5, -0.5, -0.1),
                 # (-0.5, -0.2, 0.5),
-                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5),
+                wp.quat_identity(),
             ),
             floating=False,
-            scale=100,  # unit: cm
+            scale=1,  # unit: cm
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
@@ -380,54 +346,58 @@ class Example:
             [
                 # translation_duration, gripper transform (3D position, 4D quaternion), gripper open (1) or closed (0)
                 # # top left
-                [3, 0.31, 0.12, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [2, 0.31, 0.12, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, 0.26, 0.16, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, 0.12, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [3, -0.06, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1, -0.06, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2.5, 0.31, -0.60, 0.23, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.31, -0.60, 0.23, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.26, -0.60, 0.26, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.12, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.06, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.06, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom right
-                [2, 0.15, 0.21, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [3, 0.15, 0.10, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [3, 0.15, 0.10, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, 0.15, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [3, -0.02, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1, -0.02, 0.18, 0.33, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2, 0.15, -0.33, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 0.15, -0.33, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 0.15, -0.33, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.15, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.02, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.02, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # top left
-                [2, -0.28, 0.18, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [2, -0.28, 0.10, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [2, -0.28, 0.10, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.18, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [3, 0.05, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1, 0.05, 0.21, 0.60, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.28, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.20, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.28, -0.60, 0.20, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.18, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, 0.05, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, 0.05, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # # bottom left
-                [3, -0.18, 0.105, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [3, -0.18, 0.10, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.03, 0.21, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [3, -0.03, 0.21, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.03, 0.21, 0.30, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [3, -0.18, -0.30, 0.205, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, -0.18, -0.30, 0.205, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, -0.0, 0.20, 0.21, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [2, -0.0, 0.092, 0.21, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [2, -0.0, 0.092, 0.21, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [2, -0.0, 0.25, 0.21, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1, -0.0, 0.25, 0.3, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1.5, -0.0, 0.25, 0.4, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1.5, -0.0, 0.25, 0.5, *vec_rotation(0.0, -1.0, 0.0), clamp_close_activation_val],
-                [1, -0.0, 0.25, 0.5, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
-                [1, 0.0, 0.30, 0.55, *vec_rotation(0.0, -1.0, 0.0), clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.30, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.20, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -0.0, -0.21, 0.20, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -0.0, -0.21, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.0, -0.30, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, -0.0, -0.30, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, -0.0, -0.40, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -0.0, -0.40, 0.35, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
         self.targets = self.robot_key_poses[:, 1:]
-        self.targets = self.robot_key_poses[:, 1:]
-        self.targets[:, :3] = self.targets[:, :3] * 100.0
         self.transition_duration = self.robot_key_poses[:, 0]
         self.target = self.targets[0]
 
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
         self.endeffector_id = builder.body_count - 3
-        self.endeffector_offset = wp.transform([0.0, 0.0, 22], wp.quat_identity())
+        self.endeffector_offset = wp.transform(
+            [
+                0.0,
+                0.0,
+                0.22,
+            ],
+            wp.quat_identity(),
+        )
 
     def compute_body_jacobian(
         self,
@@ -517,24 +487,32 @@ class Example:
         delta_q = J_inv @ delta_target + N @ delta_q_null
 
         # Apply gripper finger control
-        delta_q[-2] = self.target[-1] * 4 - q[-2]
-        delta_q[-1] = self.target[-1] * 4 - q[-1]
+        delta_q[-2] = self.target[-1] * 0.04 - q[-2]
+        delta_q[-1] = self.target[-1] * 0.04 - q[-1]
 
         self.target_joint_qd.assign(delta_q)
 
     def step(self):
         self.generate_control_joint_qd(self.state_0)
-        if self.use_cuda_graph:
-            wp.capture_launch(self.cuda_graph)
-            self.sim_time += self.sim_dt * self.num_substeps
+        if self.graph:
+            wp.capture_launch(self.graph)
         else:
-            self.integrate_frame()
+            self.simulate()
 
-    def integrate_frame(self):
-        for _step in range(self.num_substeps):
+        self.sim_time += self.frame_dt
+
+    def test(self):
+        pass
+
+    def simulate(self):
+        self.cloth_solver.rebuild_bvh(self.state_0)
+        for _step in range(self.sim_substeps):
             # robot sim
             self.state_0.clear_forces()
             self.state_1.clear_forces()
+
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
 
             if self.add_robot:
                 particle_count = self.model.particle_count
@@ -552,7 +530,7 @@ class Example:
                 self.state_0.particle_f.zero_()
 
                 self.model.particle_count = particle_count
-                self.model.gravity = wp.vec3(0, self.gravity, 0)
+                self.model.gravity = wp.vec3(0, 0, self.gravity)
 
             # cloth sim
             self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
@@ -565,45 +543,24 @@ class Example:
             self.sim_time += self.sim_dt
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
 
-        with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+        # Begin frame with time
+        self.viewer.begin_frame(self.sim_time)
+
+        # Render model-driven content (ground plane)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Parse arguments and initialize viewer
+    parser = newton.examples.create_parser()
+    parser.set_defaults(num_frames=3850)
+    viewer, args = newton.examples.init(parser)
 
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_robot_manipulating_cloth.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument(
-        "--num-frames",
-        type=lambda x: None if x == "None" else int(x),
-        default=None,
-        help="Total number of frames. If None, the number of frames will be determined automatically.",
-    )
+    # Create example and run
+    example = Example(viewer)
 
-    args = parser.parse_known_args()[0]
-
-    with wp.ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_frames=args.num_frames)
-
-        for frame_idx in range(example.num_frames):
-            example.step()
-
-            if example.cloth_solver and not (frame_idx % 10):
-                example.cloth_solver.rebuild_bvh(example.state_0)
-                example.capture_cuda_graph()
-
-            example.render()
-
-            print(f"[{frame_idx:4d}/{example.num_frames}]")
+    newton.examples.run(example)

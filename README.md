@@ -230,7 +230,29 @@ uv sync --extra examples
     <td align="center">
       <code>uv run -m newton.examples ik_benchmark</code>
     </td>
+    
   </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/cloth/example_cloth_franka.py">
+        <img src="docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="newton/examples/cloth/example_cloth_twist.py">
+        <img src="docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>python -m newton.examples cloth_franka</code>
+    </td>
+    <td align="center">
+      <code>python -m newton.examples cloth_twist</code>
+    </td>
+  </tr>
+
 </table>
 
 ## MPM Examples

@@ -22,44 +22,6 @@ from .topology import topological_sort
 
 
 @wp.func
-def transform_inertia(t: wp.transform, I: wp.spatial_matrix):
-    """
-    Transform a spatial inertia tensor to a new coordinate frame.
-
-    This computes the change of coordinates for a spatial inertia tensor under a rigid-body
-    transformation `t`. The result is mathematically equivalent to:
-
-        adj_t^-T * I * adj_t^-1
-
-    where `adj_t` is the adjoint transformation matrix of `t`, and `I` is the spatial inertia
-    tensor in the original frame. This operation is described in Frank & Park, "Modern Robotics",
-    Section 8.2.3 (pg. 290).
-
-    Args:
-        t (wp.transform): The rigid-body transform (destination ← source).
-        I (wp.spatial_matrix): The spatial inertia tensor in the source frame.
-
-    Returns:
-        wp.spatial_matrix: The spatial inertia tensor expressed in the destination frame.
-    """
-    t_inv = wp.transform_inverse(t)
-
-    q = wp.transform_get_rotation(t_inv)
-    p = wp.transform_get_translation(t_inv)
-
-    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
-    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
-    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-
-    R = wp.matrix_from_cols(r1, r2, r3)
-    S = wp.mul(wp.skew(p), R)
-
-    T = wp.spatial_adjoint(R, S)
-
-    return wp.mul(wp.mul(wp.transpose(T), I), T)
-
-
-@wp.func
 def boltzmann(a: float, b: float, alpha: float):
     """
     Compute the Boltzmann-weighted average of two values.
