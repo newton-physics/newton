@@ -127,14 +127,14 @@ class TestBroadPhase(unittest.TestCase):
         nxn_broadphase = BroadPhaseAllPairs()
 
         # Create shape groups array with all shapes in global environment (-1)
-        shape_groups = wp.array(np.full(ngeom, -1, dtype=np.int32), dtype=wp.int32)
+        shape_group = wp.array(np.full(ngeom, -1, dtype=np.int32), dtype=wp.int32)
 
         nxn_broadphase.launch(
             geom_lower,
             geom_upper,
             geom_cutoff,
             collision_group,
-            shape_groups,
+            shape_group,
             ngeom,
             candidate_pair,
             num_candidate_pair,
@@ -384,14 +384,14 @@ class TestBroadPhase(unittest.TestCase):
         )
 
         # Create shape groups array with all shapes in global environment (-1)
-        shape_groups = wp.array(np.full(ngeom, -1, dtype=np.int32), dtype=wp.int32)
+        shape_group = wp.array(np.full(ngeom, -1, dtype=np.int32), dtype=wp.int32)
 
         sap_broadphase.launch(
             geom_lower,
             geom_upper,
             geom_cutoff,
             collision_group,
-            shape_groups,
+            shape_group,
             ngeom,
             candidate_pair,
             num_candidate_pair,

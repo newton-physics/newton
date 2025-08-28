@@ -147,8 +147,8 @@ class BroadPhaseAllPairs:
         geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
-        geom_collision_groups: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        geom_shape_groups: wp.array,  # Environment group ID per box (dtype=int, ndim=1)
+        geom_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
+        geom_shape_group: wp.array(dtype=int, ndim=1),  # Environment group ID per box
         geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
@@ -164,10 +164,10 @@ class BroadPhaseAllPairs:
             geom_lower: Array of lower bounds for each geometry's AABB
             geom_upper: Array of upper bounds for each geometry's AABB
             geom_cutoffs: Array of cutoff distances for each geometry
-            geom_collision_groups: Array of collision group IDs for each geometry. Positive values indicate
+            geom_collision_group: Array of collision group IDs for each geometry. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            geom_shape_groups: Array of environment group IDs for each geometry. Group -1 indicates global entities
+            geom_shape_group: Array of environment group IDs for each geometry. Group -1 indicates global entities
                 that collide with all environments. Groups 0, 1, 2, ... indicate environment-specific entities.
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
@@ -194,8 +194,8 @@ class BroadPhaseAllPairs:
                 geom_upper,
                 geom_count,
                 geom_cutoffs,
-                geom_collision_groups,
-                geom_shape_groups,
+                geom_collision_group,
+                geom_shape_group,
             ],
             outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
         )

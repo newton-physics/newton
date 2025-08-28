@@ -343,8 +343,8 @@ class BroadPhaseSAP:
         geom_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of geometry bounding boxes
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
-        geom_collision_groups: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        geom_shape_groups: wp.array,  # Environment group ID per box (dtype=int, ndim=1)
+        geom_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
+        geom_shape_group: wp.array(dtype=int, ndim=1),  # Environment group ID per box
         geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
@@ -391,7 +391,7 @@ class BroadPhaseSAP:
             kernel=_flag_group_id_kernel,
             dim=geom_count,
             inputs=[
-                geom_collision_groups,
+                geom_collision_group,
                 self.sap_cumulative_sum,
                 self.negative_group_counter,
                 self.negative_group_indices,
@@ -416,7 +416,7 @@ class BroadPhaseSAP:
                 geom_lower,
                 geom_upper,
                 geom_cutoffs,
-                geom_collision_groups,
+                geom_collision_group,
                 self.unique_group_id_counter,
                 self.unique_group_ids,
                 self.negative_group_counter,
@@ -466,8 +466,8 @@ class BroadPhaseSAP:
                 self.negative_group_indices,
                 self.negative_group_counter,
                 self.unique_group_id_counter,
-                geom_collision_groups,
-                geom_shape_groups,
+                geom_collision_group,
+                geom_shape_group,
                 self.sap_sort_index,
                 self.sap_cumulative_sum,
                 geom_cutoffs,
