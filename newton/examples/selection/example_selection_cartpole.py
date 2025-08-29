@@ -67,9 +67,8 @@ class Example:
         self.num_envs = num_envs
 
         env = newton.ModelBuilder()
-        newton.utils.parse_usd(
+        env.add_usd(
             newton.examples.get_asset("cartpole.usda"),
-            env,
             xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
             enable_self_collisions=False,

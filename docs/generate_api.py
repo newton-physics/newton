@@ -61,7 +61,7 @@ TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
 def public_symbols(mod) -> list[str]:
     """Return the list of public names for *mod* (honours ``__all__``)."""
 
-    if hasattr(mod, "__all__") and isinstance(mod.__all__, (list, tuple)):
+    if hasattr(mod, "__all__") and isinstance(mod.__all__, list | tuple):
         return list(mod.__all__)
 
     def is_public(name: str) -> bool:

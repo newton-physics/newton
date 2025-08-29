@@ -35,10 +35,10 @@ def get_asset(filename: str) -> str:
 
 def run(example):
     while example.viewer.is_running():
-        with wp.ScopedTimer("step"):
+        with wp.ScopedTimer("step", active=False):
             example.step()
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", active=False):
             example.render()
 
     example.viewer.close()
@@ -51,7 +51,10 @@ def compute_env_offsets(
     import warnings  # noqa: PLC0415
 
     warnings.warn(
-        "compute_env_offsets is deprecated and will be removed in a future version. Use the builder.replicate() function instead.",
+        (
+            "compute_env_offsets is deprecated and will be removed in a future version. "
+            "Use the builder.replicate() function instead."
+        ),
         stacklevel=2,
     )
 
@@ -180,12 +183,30 @@ def main():
         "basic_shapes": "newton.examples.basic.example_basic_shapes",
         "basic_joints": "newton.examples.basic.example_basic_joints",
         "cloth_bending": "newton.examples.cloth.example_cloth_bending",
+        "cloth_franka": "newton.examples.cloth.example_cloth_franka",
         "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
         "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
+        "ik_benchmark": "newton.examples.ik.example_ik_benchmark",
+        "ik_franka": "newton.examples.ik.example_ik_franka",
+        "ik_h1": "newton.examples.ik.example_ik_h1",
+        "cloth_twist": "newton.examples.cloth.example_cloth_twist",
+        "cloth_example": "newton.examples.cloth.example_cloth_example",
         "mpm_granular": "newton.examples.mpm.example_mpm_granular",
+        "mpm_anymal": "newton.examples.mpm.example_mpm_anymal",
+        "robot_anymal_c_walk": "newton.examples.robot.example_robot_anymal_c_walk",
+        "robot_anymal_d": "newton.examples.robot.example_robot_anymal_d",
+        "robot_cartpole": "newton.examples.robot.example_robot_cartpole",
+        "robot_g1": "newton.examples.robot.example_robot_g1",
+        "robot_h1": "newton.examples.robot.example_robot_h1",
+        "robot_humanoid": "newton.examples.robot.example_robot_humanoid",
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",
+        "diffsim_ball": "newton.examples.diffsim.example_diffsim_ball",
+        "diffsim_cloth": "newton.examples.diffsim.example_diffsim_cloth",
+        "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
+        "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
+        "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
     }
 
     if len(sys.argv) < 2:

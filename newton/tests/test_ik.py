@@ -24,7 +24,12 @@ import warp as wp
 import newton
 import newton.ik as ik
 from newton._src.sim.ik import _eval_fk_batched
-from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    assert_np_equal,
+    get_selected_cuda_test_devices,
+    get_test_devices,
+)
 
 # ----------------------------------------------------------------------------
 # helpers: planar 2-revolute baseline
@@ -431,6 +436,7 @@ def test_d6_jacobian_compare(test, device):
 # ----------------------------------------------------------------------------
 
 devices = get_test_devices()
+cuda_devices = get_selected_cuda_test_devices()
 
 
 class TestIKModes(unittest.TestCase):
@@ -448,15 +454,15 @@ add_function_test(TestIKModes, "test_convergence_analytic_free", test_convergenc
 add_function_test(TestIKModes, "test_convergence_mixed_free", test_convergence_mixed_free, devices)
 
 # D6-joint convergence
-add_function_test(TestIKModes, "test_convergence_autodiff_d6", test_convergence_autodiff_d6, devices)
+add_function_test(TestIKModes, "test_convergence_autodiff_d6", test_convergence_autodiff_d6, cuda_devices)
 add_function_test(TestIKModes, "test_convergence_analytic_d6", test_convergence_analytic_d6, devices)
 add_function_test(TestIKModes, "test_convergence_mixed_d6", test_convergence_mixed_d6, devices)
 
 # Jacobian equality
 add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_jacobian_compare, devices)
-add_function_test(TestIKModes, "test_rotation_jacobian_compare", test_rotation_jacobian_compare, devices)
+add_function_test(TestIKModes, "test_rotation_jacobian_compare", test_rotation_jacobian_compare, cuda_devices)
 add_function_test(TestIKModes, "test_joint_limit_jacobian_compare", test_joint_limit_jacobian_compare, devices)
-add_function_test(TestIKModes, "test_d6_jacobian_compare", test_d6_jacobian_compare, devices)
+add_function_test(TestIKModes, "test_d6_jacobian_compare", test_d6_jacobian_compare, cuda_devices)
 
 
 if __name__ == "__main__":

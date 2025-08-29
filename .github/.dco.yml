@@ -1,5 +1,0 @@
-# https://github.com/dcoapp/app
-
-allowRemediationCommits:
-  individual: true
-  thirdParty: false
