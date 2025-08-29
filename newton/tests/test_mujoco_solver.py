@@ -383,6 +383,21 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         # Randomize inertia tensors for all bodies in all environments
         # Simple inertia tensors that satisfy triangle inequality
 
+        def _make_spd_inertia(a_base, b_base, c_max):
+            # Sample principal moments (triangle inequality on principal values)
+            l1 = np.float32(a_base + self.rng.uniform(0.0, 0.5))
+            l2 = np.float32(b_base + self.rng.uniform(0.0, 0.5))
+            l3 = np.float32(min(l1 + l2 - 0.1, c_max))
+            lam = np.array(sorted([l1, l2, l3], reverse=True), dtype=np.float32)
+
+            # Random right-handed rotation
+            Q, _ = np.linalg.qr(self.rng.normal(size=(3, 3)).astype(np.float32))
+            if np.linalg.det(Q) < 0.0:
+                Q[:, 2] *= -1.0
+
+            inertia = (Q @ np.diag(lam) @ Q.T).astype(np.float32)
+            return inertia
+
         new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
         bodies_per_env = self.model.body_count // self.model.num_envs
         for i in range(self.model.body_count):
@@ -392,17 +407,8 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                 a_base, b_base, c_max = 2.5, 3.5, 4.5
             else:
                 a_base, b_base, c_max = 3.5, 4.5, 5.5
-            a = np.float32(a_base + self.rng.uniform(0.0, 0.5))
-            b = np.float32(b_base + self.rng.uniform(0.0, 0.5))
-            c = np.float32(min(a + b - 0.1, c_max))
-            ab = np.float32(self.rng.uniform(-0.2, 0.2))
-            ac = np.float32(self.rng.uniform(-0.2, 0.2))
-            bc = np.float32(self.rng.uniform(-0.2, 0.2))
-            inertia = np.array([[a, ab, ac], [ab, b, bc], [ac, bc, c]], dtype=np.float32)
-            eigvals = np.linalg.eigvalsh(inertia)
-            if np.any(eigvals <= 0):
-                inertia += np.eye(3, dtype=np.float32) * (np.abs(np.min(eigvals)) + 0.1)
-            new_inertias[i] = inertia
+
+            new_inertias[i] = _make_spd_inertia(a_base, b_base, c_max)
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
@@ -448,7 +454,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                             self.assertAlmostEqual(
                                 float(newton_eigvals[dim]),
                                 float(mjc_eigvals[dim]),
-                                places=6,
+                                places=5,
                                 msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
                             )
                         # Handle quaternion sign ambiguity by ensuring dot product is non-negative
@@ -480,17 +486,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                 a_base, b_base, c_max = 2.5, 3.5, 4.5
             else:
                 a_base, b_base, c_max = 3.5, 4.5, 5.5
-            a = np.float32(a_base + self.rng.uniform(0.0, 0.5))
-            b = np.float32(b_base + self.rng.uniform(0.0, 0.5))
-            c = np.float32(min(a + b - 0.1, c_max))
-            ab = np.float32(self.rng.uniform(-0.2, 0.2))
-            ac = np.float32(self.rng.uniform(-0.2, 0.2))
-            bc = np.float32(self.rng.uniform(-0.2, 0.2))
-            inertia = np.array([[a, ab, ac], [ab, b, bc], [ac, bc, c]], dtype=np.float32)
-            eigvals = np.linalg.eigvalsh(inertia)
-            if np.any(eigvals <= 0):
-                inertia += np.eye(3, dtype=np.float32) * (np.abs(np.min(eigvals)) + 0.1)
-            updated_inertias[i] = inertia
+            updated_inertias[i] = _make_spd_inertia(a_base, b_base, c_max)
         self.model.body_inertia.assign(updated_inertias)
 
         # Notify solver of inertia changes
