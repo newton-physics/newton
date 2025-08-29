@@ -199,6 +199,8 @@ def main():
         "robot_g1": "newton.examples.robot.example_robot_g1",
         "robot_h1": "newton.examples.robot.example_robot_h1",
         "robot_humanoid": "newton.examples.robot.example_robot_humanoid",
+        "robot_shadowhand_tendon": "newton.examples.robot.example_robot_shadowhand_tendon",
+        "robot_simple_tendon": "newton.examples.robot.example_robot_simple_tendon",
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",

@@ -399,6 +399,13 @@ class ModelBuilder:
         self.muscle_bodies = []
         self.muscle_points = []
 
+        # tendons (fixed)
+        self.tendon_start = []  # start index in tendon_joints for each tendon
+        self.tendon_params = []  # (stiffness, damping, rest_length, lower_limit, upper_limit) for each tendon
+        self.tendon_joints = []  # joint indices attached to tendons
+        self.tendon_gearings = []  # gearing coefficients for each joint attachment
+        self.tendon_key = []  # string key for each tendon
+
         # rigid bodies
         self.body_mass = []
         self.body_inertia = []
@@ -1174,10 +1181,30 @@ class ModelBuilder:
             "equality_constraint_polycoef",
             "equality_constraint_key",
             "equality_constraint_enabled",
+            "tendon_params",
+            "tendon_key",
         ]
 
         for attr in more_builder_attrs:
             getattr(self, attr).extend(getattr(builder, attr))
+
+        # Handle tendon copying with proper joint indices offset
+        if builder.tendon_start:
+            # The joint offset to apply to tendon joint references
+            joint_offset = self.joint_count - builder.joint_count
+            
+            # Update tendon_start indices to account for existing tendons
+            existing_tendon_joints = len(self.tendon_joints)
+            for i in range(len(builder.tendon_start)):
+                if i == 0:
+                    self.tendon_start.append(existing_tendon_joints)
+                else:
+                    self.tendon_start.append(existing_tendon_joints + builder.tendon_start[i])
+            
+            # Copy tendon_joints with offset and tendon_gearings as-is
+            for joint_idx in builder.tendon_joints:
+                self.tendon_joints.append(joint_idx + joint_offset)
+            self.tendon_gearings.extend(builder.tendon_gearings)
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
@@ -2379,6 +2406,59 @@ class ModelBuilder:
 
         # return the index of the muscle
         return len(self.muscle_start) - 1
+
+    def add_tendon(
+        self,
+        name: str,
+        joint_ids: list[int],
+        gearings: list[float],
+        stiffness: float = 0.0,
+        damping: float = 0.0,
+        rest_length: float = 0.0,
+        lower_limit: float = float('-inf'),
+        upper_limit: float = float('inf'),
+    ) -> int:
+        """Adds a fixed tendon constraint between multiple joints.
+        
+        Fixed tendons couple the motion of multiple joints through a linear
+        constraint on their positions. The tendon length is computed as:
+        L = rest_length + sum(gearing[i] * joint_pos[i])
+        
+        Args:
+            name: A unique identifier for the tendon
+            joint_ids: List of joint indices that this tendon connects
+            gearings: Gearing coefficient for each joint (transmission ratio)
+            stiffness: Elastic stiffness of the tendon (0 for hard constraint)
+            damping: Damping coefficient 
+            rest_length: Rest length of the tendon
+            lower_limit: Lower limit for tendon length
+            upper_limit: Upper limit for tendon length
+            
+        Returns:
+            The index of the tendon in the model
+        """
+        if len(joint_ids) != len(gearings):
+            raise ValueError("Number of joint IDs must match number of gearings")
+        
+        if len(joint_ids) < 2:
+            raise ValueError("Tendon must connect at least 2 joints")
+        
+        # Store the start index for this tendon's joint data
+        self.tendon_start.append(len(self.tendon_joints))
+        
+        # Store tendon parameters
+        self.tendon_params.append((stiffness, damping, rest_length, lower_limit, upper_limit))
+        
+        # Store the name/key
+        self.tendon_key.append(name)
+        
+        # Store joint indices and gearings
+        for joint_id, gearing in zip(joint_ids, gearings):
+            self.tendon_joints.append(joint_id)
+            self.tendon_gearings.append(gearing)
+        
+        # Return the index of the tendon
+        return len(self.tendon_start) - 1
 
     # region shapes
 
@@ -4230,6 +4310,19 @@ class ModelBuilder:
             m.muscle_points = wp.array(self.muscle_points, dtype=wp.vec3, requires_grad=requires_grad)
             m.muscle_activations = wp.array(self.muscle_activations, dtype=wp.float32, requires_grad=requires_grad)
 
+            # -----------------------
+            # tendons
+
+            # close the tendon joint indices
+            tendon_start = copy.copy(self.tendon_start)
+            tendon_start.append(len(self.tendon_joints))
+
+            m.tendon_start = wp.array(tendon_start, dtype=wp.int32)
+            m.tendon_params = wp.array(self.tendon_params, dtype=wp.float32, requires_grad=requires_grad)
+            m.tendon_joints = wp.array(self.tendon_joints, dtype=wp.int32)
+            m.tendon_gearings = wp.array(self.tendon_gearings, dtype=wp.float32, requires_grad=requires_grad)
+            m.tendon_key = self.tendon_key
+
             # --------------------------------------
             # rigid bodies
 
@@ -4400,6 +4493,7 @@ class ModelBuilder:
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
+            m.tendon_count = len(self.tendon_start)
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
 

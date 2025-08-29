@@ -1,0 +1,144 @@
+#usda 1.0
+(
+    upAxis = "Z"
+    metersPerUnit = 1.0
+)
+
+def Xform "World"
+{
+    def Xform "Articulation" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        def Xform "Base" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            def Cube "Cube"
+            {
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double size = 1.0
+            }
+            
+            float physics:mass = 0.0
+        }
+
+        def Xform "Link1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (0, 0, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "Cube"
+            {
+                float3[] extent = [(-0.25, -0.25, -0.5), (0.25, 0.25, 0.5)]
+            }
+            
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.1, 0.1, 0.01)
+
+            def PhysicsRevoluteJoint "Joint1" (
+                prepend apiSchemas = ["PhysxTendonAxisRootAPI:tendon1", "PhysxTendonAxisAPI:tendon2"]
+            )
+            {
+                uniform token physics:axis = "X"
+                rel physics:body0 = </World/Articulation/Base>
+                rel physics:body1 = </World/Articulation/Link1>
+                float physics:lowerLimit = -90
+                float physics:upperLimit = 90
+                point3f physics:localPos0 = (0, 0, 0.5)
+                point3f physics:localPos1 = (0, 0, -0.5)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+                
+                # Tendon 1 properties (this is the root)
+                float[] physxTendon:tendon1:gearing = [1.0]
+                float physxTendon:tendon1:stiffness = 100.0
+                float physxTendon:tendon1:damping = 10.0
+                float physxTendon:tendon1:restLength = 0.0
+                float physxTendon:tendon1:lowerLimit = -0.5
+                float physxTendon:tendon1:upperLimit = 0.5
+                
+                # Tendon 2 properties (this is a participant)
+                float[] physxTendon:tendon2:gearing = [2.0]
+            }
+        }
+
+        def Xform "Link2" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (0, 0, 2)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "Cube"
+            {
+                float3[] extent = [(-0.25, -0.25, -0.5), (0.25, 0.25, 0.5)]
+            }
+            
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.1, 0.1, 0.01)
+
+            def PhysicsRevoluteJoint "Joint2" (
+                prepend apiSchemas = ["PhysxTendonAxisAPI:tendon1", "PhysxTendonAxisRootAPI:tendon2"]
+            )
+            {
+                uniform token physics:axis = "X"
+                rel physics:body0 = </World/Articulation/Link1>
+                rel physics:body1 = </World/Articulation/Link2>
+                float physics:lowerLimit = -90
+                float physics:upperLimit = 90
+                point3f physics:localPos0 = (0, 0, 0.5)
+                point3f physics:localPos1 = (0, 0, -0.5)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+                
+                # Tendon 1 properties (this is a participant)
+                float[] physxTendon:tendon1:gearing = [-1.0]
+                
+                # Tendon 2 properties (this is the root)
+                float[] physxTendon:tendon2:gearing = [-2.0]
+                float physxTendon:tendon2:stiffness = 50.0
+                float physxTendon:tendon2:damping = 5.0
+                float physxTendon:tendon2:restLength = 0.1
+                float physxTendon:tendon2:lowerLimit = -1.0
+                float physxTendon:tendon2:upperLimit = 1.0
+            }
+        }
+
+        def Xform "Link3" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            double3 xformOp:translate = (0, 0, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "Cube"
+            {
+                float3[] extent = [(-0.25, -0.25, -0.5), (0.25, 0.25, 0.5)]
+            }
+            
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.1, 0.1, 0.01)
+
+            def PhysicsRevoluteJoint "Joint3" (
+                prepend apiSchemas = ["PhysxTendonAxisAPI:tendon2"]
+            )
+            {
+                uniform token physics:axis = "X"
+                rel physics:body0 = </World/Articulation/Link2>
+                rel physics:body1 = </World/Articulation/Link3>
+                float physics:lowerLimit = -90
+                float physics:upperLimit = 90
+                point3f physics:localPos0 = (0, 0, 0.5)
+                point3f physics:localPos1 = (0, 0, -0.5)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+                
+                # Tendon 2 properties (this is a participant)
+                float[] physxTendon:tendon2:gearing = [1.0]
+            }
+        }
+    }
+}
