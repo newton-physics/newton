@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -515,97 +516,92 @@ class TestImportUsd(unittest.TestCase):
     def test_import_tendons(self):
         """Test importing USD with PhysX fixed tendons."""
         builder = newton.ModelBuilder()
-        
+
         # Import the test USD with tendons
-        results = builder.add_usd(
-            os.path.join(os.path.dirname(__file__), "assets", "tendons_test.usda"),
-            verbose=False
-        )
-        
+        builder.add_usd(os.path.join(os.path.dirname(__file__), "assets", "tendons_test.usda"), verbose=False)
+
         # Check basic model structure
         self.assertEqual(builder.body_count, 4)  # Base + 3 links
         self.assertEqual(builder.joint_count, 4)  # 3 revolute joints + 1 free joint (articulation root)
-        
+
         # Finalize the model
         model = builder.finalize()
-        
+
         # Verify tendon count
         self.assertEqual(model.tendon_count, 2)
-        
+
         # Get tendon data
         tendon_start = model.tendon_start.numpy()
         tendon_params = model.tendon_params.numpy()
         tendon_joints = model.tendon_joints.numpy()
         tendon_gearings = model.tendon_gearings.numpy()
-        
+
         # Find joint indices by name
         joint1_idx = model.joint_key.index("/World/Articulation/Link1/Joint1")
         joint2_idx = model.joint_key.index("/World/Articulation/Link2/Joint2")
         joint3_idx = model.joint_key.index("/World/Articulation/Link3/Joint3")
-        
+
         # Test Tendon 1 (connects Joint1 and Joint2)
         tendon1_idx = model.tendon_key.index("tendon1")
         start1 = tendon_start[tendon1_idx]
         end1 = tendon_start[tendon1_idx + 1]
-        
+
         # Should have 2 joints
         self.assertEqual(end1 - start1, 2)
-        
+
         # Check joint attachments
         tendon1_joints = sorted(tendon_joints[start1:end1].tolist())
         expected_joints1 = sorted([joint1_idx, joint2_idx])
         self.assertEqual(tendon1_joints, expected_joints1)
-        
+
         # Check gearings for tendon1
         joint_gearing_map1 = {}
         for i in range(start1, end1):
             joint_gearing_map1[tendon_joints[i]] = tendon_gearings[i]
-        
+
         self.assertAlmostEqual(joint_gearing_map1[joint1_idx], 1.0, places=5)
         self.assertAlmostEqual(joint_gearing_map1[joint2_idx], -1.0, places=5)
-        
+
         # Check tendon1 parameters (from root joint - Joint1)
         params1 = tendon_params[tendon1_idx]
         self.assertAlmostEqual(params1[0], 100.0, places=5)  # stiffness
-        self.assertAlmostEqual(params1[1], 10.0, places=5)   # damping
-        self.assertAlmostEqual(params1[2], 0.0, places=5)    # rest_length
-        self.assertAlmostEqual(params1[3], -0.5, places=5)   # lower_limit
-        self.assertAlmostEqual(params1[4], 0.5, places=5)    # upper_limit
-        
+        self.assertAlmostEqual(params1[1], 10.0, places=5)  # damping
+        self.assertAlmostEqual(params1[2], 0.0, places=5)  # rest_length
+        self.assertAlmostEqual(params1[3], -0.5, places=5)  # lower_limit
+        self.assertAlmostEqual(params1[4], 0.5, places=5)  # upper_limit
+
         # Test Tendon 2 (connects Joint1, Joint2, and Joint3)
         tendon2_idx = model.tendon_key.index("tendon2")
         start2 = tendon_start[tendon2_idx]
         end2 = tendon_start[tendon2_idx + 1]
-        
+
         # Should have 3 joints
         self.assertEqual(end2 - start2, 3)
-        
+
         # Check joint attachments
         tendon2_joints = sorted(tendon_joints[start2:end2].tolist())
         expected_joints2 = sorted([joint1_idx, joint2_idx, joint3_idx])
         self.assertEqual(tendon2_joints, expected_joints2)
-        
+
         # Check gearings for tendon2
         joint_gearing_map2 = {}
         for i in range(start2, end2):
             joint_gearing_map2[tendon_joints[i]] = tendon_gearings[i]
-        
+
         self.assertAlmostEqual(joint_gearing_map2[joint1_idx], 2.0, places=5)
         self.assertAlmostEqual(joint_gearing_map2[joint2_idx], -2.0, places=5)
         self.assertAlmostEqual(joint_gearing_map2[joint3_idx], 1.0, places=5)
-        
+
         # Check tendon2 parameters (from root joint - Joint2)
         params2 = tendon_params[tendon2_idx]
-        self.assertAlmostEqual(params2[0], 50.0, places=5)   # stiffness
-        self.assertAlmostEqual(params2[1], 5.0, places=5)    # damping
-        self.assertAlmostEqual(params2[2], 0.1, places=5)    # rest_length
-        self.assertAlmostEqual(params2[3], -1.0, places=5)   # lower_limit
-        self.assertAlmostEqual(params2[4], 1.0, places=5)    # upper_limit
+        self.assertAlmostEqual(params2[0], 50.0, places=5)  # stiffness
+        self.assertAlmostEqual(params2[1], 5.0, places=5)  # damping
+        self.assertAlmostEqual(params2[2], 0.1, places=5)  # rest_length
+        self.assertAlmostEqual(params2[3], -1.0, places=5)  # lower_limit
+        self.assertAlmostEqual(params2[4], 1.0, places=5)  # upper_limit
 
     def test_import_single_joint_tendon(self):
         """Test that tendons with only one joint are skipped during import."""
-        import tempfile
-        
         # Create a USDA with a tendon that only has one joint
         usda_content = """#usda 1.0
 (
@@ -625,7 +621,7 @@ def Xform "World"
         {
             float physics:mass = 0.0
         }
-        
+
         def Xform "Link" (
             prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
         )
@@ -634,7 +630,7 @@ def Xform "World"
             uniform token[] xformOpOrder = ["xformOp:translate"]
             float physics:mass = 1.0
             float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
-            
+
             def PhysicsRevoluteJoint "Joint" (
                 prepend apiSchemas = ["PhysxTendonAxisRootAPI:invalid_tendon"]
             )
@@ -644,7 +640,7 @@ def Xform "World"
                 rel physics:body1 = </World/Articulation/Link>
                 float physics:lowerLimit = -90
                 float physics:upperLimit = 90
-                
+
                 # Single joint tendon - should be skipped
                 float[] physxTendon:invalid_tendon:gearing = [1.0]
                 float physxTendon:invalid_tendon:stiffness = 100.0
@@ -653,34 +649,30 @@ def Xform "World"
     }
 }
 """
-        
+
         # Write to temporary file and import
-        import tempfile
-        
         # Create temporary file
         fd, tmp_path = tempfile.mkstemp(suffix=".usda", text=True)
         try:
             # Write content and close file descriptor
-            with os.fdopen(fd, 'w') as tmp:
+            with os.fdopen(fd, "w") as tmp:
                 tmp.write(usda_content)
-            
+
             # Import USD
             builder = newton.ModelBuilder()
             builder.add_usd(tmp_path, verbose=False)
             model = builder.finalize()
-            
+
             # Should have no tendons since a tendon with only one joint is invalid
             self.assertEqual(model.tendon_count, 0)
         finally:
             try:
                 os.unlink(tmp_path)
-            except:
+            except Exception:
                 pass  # Ignore errors on cleanup
 
     def test_import_tendons_no_params(self):
         """Test that tendons with missing parameters use defaults."""
-        import tempfile
-        
         # Create a USDA with minimal tendon parameters
         usda_content = """#usda 1.0
 (
@@ -700,7 +692,7 @@ def Xform "World"
         {
             float physics:mass = 0.0
         }
-        
+
         def Xform "Body1" (
             prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
         )
@@ -709,7 +701,7 @@ def Xform "World"
             uniform token[] xformOpOrder = ["xformOp:translate"]
             float physics:mass = 1.0
             float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
-            
+
             def PhysicsRevoluteJoint "Joint" (
                 prepend apiSchemas = ["PhysxTendonAxisRootAPI:minimal_tendon"]
             )
@@ -719,12 +711,12 @@ def Xform "World"
                 rel physics:body1 = </World/Articulation/Body1>
                 float physics:lowerLimit = -90
                 float physics:upperLimit = 90
-                
+
                 # Root joint with only gearing - no other parameters
                 float[] physxTendon:minimal_tendon:gearing = [1.0]
             }
         }
-        
+
         def Xform "Body2" (
             prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
         )
@@ -733,7 +725,7 @@ def Xform "World"
             uniform token[] xformOpOrder = ["xformOp:translate"]
             float physics:mass = 1.0
             float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
-            
+
             def PhysicsRevoluteJoint "Joint" (
                 prepend apiSchemas = ["PhysxTendonAxisAPI:minimal_tendon"]
             )
@@ -743,7 +735,7 @@ def Xform "World"
                 rel physics:body1 = </World/Articulation/Body2>
                 float physics:lowerLimit = -90
                 float physics:upperLimit = 90
-                
+
                 # Participant joint
                 float[] physxTendon:minimal_tendon:gearing = [-1.0]
             }
@@ -751,34 +743,34 @@ def Xform "World"
     }
 }
 """
-        
+
         # Write to temporary file and import
         # Create temporary file
         fd, tmp_path = tempfile.mkstemp(suffix=".usda", text=True)
         try:
             # Write content and close file descriptor
-            with os.fdopen(fd, 'w') as tmp:
+            with os.fdopen(fd, "w") as tmp:
                 tmp.write(usda_content)
-            
+
             # Import USD
             builder = newton.ModelBuilder()
             builder.add_usd(tmp_path, verbose=False)
             model = builder.finalize()
-            
+
             # Should have one tendon
             self.assertEqual(model.tendon_count, 1)
-            
+
             # Check that default parameters were used
             params = model.tendon_params.numpy()[0]
-            self.assertAlmostEqual(params[0], 0.0, places=5)    # default stiffness
-            self.assertAlmostEqual(params[1], 0.0, places=5)    # default damping
-            self.assertAlmostEqual(params[2], 0.0, places=5)    # default rest_length
+            self.assertAlmostEqual(params[0], 0.0, places=5)  # default stiffness
+            self.assertAlmostEqual(params[1], 0.0, places=5)  # default damping
+            self.assertAlmostEqual(params[2], 0.0, places=5)  # default rest_length
             self.assertTrue(np.isinf(params[3]) and params[3] < 0)  # default lower_limit (-inf)
             self.assertTrue(np.isinf(params[4]) and params[4] > 0)  # default upper_limit (+inf)
         finally:
             try:
                 os.unlink(tmp_path)
-            except:
+            except Exception:
                 pass  # Ignore errors on cleanup
 
 

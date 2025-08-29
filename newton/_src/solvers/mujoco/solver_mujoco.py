@@ -2239,24 +2239,30 @@ class SolverMuJoCo(SolverBase):
                 eq.data[3:6] = wp.transform_get_translation(eq_constraint_relpose[i])
                 eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
                 eq.data[10] = eq_constraint_torquescale[i]
-        
+
         # Add fixed tendons from Newton model
-        if hasattr(model, 'tendon_count') and model.tendon_count > 0:
+        if hasattr(model, "tendon_count") and model.tendon_count > 0:
             # Access tendon data arrays on host
-            tendon_start = model.tendon_start.numpy() if hasattr(model.tendon_start, 'numpy') else model.tendon_start
-            tendon_params = model.tendon_params.numpy() if hasattr(model.tendon_params, 'numpy') else model.tendon_params
-            tendon_joints = model.tendon_joints.numpy() if hasattr(model.tendon_joints, 'numpy') else model.tendon_joints
-            tendon_gearings = model.tendon_gearings.numpy() if hasattr(model.tendon_gearings, 'numpy') else model.tendon_gearings
-            
+            tendon_start = model.tendon_start.numpy() if hasattr(model.tendon_start, "numpy") else model.tendon_start
+            tendon_params = (
+                model.tendon_params.numpy() if hasattr(model.tendon_params, "numpy") else model.tendon_params
+            )
+            tendon_joints = (
+                model.tendon_joints.numpy() if hasattr(model.tendon_joints, "numpy") else model.tendon_joints
+            )
+            tendon_gearings = (
+                model.tendon_gearings.numpy() if hasattr(model.tendon_gearings, "numpy") else model.tendon_gearings
+            )
+
             # Track tendon names to ensure uniqueness across environments
             tendon_name_counts = {}
-            
+
             # Add each tendon
             for i in range(model.tendon_count):
                 # Get the joints and gearings for this tendon
                 start_idx = tendon_start[i]
                 end_idx = tendon_start[i + 1]
-                
+
                 # Check if all joints in this tendon are in the selected set
                 # Only add tendons where all joints are selected
                 all_joints_selected = True
@@ -2265,14 +2271,14 @@ class SolverMuJoCo(SolverBase):
                     if joint_idx not in selected_joints:
                         all_joints_selected = False
                         break
-                
+
                 # Skip this tendon if not all joints are selected
                 if not all_joints_selected:
                     continue
-                
+
                 # Create fixed tendon
                 tendon = spec.add_tendon()
-                
+
                 # Ensure unique tendon name (similar to body naming)
                 base_name = model.tendon_key[i] if i < len(model.tendon_key) else f"tendon_{i}"
                 name = base_name
@@ -2281,9 +2287,9 @@ class SolverMuJoCo(SolverBase):
                 else:
                     tendon_name_counts[name] += 1
                     name = f"{base_name}_{tendon_name_counts[name]}"
-                
+
                 tendon.name = name
-                
+
                 # Get tendon parameters (stiffness, damping, rest_length, lower_limit, upper_limit)
                 params = tendon_params[i]
                 stiffness = params[0]
@@ -2291,7 +2297,7 @@ class SolverMuJoCo(SolverBase):
                 rest_length = params[2]
                 lower_limit = params[3]
                 upper_limit = params[4]
-                
+
                 # Set tendon properties
                 # In MuJoCo, fixed tendons use the following fields:
                 # - springlength: rest length of the tendon (needs to be array [2, 1])
@@ -2304,19 +2310,19 @@ class SolverMuJoCo(SolverBase):
                 tendon.springlength = springlength_array
                 tendon.stiffness = stiffness
                 tendon.damping = damping
-                
+
                 # Set limits if they are finite
                 if not (np.isinf(lower_limit) or np.isinf(upper_limit)):
                     tendon.limited = True
                     tendon.range[0] = lower_limit
                     tendon.range[1] = upper_limit
-                
+
                 # Add joints to the fixed tendon
                 for j in range(start_idx, end_idx):
                     joint_idx = tendon_joints[j]
                     gearing = tendon_gearings[j]
                     joint_name = model.joint_key[joint_idx]
-                    
+
                     # In MuJoCo spec API, use wrap_joint to add a joint to the tendon
                     # This is the Python equivalent of mjs_wrapJoint in C API
                     tendon.wrap_joint(joint_name, gearing)

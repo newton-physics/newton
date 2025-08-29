@@ -1192,7 +1192,7 @@ class ModelBuilder:
         if builder.tendon_start:
             # The joint offset to apply to tendon joint references
             joint_offset = self.joint_count - builder.joint_count
-            
+
             # Update tendon_start indices to account for existing tendons
             existing_tendon_joints = len(self.tendon_joints)
             for i in range(len(builder.tendon_start)):
@@ -1200,7 +1200,7 @@ class ModelBuilder:
                     self.tendon_start.append(existing_tendon_joints)
                 else:
                     self.tendon_start.append(existing_tendon_joints + builder.tendon_start[i])
-            
+
             # Copy tendon_joints with offset and tendon_gearings as-is
             for joint_idx in builder.tendon_joints:
                 self.tendon_joints.append(joint_idx + joint_offset)
@@ -2415,48 +2415,48 @@ class ModelBuilder:
         stiffness: float = 0.0,
         damping: float = 0.0,
         rest_length: float = 0.0,
-        lower_limit: float = float('-inf'),
-        upper_limit: float = float('inf'),
+        lower_limit: float = float("-inf"),
+        upper_limit: float = float("inf"),
     ) -> int:
         """Adds a fixed tendon constraint between multiple joints.
-        
+
         Fixed tendons couple the motion of multiple joints through a linear
         constraint on their positions. The tendon length is computed as:
         L = rest_length + sum(gearing[i] * joint_pos[i])
-        
+
         Args:
             name: A unique identifier for the tendon
             joint_ids: List of joint indices that this tendon connects
             gearings: Gearing coefficient for each joint (transmission ratio)
             stiffness: Elastic stiffness of the tendon (0 for hard constraint)
-            damping: Damping coefficient 
+            damping: Damping coefficient
             rest_length: Rest length of the tendon
             lower_limit: Lower limit for tendon length
             upper_limit: Upper limit for tendon length
-            
+
         Returns:
             The index of the tendon in the model
         """
         if len(joint_ids) != len(gearings):
             raise ValueError("Number of joint IDs must match number of gearings")
-        
+
         if len(joint_ids) < 2:
             raise ValueError("Tendon must connect at least 2 joints")
-        
+
         # Store the start index for this tendon's joint data
         self.tendon_start.append(len(self.tendon_joints))
-        
+
         # Store tendon parameters
         self.tendon_params.append((stiffness, damping, rest_length, lower_limit, upper_limit))
-        
+
         # Store the name/key
         self.tendon_key.append(name)
-        
+
         # Store joint indices and gearings
-        for joint_id, gearing in zip(joint_ids, gearings):
+        for joint_id, gearing in zip(joint_ids, gearings, strict=False):
             self.tendon_joints.append(joint_id)
             self.tendon_gearings.append(gearing)
-        
+
         # Return the index of the tendon
         return len(self.tendon_start) - 1
 

@@ -1364,19 +1364,15 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
         """Test that fixed tendons correctly constrain joint motion in MuJoCo solver."""
         # Create a model with two revolute joints connected by a tendon
         builder = newton.ModelBuilder()
-        
+
         # Create two bodies attached to world
         link1 = builder.add_body(
-            mass=1.0,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
         link2 = builder.add_body(
-            mass=1.0,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
-        
+
         # Add revolute joints attached to world
         joint1 = builder.add_joint_revolute(
             parent=-1,  # World
@@ -1384,18 +1380,18 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             parent_xform=wp.transform((0.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),  # Rotate around X axis
-            key="joint1"
+            key="joint1",
         )
-        
+
         joint2 = builder.add_joint_revolute(
             parent=-1,  # World
             child=link2,
             parent_xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),  # Rotate around X axis
-            key="joint2"
+            key="joint2",
         )
-        
+
         # Add a tendon connecting the two joints with gearing ratio 1:1
         # This means: tendon_length = rest_length + 1.0 * q1 + 1.0 * q2
         # So when q1 increases, q2 should decrease by the same amount to maintain constant length
@@ -1405,107 +1401,99 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             gearings=[1.0, 1.0],
             stiffness=1000.0,  # High stiffness for tight constraint
             damping=10.0,
-            rest_length=0.0
+            rest_length=0.0,
         )
-        
+
         # Add visual shapes (optional, but good practice)
         builder.add_shape_box(body=link1, hx=0.1, hy=0.1, hz=0.5)
         builder.add_shape_box(body=link2, hx=0.1, hy=0.1, hz=0.5)
-        
+
         # Set initial joint positions
         builder.joint_q[0] = 0.0  # joint1 at 0
         builder.joint_q[1] = 0.0  # joint2 at 0
-        
+
         # Apply a torque only to joint1
         model = builder.finalize()
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        
+
         # Apply positive torque to joint1 only
         control.joint_f.assign([20.0, 0.0])  # Strong torque on joint1, none on joint2
-        
+
         # Create MuJoCo solver
         try:
             solver = SolverMuJoCo(model, iterations=50, ls_iterations=50)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
-        
+
         # Simulate for several steps
         dt = 0.002
         num_steps = 200  # Simulate for 0.4 seconds total
         contacts = model.collide(state_in)
-        
+
         for _ in range(num_steps):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
-        
+
         # Get final joint positions
         final_q = state_in.joint_q.numpy()
         q1_final = final_q[0]
         q2_final = final_q[1]
-        
+
         # Verify the tendon constraint is satisfied
         # With gearing [1.0, 1.0], the constraint is: q1 + q2 = constant
         # Since we started at q1=0, q2=0, the constant is 0
         # So we expect: q1 + q2 = 0, meaning q2 = -q1
         constraint_error = abs(q1_final + q2_final)
-        
+
         # The constraint should be satisfied within a small tolerance
         self.assertLess(
             constraint_error,
             0.02,  # 2% tolerance for numerical stability
             f"Tendon constraint not satisfied: q1={q1_final:.4f}, q2={q2_final:.4f}, "
-            f"expected q1+q2=0, error={constraint_error:.4f}"
+            f"expected q1+q2=0, error={constraint_error:.4f}",
         )
-        
+
         # Also verify that the joints actually moved (not stuck at zero)
         self.assertGreater(
-            abs(q1_final),
-            0.05,
-            f"Joint 1 should have moved significantly under applied torque, but q1={q1_final:.4f}"
+            abs(q1_final), 0.05, f"Joint 1 should have moved significantly under applied torque, but q1={q1_final:.4f}"
         )
-        
+
         # Verify q2 moved in opposite direction
-        self.assertLess(
-            q2_final,
-            -0.04,
-            f"Joint 2 should have moved in opposite direction, but q2={q2_final:.4f}"
-        )
-        
+        self.assertLess(q2_final, -0.04, f"Joint 2 should have moved in opposite direction, but q2={q2_final:.4f}")
+
     def test_tendon_with_limits(self):
         """Test that tendon limits are enforced in MuJoCo solver."""
         builder = newton.ModelBuilder()
-        
+
         # Create simple 2-joint system with proper articulation
         # First link attached to world
         link1 = builder.add_body(
-            mass=1.0,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
         # Second link also attached to world
         link2 = builder.add_body(
-            mass=1.0,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
-        
+
         joint1 = builder.add_joint_revolute(
-            parent=-1, child=link1,  # Attach to world
+            parent=-1,
+            child=link1,  # Attach to world
             parent_xform=wp.transform_identity(),
             child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
-            axis=(1.0, 0.0, 0.0)
+            axis=(1.0, 0.0, 0.0),
         )
-        
+
         joint2 = builder.add_joint_revolute(
-            parent=-1, child=link2,  # Attach to world
+            parent=-1,
+            child=link2,  # Attach to world
             parent_xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
-            axis=(1.0, 0.0, 0.0)
+            axis=(1.0, 0.0, 0.0),
         )
-        
+
         # Add tendon with limits
         # Tendon length = rest_length + gearing[0]*q1 + gearing[1]*q2
         # With rest_length=0, gearing=[1,1], lower=-0.5, upper=0.5
@@ -1518,77 +1506,73 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             damping=1.0,
             rest_length=0.0,
             lower_limit=-0.5,
-            upper_limit=0.5
+            upper_limit=0.5,
         )
-        
+
         model = builder.finalize()
-        
+
         # Create solver
         try:
             solver = SolverMuJoCo(model, iterations=50, ls_iterations=50)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
-        
+
         # Test upper limit: apply positive torques to both joints
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         control.joint_f.assign([10.0, 10.0])  # Strong positive torques
-        
+
         dt = 0.001
         num_steps = 200
         contacts = model.collide(state_in)
-        
+
         for _ in range(num_steps):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
-        
+
         # Check that tendon length respects upper limit
         q = state_in.joint_q.numpy()
         tendon_length = q[0] + q[1]  # With rest_length=0 and gearing=[1,1]
-        
+
         self.assertLessEqual(
             tendon_length,
             0.51,  # Small tolerance for numerical errors
-            f"Tendon upper limit violated: length={tendon_length:.4f}, limit=0.5"
+            f"Tendon upper limit violated: length={tendon_length:.4f}, limit=0.5",
         )
-        
+
         # Test lower limit: apply negative torques
         state_in.joint_q.assign([0.0, 0.0])
         state_in.joint_qd.assign([0.0, 0.0])
         control.joint_f.assign([-10.0, -10.0])  # Strong negative torques
-        
+
         for _ in range(num_steps):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
-        
+
         # Check that tendon length respects lower limit
         q = state_in.joint_q.numpy()
         tendon_length = q[0] + q[1]
-        
+
         self.assertGreaterEqual(
             tendon_length,
             -0.51,  # Small tolerance for numerical errors
-            f"Tendon lower limit violated: length={tendon_length:.4f}, limit=-0.5"
+            f"Tendon lower limit violated: length={tendon_length:.4f}, limit=-0.5",
         )
-    
+
     def test_simple_tendon_constraint(self):
         """Test basic tendon functionality with minimal setup"""
         builder = newton.ModelBuilder()
-        
+
         # Create two simple bodies with proper inertia
         body1 = builder.add_body(
-            mass=1.0, 
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
         body2 = builder.add_body(
-            mass=1.0, 
-            com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
+            mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
         )
-        
+
         # Create two joints without limits
         joint1 = builder.add_joint_revolute(
             parent=-1,
@@ -1596,18 +1580,18 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),
-            armature=0.01
+            armature=0.01,
         )
-        
+
         joint2 = builder.add_joint_revolute(
             parent=-1,
             child=body2,
             parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),
-            armature=0.01
+            armature=0.01,
         )
-        
+
         # Add simple tendon with 1:1 coupling
         builder.add_tendon(
             name="test_tendon",
@@ -1615,18 +1599,18 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             gearings=[1.0, 1.0],
             stiffness=1000.0,  # High stiffness for tight coupling
             damping=10.0,
-            rest_length=0.0
+            rest_length=0.0,
         )
-        
+
         model = builder.finalize()
         solver = newton.solvers.SolverMuJoCo(model)
-        
+
         state = model.state()
         control = model.control()
-        
+
         # Apply torque to joint1
         control.joint_f.assign([10.0, 0.0])
-        
+
         # Simulate for a short time
         dt = 0.001
         for i in range(100):
@@ -1634,38 +1618,42 @@ class TestMuJoCoSolverTendons(unittest.TestCase):
             state_new = model.state()
             solver.step(state, state_new, control, contacts, dt)
             state = state_new
-            
+
             if i % 20 == 0:
                 q = state.joint_q.numpy()
-                print(f"Step {i}: q1={q[0]:.4f}, q2={q[1]:.4f}, sum={q[0]+q[1]:.4f}")
-        
+                print(f"Step {i}: q1={q[0]:.4f}, q2={q[1]:.4f}, sum={q[0] + q[1]:.4f}")
+
         # Final check
         q = state.joint_q.numpy()
         q1, q2 = q[0], q[1]
-        
+
         # With gearing [1.0, 1.0], the constraint is q1 + q2 = constant (0)
         constraint_value = q1 + q2
-        
+
         print(f"\nFinal: q1={q1:.4f}, q2={q2:.4f}, constraint={constraint_value:.4f}")
-        
+
         # Joint1 should move positive under torque
         self.assertGreater(q1, 0.01, "Joint1 should move under applied torque")
-        
+
         # Joint2 should move negative to maintain constraint
         self.assertLess(q2, -0.01, "Joint2 should move oppositely due to tendon")
-        
+
         # Constraint should be satisfied within reasonable tolerance
         # With finite stiffness, there will be some compliance
         self.assertAlmostEqual(
-            constraint_value, 0.0, delta=0.01,  # Allow 0.01 rad error (~0.6 degrees)
-            msg=f"Tendon constraint violated: {constraint_value:.4f} != 0"
+            constraint_value,
+            0.0,
+            delta=0.01,  # Allow 0.01 rad error (~0.6 degrees)
+            msg=f"Tendon constraint violated: {constraint_value:.4f} != 0",
         )
-        
+
         # Verify the coupling is working correctly
         # Joint positions should be approximately equal and opposite
         self.assertAlmostEqual(
-            q1, -q2, delta=0.01,  # Same tolerance as constraint
-            msg=f"Joints not moving equally and oppositely: q1={q1:.4f}, q2={q2:.4f}"
+            q1,
+            -q2,
+            delta=0.01,  # Same tolerance as constraint
+            msg=f"Joints not moving equally and oppositely: q1={q1:.4f}, q2={q2:.4f}",
         )
 
 

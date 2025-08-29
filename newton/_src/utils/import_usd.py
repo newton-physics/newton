@@ -35,24 +35,24 @@ from ..sim.joints import JointMode
 def extract_tendon_info_from_joint(joint_prim):
     """
     Extract PhysX tendon information from a joint prim.
-    
+
     Returns:
         dict: Dictionary with tendon names as keys and dict containing:
             - 'is_root': bool - whether this joint is the tendon root
             - 'attrs': dict - tendon attributes
     """
     tendon_info = {}
-    
+
     # Use Newton's existing pattern for API schemas
     api_schemas = joint_prim.GetPrimTypeInfo().GetAppliedAPISchemas()
-    
+
     # Find all tendon-related schemas (both root and participant)
     for schema in api_schemas:
         if "PhysxTendonAxisRootAPI:" in schema or "PhysxTendonAxisAPI:" in schema:
             # Extract tendon name from schema
             tendon_name = schema.split(":", 1)[1]
             is_root = "Root" in schema
-            
+
             # Get tendon attributes
             tendon_attrs = {}
             for attr in joint_prim.GetAttributes():
@@ -61,12 +61,9 @@ def extract_tendon_info_from_joint(joint_prim):
                     # Extract attribute type
                     attr_type = attr_name.split(":")[-1]
                     tendon_attrs[attr_type] = attr.Get()
-            
-            tendon_info[tendon_name] = {
-                'is_root': is_root,
-                'attrs': tendon_attrs
-            }
-    
+
+            tendon_info[tendon_name] = {"is_root": is_root, "attrs": tendon_attrs}
+
     return tendon_info
 
 
@@ -754,12 +751,12 @@ def parse_usd(
             builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
-        
+
         # Extract tendon information from this joint
         tendon_info = extract_tendon_info_from_joint(joint_prim)
         if verbose and tendon_info:
             print(f"  Joint {joint_path} has tendon info: {tendon_info}")
-        
+
         # Return the joint ID and tendon info
         return builder.joint_count - 1, tendon_info
 
@@ -973,11 +970,11 @@ def parse_usd(
                     child_body_id = art_bodies[first_joint_parent]
                 builder.add_joint_free(child=child_body_id)
                 builder.joint_q[-7:] = articulation_xform
-            
+
             # Collect tendon information as we parse joints
             tendon_data = {}
             joint_path_to_id = {}
-            
+
             for joint_id, i in enumerate(sorted_joints):
                 if joint_id == 0 and first_joint_parent == -1:
                     # the articulation root joint receives the articulation transform as parent transform
@@ -992,12 +989,12 @@ def parse_usd(
                         joint_descriptions[joint_names[i]],
                         joint_path=joint_names[i],
                     )
-                
+
                 # Process tendon information if joint was created
                 if joint_result is not None:
                     created_joint_id, tendon_info = joint_result
                     joint_path_to_id[joint_names[i]] = created_joint_id
-                    
+
                     # Collect tendon data
                     if tendon_info:
                         if verbose:
@@ -1005,59 +1002,61 @@ def parse_usd(
                         for tendon_name, info in tendon_info.items():
                             if tendon_name not in tendon_data:
                                 tendon_data[tendon_name] = {
-                                    'joints': [],
-                                    'gearings': [],
-                                    'params': {},
-                                    'root_joint': None
+                                    "joints": [],
+                                    "gearings": [],
+                                    "params": {},
+                                    "root_joint": None,
                                 }
-                            
+
                             # Extract gearing coefficient
-                            gearing = info['attrs'].get('gearing', [1.0])
-                            if hasattr(gearing, '__getitem__'):  # Check if it's indexable (list or Vt.FloatArray)
+                            gearing = info["attrs"].get("gearing", [1.0])
+                            if hasattr(gearing, "__getitem__"):  # Check if it's indexable (list or Vt.FloatArray)
                                 gearing = float(gearing[0])
                             else:
                                 gearing = float(gearing)
-                            
-                            tendon_data[tendon_name]['joints'].append(created_joint_id)
-                            tendon_data[tendon_name]['gearings'].append(gearing)
-                            
+
+                            tendon_data[tendon_name]["joints"].append(created_joint_id)
+                            tendon_data[tendon_name]["gearings"].append(gearing)
+
                             # If this is the root joint, store parameters
-                            if info['is_root']:
-                                tendon_data[tendon_name]['root_joint'] = joint_names[i]
-                                for param in ['stiffness', 'damping', 'restLength', 'lowerLimit', 'upperLimit']:
-                                    if param in info['attrs']:
-                                        value = info['attrs'][param]
+                            if info["is_root"]:
+                                tendon_data[tendon_name]["root_joint"] = joint_names[i]
+                                for param in ["stiffness", "damping", "restLength", "lowerLimit", "upperLimit"]:
+                                    if param in info["attrs"]:
+                                        value = info["attrs"][param]
                                         # Convert to float if needed
-                                        tendon_data[tendon_name]['params'][param] = float(value)
-                                        
+                                        tendon_data[tendon_name]["params"][param] = float(value)
+
                                 if verbose:
                                     print(f"  Found tendon root: {tendon_name} on joint {joint_names[i]}")
                             else:
                                 if verbose:
                                     print(f"  Found tendon participant: {tendon_name} on joint {joint_names[i]}")
-            
+
             # Add tendons to builder after all joints are parsed
             if verbose and tendon_data:
                 print(f"Found {len(tendon_data)} tendons to process")
             for tendon_name, data in tendon_data.items():
-                if len(data['joints']) >= 2:
-                    params = data['params']
-                    if hasattr(builder, 'add_tendon'):
+                if len(data["joints"]) >= 2:
+                    params = data["params"]
+                    if hasattr(builder, "add_tendon"):
                         builder.add_tendon(
                             name=tendon_name,
-                            joint_ids=data['joints'],
-                            gearings=data['gearings'],
-                            stiffness=params.get('stiffness', 0.0),
-                            damping=params.get('damping', 0.0),
-                            rest_length=params.get('restLength', 0.0),
-                            lower_limit=params.get('lowerLimit', float('-inf')),
-                            upper_limit=params.get('upperLimit', float('inf'))
+                            joint_ids=data["joints"],
+                            gearings=data["gearings"],
+                            stiffness=params.get("stiffness", 0.0),
+                            damping=params.get("damping", 0.0),
+                            rest_length=params.get("restLength", 0.0),
+                            lower_limit=params.get("lowerLimit", float("-inf")),
+                            upper_limit=params.get("upperLimit", float("inf")),
                         )
                         if verbose:
                             print(f"Added tendon {tendon_name} with {len(data['joints'])} joints")
                     else:
                         if verbose:
-                            print(f"Warning: ModelBuilder does not have add_tendon method, skipping tendon {tendon_name}")
+                            print(
+                                f"Warning: ModelBuilder does not have add_tendon method, skipping tendon {tendon_name}"
+                            )
                 elif verbose:
                     print(f"Warning: Tendon {tendon_name} has only {len(data['joints'])} joint(s), skipping")
 
