@@ -210,12 +210,13 @@ def init_rhs_kernel(
 def prepare_jacobi_preconditioner_kernel(
     static_A_diags: wp.array(dtype=float),
     contact_hessian_diags: wp.array(dtype=wp.mat33),
+    particle_flags: wp.array(dtype=wp.int32),
     # outputs
     inv_A_diags: wp.array(dtype=wp.mat33),
 ):
     tid = wp.tid()
     diag = wp.identity(3, float) * static_A_diags[tid]
-    if static_A_diags[tid] > 0.0:
+    if particle_flags[tid] & ParticleFlags.ACTIVE:
         diag += contact_hessian_diags[tid]
     inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
 

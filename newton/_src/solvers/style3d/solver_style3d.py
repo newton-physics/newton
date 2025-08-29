@@ -222,7 +222,11 @@ class SolverStyle3D(SolverBase):
                 wp.launch(
                     prepare_jacobi_preconditioner_kernel,
                     dim=self.model.particle_count,
-                    inputs=[self.static_A_diags, self.collision.contact_hessian_diagonal()],
+                    inputs=[
+                        self.static_A_diags,
+                        self.collision.contact_hessian_diagonal(),
+                        self.model.particle_flags,
+                    ],
                     outputs=[self.inv_A_diags],
                     device=self.device,
                 )
