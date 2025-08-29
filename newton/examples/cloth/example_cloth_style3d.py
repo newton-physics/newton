@@ -31,11 +31,11 @@ class Example:
         self.frame_dt = 1.0 / self.fps
 
         # must be an even number when using CUDA Graph
-        self.sim_substeps = 2
+        self.sim_substeps = 10
         self.sim_time = 0.0
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.iterations = 20
+        self.iterations = 4
 
         self.viewer = viewer
         builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Z)
