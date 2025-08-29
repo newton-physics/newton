@@ -17,7 +17,8 @@
 # Example Robot UR10
 #
 # Shows how to set up a simulation of a UR10 robot arm
-# from a USD file using newton.ModelBuilder.add_usd().
+# from a USD file using newton.ModelBuilder.add_usd() and
+# applies a sinusoidal trajectory to the joint targets.
 #
 # Command: python -m newton.examples robot_ur10 --num-envs 16
 #
