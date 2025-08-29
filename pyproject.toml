@@ -56,6 +56,7 @@ examples = [
     "pyglet>=2.1.6",        # for OpenGL viewer
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
+    "pyyaml>=6.0.2",
 ]
 
 # Extra dependency needed to run examples that inference an RL policy
