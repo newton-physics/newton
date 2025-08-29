@@ -79,6 +79,7 @@ def add_example_test(
     test_options_cpu: dict[str, Any] | None = None,
     test_options_cuda: dict[str, Any] | None = None,
     use_viewer: bool = False,
+    test_suffix: str | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
@@ -195,7 +196,8 @@ def add_example_test(
             except OSError:
                 pass
 
-    add_function_test(cls, f"test_{name}", run, devices=devices, check_output=False)
+    test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
+    add_function_test(cls, test_name, run, devices=devices, check_output=False)
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
@@ -258,7 +260,7 @@ add_example_test(
     name="cloth.example_cloth_franka",
     devices=test_devices,
     test_options={"num_frames": 50},
-    test_options_cpu={"num_frames": 10},
+    test_options_cpu={"num_frames": 2},
     use_viewer=True,
 )
 add_example_test(
@@ -322,6 +324,71 @@ add_example_test(
     test_options={"num_frames": 500},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
+)
+
+
+class TestRobotPolicyExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_29dof"},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+    test_suffix="G1_29dof",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    use_viewer=True,
+    test_suffix="G1_23dof",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
+    use_viewer=True,
+    test_suffix="G1_23dof_Physx",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal"},
+    use_viewer=True,
+    test_suffix="Anymal",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
+    use_viewer=True,
+    test_suffix="Anymal_Physx",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"torch_required": True},
+    test_options_cuda={"num_frames": 500, "robot": "go2"},
+    use_viewer=True,
+    test_suffix="Go2",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
+    test_options={"torch_required": True},
+    test_options_cuda={"num_frames": 500, "robot": "go2", "physx": True},
+    use_viewer=True,
+    test_suffix="Go2_Physx",
 )
 
 
