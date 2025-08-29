@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -513,27 +514,41 @@ def parse_usd(
                 scale = np.array(op.Get(), dtype=np.float32)
         return scale
 
+    def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
+        if get_transforms:
+            parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+        else:
+            parent_tf = None
+            child_tf = None
+
+        parent_path = str(joint_desc.body0)
+        child_path = str(joint_desc.body1)
+        parent_id = body_index_map.get(parent_path, -1)
+        child_id = body_index_map.get(child_path, -1)
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            if parent_id == -1:
+                warnings.warn(f"Skipping joint {joint_desc.primPath}: both bodies unresolved", stacklevel=2)
+                return
+            parent_id, child_id = child_id, parent_id
+            if get_transforms:
+                parent_tf, child_tf = child_tf, parent_tf
+            if verbose:
+                print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+        if get_transforms:
+            return parent_id, child_id, parent_tf, child_tf
+        else:
+            return parent_id, child_id
+
     def parse_joint(joint_desc, joint_path, incoming_xform=None):
         if not joint_desc.jointEnabled and only_load_enabled_joints:
             return
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
-        parent_path = str(joint_desc.body0)
-        child_path = str(joint_desc.body1)
-        parent_id = path_body_map.get(parent_path, -1)
-        child_id = path_body_map.get(child_path, -1)
-        parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
-        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
-        # If child_id is -1, swap parent and child
-        if child_id == -1:
-            if parent_id == -1:
-                if verbose:
-                    print(f"Skipping joint {joint_path}: both bodies unresolved")
-                return
-            parent_id, child_id = child_id, parent_id
-            parent_tf, child_tf = child_tf, parent_tf
-            if verbose:
-                print(f"Joint {joint_path} connects {parent_path} to world")
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
+            joint_desc, path_body_map, get_transforms=True
+        )
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
@@ -887,7 +902,8 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_names.append(str(p))
                 joint_desc = joint_descriptions[str(p)]
-                joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
+                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
+                joint_edges.append((parent_id, child_id))
 
             # add joints in topological order
             if joint_ordering is not None:
