@@ -473,15 +473,20 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         for i in range(self.model.body_count):
             env_idx = i // bodies_per_env
             if env_idx == 0:
-                a = np.float32(2.5 + self.rng.uniform(0.0, 0.5))
-                b = np.float32(3.5 + self.rng.uniform(0.0, 0.5))
-                c = np.float32(min(a + b - 0.1, 4.5))
-                updated_inertias[i] = np.diag([a, b, c]).astype(np.float32)
+                a_base, b_base, c_max = 2.5, 3.5, 4.5
             else:
-                a = np.float32(3.5 + self.rng.uniform(0.0, 0.5))
-                b = np.float32(4.5 + self.rng.uniform(0.0, 0.5))
-                c = np.float32(min(a + b - 0.1, 5.5))
-                updated_inertias[i] = np.diag([a, b, c]).astype(np.float32)
+                a_base, b_base, c_max = 3.5, 4.5, 5.5
+            a = np.float32(a_base + self.rng.uniform(0.0, 0.5))
+            b = np.float32(b_base + self.rng.uniform(0.0, 0.5))
+            c = np.float32(min(a + b - 0.1, c_max))
+            ab = np.float32(self.rng.uniform(-0.2, 0.2))
+            ac = np.float32(self.rng.uniform(-0.2, 0.2))
+            bc = np.float32(self.rng.uniform(-0.2, 0.2))
+            inertia = np.array([[a, ab, ac], [ab, b, bc], [ac, bc, c]], dtype=np.float32)
+            eigvals = np.linalg.eigvalsh(inertia)
+            if np.any(eigvals <= 0):
+                inertia += np.eye(3, dtype=np.float32) * (np.abs(np.min(eigvals)) + 0.1)
+            updated_inertias[i] = inertia
         self.model.body_inertia.assign(updated_inertias)
 
         # Notify solver of inertia changes
