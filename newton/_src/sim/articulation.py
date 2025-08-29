@@ -531,6 +531,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
 def eval_articulation_ik(
     articulation_start: wp.array(dtype=int),
     articulation_count: int,  # total number of articulations
+    articulation_mask: wp.array(dtype=bool),  # can be None, mask to filter articulations
     articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -558,6 +559,11 @@ def eval_articulation_ik(
     # Bounds check
     if articulation_id < 0 or articulation_id >= articulation_count:
         return  # Invalid articulation index
+
+    # early out if disabling IK for this articulation
+    if articulation_mask:
+        if not articulation_mask[articulation_id]:
+            return
 
     # Get joint range for this articulation
     joint_start = articulation_start[articulation_id]
@@ -737,7 +743,7 @@ def eval_articulation_ik(
 
 
 # given maximal coordinate model computes ik (closest point projection)
-def eval_ik(model, state, joint_q, joint_qd, indices=None):
+def eval_ik(model, state, joint_q, joint_qd, mask=None, indices=None):
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
@@ -746,8 +752,16 @@ def eval_ik(model, state, joint_q, joint_qd, indices=None):
         state (State): The state with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
         joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
+        mask (array): Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
         indices (array): Integer indices of articulations to update. If None, updates all articulations.
+
+    Note:
+        The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.
     """
+    # Check for mutually exclusive parameters
+    if mask is not None and indices is not None:
+        raise ValueError("mask and indices parameters are mutually exclusive - please use only one")
+
     # Determine launch dimensions
     if indices is not None:
         num_articulations = len(indices)
@@ -761,6 +775,7 @@ def eval_ik(model, state, joint_q, joint_qd, indices=None):
         inputs=[
             model.articulation_start,
             model.articulation_count,
+            mask,
             indices,
             state.body_q,
             state.body_qd,
