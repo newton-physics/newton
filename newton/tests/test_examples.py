@@ -338,22 +338,21 @@ add_example_test(
     test_options={"num_frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
-)
-add_example_test(
-    TestRobotPolicyExamples,
-    name="robot.example_robot_policy",
-    devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof"},
-    test_options_cpu={"num_frames": 10},
-    use_viewer=True,
     test_suffix="G1_29dof",
 )
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
+    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    use_viewer=True,
+    test_suffix="G1_23dof",
+)
+add_example_test(
+    TestRobotPolicyExamples,
+    name="robot.example_robot_policy",
+    devices=cuda_test_devices,
     test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -362,7 +361,6 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num_frames": 500, "torch_required": True, "robot": "anymal"},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -371,7 +369,6 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num_frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -384,8 +381,6 @@ add_example_test(
     use_viewer=True,
     test_suffix="Go2",
 )
-
-
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
