@@ -34,7 +34,6 @@ from ...sim import (
     Model,
     State,
     color_graph,
-    count_rigid_contact_points,
     plot_graph,
 )
 from ...utils import topological_sort
@@ -863,10 +862,8 @@ def update_body_mass_ipos_kernel(
 @wp.kernel
 def update_body_inertia_kernel(
     body_inertia: wp.array(dtype=wp.mat33f),
-    body_quat: wp.array2d(dtype=wp.quatf),
     bodies_per_env: int,
     body_mapping: wp.array(dtype=int),
-    up_axis: int,
     # outputs
     body_inertia_out: wp.array2d(dtype=wp.vec3f),
     body_iquat_out: wp.array2d(dtype=wp.quatf),
@@ -878,12 +875,14 @@ def update_body_inertia_kernel(
     if mjc_idx == -1:
         return
 
-    # Get inertia tensor and body orientation
+    # Get inertia tensor
     I = body_inertia[tid]
-    # body_q = body_quat[worldid, mjc_idx]
 
     # Calculate eigenvalues and eigenvectors
     eigenvectors, eigenvalues = wp.eig3(I)
+
+    # transpose eigenvectors to allow reshuffling by indexing rows.
+    vecs_transposed = wp.transpose(eigenvectors)
 
     # Bubble sort for 3 elements in descending order
     for i in range(2):
@@ -894,21 +893,20 @@ def update_body_inertia_kernel(
                 eigenvalues[j] = eigenvalues[j + 1]
                 eigenvalues[j + 1] = temp_val
                 # Swap eigenvectors
-                temp_vec = eigenvectors[j]
-                eigenvectors[j] = eigenvectors[j + 1]
-                eigenvectors[j + 1] = temp_vec
+                temp_vec = vecs_transposed[j]
+                vecs_transposed[j] = vecs_transposed[j + 1]
+                vecs_transposed[j + 1] = temp_vec
 
-    # this does not work yet, I think we are reporting in the wrong reference frame
-    # Convert eigenvectors to quaternion (xyzw format for mujoco)
-    # q = wp.quat_from_matrix(wp.mat33f(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
-    # q = wp.normalize(q)
+    # Convert eigenvectors to quaternion (xyzw format)
+    q = wp.quat_from_matrix(wp.transpose(vecs_transposed))
+    q = wp.normalize(q)
 
-    # Convert from wxyz to xyzw format and compose with body orientation
-    # q = wp.quat(q[1], q[2], q[3], q[0])
+    # Convert from xyzw to wxyz format
+    q = wp.quat(q[1], q[2], q[3], q[0])
 
     # Store results
     body_inertia_out[worldid, mjc_idx] = eigenvalues
-    # body_iquat_out[worldid, mjc_idx] = q
+    body_iquat_out[worldid, mjc_idx] = q
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -1159,7 +1157,7 @@ class SolverMuJoCo(SolverBase):
         mjw_model: MjWarpModel | None = None,
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
-        nefc_per_env: int = 100,
+        njmax: int = 100,
         ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
@@ -1185,7 +1183,7 @@ class SolverMuJoCo(SolverBase):
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            nefc_per_env (int): Number of constraints per environment (world).
+            njmax (int): Maximum number of constraints per environment (world).
             ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
@@ -1250,7 +1248,7 @@ class SolverMuJoCo(SolverBase):
                     disableflags=disableflags,
                     disable_contacts=disable_contacts,
                     separate_envs_to_worlds=separate_envs_to_worlds,
-                    nefc_per_env=nefc_per_env,
+                    njmax=njmax,
                     ncon_per_env=ncon_per_env,
                     iterations=iterations,
                     ls_iterations=ls_iterations,
@@ -1644,7 +1642,7 @@ class SolverMuJoCo(SolverBase):
         separate_envs_to_worlds: bool = True,
         iterations: int = 20,
         ls_iterations: int = 10,
-        nefc_per_env: int = 100,  # number of constraints per world
+        njmax: int = 100,  # number of constraints per world
         ncon_per_env: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "euler",
@@ -2351,9 +2349,9 @@ class SolverMuJoCo(SolverBase):
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
                 else:
-                    rigid_contact_max = count_rigid_contact_points(model)
+                    rigid_contact_max = model.rigid_contact_max
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(nefc_per_env, self.mj_data.nefc)
+            njmax = max(njmax, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )
@@ -2368,7 +2366,7 @@ class SolverMuJoCo(SolverBase):
             # "body_pos",
             # "body_quat",
             "body_ipos",
-            # "body_iquat",
+            "body_iquat",
             "body_mass",
             # "body_subtreemass",
             # "subtree_mass",
@@ -2486,10 +2484,8 @@ class SolverMuJoCo(SolverBase):
             dim=self.model.body_count,
             inputs=[
                 self.model.body_inertia,
-                self.mjw_model.body_quat,
                 bodies_per_env,
                 self.to_mjc_body_index,
-                self.model.up_axis,
             ],
             outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
             device=self.model.device,

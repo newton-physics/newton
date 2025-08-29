@@ -25,6 +25,7 @@ import warp as wp
 import newton
 import newton.utils
 from newton.selection import ArticulationView
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestAnymalReset(unittest.TestCase):
@@ -100,7 +101,7 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, nefc_per_env=200
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
         )
 
         self.renderer = None if self.headless else newton.viewer.RendererOpenGL(self.model, stage_path)
@@ -283,11 +284,13 @@ class TestAnymalReset(unittest.TestCase):
 
     def _run_reset_test(self, cone_type):
         self._setup_simulation(cone_type)
-        for i in range(50):
+        num_steps = 50 if self.device.is_cuda else 5
+        check_interval = 10 if self.device.is_cuda else 4
+        for i in range(num_steps):
             self.step()
             if not self.headless:
                 self.render()
-            if i % 10 == 0:
+            if i % check_interval == 0:
                 current_iters = self.get_current_iterations()
                 max_iters = self.get_max_iterations()
                 self.assertLess(
@@ -301,11 +304,11 @@ class TestAnymalReset(unittest.TestCase):
         self.propagate_reset_state()
         mjw_data_matches = self.compare_mjw_data_with_initial()
 
-        for i in range(50):
+        for i in range(num_steps):
             self.step()
             if not self.headless:
                 self.render()
-            if i % 10 == 0:
+            if i % check_interval == 0:
                 current_iters = self.get_current_iterations()
                 max_iters = self.get_max_iterations()
                 self.assertLess(
@@ -322,13 +325,30 @@ class TestAnymalReset(unittest.TestCase):
         if self.renderer:
             self.renderer.save()
 
-    def test_reset_functionality_elliptic(self):
-        """Test reset functionality with ELLIPTIC cone"""
-        self._run_reset_test(mujoco.mjtCone.mjCONE_ELLIPTIC)
 
-    def test_reset_functionality_pyramidal(self):
-        """Test reset functionality with PYRAMIDAL cone"""
-        self._run_reset_test(mujoco.mjtCone.mjCONE_PYRAMIDAL)
+def test_reset_functionality(test: TestAnymalReset, device, cone_type):
+    test.device = device
+    with wp.ScopedDevice(device):
+        test._run_reset_test(cone_type)
+
+
+devices = get_test_devices()
+add_function_test(
+    TestAnymalReset,
+    "test_reset_functionality_elliptic",
+    test_reset_functionality,
+    devices=devices,
+    cone_type=mujoco.mjtCone.mjCONE_ELLIPTIC,
+    check_output=False,
+)
+add_function_test(
+    TestAnymalReset,
+    "test_reset_functionality_pyramidal",
+    test_reset_functionality,
+    devices=devices,
+    cone_type=mujoco.mjtCone.mjCONE_PYRAMIDAL,
+    check_output=False,
+)
 
 
 if __name__ == "__main__":

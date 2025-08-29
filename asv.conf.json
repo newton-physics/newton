@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "project": "newton-physics",
+  "project": "newton",
   "project_url": "https://github.com/newton-physics/newton",
   "repo": ".",
   "branches": ["main"],
@@ -16,7 +16,7 @@
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
     "python -m pip install -U numpy",
-    "python -m pip install -U --pre warp-lang==1.9.0.dev20250806 --index-url=https://pypi.nvidia.com/",
+    "python -m pip install -U --pre warp-lang==1.9.0.dev20250825 --index-url=https://pypi.nvidia.com/",
     "python -m pip install -U --pre mujoco==3.3.6.dev797870883 -f https://py.mujoco.org/",
     "python -m pip install -U torch==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
     "python -m pip install git+https://github.com/google-deepmind/mujoco_warp@baeb10e73237df13802217d310788e1f02dcf92d",
