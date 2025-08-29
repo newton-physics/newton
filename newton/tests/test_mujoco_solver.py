@@ -398,9 +398,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
             ab = np.float32(self.rng.uniform(-0.2, 0.2))
             ac = np.float32(self.rng.uniform(-0.2, 0.2))
             bc = np.float32(self.rng.uniform(-0.2, 0.2))
-            inertia = np.array([[a, ab, ac],
-                                [ab, b, bc],
-                                [ac, bc, c]], dtype=np.float32)
+            inertia = np.array([[a, ab, ac], [ab, b, bc], [ac, bc, c]], dtype=np.float32)
             eigvals = np.linalg.eigvalsh(inertia)
             if np.any(eigvals <= 0):
                 inertia += np.eye(3, dtype=np.float32) * (np.abs(np.min(eigvals)) + 0.1)
@@ -428,7 +426,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         newton_eigvecs = newton_eigvecs.reshape((3, 3))
 
                         newton_eigvals = np.array(newton_eigvals)
-                        
+
                         mjc_eigvals = mjc_inertia  # Already in diagonal form
                         mjc_iquat = np.roll(solver.mjw_model.body_iquat.numpy()[env_idx, mjc_idx].astype(np.float32), 1)
 
@@ -436,12 +434,16 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         sort_indices = np.argsort(newton_eigvals)
                         newton_eigvals = newton_eigvals[sort_indices]
                         newton_eigvecs = newton_eigvecs[:, sort_indices]
-                        
+
                         # reverse because we want descending order of eigenvalues
                         newton_eigvals = newton_eigvals[::-1]
                         newton_eigvecs = newton_eigvecs[::-1]
 
-                        newton_quat = wp.quat_from_matrix(wp.matrix_from_cols(wp.vec3(newton_eigvecs[0]), wp.vec3(newton_eigvecs[1]), wp.vec3(newton_eigvecs[2])))                        
+                        newton_quat = wp.quat_from_matrix(
+                            wp.matrix_from_cols(
+                                wp.vec3(newton_eigvecs[0]), wp.vec3(newton_eigvecs[1]), wp.vec3(newton_eigvecs[2])
+                            )
+                        )
                         newton_quat = wp.normalize(newton_quat)
 
                         for dim in range(3):
