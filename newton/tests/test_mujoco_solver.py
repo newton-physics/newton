@@ -426,7 +426,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         newton_eigvecs = newton_eigvecs.reshape((3, 3))
 
                         newton_eigvals = np.array(newton_eigvals)
-                        
+
                         mjc_eigvals = mjc_inertia  # Already in diagonal form
                         mjc_iquat = np.roll(solver.mjw_model.body_iquat.numpy()[env_idx, mjc_idx].astype(np.float32), 1)
 
@@ -437,7 +437,9 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
                         newton_quat = wp.quat_from_matrix(
                             wp.matrix_from_cols(
-                                wp.vec3(newton_eigvecs[:, 0]), wp.vec3(newton_eigvecs[:, 1]), wp.vec3(newton_eigvecs[:, 2])
+                                wp.vec3(newton_eigvecs[:, 0]),
+                                wp.vec3(newton_eigvecs[:, 1]),
+                                wp.vec3(newton_eigvecs[:, 2]),
                             )
                         )
                         newton_quat = wp.normalize(newton_quat)
@@ -454,7 +456,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         mjc_iquat_np = np.array(mjc_iquat)
                         if np.dot(newton_quat_np, mjc_iquat_np) < 0:
                             newton_quat_np = -newton_quat_np
-                        
+
                         for dim in range(4):
                             self.assertAlmostEqual(
                                 float(mjc_iquat_np[dim]),
