@@ -127,9 +127,9 @@ class CollisionHandler:
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         self.penetration_free_conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
 
-        self.Hx = wp.zeros(model.particle_count, dtype=wp.vec3)
-        self.particle_colors = wp.zeros(model.particle_count, dtype=int)
-        self.contact_hessian_diags = wp.zeros(model.particle_count, dtype=wp.mat33)
+        self.Hx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.model.device)
+        self.particle_colors = wp.zeros(model.particle_count, dtype=int, device=self.model.device)
+        self.contact_hessian_diags = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.model.device)
 
         self.trimesh_collision_detector = TriMeshCollisionDetector(
             model,
