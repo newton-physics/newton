@@ -70,7 +70,7 @@ class ViewerGL(ViewerBase):
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
 
-        self._paused = True
+        self._paused = False
 
         # State caching for selection panel
         self._last_state = None
@@ -138,6 +138,14 @@ class ViewerGL(ViewerBase):
         indices = wp.array(indices, dtype=wp.uint32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
+
+    def log_gizmo(
+        self,
+        name,
+        transform,
+    ):
+        # Store for this frame; call this every frame you want it drawn/active
+        self._gizmo_log[name] = transform
 
     def set_model(self, model):
         """
@@ -217,9 +225,10 @@ class ViewerGL(ViewerBase):
     def log_lines(
         self,
         name,
-        line_begins: wp.array,
-        line_ends: wp.array,
-        line_colors,
+        starts: wp.array,
+        ends: wp.array,
+        colors,
+        width: float = 0.01,
         hidden=False,
     ):
         """
@@ -227,34 +236,34 @@ class ViewerGL(ViewerBase):
 
         Args:
             name (str): Unique identifier for the line batch.
-            line_begins (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
-            line_ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
-            line_colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
+            ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
+            colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
             hidden (bool): Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
-        if line_begins is None or line_ends is None or line_colors is None:
+        if starts is None or ends is None or colors is None:
             if name in self.lines:
                 self.lines[name].update(None, None, None)
             return
 
-        assert isinstance(line_begins, wp.array)
-        assert isinstance(line_ends, wp.array)
-        num_lines = len(line_begins)
-        assert len(line_ends) == num_lines, "Number of line ends must match line begins"
+        assert isinstance(starts, wp.array)
+        assert isinstance(ends, wp.array)
+        num_lines = len(starts)
+        assert len(ends) == num_lines, "Number of line ends must match line begins"
 
         # Handle tuple/list colors by expanding to array (only if not already converted above)
-        if isinstance(line_colors, (tuple, list)):
+        if isinstance(colors, tuple | list):
             if num_lines > 0:
-                color_vec = wp.vec3(*line_colors)
-                line_colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
-                line_colors.fill_(color_vec)  # Efficiently fill on GPU
+                color_vec = wp.vec3(*colors)
+                colors = wp.zeros(num_lines, dtype=wp.vec3, device=self.device)
+                colors.fill_(color_vec)  # Efficiently fill on GPU
             else:
                 # Handle zero lines case
-                line_colors = wp.array([], dtype=wp.vec3, device=self.device)
+                colors = wp.array([], dtype=wp.vec3, device=self.device)
 
-        assert isinstance(line_colors, wp.array)
-        assert len(line_colors) == num_lines, "Number of line colors must match line begins"
+        assert isinstance(colors, wp.array)
+        assert len(colors) == num_lines, "Number of line colors must match line begins"
 
         # Create or resize LinesGL object based on current requirements
         if name not in self.lines:
@@ -267,16 +276,16 @@ class ViewerGL(ViewerBase):
             max_lines = max(num_lines, self.lines[name].max_lines * 2)
             self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
 
-        self.lines[name].update(line_begins, line_ends, line_colors)
+        self.lines[name].update(starts, ends, colors)
 
-    def log_points(self, name, points, widths, colors, hidden=False):
+    def log_points(self, name, points, radii, colors, hidden=False):
         """
         Log a batch of points for rendering as spheres.
 
         Args:
             name (str): Unique name for the point batch.
             points: Array of point positions.
-            widths: Array of point radii.
+            radii: Array of point radius values.
             colors: Array of point colors.
             hidden (bool): Whether the points are hidden.
         """
@@ -286,7 +295,7 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
 
-        self.objects[name].update_from_points(points, widths, colors)
+        self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
     def log_array(self, name, array):
@@ -346,12 +355,12 @@ class ViewerGL(ViewerBase):
         com_position = wp.vec3(body_transform[0], body_transform[1], body_transform[2])
 
         # Create line data
-        line_begins = wp.array([com_position], dtype=wp.vec3, device=self.device)
-        line_ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
-        line_colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
+        starts = wp.array([com_position], dtype=wp.vec3, device=self.device)
+        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
 
         # Render the line
-        self.log_lines("picking_line", line_begins, line_ends, line_colors, hidden=False)
+        self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
     def begin_frame(self, time):
         """
@@ -361,6 +370,7 @@ class ViewerGL(ViewerBase):
             time: Current simulation time.
         """
         super().begin_frame(time)
+        self._gizmo_log = {}
 
     def end_frame(self):
         """
@@ -723,12 +733,56 @@ class ViewerGL(ViewerBase):
             self._last_fps_time = current_time
             self._frame_count = 0
 
+    def _render_gizmos(self):
+        if not self._gizmo_log:
+            return
+
+        giz = self.ui.giz
+        io = self.ui.io
+
+        # Setup ImGuizmo viewport
+        giz.set_orthographic(False)
+        giz.set_rect(0.0, 0.0, float(io.display_size[0]), float(io.display_size[1]))
+        giz.set_gizmo_size_clip_space(0.07)
+        giz.set_axis_limit(0.0)
+        giz.set_plane_limit(0.0)
+
+        # Camera matrices
+        view = self.camera.get_view_matrix().reshape(4, 4).transpose()
+        proj = self.camera.get_projection_matrix().reshape(4, 4).transpose()
+
+        # Draw & mutate each gizmo
+        for gid, transform in self._gizmo_log.items():
+            giz.push_id(str(gid))
+
+            M = wp.transform_to_matrix(transform)
+
+            def m44_to_mat16(m):
+                """Row-major 4x4 -> giz.Matrix16 (column-major, 16 floats)."""
+                m = np.asarray(m, dtype=np.float32).reshape(4, 4)
+                return giz.Matrix16(m.flatten(order="F").tolist())
+
+            view_ = m44_to_mat16(view)
+            proj_ = m44_to_mat16(proj)
+            M_ = m44_to_mat16(M)
+
+            giz.manipulate(view_, proj_, giz.OPERATION.rotate, giz.MODE.world, M_, None, None)
+            giz.manipulate(view_, proj_, giz.OPERATION.translate, giz.MODE.world, M_, None, None)
+
+            M[:] = M_.values.reshape(4, 4, order="F")
+            transform[:] = wp.transform_from_matrix(M)
+
+            giz.pop_id()
+
     def _render_ui(self):
         """
         Render the complete ImGui interface (left panel and stats overlay).
         """
         if not self.ui.is_available:
             return
+
+        # Render gizmos
+        self._render_gizmos()
 
         # Render left panel
         self._render_left_panel()
@@ -743,15 +797,15 @@ class ViewerGL(ViewerBase):
         imgui = self.ui.imgui
 
         # Use theme colors directly
-        nav_highlight_color = self.ui.get_theme_color(imgui.COLOR_NAV_HIGHLIGHT, (1.0, 1.0, 1.0, 1.0))
+        nav_highlight_color = self.ui.get_theme_color(imgui.Col_.nav_cursor, (1.0, 1.0, 1.0, 1.0))
 
         # Position the window on the left side
         io = self.ui.io
-        imgui.set_next_window_position(10, 10)
-        imgui.set_next_window_size(300, io.display_size[1] - 20)
+        imgui.set_next_window_pos(imgui.ImVec2(10, 10))
+        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
 
         # Main control panel window - use safe flag values
-        flags = imgui.WINDOW_NO_RESIZE
+        flags = imgui.WindowFlags_.no_resize.value
 
         if imgui.begin(f"Newton Viewer v{nt.__version__}", flags=flags):
             imgui.separator()
@@ -761,7 +815,7 @@ class ViewerGL(ViewerBase):
 
             # Model Information section
             if self.model is not None:
-                imgui.set_next_item_open(True, imgui.APPEARING)
+                imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 _open = imgui.collapsing_header("Model Information", flags=header_flags)
                 if isinstance(_open, tuple):
                     _open = _open[0]
@@ -778,7 +832,7 @@ class ViewerGL(ViewerBase):
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
 
                 # Visualization Controls section
-                imgui.set_next_item_open(True, imgui.APPEARING)
+                imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 _open = imgui.collapsing_header("Visualization", flags=header_flags)
                 if isinstance(_open, tuple):
                     _open = _open[0]
@@ -810,7 +864,7 @@ class ViewerGL(ViewerBase):
                     changed, self.show_triangles = imgui.checkbox("Show Cloth", show_triangles)
 
             # Rendering Options section
-            imgui.set_next_item_open(True, imgui.APPEARING)
+            imgui.set_next_item_open(True, imgui.Cond_.appearing)
             _open = imgui.collapsing_header("Rendering Options")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -832,14 +886,14 @@ class ViewerGL(ViewerBase):
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
                 # Light color
-                changed, self.renderer._light_color = imgui.color_edit3("Light Color", *self.renderer._light_color)
+                changed, self.renderer._light_color = imgui.color_edit3("Light Color", self.renderer._light_color)
                 # Sky color
-                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", *self.renderer.sky_upper)
+                changed, self.renderer.sky_upper = imgui.color_edit3("Sky Color", self.renderer.sky_upper)
                 # Ground color
-                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", *self.renderer.sky_lower)
+                changed, self.renderer.sky_lower = imgui.color_edit3("Ground Color", self.renderer.sky_lower)
 
             # Wind Effects section
-            imgui.set_next_item_open(False, imgui.ONCE)
+            imgui.set_next_item_open(False, imgui.Cond_.once)
             _open = imgui.collapsing_header("Wind")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -863,12 +917,12 @@ class ViewerGL(ViewerBase):
 
                 # Wind direction sliders
                 direction = [self.wind.direction[0], self.wind.direction[1], self.wind.direction[2]]
-                changed, direction = imgui.slider_float3("Wind Direction", *direction, -1.0, 1.0, "%.2f")
+                changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
                 if changed:
                     self.wind.direction = direction
 
             # Camera Information section
-            imgui.set_next_item_open(True, imgui.APPEARING)
+            imgui.set_next_item_open(True, imgui.Cond_.appearing)
             _open = imgui.collapsing_header("Camera")
             if isinstance(_open, tuple):
                 _open = _open[0]
@@ -884,7 +938,7 @@ class ViewerGL(ViewerBase):
 
                 # Camera controls hint
                 imgui.separator()
-                imgui.push_style_color(imgui.COLOR_TEXT, *nav_highlight_color)
+                imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*nav_highlight_color))
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
@@ -911,18 +965,18 @@ class ViewerGL(ViewerBase):
 
         # Position in top-right corner
         window_pos = (io.display_size[0] - 10, 10)
-        imgui.set_next_window_position(window_pos[0], window_pos[1], pivot_x=1.0, pivot_y=0.0)
+        imgui.set_next_window_pos(imgui.ImVec2(window_pos[0], window_pos[1]), pivot=imgui.ImVec2(1.0, 0.0))
 
         # Transparent background, auto-sized, non-resizable/movable - use safe flags
         #        try:
-        flags = (
-            imgui.WINDOW_NO_DECORATION
-            | imgui.WINDOW_ALWAYS_AUTO_RESIZE
-            | imgui.WINDOW_NO_RESIZE
-            | imgui.WINDOW_NO_SAVED_SETTINGS
-            | imgui.WINDOW_NO_FOCUS_ON_APPEARING
-            | imgui.WINDOW_NO_NAV
-            | imgui.WINDOW_NO_MOVE
+        flags: imgui.WindowFlags = (
+            imgui.WindowFlags_.no_decoration.value
+            | imgui.WindowFlags_.always_auto_resize.value
+            | imgui.WindowFlags_.no_resize.value
+            | imgui.WindowFlags_.no_saved_settings.value
+            | imgui.WindowFlags_.no_focus_on_appearing.value
+            | imgui.WindowFlags_.no_nav.value
+            | imgui.WindowFlags_.no_move.value
         )
 
         # Set semi-transparent background for the overlay window
@@ -934,18 +988,18 @@ class ViewerGL(ViewerBase):
             # Fallback: temporarily override window bg color alpha
             try:
                 style = imgui.get_style()
-                bg = style.colors[imgui.COLOR_WINDOW_BACKGROUND]
-                r, g, b = bg[0], bg[1], bg[2]
+                bg = style.color_(imgui.Col_.window_bg)
+                r, g, b = bg.x, bg.y, bg.z
             except Exception:
                 # Reasonable dark default
                 r, g, b = 0.094, 0.094, 0.094
-            imgui.push_style_color(imgui.COLOR_WINDOW_BACKGROUND, r, g, b, 0.7)
+            imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(r, g, b, 0.7))
             pushed_window_bg = True
 
         if imgui.begin("Performance Stats", flags=flags):
             # FPS display
             fps_text = f"FPS: {self._current_fps:.1f}"
-            imgui.push_style_color(imgui.COLOR_TEXT, *fps_color)
+            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*fps_color))
             imgui.text(fps_text)
             imgui.pop_style_color()
 
@@ -979,7 +1033,7 @@ class ViewerGL(ViewerBase):
 
         # Selection Panel section
         header_flags = 0
-        imgui.set_next_item_open(False, imgui.APPEARING)  # Default to closed
+        imgui.set_next_item_open(False, imgui.Cond_.appearing)  # Default to closed
         _open = imgui.collapsing_header("Selection API", flags=header_flags)
         if isinstance(_open, tuple):
             _open = _open[0]
@@ -996,7 +1050,7 @@ class ViewerGL(ViewerBase):
 
             # Display error message if any
             if state["error_message"]:
-                imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.3, 0.3, 1.0)
+                imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.3, 0.3, 1.0))
                 imgui.text(f"Error: {state['error_message']}")
                 imgui.pop_style_color()
                 imgui.separator()
@@ -1005,7 +1059,7 @@ class ViewerGL(ViewerBase):
             imgui.text("Articulation Pattern:")
             imgui.push_item_width(200)
             changed, state["selected_articulation_pattern"] = imgui.input_text(
-                "##pattern", state["selected_articulation_pattern"], 256
+                "##pattern", state["selected_articulation_pattern"]
             )
             imgui.pop_item_width()
             if imgui.is_item_hovered():
@@ -1018,13 +1072,13 @@ class ViewerGL(ViewerBase):
             imgui.push_item_width(150)
             imgui.text("Include:")
             imgui.same_line()
-            _, state["include_joints"] = imgui.input_text("##inc_joints", state["include_joints"], 256)
+            _, state["include_joints"] = imgui.input_text("##inc_joints", state["include_joints"])
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Comma-separated joint names/patterns")
 
             imgui.text("Exclude:")
             imgui.same_line()
-            _, state["exclude_joints"] = imgui.input_text("##exc_joints", state["exclude_joints"], 256)
+            _, state["exclude_joints"] = imgui.input_text("##exc_joints", state["exclude_joints"])
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Comma-separated joint names/patterns")
             imgui.pop_item_width()
@@ -1035,13 +1089,13 @@ class ViewerGL(ViewerBase):
             imgui.push_item_width(150)
             imgui.text("Include:")
             imgui.same_line()
-            _, state["include_links"] = imgui.input_text("##inc_links", state["include_links"], 256)
+            _, state["include_links"] = imgui.input_text("##inc_links", state["include_links"])
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Comma-separated link names/patterns")
 
             imgui.text("Exclude:")
             imgui.same_line()
-            _, state["exclude_links"] = imgui.input_text("##exc_links", state["exclude_links"], 256)
+            _, state["exclude_links"] = imgui.input_text("##exc_links", state["exclude_links"])
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Comma-separated link names/patterns")
             imgui.pop_item_width()
@@ -1312,7 +1366,7 @@ class ViewerGL(ViewerBase):
         for i, val in enumerate(values):
             name = names[i] if names and i < len(names) else f"[{i}]"
 
-            if isinstance(val, (int, float)) or hasattr(val, "dtype"):
+            if isinstance(val, int | float) or hasattr(val, "dtype"):
                 # shorten floating base key for ui
                 # todo: consider doing this in the importers
                 if name.startswith("floating_base"):

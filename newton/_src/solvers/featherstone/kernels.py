@@ -57,9 +57,27 @@ def compute_com_transforms(
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
 
 
-# computes adj_t^-T*I*adj_t^-1 (tensor change of coordinates), Frank & Park, section 8.2.3, pg 290
 @wp.func
-def spatial_transform_inertia(t: wp.transform, I: wp.spatial_matrix):
+def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
+    """
+    Transform a spatial inertia tensor to a new coordinate frame.
+
+    This computes the change of coordinates for a spatial inertia tensor under a rigid-body
+    transformation `t`. The result is mathematically equivalent to:
+
+        adj_t^-T * I * adj_t^-1
+
+    where `adj_t` is the adjoint transformation matrix of `t`, and `I` is the spatial inertia
+    tensor in the original frame. This operation is described in Frank & Park, "Modern Robotics",
+    Section 8.2.3 (pg. 290).
+
+    Args:
+        t (wp.transform): The rigid-body transform (destination ← source).
+        I (wp.spatial_matrix): The spatial inertia tensor in the source frame.
+
+    Returns:
+        wp.spatial_matrix: The spatial inertia tensor expressed in the destination frame.
+    """
     t_inv = wp.transform_inverse(t)
 
     q = wp.transform_get_rotation(t_inv)
@@ -695,7 +713,7 @@ def compute_link_velocity(
     f_g_s = wp.spatial_vector(wp.cross(r_com, f_g), f_g)
 
     # body forces
-    I_s = spatial_transform_inertia(X_sm, I_m)
+    I_s = transform_spatial_inertia(X_sm, I_m)
 
     f_b_s = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s)
 

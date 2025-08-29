@@ -71,7 +71,7 @@ def _compare_serialized_data(test, data1, data2):
             _compare_serialized_data(test, data1[key], data2[key])
     elif isinstance(data1, list) or isinstance(data1, tuple):
         test.assertEqual(len(data1), len(data2))
-        for item1, item2 in zip(data1, data2):
+        for item1, item2 in zip(data1, data2, strict=False):
             _compare_serialized_data(test, item1, item2)
     elif isinstance(data1, set):
         test.assertEqual(data1, data2)
@@ -84,7 +84,7 @@ def _compare_serialized_data(test, data1, data2):
             test.assertAlmostEqual(data1[idx], data2[idx], delta=1e-6)
     elif isinstance(data1, float):
         test.assertAlmostEqual(data1, data2)
-    elif isinstance(data1, (int, bool, str, type(None), bytes, bytearray, complex)):
+    elif isinstance(data1, int | bool | str | type(None) | bytes | bytearray | complex):
         test.assertEqual(data1, data2)
     else:
         test.fail(f"Unhandled type for comparison: {type(data1)}")
@@ -121,7 +121,7 @@ def test_model_and_state_recorder(test: TestRecorder, device):
         _compare_serialized_data(test, recorder.model_data, new_recorder.model_data)
 
         test.assertEqual(len(recorder.history), len(new_recorder.history))
-        for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history):
+        for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
             _compare_serialized_data(test, original_state_data, loaded_state_data)
 
     finally:

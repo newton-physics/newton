@@ -9,7 +9,6 @@ newton.viewer
    :toctree: _generated
    :nosignatures:
 
-   GizmoSystem
    RecorderImGuiManager
    RendererOpenGL
    RendererUsd

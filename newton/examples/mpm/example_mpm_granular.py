@@ -185,7 +185,6 @@ if __name__ == "__main__":
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)

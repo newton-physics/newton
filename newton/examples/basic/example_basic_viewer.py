@@ -172,7 +172,7 @@ class Example:
             self.mat_plane,
         )
 
-        self.viewer.log_lines("coordinate_self.axes", self.axes_begins, self.axes_ends, self.axes_colors)
+        self.viewer.log_lines("/coordinate_axes", self.axes_begins, self.axes_ends, self.axes_colors)
 
         # End frame (process events, render, present)
         self.viewer.end_frame()

@@ -16,7 +16,6 @@
 """Implicit MPM solver."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -1068,21 +1067,21 @@ class SolverImplicitMPM(SolverBase):
         # Compute density from particle mass and radius
         # TODO support for varying properties
         if len(model.particle_mass) > 0 and len(model.particle_radius) > 0:
-            self.density = model.particle_mass[:1].numpy()[0] / (
-                4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3
+            self.density = float(
+                model.particle_mass[:1].numpy()[0] / (4.0 / 3.0 * np.pi * model.particle_radius[:1].numpy()[0] ** 3)
             )
         else:
             self.density = 1.0
 
-        self.friction_coeff = model.particle_mu
-        self.yield_stresses = options.yield_stresses
+        self.friction_coeff = float(model.particle_mu)
+        self.yield_stresses = wp.vec3f(options.yield_stresses)
         self.unilateral = options.unilateral
-        self.max_fraction = options.max_fraction
+        self.max_fraction = float(options.max_fraction)
 
         self.max_iterations = options.max_iterations
-        self.tolerance = options.tolerance
+        self.tolerance = float(options.tolerance)
 
-        self.voxel_size = options.voxel_size
+        self.voxel_size = float(options.voxel_size)
         self.degree = 1 if options.unilateral else 0
 
         self.grid_padding = options.grid_padding
@@ -1136,11 +1135,11 @@ class SolverImplicitMPM(SolverBase):
         self,
         model: Model,
         # TODO: read colliders from model
-        colliders: Optional[list[wp.Mesh]] = None,
-        collider_thicknesses: Optional[list[float]] = None,
-        collider_projection_threshold: Optional[list[float]] = None,
-        collider_masses: Optional[list[float]] = None,
-        collider_friction: Optional[list[float]] = None,
+        colliders: list[wp.Mesh] | None = None,
+        collider_thicknesses: list[float] | None = None,
+        collider_projection_threshold: list[float] | None = None,
+        collider_masses: list[float] | None = None,
+        collider_friction: list[float] | None = None,
     ):
         """Setups the collision geometry for the implicit MPM solver.
 
