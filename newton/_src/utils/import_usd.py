@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 
@@ -1212,6 +1212,40 @@ def parse_usd(
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
+
+            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated
+            I_m = np.array(builder.body_inertia[body_id])
+            mass = builder.body_mass[body_id]
+            if I_m.max() == 0.0:
+                if mass > 0.0:
+                    # Heuristic: assume a uniform density sphere with the given mass
+                    # For a sphere: I = (2/5) * m * r^2
+                    # Estimate radius from mass assuming reasonable density (e.g., water density ~1000 kg/m³)
+                    # This gives r = (3*m/(4*π*p))^(1/3)
+                    density = default_shape_density  # kg/m³
+                    volume = mass / density
+                    radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
+                    _, _, I_default = compute_sphere_inertia(density, radius)
+
+                    # Apply parallel axis theorem if center of mass is offset
+                    com = builder.body_com[body_id]
+                    if np.linalg.norm(com) > 1e-6:
+                        # I = I_cm + m * d² where d is distance from COM to body origin
+                        d_squared = np.sum(com**2)
+                        I_default += mass * d_squared * np.eye(3)
+
+                    builder.body_inertia[body_id] = I_default
+                    builder.body_inv_inertia[body_id] = wp.inverse(I_default)
+
+                    if verbose:
+                        print(
+                            f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]"
+                        )
+                else:
+                    warnings.warn(
+                        f"Body {body_path} has zero mass and zero inertia despite having the MassAPI USD schema applied.",
+                        stacklevel=2,
+                    )
 
     # add free joints to floating bodies that's just been added by import_usd
     new_bodies = path_body_map.values()
