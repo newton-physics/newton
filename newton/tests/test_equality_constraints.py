@@ -45,7 +45,7 @@ class TestEqualityConstraints(unittest.TestCase):
             integrator="euler",
             iterations=100,
             ls_iterations=50,
-            nefc_per_env=100,
+            njmax=100,
             ncon_per_env=50,
         )
 

@@ -315,7 +315,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.model.body_com.assign(new_coms)
 
         # Initialize solver
-        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True, nefc_per_env=1)
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True, njmax=1)
 
         # Check that COM positions were transferred correctly
         bodies_per_env = self.model.body_count // self.model.num_envs
