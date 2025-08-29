@@ -79,6 +79,12 @@ class Example:
         )
 
         self.time = 0.0
+        self.spacing = 2.0
+
+    def gui(self, ui):
+        ui.text("Custom UI text")
+        changed, self.time = ui.slider_float("Time", self.time, 0.0, 100.0)
+        changed, self.spacing = ui.slider_float("Spacing", self.spacing, 0.0, 10.0)
 
     def step(self):
         pass
@@ -91,7 +97,6 @@ class Example:
         # All objects at same height to avoid ground intersection
         base_height = 2.0
         base_left = -4.0
-        spacing = 2.0
 
         # Simple rotation animations
         qy_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3 * self.time)
@@ -102,24 +107,24 @@ class Example:
         sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * self.time)))
         x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
 
-        base_left += spacing
+        base_left += self.spacing
 
         # Box: rocking rotation at x = -3
         x_box_anim = wp.array([wp.transform([0.0, base_left, base_height], qx_slow)], dtype=wp.transform)
-        base_left += spacing
+        base_left += self.spacing
 
         # Cone: spinning at origin (x = 0)
         x_cone_anim = wp.array([wp.transform([0.0, base_left, base_height], qy_slow)], dtype=wp.transform)
-        base_left += spacing
+        base_left += self.spacing
 
         # Cylinder: spinning on different axis at x = 3
         x_cyl_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
-        base_left += spacing
+        base_left += self.spacing
 
         # Capsule: gentle sway at x = 6
         capsule_pos = wp.vec3(0.3 * math.sin(0.8 * self.time), base_left, base_height)
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
-        base_left += spacing
+        base_left += self.spacing
 
         # Update instances via log_shapes
         self.viewer.log_shapes(

@@ -34,6 +34,9 @@ def get_asset(filename: str) -> str:
 
 
 def run(example):
+    if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
+        example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
+
     while example.viewer.is_running():
         with wp.ScopedTimer("step", active=False):
             example.step()
