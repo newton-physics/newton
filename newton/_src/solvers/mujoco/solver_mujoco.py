@@ -1159,7 +1159,7 @@ class SolverMuJoCo(SolverBase):
         mjw_model: MjWarpModel | None = None,
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
-        nefc_per_env: int = 100,
+        njmax: int = 100,
         ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
@@ -1185,7 +1185,7 @@ class SolverMuJoCo(SolverBase):
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            nefc_per_env (int): Number of constraints per environment (world).
+            njmax (int): Maximum number of constraints per environment (world).
             ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
@@ -1250,7 +1250,7 @@ class SolverMuJoCo(SolverBase):
                     disableflags=disableflags,
                     disable_contacts=disable_contacts,
                     separate_envs_to_worlds=separate_envs_to_worlds,
-                    nefc_per_env=nefc_per_env,
+                    njmax=njmax,
                     ncon_per_env=ncon_per_env,
                     iterations=iterations,
                     ls_iterations=ls_iterations,
@@ -1369,8 +1369,8 @@ class SolverMuJoCo(SolverBase):
             xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
-            ctrl = wp.empty((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
-            qfrc = wp.empty((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+            ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
+            qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         axes_per_env = model.joint_dof_count // nworld
@@ -1644,7 +1644,7 @@ class SolverMuJoCo(SolverBase):
         separate_envs_to_worlds: bool = True,
         iterations: int = 20,
         ls_iterations: int = 10,
-        nefc_per_env: int = 100,  # number of constraints per world
+        njmax: int = 100,  # number of constraints per world
         ncon_per_env: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "euler",
@@ -2353,7 +2353,7 @@ class SolverMuJoCo(SolverBase):
                 else:
                     rigid_contact_max = count_rigid_contact_points(model)
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(nefc_per_env, self.mj_data.nefc)
+            njmax = max(njmax, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
             )

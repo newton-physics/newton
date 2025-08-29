@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "newton-physics"
+name = "newton"
 dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
@@ -25,25 +25,25 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.7.0.dev20250625"]
+dependencies = ["warp-lang>=1.7.0.dev20250823"]
 
 [project.optional-dependencies]
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=0.0.1",            # MuJoCo, warp-accelerated
-    "mujoco>=3.3.3.dev769049331",    # MuJoCo physics engine
+    "mujoco-warp>=0.0.1",         # MuJoCo, warp-accelerated
+    "mujoco>=3.3.3.dev769049331", # MuJoCo physics engine
 ]
 
 # Asset import and mesh processing dependencies
 importers = [
     # Mesh processing dependencies used by ModelBuilder.approximate_meshes
-    "scipy",                         # for convex hull approximation
-    "fast-simplification>=0.1.11",   # for mesh simplification
-    "alphashape>=1.3.1",             # for alphashape remeshing
-    "coacd>=1.0.7",                  # for convex decomposition
-    "trimesh>=4.6.8",                # for mesh operations and V-HACD
-    "pycollada>=0.9",                # for loading mesh data with trimesh
+    "scipy",                       # for convex hull approximation
+    "fast-simplification>=0.1.11", # for mesh simplification
+    "alphashape>=1.3.1",           # for alphashape remeshing
+    "coacd>=1.0.7",                # for convex decomposition
+    "trimesh>=4.6.8",              # for mesh operations and V-HACD
+    "pycollada>=0.9",              # for loading mesh data with trimesh
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
@@ -51,25 +51,26 @@ importers = [
 
 # Examples dependencies including visualization
 examples = [
-    "newton-physics[sim]",           # include simulation dependencies
-    "newton-physics[importers]",     # include import dependencies
-    "pyglet>=2.1.6",                 # for OpenGL viewer
-    "GitPython>=3.1.44",             # for downloading assets via newton.utils.download_asset()
-    "imgui_bundle>=1.92.0",          # for viewer GUI
+    "newton[sim]",          # include simulation dependencies
+    "newton[importers]",    # include import dependencies
+    "pyglet>=2.1.6",        # for OpenGL viewer
+    "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
+    "imgui_bundle>=1.92.0", # for viewer GUI
+    "pyyaml>=6.0.2",
 ]
 
 # Extra dependency needed to run examples that inference an RL policy
 torch-cu12 = [
-    "newton-physics[examples]",      # include example dependencies
-    "torch>=2.7.0",                  # Cuda 12 PyTorch
+    "newton[examples]", # include example dependencies
+    "torch>=2.7.0",     # Cuda 12 PyTorch
 ]
 
 # Development and Testing
 # Contains all w/o torch, plus development debugging dependencies
 dev = [
-    "newton-physics[examples]",      # includes examples, which pulls in sim and visualization
-    "tqdm>=4.67.1",                  # for progress bars
-    "coverage[toml]>=7.8.0",         # for code coverage testing
+    "newton[examples]",      # includes examples, which pulls in sim and visualization
+    "tqdm>=4.67.1",          # for progress bars
+    "coverage[toml]>=7.8.0", # for code coverage testing
 ]
 
 # Documentation dependencies
@@ -181,7 +182,11 @@ exclude_lines = [
     "if 0:",
     "if __name__ == .__main__.:",
 ]
-omit = ["*/newton/examples/*", "*/newton/tests/*", "*/newton/tests/thirdparty/*"]
+omit = [
+    "*/newton/examples/*",
+    "*/newton/tests/*",
+    "*/newton/tests/thirdparty/*",
+]
 
 [tool.basedpyright]
 reportUnknownVariableType = false

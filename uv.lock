@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform != 'darwin'",
@@ -729,7 +729,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "warp-lang", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.9.0.dev20250806", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang", version = "1.9.0.dev20250825", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
 ]
 
 [[package]]
@@ -788,11 +788,11 @@ wheels = [
 ]
 
 [[package]]
-name = "newton-physics"
+name = "newton"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.9.0.dev20250806", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang", version = "1.9.0.dev20250825", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
 ]
 
 [package.optional-dependencies]
@@ -807,8 +807,10 @@ dev = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
     { name = "tqdm" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
@@ -833,8 +835,10 @@ examples = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
 ]
@@ -857,10 +861,12 @@ torch-cu12 = [
     { name = "coacd" },
     { name = "fast-simplification" },
     { name = "gitpython" },
+    { name = "imgui-bundle" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
@@ -890,8 +896,10 @@ requires-dist = [
     { name = "fast-simplification", marker = "extra == 'torch-cu12'", specifier = ">=0.1.11" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
     { name = "gitpython", marker = "extra == 'examples'", specifier = ">=3.1.44" },
+    { name = "gitpython", marker = "extra == 'torch-cu12'", specifier = ">=3.1.44" },
     { name = "imgui-bundle", marker = "extra == 'dev'", specifier = ">=1.92.0" },
     { name = "imgui-bundle", marker = "extra == 'examples'", specifier = ">=1.92.0" },
+    { name = "imgui-bundle", marker = "extra == 'torch-cu12'", specifier = ">=1.92.0" },
     { name = "mujoco", marker = "extra == 'dev'", specifier = ">=3.3.3.dev769049331", index = "https://py.mujoco.org/" },
     { name = "mujoco", marker = "extra == 'examples'", specifier = ">=3.3.3.dev769049331", index = "https://py.mujoco.org/" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.3.3.dev769049331", index = "https://py.mujoco.org/" },
@@ -909,6 +917,9 @@ requires-dist = [
     { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'torch-cu12'", specifier = ">=2.1.6" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.2" },
+    { name = "pyyaml", marker = "extra == 'examples'", specifier = ">=6.0.2" },
+    { name = "pyyaml", marker = "extra == 'torch-cu12'", specifier = ">=6.0.2" },
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "scipy", marker = "extra == 'examples'" },
     { name = "scipy", marker = "extra == 'importers'" },
@@ -918,7 +929,8 @@ requires-dist = [
     { name = "sphinx-design", marker = "extra == 'docs'", specifier = "<=0.6.1" },
     { name = "sphinx-tabs", marker = "extra == 'docs'", specifier = ">=3.3.0" },
     { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'", specifier = ">=1.0.0" },
-    { name = "torch", marker = "extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "newton-physics", extra = "torch-cu12" } },
+    { name = "torch", marker = "extra == 'examples'", specifier = ">=2.7.1" },
+    { name = "torch", marker = "extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "newton", extra = "torch-cu12" } },
     { name = "tqdm", marker = "extra == 'dev'", specifier = ">=4.67.1" },
     { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.6.8" },
     { name = "trimesh", marker = "extra == 'examples'", specifier = ">=4.6.8" },
@@ -928,8 +940,8 @@ requires-dist = [
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'torch-cu12'", specifier = ">=25.5" },
-    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250625", index = "https://pypi.nvidia.com/" },
-    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250625" },
+    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250823", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250823" },
 ]
 provides-extras = ["dev", "docs", "examples", "importers", "sim", "torch-cu12"]
 
@@ -2269,7 +2281,7 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.9.0.dev20250806"
+version = "1.9.0.dev20250825"
 source = { registry = "https://pypi.nvidia.com/" }
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform != 'darwin'",
@@ -2281,9 +2293,9 @@ dependencies = [
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform != 'darwin'" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250806-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e534b9cce3b6e7dc16c9bf7c386d1b69df670712fda7386aefef3eb231801440" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250806-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:55819b1af146c12ca5665943a7c77c45bdd803e5a4711c3e5a7c30e62464dbc9" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250806-py3-none-win_amd64.whl", hash = "sha256:22a041f744cc2140ffa918cc8779104ab563e3fa0991069172c564e2debcd4cb" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:28f7ef23bcd128bb6da2d2115b7eb34ebb0c8d28b522d71b287ae636516e28e3" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:204b8cfde848b3f2eb80f34646b5f11c91bec896ba7168e42ffe69ad4ca445e2" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-win_amd64.whl", hash = "sha256:b7068b75ff622ffa295a83526d4e18e85b0327c21664949df89ede821dc4bd20" },
 ]
 
 [[package]]
