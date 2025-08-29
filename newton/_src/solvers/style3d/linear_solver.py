@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import warp as wp
 
@@ -340,7 +341,7 @@ class PcgSolver:
         inv_M: wp.array(dtype=Any),
         x1: wp.array(dtype=wp.vec3),
         iterations: int,
-        additional_multiplier: Optional[Callable] = None,
+        additional_multiplier: Callable | None = None,
     ):
         if x0 is None:
             x1.zero_()
