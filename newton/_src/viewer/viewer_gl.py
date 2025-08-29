@@ -91,6 +91,9 @@ class ViewerGL(ViewerBase):
             "error_message": "",
         }
 
+        # Custom UI extension system
+        self._custom_ui_renderers = []
+
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
         self.renderer.register_mouse_press(self.on_mouse_press)
@@ -780,7 +783,7 @@ class ViewerGL(ViewerBase):
 
     def _render_ui(self):
         """
-        Render the complete ImGui interface (left panel and stats overlay).
+        Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
         if not self.ui.is_available:
             return
@@ -793,6 +796,9 @@ class ViewerGL(ViewerBase):
 
         # Render top-right stats overlay
         self._render_stats_overlay()
+
+        # Render custom UI extensions
+        self._render_custom_ui()
 
     def _render_left_panel(self):
         """
@@ -1398,3 +1404,55 @@ class ViewerGL(ViewerBase):
             else:
                 # For non-numeric values, just show as text
                 imgui.text(f"{name}: {val}")
+
+    def add_custom_ui(self, render_func, name=None):
+        """
+        Add a custom UI render function to the viewer.
+
+        Args:
+            render_func: A callable that takes the viewer instance as an argument
+                        and renders ImGui UI elements. The function should return
+                        None and handle all ImGui calls internally.
+            name: Optional name for the UI extension (for debugging)
+        """
+        if not callable(render_func):
+            raise ValueError("render_func must be callable")
+
+        ui_renderer = {
+            "func": render_func,
+            "name": name or f"CustomUI_{len(self._custom_ui_renderers)}",
+        }
+        self._custom_ui_renderers.append(ui_renderer)
+
+    def remove_custom_ui(self, render_func_or_name):
+        """
+        Remove a custom UI renderer.
+
+        Args:
+            render_func_or_name: Either the render function that was added,
+                                or the name string that was provided when adding.
+        """
+        to_remove = []
+        for i, renderer in enumerate(self._custom_ui_renderers):
+            if (callable(render_func_or_name) and renderer["func"] == render_func_or_name) or (
+                isinstance(render_func_or_name, str) and renderer["name"] == render_func_or_name
+            ):
+                to_remove.append(i)
+
+        # Remove in reverse order to maintain indices
+        for i in reversed(to_remove):
+            del self._custom_ui_renderers[i]
+
+    def _render_custom_ui(self):
+        """
+        Render all custom UI extensions.
+        """
+        if not self.ui.is_available:
+            return
+
+        for renderer in self._custom_ui_renderers:
+            try:
+                renderer["func"](self)
+            except Exception as e:
+                print(f"Error rendering custom UI '{renderer['name']}': {e}")
+                # Continue to render other UI components
