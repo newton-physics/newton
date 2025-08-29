@@ -61,6 +61,15 @@ class ViewerBase:
         self.show_springs = False
         self.show_triangles = True
 
+    def is_running(self) -> bool:
+        return True
+
+    def is_paused(self) -> bool:
+        return False
+
+    def is_resetting(self) -> bool:
+        return False
+
     def set_model(self, model):
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
@@ -70,6 +79,9 @@ class ViewerBase:
         if model is not None:
             self.device = model.device
             self._populate_shapes()
+
+    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        pass
 
     def begin_frame(self, time):
         self.time = time
@@ -552,7 +564,12 @@ class ViewerBase:
             parent = shape_body[s]
             xform = wp.transform_expand(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
-            color = wp.vec3(self._shape_color_map(s))
+
+            if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+                color = wp.vec3(0.5, 0.5, 0.5)
+            else:
+                color = wp.vec3(self._shape_color_map(s))
+
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             if geo_type == newton.GeoType.MESH:
