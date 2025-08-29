@@ -881,6 +881,7 @@ def update_body_inertia_kernel(
 
     # Calculate eigenvalues and eigenvectors
     eigenvectors, eigenvalues = wp.eig3(I)
+    vecs_transposed = wp.transpose(eigenvectors)
 
     # Bubble sort for 3 elements in descending order
     for i in range(2):
@@ -891,12 +892,12 @@ def update_body_inertia_kernel(
                 eigenvalues[j] = eigenvalues[j + 1]
                 eigenvalues[j + 1] = temp_val
                 # Swap eigenvectors
-                temp_vec = eigenvectors[j]
-                eigenvectors[j] = eigenvectors[j + 1]
-                eigenvectors[j + 1] = temp_vec
+                temp_vec = vecs_transposed[j]
+                vecs_transposed[j] = vecs_transposed[j + 1]
+                vecs_transposed[j + 1] = temp_vec
 
     # Convert eigenvectors to quaternion (xyzw format)
-    q = wp.quat_from_matrix(wp.matrix_from_cols(eigenvectors[0], eigenvectors[1], eigenvectors[2]))
+    q = wp.quat_from_matrix(wp.transpose(vecs_transposed))
     q = wp.normalize(q)
 
     # Convert from xyzw to wxyz format
