@@ -426,22 +426,18 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         newton_eigvecs = newton_eigvecs.reshape((3, 3))
 
                         newton_eigvals = np.array(newton_eigvals)
-
+                        
                         mjc_eigvals = mjc_inertia  # Already in diagonal form
                         mjc_iquat = np.roll(solver.mjw_model.body_iquat.numpy()[env_idx, mjc_idx].astype(np.float32), 1)
 
-                        # Sort eigenvalues in ascending order and shuffle eigenvectors accordingly
-                        sort_indices = np.argsort(newton_eigvals)
+                        # Sort eigenvalues in descending order and reorder eigenvectors by columns
+                        sort_indices = np.argsort(newton_eigvals)[::-1]
                         newton_eigvals = newton_eigvals[sort_indices]
                         newton_eigvecs = newton_eigvecs[:, sort_indices]
 
-                        # reverse because we want descending order of eigenvalues
-                        newton_eigvals = newton_eigvals[::-1]
-                        newton_eigvecs = newton_eigvecs[::-1]
-
                         newton_quat = wp.quat_from_matrix(
                             wp.matrix_from_cols(
-                                wp.vec3(newton_eigvecs[0]), wp.vec3(newton_eigvecs[1]), wp.vec3(newton_eigvecs[2])
+                                wp.vec3(newton_eigvecs[:, 0]), wp.vec3(newton_eigvecs[:, 1]), wp.vec3(newton_eigvecs[:, 2])
                             )
                         )
                         newton_quat = wp.normalize(newton_quat)
@@ -453,10 +449,16 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                                 places=6,
                                 msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
                             )
+                        # Handle quaternion sign ambiguity by ensuring dot product is non-negative
+                        newton_quat_np = np.array(newton_quat)
+                        mjc_iquat_np = np.array(mjc_iquat)
+                        if np.dot(newton_quat_np, mjc_iquat_np) < 0:
+                            newton_quat_np = -newton_quat_np
+                        
                         for dim in range(4):
                             self.assertAlmostEqual(
-                                float(mjc_iquat[dim]),
-                                float(newton_quat[dim]),
+                                float(mjc_iquat_np[dim]),
+                                float(newton_quat_np[dim]),
                                 places=5,
                                 msg=f"{msg_prefix}Inertia quaternion mismatch for body {body_idx} in environment {env_idx}",
                             )

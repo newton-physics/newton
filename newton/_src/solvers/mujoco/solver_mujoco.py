@@ -881,6 +881,8 @@ def update_body_inertia_kernel(
 
     # Calculate eigenvalues and eigenvectors
     eigenvectors, eigenvalues = wp.eig3(I)
+
+    # transpose eigenvectors to allow reshuffling by indexing rows.
     vecs_transposed = wp.transpose(eigenvectors)
 
     # Bubble sort for 3 elements in descending order
