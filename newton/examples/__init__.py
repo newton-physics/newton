@@ -200,6 +200,7 @@ def main():
         "robot_h1": "newton.examples.robot.example_robot_h1",
         "robot_humanoid": "newton.examples.robot.example_robot_humanoid",
         "robot_policy": "newton.examples.robot.example_robot_policy",
+        "robot_ur10": "newton.examples.robot.example_robot_ur10",
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",

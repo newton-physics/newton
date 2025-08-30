@@ -325,6 +325,14 @@ add_example_test(
     test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_ur10",
+    devices=test_devices,
+    test_options={"num_frames": 500},
+    test_options_cpu={"num_frames": 10},
+    use_viewer=True,
+)
 
 
 class TestRobotPolicyExamples(unittest.TestCase):
