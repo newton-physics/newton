@@ -4359,11 +4359,20 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
+            # Compute max joints per articulation for IK kernel launches
+            max_joints_per_articulation = 0
+            for art_idx in range(len(self.articulation_start)):
+                joint_start = articulation_start[art_idx]
+                joint_end = articulation_start[art_idx + 1]
+                num_joints = joint_end - joint_start
+                max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
             m.articulation_group = wp.array(self.articulation_group, dtype=wp.int32)
+            m.max_joints_per_articulation = max_joints_per_articulation
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
