@@ -15,7 +15,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import warp as wp
+
+if TYPE_CHECKING:
+    from .model import Model
+from .state import State
 
 
 class Control:
@@ -50,6 +56,13 @@ class Control:
         The joint targets are defined for any joint type, except for free joints.
         """
 
+        # New targets kept separate for clarity. If not set, PD will treat them as zeros.
+        self.joint_pos_target: wp.array | None = None
+        """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+
+        self.joint_vel_target: wp.array | None = None
+        """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
 
@@ -64,6 +77,9 @@ class Control:
             Support for muscle dynamics is not yet implemented.
         """
 
+        # Actuator list. Each actuator can contribute forces into ``joint_f``.
+        self.actuators: list[Actuator] = []
+
     def clear(self) -> None:
         """Reset the control inputs to zero."""
 
@@ -75,3 +91,75 @@ class Control:
             self.tet_activations.zero_()
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
+
+        if self.joint_pos_target is not None:
+            self.joint_pos_target.zero_()
+        if self.joint_vel_target is not None:
+            self.joint_vel_target.zero_()
+
+    def compute_actuator_forces(self, model: Model, state: State, nworld: int, axes_per_env: int) -> None:
+        """Compute and accumulate forces from all actuators into ``joint_f``.
+
+        Notes:
+            - This method zeros ``joint_f`` before accumulation.
+            - For convenience, if ``joint_f`` is ``None`` and the model has joints,
+              a zero array will be allocated on the model's device.
+        """
+        self.joint_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+
+        for actuator in self.actuators:
+            actuator.compute_force(model, state, self, nworld, axes_per_env)
+
+
+@wp.kernel
+def pd_actuator_kernel(
+    kp_dof: wp.array(dtype=wp.float32),
+    kd_dof: wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
+    joint_qd: wp.array(dtype=wp.float32),
+    q_target: wp.array(dtype=wp.float32),
+    qd_target: wp.array(dtype=wp.float32),
+    axes_per_env: int,
+    # outputs
+    joint_f: wp.array(dtype=wp.float32),
+):
+    worldid, axisid = wp.tid()
+
+    kp = kp_dof[worldid * axes_per_env + axisid]
+    kd = kd_dof[worldid * axes_per_env + axisid]
+
+    vel_err = qd_target[worldid * axes_per_env + axisid] - joint_qd[worldid * axes_per_env + axisid]
+    pos_err = q_target[worldid * axes_per_env + axisid] - joint_q[worldid * axes_per_env + axisid]
+    joint_f[worldid * axes_per_env + axisid] = +kp * pos_err + kd * vel_err
+
+
+class Actuator:
+    """Simple PD actuator acting on a set of joint DOFs.
+
+    This actuator computes torques/forces for the specified DOF indices using a PD law:
+
+        tau = kp * (q_target - q) + kd * (qd_target - qd)
+
+    Position tracking is only applied for joints where the number of coordinates equals
+    the number of DOFs (e.g., revolute, prismatic, D6). For joints like FREE or BALL,
+    where coordinate and DOF dimensions differ, only the velocity term is applied.
+    """
+
+    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+        wp.launch(
+            pd_actuator_kernel,
+            dim=(nworld, axes_per_env),
+            inputs=[
+                model.joint_target_ke,
+                model.joint_target_kd,
+                state.joint_q,
+                state.joint_qd,
+                control.joint_pos_target,
+                control.joint_vel_target,
+                axes_per_env,
+            ],
+            outputs=[
+                control.joint_f,
+            ],
+            device=model.device,
+        )

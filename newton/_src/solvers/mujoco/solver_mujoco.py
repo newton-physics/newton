@@ -29,7 +29,6 @@ from ...sim import (
     Contacts,
     Control,
     EqType,
-    JointMode,
     JointType,
     Model,
     State,
@@ -59,8 +58,8 @@ else:
 def import_mujoco():
     """Import the MuJoCo Warp dependencies."""
     try:
-        import mujoco  # noqa: PLC0415
-        import mujoco_warp  # noqa: PLC0415
+        import mujoco
+        import mujoco_warp
     except ImportError as e:
         raise ImportError(
             "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
@@ -547,24 +546,6 @@ def convert_mjw_contact_to_warp_kernel(
 
 
 @wp.kernel
-def apply_mjc_control_kernel(
-    joint_target: wp.array(dtype=wp.float32),
-    axis_mode: wp.array(dtype=wp.int32),
-    axis_to_actuator: wp.array(dtype=wp.int32),
-    axes_per_env: int,
-    # outputs
-    mj_act: wp.array2d(dtype=wp.float32),
-):
-    worldid, axisid = wp.tid()
-    actuator_id = axis_to_actuator[axisid]
-    if actuator_id != -1:
-        if axis_mode[axisid] != JointMode.NONE:
-            mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_env + axisid]
-        else:
-            mj_act[worldid, actuator_id] = 0.0
-
-
-@wp.kernel
 def apply_mjc_body_f_kernel(
     up_axis: int,
     body_q: wp.array(dtype=wp.transform),
@@ -915,53 +896,6 @@ def repeat_array_kernel(
 
 
 @wp.kernel
-def update_axis_properties_kernel(
-    joint_dof_mode: wp.array(dtype=int),
-    joint_target_kp: wp.array(dtype=float),
-    joint_target_kv: wp.array(dtype=float),
-    joint_effort_limit: wp.array(dtype=float),
-    axis_to_actuator: wp.array(dtype=wp.int32),
-    axes_per_env: int,
-    # outputs
-    actuator_bias: wp.array2d(dtype=vec10f),
-    actuator_gain: wp.array2d(dtype=vec10f),
-    actuator_forcerange: wp.array2d(dtype=wp.vec2f),
-):
-    """Update actuator force ranges based on joint effort limits."""
-    tid = wp.tid()
-    worldid = tid // axes_per_env
-    axis_in_env = tid % axes_per_env
-
-    actuator_idx = axis_to_actuator[axis_in_env]
-    if actuator_idx >= 0:  # Valid actuator
-        kp = joint_target_kp[tid]
-        kv = joint_target_kv[tid]
-        mode = joint_dof_mode[tid]
-
-        if mode == JointMode.TARGET_POSITION:
-            # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            actuator_bias[worldid, actuator_idx][1] = -kp
-            actuator_bias[worldid, actuator_idx][2] = -kv
-            actuator_gain[worldid, actuator_idx][0] = kp
-        elif mode == JointMode.TARGET_VELOCITY:
-            # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            actuator_bias[worldid, actuator_idx][1] = 0.0
-            actuator_bias[worldid, actuator_idx][2] = -kv
-            actuator_gain[worldid, actuator_idx][0] = kv
-        else:
-            # bias = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-            # gain = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            actuator_bias[worldid, actuator_idx][1] = 0.0
-            actuator_bias[worldid, actuator_idx][2] = 0.0
-            actuator_gain[worldid, actuator_idx][0] = 1.0
-
-        effort_limit = joint_effort_limit[tid]
-        actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
-
-
-@wp.kernel
 def update_dof_properties_kernel(
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
@@ -1209,8 +1143,6 @@ class SolverMuJoCo(SolverBase):
 
         self.shape_incoming_xform: wp.array(dtype=wp.transform) | None = None
         """The transform applied to Newton's shape frame to match MuJoCo's geom frame. This only affects mesh shapes (MuJoCo aligns them with their inertial frames). Shape [shape_count], dtype transform."""
-        self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
-        """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
         """Mapping from MuJoCo body index to Newton body index (skip world body index -1). Shape [bodies_per_env], dtype int32."""
         self.to_newton_shape_index: wp.array(dtype=int, ndim=2) | None = None
@@ -1369,40 +1301,29 @@ class SolverMuJoCo(SolverBase):
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
         if control is not None:
-            wp.launch(
-                apply_mjc_control_kernel,
-                dim=(nworld, axes_per_env),
-                inputs=[
-                    control.joint_target,
-                    model.joint_dof_mode,
-                    self.mjc_axis_to_actuator,
-                    axes_per_env,
-                ],
-                outputs=[
-                    ctrl,
-                ],
-                device=model.device,
-            )
-            wp.launch(
-                apply_mjc_qfrc_kernel,
-                dim=(nworld, joints_per_env),
-                inputs=[
-                    state.body_q,
-                    control.joint_f,
-                    model.joint_type,
-                    model.body_com,
-                    model.joint_child,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    joints_per_env,
-                    bodies_per_env,
-                ],
-                outputs=[
-                    qfrc,
-                ],
-                device=model.device,
-            )
+            control.compute_actuator_forces(model, state, nworld, axes_per_env)
+
+            if control.joint_f is not None:
+                wp.launch(
+                    apply_mjc_qfrc_kernel,
+                    dim=(nworld, joints_per_env),
+                    inputs=[
+                        state.body_q,
+                        control.joint_f,
+                        model.joint_type,
+                        model.body_com,
+                        model.joint_child,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        model.joint_dof_dim,
+                        joints_per_env,
+                        bodies_per_env,
+                    ],
+                    outputs=[
+                        qfrc,
+                    ],
+                    device=model.device,
+                )
 
         if state.body_f is not None:
             wp.launch(
@@ -1660,7 +1581,6 @@ class SolverMuJoCo(SolverBase):
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
-        actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
@@ -1811,9 +1731,7 @@ class SolverMuJoCo(SolverBase):
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
         joint_dof_dim = model.joint_dof_dim.numpy()
-        joint_dof_mode = model.joint_dof_mode.numpy()
-        joint_target_kd = model.joint_target_kd.numpy()
-        joint_target_ke = model.joint_target_ke.numpy()
+
         joint_qd_start = model.joint_qd_start.numpy()
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
@@ -1844,10 +1762,6 @@ class SolverMuJoCo(SolverBase):
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
-
-        # mapping from joint axis to actuator index
-        axis_to_actuator = np.zeros((model.joint_dof_count,), dtype=np.int32) - 1
-        actuator_count = 0
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -2101,37 +2015,6 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
-                    if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
-                        else:
-                            args = actuator_args
-
-                        if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
-                            kp = joint_target_ke[ai]
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        else:
-                            # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-                        # Add effort limits from Newton model
-                        effort_limit = joint_effort_limit[ai]
-                        args["forcerange"] = [-effort_limit, effort_limit]
-
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
 
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
@@ -2167,37 +2050,6 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
-                    if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
-                        else:
-                            args = actuator_args
-
-                        if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
-                            kp = joint_target_ke[ai]
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        else:
-                            # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-                        # Add effort limits from Newton model
-                        effort_limit = joint_effort_limit[ai]
-                        args["forcerange"] = [-effort_limit, effort_limit]
-
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
 
             elif j_type != JointType.FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
@@ -2312,8 +2164,6 @@ class SolverMuJoCo(SolverBase):
                     ],
                 )
 
-            # mapping from Newton joint axis index to MJC actuator index
-            self.mjc_axis_to_actuator = wp.array(axis_to_actuator, dtype=wp.int32)
             # mapping from MJC body index to Newton body index (skip world index -1)
             to_mjc_body_index = np.fromiter(body_mapping.keys(), dtype=int)[1:] + 1
             self.to_mjc_body_index = wp.array(to_mjc_body_index, dtype=wp.int32)
@@ -2488,27 +2338,6 @@ class SolverMuJoCo(SolverBase):
     def update_joint_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
-
-        # Update actuator force ranges (effort limits) if actuators exist
-        if self.mjc_axis_to_actuator is not None:
-            wp.launch(
-                update_axis_properties_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
-                    self.model.joint_dof_mode,
-                    self.model.joint_target_ke,
-                    self.model.joint_target_kd,
-                    self.model.joint_effort_limit,
-                    self.mjc_axis_to_actuator,
-                    dofs_per_env,
-                ],
-                outputs=[
-                    self.mjw_model.actuator_biasprm,
-                    self.mjw_model.actuator_gainprm,
-                    self.mjw_model.actuator_forcerange,
-                ],
-                device=self.model.device,
-            )
 
         # Update DOF properties (armature and friction)
         wp.launch(
