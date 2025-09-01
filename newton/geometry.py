@@ -14,11 +14,14 @@
 # limitations under the License.
 
 from ._src.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
+from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
 from ._src.geometry.utils import remesh_mesh
 
 __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "compute_shape_inertia",
     "remesh_mesh",
+    "transform_inertia",
 ]

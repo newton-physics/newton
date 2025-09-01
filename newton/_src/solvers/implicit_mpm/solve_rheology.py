@@ -17,7 +17,7 @@
 
 import gc
 import math
-from typing import Any, Optional
+from typing import Any
 
 import warp as wp
 import warp.fem as fem
@@ -728,7 +728,7 @@ def solve_rheology(
     max_iterations: int,
     tolerance: float,
     strain_mat: sp.BsrMatrix,
-    transposed_strain_mat: Optional[sp.BsrMatrix],
+    transposed_strain_mat: sp.BsrMatrix | None,
     inv_volume,
     yield_stress,
     stress_strain_matrices,
@@ -741,9 +741,9 @@ def solve_rheology(
     collider_inv_mass,
     collider_impulse,
     color_offsets,
-    color_indices: Optional[wp.array] = None,
-    rigidity_mat: Optional[sp.BsrMatrix] = None,
-    temporary_store: Optional[fem.TemporaryStore] = None,
+    color_indices: wp.array | None = None,
+    rigidity_mat: sp.BsrMatrix | None = None,
+    temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
     verbose=wp.config.verbose,
 ):

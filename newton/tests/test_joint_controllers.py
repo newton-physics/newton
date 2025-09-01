@@ -81,7 +81,7 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
 
     # renderer.save()
 
-    if not isinstance(solver, (newton.solvers.SolverMuJoCo, newton.solvers.SolverFeatherstone)):
+    if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
         newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
     joint_q = state_0.joint_q.numpy()

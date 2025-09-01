@@ -24,7 +24,6 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
-from typing import Optional
 
 import numpy as np
 import warp as wp
@@ -53,7 +52,7 @@ except OSError:
     LIBC = None
 
 
-def get_selected_cuda_test_devices(mode: Optional[str] = None):
+def get_selected_cuda_test_devices(mode: str | None = None):
     """Returns a list of CUDA devices according the selected ``mode`` behavior.
 
     If ``mode`` is ``None``, the ``global test_mode`` value will be used and
@@ -95,7 +94,7 @@ def get_selected_cuda_test_devices(mode: Optional[str] = None):
     return selected_cuda_devices
 
 
-def get_test_devices(mode: Optional[str] = None):
+def get_test_devices(mode: str | None = None):
     """Returns a list of devices based on the mode selected.
 
     Args:

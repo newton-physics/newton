@@ -61,6 +61,17 @@ class ViewerBase:
         self.show_springs = False
         self.show_triangles = True
 
+    def is_key_down(self, key) -> bool:
+        """Default key query API. Concrete viewers can override.
+
+        Args:
+            key: Key identifier (string or backend-specific code)
+
+        Returns:
+            bool: Always False by default.
+        """
+        return False
+
     def set_model(self, model):
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
@@ -149,17 +160,17 @@ class ViewerBase:
         # Always call log_lines to update the renderer (handles zero contacts gracefully)
         if num_contacts > 0:
             # Slice arrays to only include active contacts
-            line_begins = self._contact_points0[:num_contacts]
-            line_ends = self._contact_points1[:num_contacts]
+            starts = self._contact_points0[:num_contacts]
+            ends = self._contact_points1[:num_contacts]
         else:
             # Create empty arrays for zero contacts case
-            line_begins = wp.array([], dtype=wp.vec3, device=self.device)
-            line_ends = wp.array([], dtype=wp.vec3, device=self.device)
+            starts = wp.array([], dtype=wp.vec3, device=self.device)
+            ends = wp.array([], dtype=wp.vec3, device=self.device)
 
         # Use orange-red color for contact normals
-        line_colors = (0.0, 1.0, 0.0)
+        colors = (0.0, 1.0, 0.0)
 
-        self.log_lines("/contacts", line_begins, line_ends, line_colors)
+        self.log_lines("/contacts", starts, ends, colors)
 
     def log_shapes(
         self,
@@ -193,7 +204,7 @@ class ViewerBase:
 
         # normalize geo_scale to a list for hashing + mesh creation
         def _as_float_list(value):
-            if isinstance(value, (tuple, list, np.ndarray)):
+            if isinstance(value, tuple | list | np.ndarray):
                 return [float(v) for v in value]
             else:
                 return [float(value)]
@@ -329,6 +340,14 @@ class ViewerBase:
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
 
+    def log_gizmo(
+        self,
+        gid,
+        transform,
+    ):
+        # Optional: for interactive viewers
+        pass
+
     @abstractmethod
     def log_mesh(
         self,
@@ -347,11 +366,11 @@ class ViewerBase:
         pass
 
     @abstractmethod
-    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
+    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         pass
 
     @abstractmethod
-    def log_points(self, name, points, widths, colors, hidden=False):
+    def log_points(self, name, points, radii, colors, hidden=False):
         pass
 
     @abstractmethod
@@ -442,7 +461,7 @@ class ViewerBase:
         """
 
         # normalize
-        if isinstance(geo_scale, (list, tuple, np.ndarray)):
+        if isinstance(geo_scale, list | tuple | np.ndarray):
             scale_list = [float(v) for v in geo_scale]
         else:
             scale_list = [float(geo_scale)]
@@ -639,7 +658,7 @@ class ViewerBase:
             self.log_points(
                 name="/model/particles",
                 points=state.particle_q,
-                widths=self.model.particle_radius,
+                radii=self.model.particle_radius,
                 colors=colors,
                 hidden=not self.show_particles,
             )

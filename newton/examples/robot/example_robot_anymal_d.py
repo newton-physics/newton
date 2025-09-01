@@ -14,28 +14,35 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Anymal D walk
+# Example Robot Anymal D
 #
-# Shows how to control Anymal D with multiple environments.
+# Shows how to simulate Anymal D with multiple environments using SolverMuJoCo.
 #
-# Example usage:
-# uv run newton/examples/example_anymal_d.py --num-envs 4
+# Command: python -m newton.examples robot_anymal_d --num-envs 16
 #
 ###########################################################################
 
+import mujoco
 import warp as wp
 
-wp.config.enable_backward = False
-import mujoco
-
 import newton
+import newton.examples
 import newton.utils
 
 
 class Example:
-    def __init__(self, stage_path="example_anymal_d.usd", headless=False, num_envs=8, use_cuda_graph=True):
-        self.device = wp.get_device()
+    def __init__(self, viewer, num_envs=8):
+        self.fps = 50
+        self.frame_dt = 1.0 / self.fps
+        self.sim_time = 0.0
+        self.sim_substeps = 4
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
         self.num_envs = num_envs
+
+        self.viewer = viewer
+
+        self.device = wp.get_device()
 
         articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -48,12 +55,12 @@ class Example:
 
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         asset_file = str(asset_path / "usd" / "anymal_d.usda")
-        newton.utils.parse_usd(
+        articulation_builder.add_usd(
             asset_file,
-            articulation_builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_non_physics_prims=True,
+            hide_collision_shapes=True,
         )
 
         articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
@@ -75,94 +82,67 @@ class Example:
 
         builder.add_ground_plane()
 
-        self.sim_time = 0.0
-        self.sim_step = 0
-        fps = 50
-        self.frame_dt = 1.0e0 / fps
-
-        self.sim_substeps = 4
-        self.sim_dt = self.frame_dt / self.sim_substeps
-
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(
             self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
         )
 
-        self.renderer = None
-        if not headless and stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = None
+        self.contacts = self.model.collide(self.state_0)
 
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        # ensure this is called at the end of the Example constructor
+        self.viewer.set_model(self.model)
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(wp.get_device()) and use_cuda_graph
+        # put graph capture into it's own function
+        self.capture()
 
-        if self.use_cuda_graph:
+    def capture(self):
+        self.graph = None
+        if self.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
+    # simulate() performs one frame's worth of updates
     def simulate(self):
-        self.contacts = None
+        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
+
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
-            return
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
 
-        with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+    def test(self):
+        pass
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_anymal_d.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=1000, help="Total number of frames.")
+    parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=8, help="Total number of simulated environments.")
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
-    args = parser.parse_known_args()[0]
+    viewer, args = newton.examples.init(parser)
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            stage_path=args.stage_path,
-            headless=args.headless,
-            num_envs=args.num_envs,
-            use_cuda_graph=args.use_cuda_graph,
-        )
+    example = Example(viewer, args.num_envs)
 
-        for frame_idx in range(args.num_frames):
-            example.step()
-            example.render()
-
-            if example.renderer is None:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
-
-        if example.renderer:
-            example.renderer.save()
+    newton.examples.run(example)

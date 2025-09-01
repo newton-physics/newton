@@ -43,6 +43,7 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
+    MESH_MAXHULLVERT,
     SDF,
     GeoType,
     Mesh,
@@ -356,7 +357,6 @@ class ModelBuilder:
         # collision groups within collisions are handled
         self.shape_collision_group = []
         self.shape_collision_group_map = {}
-        self.last_collision_group = 0
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
         # environment group index for each shape
@@ -649,12 +649,259 @@ class ModelBuilder:
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
         self.articulation_group.append(self.current_env_group)
 
+    # region importers
+    def add_urdf(
+        self,
+        source: str,
+        xform: Transform | None = None,
+        floating: bool = False,
+        base_joint: dict | str | None = None,
+        scale: float = 1.0,
+        hide_visuals: bool = False,
+        parse_visuals_as_colliders: bool = False,
+        up_axis: AxisType = Axis.Z,
+        force_show_colliders: bool = False,
+        enable_self_collisions: bool = True,
+        ignore_inertial_definitions: bool = True,
+        ensure_nonstatic_links: bool = True,
+        static_link_mass: float = 1e-2,
+        collapse_fixed_joints: bool = False,
+        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    ):
+        """
+        Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
+
+        Args:
+            source (str): The filename of the URDF file to parse.
+            xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
+            floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            scale (float): The scaling factor to apply to the imported mechanism.
+            hide_visuals (bool): If True, hide visual shapes.
+            parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
+            up_axis (AxisType): The up axis of the URDF. This is used to transform the URDF to the builder's up axis. It also determines the up axis of capsules and cylinders in the URDF. The default is Z.
+            force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
+            enable_self_collisions (bool): If True, self-collisions are enabled.
+            ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
+            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
+            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
+            collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
+            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        """
+        from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
+
+        return parse_urdf(
+            self,
+            source,
+            xform,
+            floating,
+            base_joint,
+            scale,
+            hide_visuals,
+            parse_visuals_as_colliders,
+            up_axis,
+            force_show_colliders,
+            enable_self_collisions,
+            ignore_inertial_definitions,
+            ensure_nonstatic_links,
+            static_link_mass,
+            collapse_fixed_joints,
+            mesh_maxhullvert,
+        )
+
+    def add_usd(
+        self,
+        source,
+        xform: Transform | None = None,
+        only_load_enabled_rigid_bodies: bool = False,
+        only_load_enabled_joints: bool = True,
+        joint_drive_gains_scaling: float = 1.0,
+        invert_rotations: bool = True,
+        verbose: bool = False,
+        ignore_paths: list[str] | None = None,
+        cloned_env: str | None = None,
+        collapse_fixed_joints: bool = False,
+        enable_self_collisions: bool = True,
+        apply_up_axis_from_stage: bool = False,
+        root_path: str = "/",
+        joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
+        bodies_follow_joint_ordering: bool = True,
+        skip_mesh_approximation: bool = False,
+        load_non_physics_prims: bool = True,
+        hide_collision_shapes: bool = False,
+        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    ) -> dict[str, Any]:
+        """
+        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+
+        The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
+
+        Args:
+            source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
+            xform (Transform): The transform to apply to the entire scene.
+            only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
+            only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
+            joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+            invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
+            verbose (bool): If True, print additional information about the parsed USD file. Default is False.
+            ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
+            cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
+            collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+            enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+            apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
+            root_path (str): The USD path to import, defaults to "/".
+            joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
+            bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
+            skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+            load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+            hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+
+        Returns:
+            dict: Dictionary with the following entries:
+
+            .. list-table::
+                :widths: 25 75
+
+                * - "fps"
+                  - USD stage frames per second
+                * - "duration"
+                  - Difference between end time code and start time code of the USD stage
+                * - "up_axis"
+                  - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
+                * - "path_shape_map"
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
+                * - "path_body_map"
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
+                * - "path_shape_scale"
+                  - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - "mass_unit"
+                  - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
+                * - "linear_unit"
+                  - The stage's Meters Per Unit (MPU) definition (1.0 by default)
+                * - "scene_attributes"
+                  - Dictionary of all attributes applied to the PhysicsScene prim
+                * - "collapse_results"
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
+        """
+        from ..utils.import_usd import parse_usd  # noqa: PLC0415
+
+        return parse_usd(
+            self,
+            source,
+            xform,
+            only_load_enabled_rigid_bodies,
+            only_load_enabled_joints,
+            joint_drive_gains_scaling,
+            invert_rotations,
+            verbose,
+            ignore_paths,
+            cloned_env,
+            collapse_fixed_joints,
+            enable_self_collisions,
+            apply_up_axis_from_stage,
+            root_path,
+            joint_ordering,
+            bodies_follow_joint_ordering,
+            skip_mesh_approximation,
+            load_non_physics_prims,
+            hide_collision_shapes,
+            mesh_maxhullvert,
+        )
+
+    def add_mjcf(
+        self,
+        source: str,
+        xform: Transform | None = None,
+        floating: bool | None = None,
+        base_joint: dict | str | None = None,
+        armature_scale: float = 1.0,
+        scale: float = 1.0,
+        hide_visuals: bool = False,
+        parse_visuals_as_colliders: bool = False,
+        parse_meshes: bool = True,
+        up_axis: AxisType = Axis.Z,
+        ignore_names: Sequence[str] = (),
+        ignore_classes: Sequence[str] = (),
+        visual_classes: Sequence[str] = ("visual",),
+        collider_classes: Sequence[str] = ("collision",),
+        no_class_as_colliders: bool = True,
+        force_show_colliders: bool = False,
+        enable_self_collisions: bool = False,
+        ignore_inertial_definitions: bool = True,
+        ensure_nonstatic_links: bool = True,
+        static_link_mass: float = 1e-2,
+        collapse_fixed_joints: bool = False,
+        verbose: bool = False,
+        skip_equality_constraints: bool = False,
+        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    ):
+        """
+        Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+
+        Args:
+            source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
+            xform (Transform): The transform to apply to the imported mechanism.
+            floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
+            scale (float): The scaling factor to apply to the imported mechanism.
+            hide_visuals (bool): If True, hide visual shapes.
+            parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
+            parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+            up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
+            ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
+            ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
+            visual_classes (Sequence[str]): A list of regular expressions. Visual geometries with a class matching one of the regular expressions will be parsed.
+            collider_classes (Sequence[str]): A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
+            no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
+            force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
+            enable_self_collisions (bool): If True, self-collisions are enabled.
+            ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
+            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
+            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
+            collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
+            verbose (bool): If True, print additional information about parsing the MJCF.
+            skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        """
+        from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
+
+        return parse_mjcf(
+            self,
+            source,
+            xform,
+            floating,
+            base_joint,
+            armature_scale,
+            scale,
+            hide_visuals,
+            parse_visuals_as_colliders,
+            parse_meshes,
+            up_axis,
+            ignore_names,
+            ignore_classes,
+            visual_classes,
+            collider_classes,
+            no_class_as_colliders,
+            force_show_colliders,
+            enable_self_collisions,
+            ignore_inertial_definitions,
+            ensure_nonstatic_links,
+            static_link_mass,
+            collapse_fixed_joints,
+            verbose,
+            skip_equality_constraints,
+            mesh_maxhullvert,
+        )
+
+    # endregion
+
     def add_builder(
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
         update_num_env_count: bool = True,
-        separate_collision_group: bool = True,
         environment: int | None = None,
     ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
@@ -663,6 +910,11 @@ class ModelBuilder:
         When adding a builder, ALL entities from the source builder will be assigned to the same
         environment group, overriding any group assignments that existed in the source builder.
         This ensures that all entities from a sub-builder are grouped together as a single environment.
+
+        Environment groups automatically handle collision filtering between different environments:
+        - Entities from different environments (except -1) do not collide with each other
+        - Global entities (group -1) collide with all environments
+        - Collision groups from the source builder are preserved as-is for fine-grained collision control within each environment
 
         To create global entities that are shared across all environments, set the main builder's
         `current_env_group` to -1 before adding entities directly (not via add_builder).
@@ -688,7 +940,6 @@ class ModelBuilder:
             update_num_env_count (bool): if True, the number of environments is updated appropriately.
                 For non-global entities (environment >= 0), this either increments num_envs (when environment is None)
                 or ensures num_envs is at least environment+1. Global entities (environment=-1) do not affect num_envs.
-            separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
             environment (int | None): environment group index to assign to ALL entities from this builder.
                 If None, uses the current environment count as the group index. Use -1 for global entities.
                 Note: environment=-1 does not increase num_envs even when update_num_env_count=True.
@@ -799,32 +1050,19 @@ class ModelBuilder:
             else:
                 self.body_q.append(builder.body_q[i])
 
-        # apply collision group
-        if separate_collision_group:
-            self.shape_collision_group.extend([self.last_collision_group + 1 for _ in builder.shape_collision_group])
-        else:
-            self.shape_collision_group.extend(
-                [(g + self.last_collision_group if g > -1 else -1) for g in builder.shape_collision_group]
-            )
-        shape_count = self.shape_count
+        # Copy collision groups without modification
+        self.shape_collision_group.extend(builder.shape_collision_group)
+
+        # Copy collision filter pairs with offset
+        shape_count_offset = self.shape_count
         for i, j in builder.shape_collision_filter_pairs:
-            self.shape_collision_filter_pairs.add((i + shape_count, j + shape_count))
+            self.shape_collision_filter_pairs.add((i + shape_count_offset, j + shape_count_offset))
+
+        # Copy collision group map directly
         for group, shapes in builder.shape_collision_group_map.items():
-            if separate_collision_group:
-                extend_group = self.last_collision_group + 1
-            else:
-                extend_group = group + self.last_collision_group if group > -1 else -1
-
-            if extend_group not in self.shape_collision_group_map:
-                self.shape_collision_group_map[extend_group] = []
-
-            self.shape_collision_group_map[extend_group].extend([s + shape_count for s in shapes])
-
-        # update last collision group counter
-        if separate_collision_group:
-            self.last_collision_group += 1
-        elif builder.last_collision_group > -1:
-            self.last_collision_group += builder.last_collision_group
+            if group not in self.shape_collision_group_map:
+                self.shape_collision_group_map[group] = []
+            self.shape_collision_group_map[group].extend([s + shape_count_offset for s in shapes])
 
         # Handle environment group assignments
         # For particles
@@ -1121,7 +1359,11 @@ class ModelBuilder:
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
-                    self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+                    # Ensure canonical order (smaller, larger) for consistent lookup
+                    a, b = parent_shape, child_shape
+                    if a > b:
+                        a, b = b, a
+                    self.shape_collision_filter_pairs.add((a, b))
 
         return self.joint_count - 1
 
@@ -2195,7 +2437,6 @@ class ModelBuilder:
         self.shape_collision_group.append(cfg.collision_group)
         if cfg.collision_group not in self.shape_collision_group_map:
             self.shape_collision_group_map[cfg.collision_group] = []
-        self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
@@ -3008,6 +3249,7 @@ class ModelBuilder:
                 np.array(tri_kd)[valid_inds],
                 np.array(tri_drag)[valid_inds],
                 np.array(tri_lift)[valid_inds],
+                strict=False,
             )
         )
         areas = areas.tolist()
@@ -3190,7 +3432,7 @@ class ModelBuilder:
         edge_ke = init_if_none(edge_ke, self.default_edge_ke)
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
 
-        self.edge_bending_properties.extend(zip(edge_ke, edge_kd))
+        self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
 
     def add_cloth_grid(
         self,
@@ -4117,11 +4359,20 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
+            # Compute max joints per articulation for IK kernel launches
+            max_joints_per_articulation = 0
+            for art_idx in range(len(self.articulation_start)):
+                joint_start = articulation_start[art_idx]
+                joint_end = articulation_start[art_idx + 1]
+                num_joints = joint_end - joint_start
+                max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
             m.articulation_group = wp.array(self.articulation_group, dtype=wp.int32)
+            m.max_joints_per_articulation = max_joints_per_articulation
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
@@ -4186,6 +4437,7 @@ class ModelBuilder:
         # Copy the set of filtered-out shape pairs to avoid modifying the original
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
+
         # iterate over collision groups (islands)
         for group, shapes in self.shape_collision_group_map.items():
             for s1, s2 in itertools.combinations(shapes, 2):
@@ -4194,12 +4446,21 @@ class ModelBuilder:
                 if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
                     continue
 
+                # Check environment groups
+                env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
+                env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
+
+                # Skip shapes from different environments (unless one is global)
+                if env1 != -1 and env2 != -1 and env1 != env2:
+                    continue
+
                 # Ensure canonical order (smaller_element, larger_element)
                 shape_a, shape_b = min(s1, s2), max(s1, s2)
 
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
                     filters.add((shape_a, shape_b))
+
             if group != -1 and -1 in self.shape_collision_group_map:
                 # shapes with collision group -1 collide with all other shapes
                 for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
@@ -4207,9 +4468,19 @@ class ModelBuilder:
                         continue
                     if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
                         continue
+
+                    # Check environment groups
+                    env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
+                    env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
+
+                    # Skip shapes from different environments (unless one is global)
+                    if env1 != -1 and env2 != -1 and env1 != env2:
+                        continue
+
                     shape_a, shape_b = min(s1, s2), max(s1, s2)
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
+
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)

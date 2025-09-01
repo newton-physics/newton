@@ -18,26 +18,25 @@
 import unittest
 
 import numpy as np
-import warp as wp
+
+import newton
 
 
 class TestAnymalCWalk(unittest.TestCase):
     def test_anymal_walk_policy(self):
         try:
-            from newton.examples.example_anymal_c_walk import Example  # noqa: PLC0415
+            from newton.examples.robot.example_robot_anymal_c_walk import Example  # noqa: PLC0415
         except ImportError:
             self.skipTest("Example import failed - skipping test")
 
-        example = Example(stage_path=None, headless=True)
         num_test_steps = 1000
+        example = Example(viewer=newton.viewer.ViewerNull(num_frames=num_test_steps))
         for step_num in range(num_test_steps):
-            if example.use_cuda_graph:
-                wp.capture_launch(example.graph)
-            else:
-                example.simulate()
+            example.step()
+            example.render()
 
             root_pos = example.state_0.joint_q[:3].numpy()
-            root_height = root_pos[1]
+            root_height = root_pos[2]
 
             qd_linear = example.state_0.joint_qd[3:6].numpy()
             qd_angular = example.state_0.joint_qd[0:3].numpy()
@@ -51,14 +50,10 @@ class TestAnymalCWalk(unittest.TestCase):
 
             if step_num % 100 == 0 and step_num != 0:
                 self.assertGreater(
-                    qd_linear_corrected[0],
+                    qd_linear_corrected[1],
                     0.5,
-                    f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[0]:.3f} m/s (expected > 0.5)",
+                    f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[1]:.3f} m/s (expected > 0.5)",
                 )
-
-            example.controller.get_control(example.state_0)
-            example.sim_step += 1
-            example.sim_time += example.frame_dt
 
 
 if __name__ == "__main__":

@@ -84,17 +84,15 @@ class Example:
         up_axis = newton.Axis.Z
 
         env_builder = newton.ModelBuilder(up_axis=up_axis)
-        newton.utils.parse_mjcf(
+        env_builder.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
-            env_builder,
             ignore_names=["floor", "ground"],
             up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
-        newton.utils.parse_mjcf(
+        env_builder.add_mjcf(
             newton.examples.get_asset("nv_humanoid.xml"),
-            env_builder,
             ignore_names=["floor", "ground"],
             up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),

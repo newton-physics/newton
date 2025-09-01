@@ -16,7 +16,8 @@
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_anymal_c_walk import Example
+import newton
+from newton.examples.robot.example_robot_anymal_c_walk import Example
 
 
 class FastExampleAnymalPretrained:
@@ -25,7 +26,7 @@ class FastExampleAnymalPretrained:
 
     def setup(self):
         self.num_frames = 50
-        self.example = Example(stage_path=None, headless=True)
+        self.example = Example(viewer=newton.viewer.ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

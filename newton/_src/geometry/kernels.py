@@ -643,12 +643,14 @@ def create_soft_contacts(
     particle_q: wp.array(dtype=wp.vec3),
     particle_radius: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
+    particle_group: wp.array(dtype=int),  # Environment groups for particles
     body_q: wp.array(dtype=wp.transform),
     shape_transform: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
     shape_type: wp.array(dtype=int),
     shape_scale: wp.array(dtype=wp.vec3),
     shape_source_ptr: wp.array(dtype=wp.uint64),
+    shape_group: wp.array(dtype=int),  # Environment groups for shapes
     margin: float,
     soft_contact_max: int,
     shape_count: int,
@@ -667,6 +669,14 @@ def create_soft_contacts(
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
     if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+
+    # Check environment groups
+    particle_env = particle_group[particle_index]
+    shape_env = shape_group[shape_index]
+
+    # Skip collision between different environments (unless one is global)
+    if particle_env != -1 and shape_env != -1 and particle_env != shape_env:
         return
 
     rigid_index = shape_body[shape_index]
@@ -1076,7 +1086,8 @@ def broadphase_collision_pairs(
             mesh_b = wp.mesh_get(shape_source_ptr[actual_shape_b])
             num_contacts_b = mesh_b.points.shape[0]
         elif actual_type_b != GeoType.PLANE:
-            print("broadphase_collision_pairs: unsupported geometry type for mesh collision")
+            if wp.static(wp.config.verbose):
+                print("broadphase_collision_pairs: unsupported geometry type for mesh collision")
             return
         num_contacts = num_contacts_a + num_contacts_b
         if num_contacts > 0:
@@ -1106,7 +1117,8 @@ def broadphase_collision_pairs(
     elif actual_type_a == GeoType.PLANE:
         return  # no plane-plane contacts
     else:
-        wp.printf("broadphase_collision_pairs: unsupported geometry type %i and %i\n", actual_type_a, actual_type_b)
+        if wp.static(wp.config.verbose):
+            wp.printf("broadphase_collision_pairs: unsupported geometry type %i and %i\n", actual_type_a, actual_type_b)
 
     if num_contacts > 0:
         index = wp.atomic_add(contact_count, 0, num_contacts)
@@ -1259,8 +1271,8 @@ def handle_contact_pairs(
             p_b_body = closest_point_plane(geo_scale_b[0], geo_scale_b[1], wp.transform_point(X_sw_b, p_a_world))
             p_b_world = wp.transform_point(X_ws_b, p_b_body)
         else:
-            print("Unsupported geometry type in sphere collision handling")
-            print(geo_type_b)
+            if wp.static(wp.config.verbose):
+                print("Unsupported geometry type in sphere collision handling")
             return
         diff = p_a_world - p_b_world
         if geo_type_b == GeoType.PLANE:
@@ -1577,7 +1589,7 @@ def handle_contact_pairs(
                 return
 
     else:
-        print("Unsupported geometry pair in collision handling")
+        # print("Unsupported geometry pair in collision handling")
         return
 
     # Total separation required by radii and additional thicknesses

@@ -25,7 +25,7 @@ import newton.examples
 from newton import JointType
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
-from newton.utils import parse_usd, quat_between_axes
+from newton.utils import quat_between_axes
 
 devices = get_test_devices()
 
@@ -35,9 +35,8 @@ class TestImportUsd(unittest.TestCase):
     def test_import_articulation(self):
         builder = newton.ModelBuilder()
 
-        results = parse_usd(
+        results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
-            builder,
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 9)
@@ -62,9 +61,8 @@ class TestImportUsd(unittest.TestCase):
     def test_import_articulation_no_visuals(self):
         builder = newton.ModelBuilder()
 
-        results = parse_usd(
+        results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
-            builder,
             collapse_fixed_joints=True,
             load_non_physics_prims=False,
         )
@@ -90,9 +88,8 @@ class TestImportUsd(unittest.TestCase):
     def test_import_articulation_with_mesh(self):
         builder = newton.ModelBuilder()
 
-        _ = parse_usd(
+        _ = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "simple_articulation_with_mesh.usda"),
-            builder,
             collapse_fixed_joints=True,
         )
 
@@ -110,9 +107,8 @@ class TestImportUsd(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        results = parse_usd(
+        results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "revolute_articulation.usda"),
-            builder,
             collapse_fixed_joints=False,  # Don't collapse to see all joints
         )
 
@@ -155,9 +151,8 @@ class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
-        parse_usd(
+        builder_dfs.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
-            builder_dfs,
             collapse_fixed_joints=True,
             joint_ordering="dfs",
         )
@@ -175,9 +170,8 @@ class TestImportUsd(unittest.TestCase):
             self.assertTrue(builder_dfs.joint_key[i + 1].endswith(expected[i]))
 
         builder_bfs = newton.ModelBuilder()
-        parse_usd(
+        builder_bfs.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
-            builder_bfs,
             collapse_fixed_joints=True,
             joint_ordering="bfs",
         )
@@ -198,14 +192,12 @@ class TestImportUsd(unittest.TestCase):
     def test_env_cloning(self):
         builder_no_cloning = newton.ModelBuilder()
         builder_cloning = newton.ModelBuilder()
-        parse_usd(
+        builder_no_cloning.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant_multi.usda"),
-            builder_no_cloning,
             collapse_fixed_joints=True,
         )
-        parse_usd(
+        builder_cloning.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant_multi.usda"),
-            builder_cloning,
             collapse_fixed_joints=True,
             cloned_env="/World/envs/env_0",
         )
@@ -226,9 +218,8 @@ class TestImportUsd(unittest.TestCase):
     def test_mass_calculations(self):
         builder = newton.ModelBuilder()
 
-        _ = parse_usd(
+        _ = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
-            builder,
             collapse_fixed_joints=True,
         )
 
@@ -254,9 +245,8 @@ class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_cube_cylinder_joint_count(self):
         builder = newton.ModelBuilder()
-        import_results = parse_usd(
+        import_results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
-            builder,
             collapse_fixed_joints=True,
             invert_rotations=True,
         )
@@ -323,7 +313,7 @@ class TestImportUsd(unittest.TestCase):
         create_collision_mesh("/meshBoundingCube", vertices, indices, UsdPhysics.Tokens.boundingCube)
 
         builder = newton.ModelBuilder()
-        parse_usd(stage, builder, mesh_maxhullvert=4)
+        builder.add_usd(stage, mesh_maxhullvert=4)
 
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
@@ -355,10 +345,7 @@ class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
         builder = newton.ModelBuilder()
-        parse_usd(
-            newton.examples.get_asset("humanoid.usda"),
-            builder,
-        )
+        builder.add_usd(newton.examples.get_asset("humanoid.usda"))
         self.assertEqual(builder.shape_count, 38)
         self.assertEqual(builder.body_count, 16)
         visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
@@ -412,7 +399,7 @@ class TestImportUsd(unittest.TestCase):
 
         # Parse USD
         builder = newton.ModelBuilder()
-        parse_usd(stage, builder)
+        builder.add_usd(stage)
 
         # Verify parsing
         self.assertEqual(builder.body_count, 1)
@@ -505,7 +492,7 @@ class TestImportUsd(unittest.TestCase):
             joints[path] = joint
 
         builder = newton.ModelBuilder()
-        parse_usd(stage, builder)
+        builder.add_usd(stage)
 
         model = builder.finalize()
 
@@ -537,10 +524,10 @@ class TestImportSampleAssets(unittest.TestCase):
         stage = Usd.Stage.Open(file)
         parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
         # since the key is generated from USD paths we can assume that keys are unique
-        body_key_to_idx = dict(zip(model.body_key, range(model.body_count)))
-        shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count)))
+        body_key_to_idx = dict(zip(model.body_key, range(model.body_count), strict=False))
+        shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count), strict=False))
 
-        parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody]))
+        parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody], strict=False))
 
         # body presence
         for body_path, _ in parsed_bodies:
@@ -590,12 +577,12 @@ class TestImportSampleAssets(unittest.TestCase):
             JointType.D6: UsdPhysics.ObjectType.D6Joint,
         }
 
-        joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count)))
+        joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count), strict=False))
         model_joint_type = model.joint_type.numpy()
         joints_found = []
 
         for joint_type, joint_objtype in joint_mapping.items():
-            for joint_path, _joint_desc in list(zip(*parsed.get(joint_objtype, ()))):
+            for joint_path, _joint_desc in list(zip(*parsed.get(joint_objtype, ()), strict=False)):
                 joint_idx = joint_key_to_idx.get(str(joint_path), None)
                 joints_found.append(joint_idx)
                 assert joint_key_to_idx.get(str(joint_path), None) is not None
@@ -782,7 +769,7 @@ class TestImportSampleAssets(unittest.TestCase):
         for shape_type, shape_objtype in shape_type_mapping.items():
             if shape_objtype not in parsed:
                 continue
-            for xpath, shape_spec in zip(*parsed[shape_objtype]):
+            for xpath, shape_spec in zip(*parsed[shape_objtype], strict=False):
                 path = str(xpath)
                 if path in shape_key_to_idx:
                     sid = shape_key_to_idx[path]
@@ -827,7 +814,7 @@ class TestImportSampleAssets(unittest.TestCase):
             newton_pos = newton_transform[:3]
             newton_quat = newton_transform[3:7]
 
-            for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos)):
+            for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos, strict=False)):
                 self.assertAlmostEqual(
                     n_pos, u_pos, places=5, msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}"
                 )
@@ -856,7 +843,7 @@ class TestImportSampleAssets(unittest.TestCase):
                 self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
                 self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
             elif newton_type == newton.GeoType.BOX:
-                for i, (n_scale, u_extent) in enumerate(zip(newton_scale, shape_spec.halfExtents)):
+                for i, (n_scale, u_extent) in enumerate(zip(newton_scale, shape_spec.halfExtents, strict=False)):
                     self.assertAlmostEqual(
                         n_scale, u_extent, places=5, msg=f"Box {sid} extent[{i}]: USD={u_extent}, Newton={n_scale}"
                     )
@@ -871,9 +858,8 @@ class TestImportSampleAssets(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("ant.usda")
-        newton.utils.parse_usd(
+        builder.add_usd(
             asset_path,
-            builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
@@ -893,9 +879,8 @@ class TestImportSampleAssets(unittest.TestCase):
         if not stage_path or not os.path.exists(stage_path):
             raise unittest.SkipTest(f"Stage file not found: {stage_path}")
 
-        newton.utils.parse_usd(
+        builder.add_usd(
             stage_path,
-            builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
@@ -908,9 +893,8 @@ class TestImportSampleAssets(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("cartpole.usda")
-        newton.utils.parse_usd(
+        builder.add_usd(
             asset_path,
-            builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
@@ -923,9 +907,8 @@ class TestImportSampleAssets(unittest.TestCase):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
 
-        newton.utils.parse_usd(
+        builder.add_usd(
             asset_path,
-            builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,
@@ -938,9 +921,8 @@ class TestImportSampleAssets(unittest.TestCase):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usd")
 
-        newton.utils.parse_usd(
+        builder.add_usd(
             asset_path,
-            builder,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=False,

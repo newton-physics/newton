@@ -167,7 +167,7 @@ AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 
 def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
     """Convert an axis representation to a 3D vector."""
-    if isinstance(axis, (list, tuple, np.ndarray)):
+    if isinstance(axis, list | tuple | np.ndarray):
         return wp.vec3(*axis)
     elif wp.types.type_is_vector(type(axis)):
         return wp.vec3(*axis)

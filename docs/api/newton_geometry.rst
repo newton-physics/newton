@@ -19,4 +19,6 @@ newton.geometry
    :toctree: _generated
    :signatures: long
 
+   compute_shape_inertia
    remesh_mesh
+   transform_inertia
