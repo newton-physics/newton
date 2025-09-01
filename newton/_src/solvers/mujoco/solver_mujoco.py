@@ -34,7 +34,6 @@ from ...sim import (
     Model,
     State,
     color_graph,
-    count_rigid_contact_points,
     plot_graph,
 )
 from ...utils import topological_sort
@@ -2350,7 +2349,7 @@ class SolverMuJoCo(SolverBase):
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
                 else:
-                    rigid_contact_max = count_rigid_contact_points(model)
+                    rigid_contact_max = model.rigid_contact_max
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(njmax, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(

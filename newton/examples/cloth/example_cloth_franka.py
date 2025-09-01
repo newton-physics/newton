@@ -185,7 +185,7 @@ class Example:
             self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.scene.add_builder(franka, xform, separate_collision_group=False)
+            self.scene.add_builder(franka, xform)
             self.bodies_per_env = franka.body_count
             self.dof_q_per_env = franka.joint_coord_count
             self.dof_qd_per_env = franka.joint_dof_count
