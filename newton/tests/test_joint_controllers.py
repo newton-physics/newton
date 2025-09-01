@@ -31,23 +31,24 @@ class TestJointController(unittest.TestCase):
     pass
 
 
-def test_revolute_controller(test: TestJointController, device, solver_fn, joint_mode, target_value):
+def test_revolute_controller(test: TestJointController, device, solver_fn, pos_target_val, vel_target_val, expected_pos, expected_vel):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
     # easy case: identity transform, zero center of mass
     b = builder.add_body(armature=0.0, I_m=box_inertia, mass=box_mass)
     builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
-    # Create a revolute joint
+    
+    # Create a revolute joint using modern API
     builder.add_joint_revolute(
         parent=-1,
         child=b,
         parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target=target_value,
+        pos_target=pos_target_val,
+        vel_target=vel_target_val,
         armature=0.0,
-        mode=joint_mode,
         # limit_lower=-wp.pi,
         # limit_upper=wp.pi,
         limit_ke=0.0,
@@ -66,7 +67,8 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
-    control.joint_target = wp.array([target_value], dtype=wp.float32, device=device)
+    control.joint_pos_target = wp.array([pos_target_val], dtype=wp.float32, device=device)
+    control.joint_vel_target = wp.array([vel_target_val], dtype=wp.float32, device=device)
 
     sim_dt = 1.0 / 60.0
     sim_time = 0.0
@@ -86,11 +88,10 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
 
     joint_q = state_0.joint_q.numpy()
     joint_qd = state_0.joint_qd.numpy()
-    if joint_mode == newton.JointMode.TARGET_POSITION:
-        test.assertAlmostEqual(joint_q[0], target_value, delta=1e-2)
-        test.assertAlmostEqual(joint_qd[0], 0.0, delta=1e-2)
-    elif joint_mode == newton.JointMode.TARGET_VELOCITY:
-        test.assertAlmostEqual(joint_qd[0], target_value, delta=1e-2)
+    if expected_pos is not None:
+        test.assertAlmostEqual(joint_q[0], expected_pos, delta=1e-2)
+    if expected_vel is not None:
+        test.assertAlmostEqual(joint_qd[0], expected_vel, delta=1e-2)
 
 
 devices = get_test_devices()
@@ -112,8 +113,10 @@ for device in devices:
             test_revolute_controller,
             devices=[device],
             solver_fn=solver_fn,
-            joint_mode=newton.JointMode.TARGET_POSITION,
-            target_value=wp.pi / 2.0,
+            pos_target_val=wp.pi / 2.0,
+            vel_target_val=0.0,
+            expected_pos=wp.pi / 2.0,
+            expected_vel=0.0,
         )
         # TODO: XPBD velocity control is not working correctly
         if solver_name == "mujoco_warp" or solver_name == "mujoco_cpu":
@@ -123,8 +126,10 @@ for device in devices:
                 test_revolute_controller,
                 devices=[device],
                 solver_fn=solver_fn,
-                joint_mode=newton.JointMode.TARGET_VELOCITY,
-                target_value=wp.pi / 2.0,
+                pos_target_val=0.0,
+                vel_target_val=wp.pi / 2.0,
+                expected_pos=None,
+                expected_vel=wp.pi / 2.0,
             )
 
 if __name__ == "__main__":

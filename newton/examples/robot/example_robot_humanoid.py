@@ -57,7 +57,6 @@ class Example:
         )
 
         for i in range(len(humanoid.joint_dof_mode)):
-            humanoid.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
             humanoid.joint_target_ke[i] = 150
             humanoid.joint_target_kd[i] = 5
 

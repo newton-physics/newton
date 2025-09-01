@@ -348,8 +348,8 @@ def jcalc_tau(
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_f: wp.array(dtype=float),
-    joint_target: wp.array(dtype=float),
-    joint_dof_mode: wp.array(dtype=int),
+    joint_pos_target: wp.array(dtype=float),
+    joint_vel_target: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     coord_start: int,
@@ -391,7 +391,6 @@ def jcalc_tau(
 
             q = joint_q[coord_start + i]
             qd = joint_qd[j]
-            act = joint_target[j]
 
             lower = joint_limit_lower[j]
             upper = joint_limit_upper[j]
@@ -399,9 +398,10 @@ def jcalc_tau(
             limit_kd = joint_limit_kd[j]
             target_ke = joint_target_ke[j]
             target_kd = joint_target_kd[j]
-            mode = joint_dof_mode[j]
+            pos_target = joint_pos_target[j]
+            vel_target = joint_vel_target[j]
 
-            drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
+            drive_f = eval_joint_force(q, qd, pos_target, vel_target, target_ke, target_kd, lower, upper, limit_ke, limit_kd)
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
@@ -810,11 +810,11 @@ def eval_rigid_tau(
     joint_q_start: wp.array(dtype=int),
     joint_qd_start: wp.array(dtype=int),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_dof_mode: wp.array(dtype=int),
+    joint_pos_target: wp.array(dtype=float),
+    joint_vel_target: wp.array(dtype=float),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_f: wp.array(dtype=float),
-    joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
@@ -865,8 +865,8 @@ def eval_rigid_tau(
             joint_q,
             joint_qd,
             joint_f,
-            joint_target,
-            joint_dof_mode,
+            joint_pos_target,
+            joint_vel_target,
             joint_limit_lower,
             joint_limit_upper,
             coord_start,

@@ -29,6 +29,59 @@ import newton
 import newton.examples
 import newton.utils
 
+@wp.kernel
+def apply_joint_position_pd_control(
+    actions: wp.array(dtype=wp.float32, ndim=1),
+    action_scale: wp.float32,
+    default_joint_q: wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
+    joint_qd: wp.array(dtype=wp.float32),
+    Kp: wp.float32,
+    Kd: wp.float32,
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    # outputs
+    joint_f: wp.array(dtype=wp.float32),
+):
+    joint_id = wp.tid()
+    if joint_id == 0:
+        return  # skip the free joint
+    qi = joint_q_start[joint_id]
+    qdi = joint_qd_start[joint_id]
+    dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+    for j in range(dim):
+        qj = qi + j
+        qdj = qdi + j
+        q = joint_q[qj]
+        qd = joint_qd[qdj]
+
+        tq = wp.clamp(actions[qdj - 6], -1.0, 1.0) * action_scale + default_joint_q[qj]
+        tq = Kp * (tq - q) - Kd * qd
+
+        joint_f[qdj] = tq
+
+def assign_control(control, state, model):
+        wp.launch(
+            kernel=apply_joint_position_pd_control,
+            dim=model.joint_count,
+            inputs=[
+                wp.from_torch(wp.to_torch(wp.zeros(model.joint_count)).reshape(-1)),
+                1.0,
+                model.joint_q,
+                state.joint_q,
+                state.joint_qd,
+                150.0,
+                5.0,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+            ],
+            outputs=[
+                control.joint_f,
+            ],
+            device=model.device,
+        )
 
 class Example:
     def __init__(self, viewer, num_envs=8):
@@ -67,8 +120,7 @@ class Example:
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
-        for i in range(len(articulation_builder.joint_dof_mode)):
-            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(articulation_builder.joint_target_ke)):
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
 
@@ -100,7 +152,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and False:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -113,6 +165,7 @@ class Example:
 
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
+            assign_control(self.control, self.state_0, self.model)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

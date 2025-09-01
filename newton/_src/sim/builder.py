@@ -57,7 +57,6 @@ from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
-    JointMode,
     JointType,
     get_joint_dof_count,
 )
@@ -257,8 +256,7 @@ class ModelBuilder:
                 target_kd=0.0,
                 armature=0.0,
                 limit_ke=0.0,
-                limit_kd=0.0,
-                mode=JointMode.NONE,
+                limit_kd=0.0
             )
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -422,7 +420,7 @@ class ModelBuilder:
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
-        self.joint_dof_mode = []
+
         self.joint_limit_lower = []
         self.joint_limit_upper = []
         self.joint_limit_ke = []
@@ -1098,7 +1096,7 @@ class ModelBuilder:
             "joint_armature",
             "joint_axis",
             "joint_dof_dim",
-            "joint_dof_mode",
+
             "joint_key",
             "joint_qd",
             "joint_f",
@@ -2098,14 +2096,15 @@ class ModelBuilder:
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-                        "axis_mode": self.joint_dof_mode[j],
+
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "act": self.joint_target[j],
+                        "pos_target": self.joint_pos_target[j],
+                        "vel_target": self.joint_vel_target[j],
                         "effort_limit": self.joint_effort_limit[j],
                     }
                 )
@@ -2283,7 +2282,7 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-        self.joint_dof_mode.clear()
+
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
@@ -2294,7 +2293,7 @@ class ModelBuilder:
         self.joint_dof_dim.clear()
         self.joint_pos_target.clear()
         self.joint_vel_target.clear()
-        self.joint_group.clear()  # Clear joint groups
+        self.joint_group.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -2317,15 +2316,15 @@ class ModelBuilder:
                 self.joint_group.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-                self.joint_dof_mode.append(axis["axis_mode"])
+
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_pos_target.append(axis["act"])
-                self.joint_vel_target.append(axis["act"])
+                self.joint_pos_target.append(axis["pos_target"])
+                self.joint_vel_target.append(axis["vel_target"])
                 self.joint_effort_limit.append(axis["effort_limit"])
 
         return {
@@ -4288,7 +4287,7 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-                    # Directly use the corrected arrays on the Model (avoids double allocation)
+
                     # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
@@ -4332,7 +4331,7 @@ class ModelBuilder:
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_dof_mode = wp.array(self.joint_dof_mode, dtype=wp.int32)
+
             m.joint_pos_target = wp.array(self.joint_pos_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_vel_target = wp.array(self.joint_vel_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)

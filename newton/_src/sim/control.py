@@ -47,15 +47,6 @@ class Control:
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
 
-        self.joint_target: wp.array | None = None
-        """
-        Array of joint targets with shape ``(joint_dof_count,)`` and type ``float``.
-        Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
-        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_dof_mode`.
-
-        The joint targets are defined for any joint type, except for free joints.
-        """
-
         # New targets kept separate for clarity. If not set, PD will treat them as zeros.
         self.joint_pos_target: wp.array | None = None
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
@@ -128,7 +119,7 @@ def pd_actuator_kernel(
     kp = kp_dof[worldid * axes_per_env + axisid]
     kd = kd_dof[worldid * axes_per_env + axisid]
 
-    vel_err = qd_target[worldid * axes_per_env + axisid] - joint_qd[worldid * axes_per_env + axisid]
+    vel_err = 0.0 - joint_qd[worldid * axes_per_env + axisid]
     pos_err = q_target[worldid * axes_per_env + axisid] - joint_q[worldid * axes_per_env + axisid]
     joint_f[worldid * axes_per_env + axisid] = +kp * pos_err + kd * vel_err
 
@@ -146,6 +137,7 @@ class Actuator:
     """
 
     def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+        print("compute_force", axes_per_env, nworld, control.joint_pos_target, model.joint_target_ke, model.joint_target_kd)
         wp.launch(
             pd_actuator_kernel,
             dim=(nworld, axes_per_env),
@@ -163,3 +155,4 @@ class Actuator:
             ],
             device=model.device,
         )
+        print("resulting forces", control.joint_f)

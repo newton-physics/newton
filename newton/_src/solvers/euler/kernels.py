@@ -26,7 +26,6 @@ from ...geometry.kernels import triangle_closest_point_barycentric
 from ...sim import (
     Contacts,
     Control,
-    JointMode,
     JointType,
     Model,
     State,
@@ -965,37 +964,34 @@ def eval_rigid_contacts(
 def eval_joint_force(
     q: float,
     qd: float,
-    act: float,
+    pos_target: float,
+    vel_target: float,
     target_ke: float,
     target_kd: float,
     limit_lower: float,
     limit_upper: float,
     limit_ke: float,
     limit_kd: float,
-    mode: wp.int32,
 ) -> float:
-    """Joint force evaluation for a single degree of freedom."""
+    """Joint force evaluation for a single degree of freedom.
+    
+    Uses the same PD control logic as the control module:
+    force = kp * (pos_target - q) + kd * (vel_target - qd) + limit_forces
+    """
 
     limit_f = 0.0
     damping_f = 0.0
-    target_f = 0.0
-
-    if mode == JointMode.TARGET_POSITION:
-        target_f = target_ke * (act - q) - target_kd * qd
-    elif mode == JointMode.TARGET_VELOCITY:
-        target_f = target_ke * (act - qd)
+    pos_err = pos_target - q
+    vel_err = vel_target - qd
+    target_f = target_ke * pos_err + target_kd * vel_err
 
     # compute limit forces, damping only active when limit is violated
     if q < limit_lower:
         limit_f = limit_ke * (limit_lower - q)
         damping_f = -limit_kd * qd
-        if mode == JointMode.TARGET_VELOCITY:
-            target_f = 0.0  # override target force when limit is violated
     elif q > limit_upper:
         limit_f = limit_ke * (limit_upper - q)
         damping_f = -limit_kd * qd
-        if mode == JointMode.TARGET_VELOCITY:
-            target_f = 0.0  # override target force when limit is violated
 
     return limit_f + damping_f + target_f
 
@@ -1014,9 +1010,9 @@ def eval_body_joints(
     joint_X_c: wp.array(dtype=wp.transform),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_dof_mode: wp.array(dtype=int),
     joint_f: wp.array(dtype=float),
-    joint_target: wp.array(dtype=float),
+    joint_pos_target: wp.array(dtype=float),
+    joint_vel_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),
     joint_target_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
@@ -1116,21 +1112,20 @@ def eval_body_joints(
         # evaluate joint coordinates
         q = wp.dot(x_err, axis_p)
         qd = wp.dot(v_err, axis_p)
-        act = joint_target[qd_start]
 
         f_total = axis_p * (
             -joint_f[qd_start]
             - eval_joint_force(
                 q,
                 qd,
-                act,
+                joint_pos_target[qd_start],
+                joint_vel_target[qd_start],
                 joint_target_ke[qd_start],
                 joint_target_kd[qd_start],
                 joint_limit_lower[qd_start],
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_dof_mode[qd_start],
             )
         )
 
@@ -1154,21 +1149,20 @@ def eval_body_joints(
 
         q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
         qd = wp.dot(w_err, axis_p)
-        act = joint_target[qd_start]
 
         t_total = axis_p * (
             -joint_f[qd_start]
             - eval_joint_force(
                 q,
                 qd,
-                act,
+                joint_pos_target[qd_start],
+                joint_vel_target[qd_start],
                 joint_target_ke[qd_start],
                 joint_target_kd[qd_start],
                 joint_limit_lower[qd_start],
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
-                joint_dof_mode[qd_start],
             )
         )
 
@@ -1200,14 +1194,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     q0,
                     qd0,
-                    joint_target[qd_start + 0],
+                    joint_pos_target[qd_start + 0],
+                    joint_vel_target[qd_start + 0],
                     joint_target_ke[qd_start + 0],
                     joint_target_kd[qd_start + 0],
                     joint_limit_lower[qd_start + 0],
                     joint_limit_upper[qd_start + 0],
                     joint_limit_ke[qd_start + 0],
                     joint_limit_kd[qd_start + 0],
-                    joint_dof_mode[qd_start + 0],
                 )
             )
 
@@ -1224,14 +1218,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     q1,
                     qd1,
-                    joint_target[qd_start + 1],
+                    joint_pos_target[qd_start + 1],
+                    joint_vel_target[qd_start + 1],
                     joint_target_ke[qd_start + 1],
                     joint_target_kd[qd_start + 1],
                     joint_limit_lower[qd_start + 1],
                     joint_limit_upper[qd_start + 1],
                     joint_limit_ke[qd_start + 1],
                     joint_limit_kd[qd_start + 1],
-                    joint_dof_mode[qd_start + 1],
                 )
             )
 
@@ -1248,14 +1242,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     q2,
                     qd2,
-                    joint_target[qd_start + 2],
+                    joint_pos_target[qd_start + 2],
+                    joint_vel_target[qd_start + 2],
                     joint_target_ke[qd_start + 2],
                     joint_target_kd[qd_start + 2],
                     joint_limit_lower[qd_start + 2],
                     joint_limit_upper[qd_start + 2],
                     joint_limit_ke[qd_start + 2],
                     joint_limit_kd[qd_start + 2],
-                    joint_dof_mode[qd_start + 2],
                 )
             )
 
@@ -1292,14 +1286,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     q,
                     qd,
-                    joint_target[i_0],
+                    joint_pos_target[i_0],
+                    joint_vel_target[i_0],
                     joint_target_ke[i_0],
                     joint_target_kd[i_0],
                     joint_limit_lower[i_0],
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_dof_mode[i_0],
                 )
             )
 
@@ -1338,14 +1332,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     angles[0],
                     wp.dot(axis_0, w_err),
-                    joint_target[i_0],
+                    joint_pos_target[i_0],
+                    joint_vel_target[i_0],
                     joint_target_ke[i_0],
                     joint_target_kd[i_0],
                     joint_limit_lower[i_0],
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_dof_mode[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -1353,14 +1347,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     angles[1],
                     wp.dot(axis_1, w_err),
-                    joint_target[i_1],
+                    joint_pos_target[i_1],
+                    joint_vel_target[i_1],
                     joint_target_ke[i_1],
                     joint_target_kd[i_1],
                     joint_limit_lower[i_1],
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_dof_mode[i_1],
                 )
             )
 
@@ -1369,13 +1363,13 @@ def eval_body_joints(
                 angles[2],
                 wp.dot(axis_2, w_err),
                 0.0,
+                0.0,
                 joint_attach_ke,
                 joint_attach_kd * angular_damping_scale,
                 0.0,
                 0.0,
                 0.0,
                 0.0,
-                JointMode.NONE,
             )
 
         if ang_axis_count == 3:
@@ -1406,14 +1400,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     angles[0],
                     wp.dot(axis_0, w_err),
-                    joint_target[i_0],
+                    joint_pos_target[i_0],
+                    joint_vel_target[i_0],
                     joint_target_ke[i_0],
                     joint_target_kd[i_0],
                     joint_limit_lower[i_0],
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
-                    joint_dof_mode[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -1421,14 +1415,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     angles[1],
                     wp.dot(axis_1, w_err),
-                    joint_target[i_1],
+                    joint_pos_target[i_1],
+                    joint_vel_target[i_1],
                     joint_target_ke[i_1],
                     joint_target_kd[i_1],
                     joint_limit_lower[i_1],
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
-                    joint_dof_mode[i_1],
                 )
             )
             t_total += axis_2 * (
@@ -1436,14 +1430,14 @@ def eval_body_joints(
                 - eval_joint_force(
                     angles[2],
                     wp.dot(axis_2, w_err),
-                    joint_target[i_2],
+                    joint_pos_target[i_2],
+                    joint_vel_target[i_2],
                     joint_target_ke[i_2],
                     joint_target_kd[i_2],
                     joint_limit_lower[i_2],
                     joint_limit_upper[i_2],
                     joint_limit_ke[i_2],
                     joint_limit_kd[i_2],
-                    joint_dof_mode[i_2],
                 )
             )
 
@@ -1663,9 +1657,9 @@ def eval_body_joint_forces(
                 model.joint_X_c,
                 model.joint_axis,
                 model.joint_dof_dim,
-                model.joint_dof_mode,
                 control.joint_f,
-                control.joint_target,
+                control.joint_pos_target,
+                control.joint_vel_target,
                 model.joint_target_ke,
                 model.joint_target_kd,
                 model.joint_limit_lower,

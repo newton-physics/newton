@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import os  # For path manipulation
-import time  # Added for the interactive loop
+import time
 import unittest
 
 import numpy as np  # For numerical operations and random values

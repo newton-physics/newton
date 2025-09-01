@@ -134,12 +134,15 @@ class Example:
             0.4,
             -0.8,
         ]
-        for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
         for i in range(len(builder.joint_target_ke)):
-            builder.joint_target_ke[i] = 150
-            builder.joint_target_kd[i] = 5
+            if i < 6:
+                builder.joint_target_ke[i] = 0
+                builder.joint_target_kd[i] = 0
+
+            else:
+                builder.joint_target_ke[i] = 150
+                builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True)
@@ -176,9 +179,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if self.device.is_cuda:
+        if self.device.is_cuda and False:
             torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+            self.control.joint_pos_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -198,29 +201,29 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        obs = compute_obs(
-            self.act,
-            self.state_0,
-            self.joint_pos_initial,
-            self.torch_device,
-            self.lab_to_mujoco_indices,
-            self.gravity_vec,
-            self.command,
-        )
-        with torch.no_grad():
-            self.act = self.policy(obs)
-            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-            a = self.joint_pos_initial + 0.5 * self.rearranged_act
-            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            wp.copy(
-                self.control.joint_target, a_wp
-            )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
-
+        with wp.ScopedTimer("step"):
+            obs = compute_obs(
+                self.act,
+                self.state_0,
+                self.joint_pos_initial,
+                self.torch_device,
+                self.lab_to_mujoco_indices,
+                self.gravity_vec,
+                self.command,
+            )
+            with torch.no_grad():
+                self.act = self.policy(obs)
+                self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
+                a = self.joint_pos_initial + 0.5 * self.rearranged_act
+                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+                wp.copy(
+                    self.control.joint_pos_target, a_wp
+                )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+            if self.graph:
+                wp.capture_launch(self.graph)
+            else:
+                self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):

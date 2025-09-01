@@ -30,7 +30,6 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
-from ..sim.joints import JointMode
 
 
 def parse_usd(
@@ -578,13 +577,8 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             if joint_desc.drive.enabled:
-                # XXX take the target which is nonzero to decide between position vs. velocity target...
-                if joint_desc.drive.targetVelocity:
-                    joint_params["target"] = joint_desc.drive.targetVelocity
-                    joint_params["mode"] = JointMode.TARGET_VELOCITY
-                else:
-                    joint_params["target"] = joint_desc.drive.targetPosition
-                    joint_params["mode"] = JointMode.TARGET_POSITION
+                joint_params["vel_target"] = joint_desc.drive.targetVelocity
+                joint_params["pos_target"] = joint_desc.drive.targetPosition
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness
                 joint_params["target_kd"] = joint_desc.drive.damping
@@ -599,7 +593,8 @@ def parse_usd(
                 builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
-                    joint_params["target"] *= DegreesToRadian
+                    joint_params["pos_target"] *= DegreesToRadian
+                    joint_params["vel_target"] *= DegreesToRadian
                     joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
                     joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
@@ -638,8 +633,8 @@ def parse_usd(
                 free_axis = limit_lower < limit_upper
 
                 def define_joint_mode(dof, joint_desc):
-                    target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
-                    mode = JointMode.NONE
+                    pos_target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
+                    vel_target = 0.0
                     target_ke = 0.0
                     target_kd = 0.0
                     effort_limit = np.inf
@@ -647,18 +642,14 @@ def parse_usd(
                         if drive.first != dof:
                             continue
                         if drive.second.enabled:
-                            if drive.second.targetVelocity != 0.0:
-                                target = drive.second.targetVelocity
-                                mode = JointMode.TARGET_VELOCITY
-                            else:
-                                target = drive.second.targetPosition
-                                mode = JointMode.TARGET_POSITION
+                            vel_target = drive.second.targetVelocity
+                            pos_target = drive.second.targetPosition
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return target, mode, target_ke, target_kd, effort_limit
+                    return pos_target, vel_target, target_ke, target_kd, effort_limit # todo
 
-                target, mode, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
+                pos_target, vel_target,  target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -683,8 +674,8 @@ def parse_usd(
                             limit_upper=limit_upper,
                             limit_ke=current_joint_limit_ke,
                             limit_kd=current_joint_limit_kd,
-                            target=target,
-                            mode=mode,
+                            pos_target=pos_target,
+                            vel_target=vel_target,
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
@@ -699,8 +690,8 @@ def parse_usd(
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
                             limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            target=target * DegreesToRadian,
-                            mode=mode,
+                            pos_target=pos_target  * DegreesToRadian,
+                            vel_target=vel_target * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,

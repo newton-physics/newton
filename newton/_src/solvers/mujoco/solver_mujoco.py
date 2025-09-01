@@ -1301,7 +1301,7 @@ class SolverMuJoCo(SolverBase):
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
         if control is not None:
-            control.compute_actuator_forces(model, state, nworld, axes_per_env)
+            #control.compute_actuator_forces(model, state, nworld, axes_per_env)
 
             if control.joint_f is not None:
                 wp.launch(

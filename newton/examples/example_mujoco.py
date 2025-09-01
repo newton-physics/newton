@@ -280,7 +280,7 @@ class Example:
     def step(self):
         if self.actuation == "random":
             joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
-            wp.copy(self.control.joint_target, joint_target)
+            wp.copy(self.control.joint_pos_target, joint_target)
 
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)

@@ -29,8 +29,8 @@ class TestJointDrive(unittest.TestCase):
         dt,
         joint_type,
         free_axis,
-        drive_mode,
-        targets,
+        pos_targets,
+        vel_targets,
         target_kes,
         target_kds,
         joint_qs,
@@ -38,7 +38,8 @@ class TestJointDrive(unittest.TestCase):
         masses,
         inertias,
     ) -> float:
-        target = targets[env_id]
+        pos_target = pos_targets[env_id]
+        vel_target = vel_targets[env_id]
         ke = target_kes[env_id]
         kd = target_kds[env_id]
         q = joint_qs[env_id]
@@ -54,11 +55,10 @@ class TestJointDrive(unittest.TestCase):
         else:
             print("unsupported joint type")
 
-        F = 0
-        if drive_mode == newton.JointMode.TARGET_POSITION:
-            F = ke * (target - q) - (kd * qd)
-        elif drive_mode == newton.JointMode.TARGET_VELOCITY:
-            F = kd * (target - qd)
+
+        pos_err = pos_target - q
+        vel_err = vel_target - qd
+        F = ke * pos_err + kd * vel_err
 
         F += M * g
 
@@ -159,13 +159,13 @@ class TestJointDrive(unittest.TestCase):
         vNew = [0.0] * nb_envs
         for i in range(0, nb_envs):
             vNew[i] = self.compute_expected_velocity_outcome(
-                drive_mode=newton.JointMode.TARGET_POSITION,
                 env_id=i,
                 g=g,
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                targets=joint_pos_targets,
+                pos_targets=joint_pos_targets,
+                vel_targets=[0.0, 0.0],
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
                 joint_qs=joint_start_positions,
@@ -204,8 +204,8 @@ class TestJointDrive(unittest.TestCase):
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                drive_mode=newton.JointMode.TARGET_POSITION,
-                targets=joint_pos_targets,
+                pos_targets=joint_pos_targets,
+                vel_targets=[0.0, 0.0],
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
                 joint_qs=joint_start_positions,
@@ -223,15 +223,13 @@ class TestJointDrive(unittest.TestCase):
         state_in, state_out = state_out, state_in
 
         ################################
-        # Change the mode of the joint drives to velocity drive, update the drive targets, and reset to start state
-        # Note the drive modes need to be identical.
+        # Change to velocity control and reset to start state
         joint_vel_targets = [20.0, 300.0]
         joint_drive_stiffnesses = [0.0, 0.0]
         joint_drive_dampings = [10.0, 20.0]
         joint_start_positions = [0.0, 0.0]
         joint_start_velocities = [0.0, 0.0]
-        joint_dof_modes = [newton.JointMode.TARGET_VELOCITY, newton.JointMode.TARGET_VELOCITY]
-        #  model.joint_dof_mode.assign(joint_dof_modes)
+
         model.joint_target_ke.assign(joint_drive_stiffnesses)
         model.joint_target_kd.assign(joint_drive_dampings)
         control.joint_vel_target.assign(joint_vel_targets)
@@ -247,8 +245,8 @@ class TestJointDrive(unittest.TestCase):
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                drive_mode=joint_dof_modes[i],
-                targets=joint_vel_targets,
+                pos_targets=[0.0, 0.0],
+                vel_targets=joint_vel_targets,
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
                 joint_qs=joint_start_positions,
@@ -266,14 +264,14 @@ class TestJointDrive(unittest.TestCase):
 
         ################################
 
-        # Now run again with JointMode.NONE and reset back to the start state.
+        # Now run again with no control (zero stiffness/damping) and reset back to the start state.
 
-        joint_dof_modes = [newton.JointMode.NONE, newton.JointMode.NONE]
+
         joint_drive_stiffnesses = [0.0, 0.0]
         joint_drive_dampings = [0.0, 0.0]
         model.joint_target_ke.assign(joint_drive_stiffnesses)
         model.joint_target_kd.assign(joint_drive_dampings)
-        # model.joint_dof_mode.assign(joint_dof_modes)
+
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
@@ -286,8 +284,8 @@ class TestJointDrive(unittest.TestCase):
                 dt=dt,
                 joint_type=joint_type,
                 free_axis=joint_motion_axis,
-                drive_mode=joint_dof_modes[i],
-                targets=joint_vel_targets,
+                pos_targets=[0.0, 0.0],
+                vel_targets=[0.0, 0.0],
                 target_kes=joint_drive_stiffnesses,
                 target_kds=joint_drive_dampings,
                 joint_qs=joint_start_positions,
