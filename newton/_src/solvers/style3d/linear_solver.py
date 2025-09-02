@@ -97,6 +97,7 @@ wp.overload(eval_residual_kernel_with_additional_Ax, {"A_diag": wp.array(dtype=w
 def array_mul_kernel(
     a: wp.array(dtype=Any),
     b: wp.array(dtype=wp.vec3),
+    # outputs
     out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -113,6 +114,7 @@ def ell_mat_vec_mul_kernel(
     M_non_diag: SparseMatrixELL,
     M_diag: wp.array(dtype=Any),
     x: wp.array(dtype=wp.vec3),
+    # outputs
     Mx: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -147,14 +149,18 @@ wp.overload(ell_mat_vec_mul_add_kernel, {"M_diag": wp.array(dtype=wp.mat33)})
 @wp.kernel
 def update_cg_direction_kernel(
     iter: int,
-    p: wp.array(dtype=wp.vec3),
     z: wp.array(dtype=wp.vec3),
     rTz: wp.array(dtype=float),
+    # outputs
+    p: wp.array(dtype=wp.vec3),
 ):
-    #    p = r + (rz_new / rz_old) * p;
+    # p = r + (rz_new / rz_old) * p;
     i = wp.tid()
-    beta = wp.where(iter > 0, rTz[iter] / rTz[iter - 1], 0.0)
-    p[i] = z[i] + beta * p[i]
+    new_p = z[i]
+    if iter > 0:
+        beta = rTz[iter] / rTz[iter - 1]
+        new_p += beta * p[i]
+    p[i] = new_p
 
 
 @wp.kernel
@@ -164,6 +170,7 @@ def step_cg_kernel(
     pTAp: wp.array(dtype=float),
     p: wp.array(dtype=wp.vec3),
     Ap: wp.array(dtype=wp.vec3),
+    # outputs
     x: wp.array(dtype=wp.vec3),
     r: wp.array(dtype=wp.vec3),
 ):
@@ -292,8 +299,8 @@ class PcgSolver:
         wp.launch(
             update_cg_direction_kernel,
             dim=self.dim,
-            inputs=[iter, self.p, self.z],
-            outputs=[self.rTz],
+            inputs=[iter, self.z, self.rTz],
+            outputs=[self.p],
             device=self.device,
         )
 
