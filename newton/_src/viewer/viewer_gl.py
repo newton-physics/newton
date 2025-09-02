@@ -139,6 +139,9 @@ class ViewerGL(ViewerBase):
                      "stats" - Stats/metrics area
                      "free" - Free-floating UI elements
         """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+
         if position not in self._ui_callbacks:
             valid_positions = list(self._ui_callbacks.keys())
             raise ValueError(f"Invalid position '{position}'. Must be one of: {valid_positions}")

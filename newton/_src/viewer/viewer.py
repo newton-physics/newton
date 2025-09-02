@@ -38,7 +38,7 @@ class ViewerBase:
         self.model_changed = True
 
         # map from shape hash -> Instances
-        self.shape_instances = {}
+        self._shape_instances = {}
 
         # cache for geometry created via log_shapes()
         # maps from geometry hash -> mesh path
@@ -65,9 +65,6 @@ class ViewerBase:
         return True
 
     def is_paused(self) -> bool:
-        return False
-
-    def is_resetting(self) -> bool:
         return False
 
     def is_key_down(self, key) -> bool:
@@ -104,7 +101,7 @@ class ViewerBase:
             return
 
         # compute shape transforms and render
-        for shapes in self.shape_instances.values():
+        for shapes in self._shape_instances.values():
             shapes.update(state)
             self.log_instances(
                 shapes.name,
@@ -554,8 +551,8 @@ class ViewerBase:
                 geo_src,
             )
 
-            if geo_hash in self.shape_instances:
-                batch = self.shape_instances[geo_hash]
+            if geo_hash in self._shape_instances:
+                batch = self._shape_instances[geo_hash]
             else:
                 # ensure geometry exists and get mesh path
                 mesh_name = self._populate_geometry(
@@ -567,10 +564,10 @@ class ViewerBase:
                 )
 
                 # add instances
-                shape_name = f"/model/shapes/shape_{len(self.shape_instances)}"
+                shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.Instances(shape_name, mesh_name, self.device)
 
-                self.shape_instances[geo_hash] = batch
+                self._shape_instances[geo_hash] = batch
 
             parent = shape_body[s]
             xform = wp.transform_expand(shape_transform[s])
@@ -598,7 +595,7 @@ class ViewerBase:
             batch.add(parent, xform, scale, color, material)
 
         # upload all batches to the GPU
-        for batch in self.shape_instances.values():
+        for batch in self._shape_instances.values():
             batch.finalize()
 
     def _log_joints(self, state):
