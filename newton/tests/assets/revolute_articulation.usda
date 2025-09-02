@@ -1,37 +1,7 @@
 #usda 1.0
 (
-    customLayerData = {
-        dictionary cameraSettings = {
-            dictionary Front = {
-                double3 position = (50200.000000000015, -1.1146639167236572e-11, 0)
-                double radius = 500
-            }
-            dictionary Perspective = {
-                double3 position = (4.999999999999999, 5, 5.0000000000000036)
-                double3 target = (-3.978038876084611e-8, -3.978038431995401e-8, 7.956077041626486e-8)
-            }
-            dictionary Right = {
-                double3 position = (0, -50010, -1.1104450692300816e-11)
-                double radius = 500
-            }
-            dictionary Top = {
-                double3 position = (0, 0, 50010)
-                double radius = 500
-            }
-            string boundCamera = "/OmniverseKit_Persp"
-        }
-        dictionary omni_layer = {
-            string authoring_layer = "./revolute_articulation.usd"
-            dictionary muteness = {
-            }
-        }
-        int refinementOverrideImplVersion = 0
-        dictionary renderSettings = {
-        }
-    }
+    customLayerData = {}
     defaultPrim = "Articulation"
-    doc = """Generated from Composed Stage of root layer https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/IsaacSim/SimpleArticulation/revolute_articulation.usd
-"""
     endTimeCode = 100
     metersPerUnit = 1
     startTimeCode = 0
@@ -39,17 +9,14 @@
     upAxis = "Z"
 )
 
+def Xform "World"
+{
+}
+
 def Xform "Articulation" (
-    apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI", "IsaacRobotAPI"]
+    apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
 )
 {
-    string isaac:description
-    string isaac:namespace
-    rel isaac:physics:robotJoints = </Articulation/Arm/RevoluteJoint>
-    rel isaac:physics:robotLinks = [
-        </Articulation/CenterPivot>,
-        </Articulation/Arm>,
-    ]
     bool physxArticulation:enabledSelfCollisions = 0
     int physxArticulation:solverPositionIterationCount = 64
     int physxArticulation:solverVelocityIterationCount = 64
@@ -59,11 +26,10 @@ def Xform "Articulation" (
     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
     def Sphere "CenterPivot" (
-        apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI", "IsaacLinkAPI"]
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
     )
     {
         float3[] extent = [(-50, -50, -50), (50, 50, 50)]
-        string isaac:nameOverride
         vector3f physics:angularVelocity = (0, 0, 0)
         point3f physics:centerOfMass = (0, 0, 0)
         float3 physics:diagonalInertia = (0.0001, 0.0001, 0.0001)
@@ -83,19 +49,8 @@ def Xform "Articulation" (
         double3 xformOp:translate = (0, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
-        def PhysicsFixedJoint "FixedJoint" (
-            apiSchemas = ["IsaacJointAPI"]
-        )
+        def PhysicsFixedJoint "FixedJoint"
         {
-            custom string isaac:nameOverride
-            float[] isaac:physics:AccelerationLimit
-            float[] isaac:physics:JerkLimit
-            custom int isaac:physics:Rot_X:DofOffset
-            custom int isaac:physics:Rot_Y:DofOffset
-            custom int isaac:physics:Rot_Z:DofOffset
-            custom int isaac:physics:Tr_X:DofOffset
-            custom int isaac:physics:Tr_Y:DofOffset
-            custom int isaac:physics:Tr_Z:DofOffset
             rel physics:body0 = </Articulation/CenterPivot>
             float physics:breakForce = inf
             float physics:breakTorque = inf
@@ -107,11 +62,10 @@ def Xform "Articulation" (
     }
 
     def Cube "Arm" (
-        apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI", "IsaacLinkAPI"]
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysicsMassAPI"]
     )
     {
         float3[] extent = [(-50, -50, -50), (50, 50, 50)]
-        string isaac:nameOverride
         vector3f physics:angularVelocity = (0, 0, 0)
         point3f physics:centerOfMass = (0, 0, 0)
         bool physics:collisionEnabled = 1
@@ -134,58 +88,23 @@ def Xform "Articulation" (
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
         def PhysicsRevoluteJoint "RevoluteJoint" (
-            apiSchemas = ["PhysicsDriveAPI:angular", "IsaacJointAPI"]
+            apiSchemas = ["PhysicsDriveAPI:angular"]
         )
         {
             float drive:angular:physics:damping = 100000
             float drive:angular:physics:maxForce = inf
             float drive:angular:physics:stiffness = 100000
             float drive:angular:physics:targetPosition = 0
-            custom string isaac:nameOverride
-            float[] isaac:physics:AccelerationLimit
-            float[] isaac:physics:JerkLimit
-            custom int isaac:physics:Rot_X:DofOffset
-            custom int isaac:physics:Rot_Y:DofOffset
-            custom int isaac:physics:Rot_Z:DofOffset
-            custom int isaac:physics:Tr_X:DofOffset
-            custom int isaac:physics:Tr_Y:DofOffset
-            custom int isaac:physics:Tr_Z:DofOffset
             uniform token physics:axis = "Y"
-            rel physics:body0 = </Articulation/Arm>
-            rel physics:body1 = </Articulation/CenterPivot>
+            rel physics:body0 = </Articulation/CenterPivot>
+            rel physics:body1 = </Articulation/Arm>
             float physics:breakForce = inf
             float physics:breakTorque = inf
-            point3f physics:localPos0 = (-0.5, 0, 0)
-            point3f physics:localPos1 = (0, 0, 0)
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (-0.5, 0, 0)
             quatf physics:localRot0 = (1, 0, 0, 0)
             quatf physics:localRot1 = (1, 0, 0, 0)
         }
-    }
-}
-
-def Xform "World"
-{
-    def DistantLight "defaultLight" (
-        apiSchemas = ["ShapingAPI"]
-    )
-    {
-        float angle = 1
-        float inputs:angle = 1
-        float inputs:intensity = 3000
-        float inputs:shaping:cone:angle = 180
-        float inputs:shaping:cone:softness = 0
-        float inputs:shaping:focus = 0
-        color3f inputs:shaping:focusTint = (0, 0, 0)
-        float intensity = 3000
-        float shaping:cone:angle = 180
-        float shaping:cone:softness
-        float shaping:focus
-        color3f shaping:focusTint
-        asset shaping:ies:file
-        double3 xformOp:rotateXYZ = (45, 0, 90)
-        double3 xformOp:scale = (0.009999999776482582, 0.009999999776482582, 0.009999999776482582)
-        double3 xformOp:translate = (0, 0, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
     }
 }
 
@@ -205,66 +124,3 @@ def PhysicsScene "physicsScene" (
     float physxScene:frictionOffsetThreshold = 0.0004
     uniform token physxScene:solverType = "TGS"
 }
-
-def "Render" (
-    hide_in_stage_window = true
-    no_delete = true
-)
-{
-    def "OmniverseKit"
-    {
-        def "HydraTextures" (
-            hide_in_stage_window = true
-            no_delete = true
-        )
-        {
-            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
-                apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
-                hide_in_stage_window = true
-                no_delete = true
-            )
-            {
-                rel camera = </OmniverseKit_Persp>
-                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
-                token omni:rtx:background:source:type = "domeLight"
-                bool omni:rtx:dlss:frameGeneration = 0
-                string omni:rtx:material:db:rtSensorNameToIdMap = "DefaultMaterial:0;AsphaltStandardMaterial:1;AsphaltWeatheredMaterial:2;VegetationGrassMaterial:3;WaterStandardMaterial:4;GlassStandardMaterial:5;FiberGlassMaterial:6;MetalAlloyMaterial:7;MetalAluminumMaterial:8;MetalAluminumOxidizedMaterial:9;PlasticStandardMaterial:10;RetroMarkingsMaterial:11;RetroSignMaterial:12;RubberStandardMaterial:13;SoilClayMaterial:14;ConcreteRoughMaterial:15;ConcreteSmoothMaterial:16;OakTreeBarkMaterial:17;FabricStandardMaterial:18;PlexiGlassStandardMaterial:19;MetalSilverMaterial:20"
-                bool omni:rtx:material:db:syncLoads = 1
-                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
-                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
-                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
-                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
-                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
-                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
-                bool omni:rtx:rt:demoire = 0
-                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
-                bool omni:rtx:scene:hydra:materialSyncLoads = 1
-                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
-                uint omni:rtx:viewTile:limit = 4294967295
-                rel orderedVars = </Render/Vars/LdrColor>
-                custom bool overrideClipRange = 0
-                uniform int2 resolution = (1280, 720)
-            }
-        }
-    }
-
-    def RenderSettings "OmniverseGlobalRenderSettings" (
-        apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
-        no_delete = true
-    )
-    {
-        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
-    }
-
-    def "Vars"
-    {
-        def RenderVar "LdrColor" (
-            hide_in_stage_window = true
-            no_delete = true
-        )
-        {
-            uniform string sourceName = "LdrColor"
-        }
-    }
-}
-

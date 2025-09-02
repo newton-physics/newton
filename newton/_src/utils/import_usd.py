@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -27,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 
@@ -513,27 +514,41 @@ def parse_usd(
                 scale = np.array(op.Get(), dtype=np.float32)
         return scale
 
+    def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
+        if get_transforms:
+            parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+        else:
+            parent_tf = None
+            child_tf = None
+
+        parent_path = str(joint_desc.body0)
+        child_path = str(joint_desc.body1)
+        parent_id = body_index_map.get(parent_path, -1)
+        child_id = body_index_map.get(child_path, -1)
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            if parent_id == -1:
+                warnings.warn(f"Skipping joint {joint_desc.primPath}: both bodies unresolved", stacklevel=2)
+                return
+            parent_id, child_id = child_id, parent_id
+            if get_transforms:
+                parent_tf, child_tf = child_tf, parent_tf
+            if verbose:
+                print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+        if get_transforms:
+            return parent_id, child_id, parent_tf, child_tf
+        else:
+            return parent_id, child_id
+
     def parse_joint(joint_desc, joint_path, incoming_xform=None):
         if not joint_desc.jointEnabled and only_load_enabled_joints:
             return
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
-        parent_path = str(joint_desc.body0)
-        child_path = str(joint_desc.body1)
-        parent_id = path_body_map.get(parent_path, -1)
-        child_id = path_body_map.get(child_path, -1)
-        parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
-        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
-        # If child_id is -1, swap parent and child
-        if child_id == -1:
-            if parent_id == -1:
-                if verbose:
-                    print(f"Skipping joint {joint_path}: both bodies unresolved")
-                return
-            parent_id, child_id = child_id, parent_id
-            parent_tf, child_tf = child_tf, parent_tf
-            if verbose:
-                print(f"Joint {joint_path} connects {parent_path} to world")
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
+            joint_desc, path_body_map, get_transforms=True
+        )
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
@@ -887,7 +902,8 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_names.append(str(p))
                 joint_desc = joint_descriptions[str(p)]
-                joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
+                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
+                joint_edges.append((parent_id, child_id))
 
             # add joints in topological order
             if joint_ordering is not None:
@@ -1196,6 +1212,40 @@ def parse_usd(
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
+
+            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated
+            I_m = np.array(builder.body_inertia[body_id])
+            mass = builder.body_mass[body_id]
+            if I_m.max() == 0.0:
+                if mass > 0.0:
+                    # Heuristic: assume a uniform density sphere with the given mass
+                    # For a sphere: I = (2/5) * m * r^2
+                    # Estimate radius from mass assuming reasonable density (e.g., water density ~1000 kg/m³)
+                    # This gives r = (3*m/(4*π*p))^(1/3)
+                    density = default_shape_density  # kg/m³
+                    volume = mass / density
+                    radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
+                    _, _, I_default = compute_sphere_inertia(density, radius)
+
+                    # Apply parallel axis theorem if center of mass is offset
+                    com = builder.body_com[body_id]
+                    if np.linalg.norm(com) > 1e-6:
+                        # I = I_cm + m * d² where d is distance from COM to body origin
+                        d_squared = np.sum(com**2)
+                        I_default += mass * d_squared * np.eye(3)
+
+                    builder.body_inertia[body_id] = I_default
+                    builder.body_inv_inertia[body_id] = wp.inverse(I_default)
+
+                    if verbose:
+                        print(
+                            f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]"
+                        )
+                else:
+                    warnings.warn(
+                        f"Body {body_path} has zero mass and zero inertia despite having the MassAPI USD schema applied.",
+                        stacklevel=2,
+                    )
 
     # add free joints to floating bodies that's just been added by import_usd
     new_bodies = path_body_map.values()
