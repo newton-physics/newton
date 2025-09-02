@@ -357,7 +357,6 @@ class ModelBuilder:
         # collision groups within collisions are handled
         self.shape_collision_group = []
         self.shape_collision_group_map = {}
-        self.last_collision_group = 0
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
         # environment group index for each shape
@@ -903,7 +902,6 @@ class ModelBuilder:
         builder: ModelBuilder,
         xform: Transform | None = None,
         update_num_env_count: bool = True,
-        separate_collision_group: bool = True,
         environment: int | None = None,
     ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
@@ -912,6 +910,11 @@ class ModelBuilder:
         When adding a builder, ALL entities from the source builder will be assigned to the same
         environment group, overriding any group assignments that existed in the source builder.
         This ensures that all entities from a sub-builder are grouped together as a single environment.
+
+        Environment groups automatically handle collision filtering between different environments:
+        - Entities from different environments (except -1) do not collide with each other
+        - Global entities (group -1) collide with all environments
+        - Collision groups from the source builder are preserved as-is for fine-grained collision control within each environment
 
         To create global entities that are shared across all environments, set the main builder's
         `current_env_group` to -1 before adding entities directly (not via add_builder).
@@ -937,7 +940,6 @@ class ModelBuilder:
             update_num_env_count (bool): if True, the number of environments is updated appropriately.
                 For non-global entities (environment >= 0), this either increments num_envs (when environment is None)
                 or ensures num_envs is at least environment+1. Global entities (environment=-1) do not affect num_envs.
-            separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
             environment (int | None): environment group index to assign to ALL entities from this builder.
                 If None, uses the current environment count as the group index. Use -1 for global entities.
                 Note: environment=-1 does not increase num_envs even when update_num_env_count=True.
@@ -1048,32 +1050,19 @@ class ModelBuilder:
             else:
                 self.body_q.append(builder.body_q[i])
 
-        # apply collision group
-        if separate_collision_group:
-            self.shape_collision_group.extend([self.last_collision_group + 1 for _ in builder.shape_collision_group])
-        else:
-            self.shape_collision_group.extend(
-                [(g + self.last_collision_group if g > -1 else -1) for g in builder.shape_collision_group]
-            )
-        shape_count = self.shape_count
+        # Copy collision groups without modification
+        self.shape_collision_group.extend(builder.shape_collision_group)
+
+        # Copy collision filter pairs with offset
+        shape_count_offset = self.shape_count
         for i, j in builder.shape_collision_filter_pairs:
-            self.shape_collision_filter_pairs.add((i + shape_count, j + shape_count))
+            self.shape_collision_filter_pairs.add((i + shape_count_offset, j + shape_count_offset))
+
+        # Copy collision group map directly
         for group, shapes in builder.shape_collision_group_map.items():
-            if separate_collision_group:
-                extend_group = self.last_collision_group + 1
-            else:
-                extend_group = group + self.last_collision_group if group > -1 else -1
-
-            if extend_group not in self.shape_collision_group_map:
-                self.shape_collision_group_map[extend_group] = []
-
-            self.shape_collision_group_map[extend_group].extend([s + shape_count for s in shapes])
-
-        # update last collision group counter
-        if separate_collision_group:
-            self.last_collision_group += 1
-        elif builder.last_collision_group > -1:
-            self.last_collision_group += builder.last_collision_group
+            if group not in self.shape_collision_group_map:
+                self.shape_collision_group_map[group] = []
+            self.shape_collision_group_map[group].extend([s + shape_count_offset for s in shapes])
 
         # Handle environment group assignments
         # For particles
@@ -1370,7 +1359,11 @@ class ModelBuilder:
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
-                    self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+                    # Ensure canonical order (smaller, larger) for consistent lookup
+                    a, b = parent_shape, child_shape
+                    if a > b:
+                        a, b = b, a
+                    self.shape_collision_filter_pairs.add((a, b))
 
         return self.joint_count - 1
 
@@ -2444,7 +2437,6 @@ class ModelBuilder:
         self.shape_collision_group.append(cfg.collision_group)
         if cfg.collision_group not in self.shape_collision_group_map:
             self.shape_collision_group_map[cfg.collision_group] = []
-        self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
         self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
@@ -4367,11 +4359,20 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
+            # Compute max joints per articulation for IK kernel launches
+            max_joints_per_articulation = 0
+            for art_idx in range(len(self.articulation_start)):
+                joint_start = articulation_start[art_idx]
+                joint_end = articulation_start[art_idx + 1]
+                num_joints = joint_end - joint_start
+                max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
             m.articulation_group = wp.array(self.articulation_group, dtype=wp.int32)
+            m.max_joints_per_articulation = max_joints_per_articulation
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
@@ -4436,6 +4437,7 @@ class ModelBuilder:
         # Copy the set of filtered-out shape pairs to avoid modifying the original
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
+
         # iterate over collision groups (islands)
         for group, shapes in self.shape_collision_group_map.items():
             for s1, s2 in itertools.combinations(shapes, 2):
@@ -4444,12 +4446,21 @@ class ModelBuilder:
                 if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
                     continue
 
+                # Check environment groups
+                env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
+                env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
+
+                # Skip shapes from different environments (unless one is global)
+                if env1 != -1 and env2 != -1 and env1 != env2:
+                    continue
+
                 # Ensure canonical order (smaller_element, larger_element)
                 shape_a, shape_b = min(s1, s2), max(s1, s2)
 
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
                     filters.add((shape_a, shape_b))
+
             if group != -1 and -1 in self.shape_collision_group_map:
                 # shapes with collision group -1 collide with all other shapes
                 for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
@@ -4457,9 +4468,19 @@ class ModelBuilder:
                         continue
                     if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
                         continue
+
+                    # Check environment groups
+                    env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
+                    env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
+
+                    # Skip shapes from different environments (unless one is global)
+                    if env1 != -1 and env2 != -1 and env1 != env2:
+                        continue
+
                     shape_a, shape_b = min(s1, s2), max(s1, s2)
                     if (shape_a, shape_b) not in filters:
                         contact_pairs.append((shape_a, shape_b))
                         filters.add((shape_a, shape_b))
+
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
