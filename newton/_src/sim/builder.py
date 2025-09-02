@@ -4452,7 +4452,7 @@ class ModelBuilder:
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
                 if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                    break
+                    continue
 
                 # Skip shapes from different environments (unless one is global). As the shapes are sorted,
                 # this means the shapes in this environment group have all been processed.
