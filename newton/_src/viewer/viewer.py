@@ -38,7 +38,7 @@ class ViewerBase:
         self.model_changed = True
 
         # map from shape hash -> Instances
-        self.shape_instances = {}
+        self._shape_instances = {}
 
         # cache for geometry created via log_shapes()
         # maps from geometry hash -> mesh path
@@ -61,6 +61,12 @@ class ViewerBase:
         self.show_springs = False
         self.show_triangles = True
 
+    def is_running(self) -> bool:
+        return True
+
+    def is_paused(self) -> bool:
+        return False
+
     def is_key_down(self, key) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -82,6 +88,9 @@ class ViewerBase:
             self.device = model.device
             self._populate_shapes()
 
+    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        pass
+
     def begin_frame(self, time):
         self.time = time
 
@@ -92,7 +101,7 @@ class ViewerBase:
             return
 
         # compute shape transforms and render
-        for shapes in self.shape_instances.values():
+        for shapes in self._shape_instances.values():
             shapes.update(state)
             self.log_instances(
                 shapes.name,
@@ -542,8 +551,8 @@ class ViewerBase:
                 geo_src,
             )
 
-            if geo_hash in self.shape_instances:
-                batch = self.shape_instances[geo_hash]
+            if geo_hash in self._shape_instances:
+                batch = self._shape_instances[geo_hash]
             else:
                 # ensure geometry exists and get mesh path
                 mesh_name = self._populate_geometry(
@@ -555,15 +564,20 @@ class ViewerBase:
                 )
 
                 # add instances
-                shape_name = f"/model/shapes/shape_{len(self.shape_instances)}"
+                shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.Instances(shape_name, mesh_name, self.device)
 
-                self.shape_instances[geo_hash] = batch
+                self._shape_instances[geo_hash] = batch
 
             parent = shape_body[s]
             xform = wp.transform_expand(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
-            color = wp.vec3(self._shape_color_map(s))
+
+            if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+                color = wp.vec3(0.5, 0.5, 0.5)
+            else:
+                color = wp.vec3(self._shape_color_map(s))
+
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             if geo_type == newton.GeoType.MESH:
@@ -581,7 +595,7 @@ class ViewerBase:
             batch.add(parent, xform, scale, color, material)
 
         # upload all batches to the GPU
-        for batch in self.shape_instances.values():
+        for batch in self._shape_instances.values():
             batch.finalize()
 
     def _log_joints(self, state):
