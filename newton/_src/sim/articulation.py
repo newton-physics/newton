@@ -340,9 +340,11 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array(dtype=int),
+    articulation_count: int,  # total number of articulations
     articulation_mask: wp.array(
         dtype=bool
     ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
+    articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -361,13 +363,25 @@ def eval_articulation_fk(
 ):
     tid = wp.tid()
 
+    # Determine which articulation to process
+    if articulation_indices:
+        # Using indices - get actual articulation ID from array
+        articulation_id = articulation_indices[tid]
+    else:
+        # No indices - articulation ID is just the thread index
+        articulation_id = tid
+
+    # Bounds check
+    if articulation_id < 0 or articulation_id >= articulation_count:
+        return  # Invalid articulation index
+
     # early out if disabling FK for this articulation
     if articulation_mask:
-        if not articulation_mask[tid]:
+        if not articulation_mask[articulation_id]:
             return
 
-    joint_start = articulation_start[tid]
-    joint_end = articulation_start[tid + 1]
+    joint_start = articulation_start[articulation_id]
+    joint_end = articulation_start[articulation_id + 1]
 
     eval_single_articulation_fk(
         joint_start,
@@ -396,6 +410,7 @@ def eval_fk(
     joint_qd: wp.array(dtype=float),
     state: State | object,
     mask: wp.array(dtype=bool) | None = None,
+    indices: wp.array(dtype=int) | None = None,
 ):
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
@@ -406,13 +421,27 @@ def eval_fk(
         joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
         state (State): The state to update.
         mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
+        indices (array): Integer indices of articulations to update. If None, updates all articulations.
+                        Cannot be used together with mask parameter.
     """
+    # Validate inputs
+    if mask is not None and indices is not None:
+        raise ValueError("Cannot specify both mask and indices parameters")
+
+    # Determine launch dimensions
+    if indices is not None:
+        num_articulations = len(indices)
+    else:
+        num_articulations = model.articulation_count
+
     wp.launch(
         kernel=eval_articulation_fk,
-        dim=model.articulation_count,
+        dim=num_articulations,
         inputs=[
             model.articulation_start,
+            model.articulation_count,
             mask,
+            indices,
             joint_q,
             joint_qd,
             model.joint_q_start,
@@ -500,6 +529,10 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
 
 @wp.kernel
 def eval_articulation_ik(
+    articulation_start: wp.array(dtype=int),
+    articulation_count: int,  # total number of articulations
+    articulation_mask: wp.array(dtype=bool),  # can be None, mask to filter articulations
+    articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
@@ -515,13 +548,37 @@ def eval_articulation_ik(
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
 ):
-    tid = wp.tid()
+    art_idx, joint_offset = wp.tid()  # articulation index and joint offset within articulation
 
-    parent = joint_parent[tid]
-    child = joint_child[tid]
+    # Determine which articulation to process
+    if articulation_indices:
+        articulation_id = articulation_indices[art_idx]
+    else:
+        articulation_id = art_idx
 
-    X_pj = joint_X_p[tid]
-    X_cj = joint_X_c[tid]
+    # Bounds check
+    if articulation_id < 0 or articulation_id >= articulation_count:
+        return  # Invalid articulation index
+
+    # early out if disabling IK for this articulation
+    if articulation_mask:
+        if not articulation_mask[articulation_id]:
+            return
+
+    # Get joint range for this articulation
+    joint_start = articulation_start[articulation_id]
+    joint_end = articulation_start[articulation_id + 1]
+
+    # Check if this thread has a valid joint to process
+    joint_idx = joint_start + joint_offset
+    if joint_idx >= joint_end:
+        return  # This thread has no joint (padding thread)
+
+    parent = joint_parent[joint_idx]
+    child = joint_child[joint_idx]
+
+    X_pj = joint_X_p[joint_idx]
+    X_cj = joint_X_c[joint_idx]
 
     w_p = wp.vec3()
     v_p = wp.vec3()
@@ -548,7 +605,7 @@ def eval_articulation_ik(
     v_c = wp.spatial_bottom(v_wc)
 
     # joint properties
-    type = joint_type[tid]
+    type = joint_type[joint_idx]
 
     # compute position and orientation differences between anchor frames
     x_p = wp.transform_get_translation(X_wpj)
@@ -561,10 +618,10 @@ def eval_articulation_ik(
     v_err = v_c - v_p
     w_err = w_c - w_p
 
-    q_start = joint_q_start[tid]
-    qd_start = joint_qd_start[tid]
-    lin_axis_count = joint_dof_dim[tid, 0]
-    ang_axis_count = joint_dof_dim[tid, 1]
+    q_start = joint_q_start[joint_idx]
+    qd_start = joint_qd_start[joint_idx]
+    lin_axis_count = joint_dof_dim[joint_idx, 0]
+    ang_axis_count = joint_dof_dim[joint_idx, 1]
 
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -686,7 +743,7 @@ def eval_articulation_ik(
 
 
 # given maximal coordinate model computes ik (closest point projection)
-def eval_ik(model, state, joint_q, joint_qd):
+def eval_ik(model, state, joint_q, joint_qd, mask=None, indices=None):
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
@@ -695,11 +752,31 @@ def eval_ik(model, state, joint_q, joint_qd):
         state (State): The state with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
         joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
+        mask (array): Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).
+        indices (array): Integer indices of articulations to update. If None, updates all articulations.
+
+    Note:
+        The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.
     """
+    # Check for mutually exclusive parameters
+    if mask is not None and indices is not None:
+        raise ValueError("mask and indices parameters are mutually exclusive - please use only one")
+
+    # Determine launch dimensions
+    if indices is not None:
+        num_articulations = len(indices)
+    else:
+        num_articulations = model.articulation_count
+
+    # Always use 2D launch for joint-level parallelism
     wp.launch(
         kernel=eval_articulation_ik,
-        dim=model.joint_count,
+        dim=(num_articulations, model.max_joints_per_articulation),
         inputs=[
+            model.articulation_start,
+            model.articulation_count,
+            mask,
+            indices,
             state.body_q,
             state.body_qd,
             model.body_com,

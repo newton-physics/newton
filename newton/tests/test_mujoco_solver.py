@@ -236,9 +236,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 
         for i in range(num_envs):
             env_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
-            self.builder.add_builder(
-                template_builder, xform=env_transform, update_num_env_count=True, separate_collision_group=True
-            )
+            self.builder.add_builder(template_builder, xform=env_transform, update_num_env_count=True)
 
         try:
             if self.builder.num_envs == 0 and num_envs > 0:
@@ -383,22 +381,32 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         # Randomize inertia tensors for all bodies in all environments
         # Simple inertia tensors that satisfy triangle inequality
 
-        new_inertias = np.zeros((self.model.body_count, 3, 3))
+        def _make_spd_inertia(a_base, b_base, c_max):
+            # Sample principal moments (triangle inequality on principal values)
+            l1 = np.float32(a_base + self.rng.uniform(0.0, 0.5))
+            l2 = np.float32(b_base + self.rng.uniform(0.0, 0.5))
+            l3 = np.float32(min(l1 + l2 - 0.1, c_max))
+            lam = np.array(sorted([l1, l2, l3], reverse=True), dtype=np.float32)
+
+            # Random right-handed rotation
+            Q, _ = np.linalg.qr(self.rng.normal(size=(3, 3)).astype(np.float32))
+            if np.linalg.det(Q) < 0.0:
+                Q[:, 2] *= -1.0
+
+            inertia = (Q @ np.diag(lam) @ Q.T).astype(np.float32)
+            return inertia
+
+        new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
         bodies_per_env = self.model.body_count // self.model.num_envs
         for i in range(self.model.body_count):
             env_idx = i // bodies_per_env
+            # Unified inertia generation for all environments, parameterized by env_idx
             if env_idx == 0:
-                # First environment: ensure a + b > c with random values
-                a = 2.0 + self.rng.uniform(0.0, 0.5)
-                b = 3.0 + self.rng.uniform(0.0, 0.5)
-                c = min(a + b - 0.1, 4.0)  # Ensure a + b > c
-                new_inertias[i] = np.diag([a, b, c])
+                a_base, b_base, c_max = 2.5, 3.5, 4.5
             else:
-                # Second environment: ensure a + b > c with random values
-                a = 3.0 + self.rng.uniform(0.0, 0.5)
-                b = 4.0 + self.rng.uniform(0.0, 0.5)
-                c = min(a + b - 0.1, 5.0)  # Ensure a + b > c
-                new_inertias[i] = np.diag([a, b, c])
+                a_base, b_base, c_max = 3.5, 4.5, 5.5
+
+            new_inertias[i] = _make_spd_inertia(a_base, b_base, c_max)
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
@@ -413,23 +421,52 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     newton_idx = env_idx * bodies_per_env + body_idx
                     mjc_idx = body_mapping[body_idx]
                     if mjc_idx != -1:  # Skip unmapped bodies
-                        newton_inertia = inertias_to_check[newton_idx]
-                        mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx]
+                        newton_inertia = inertias_to_check[newton_idx].astype(np.float32)
+                        mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx].astype(np.float32)
 
                         # Get eigenvalues of both tensors
-                        newton_eigvals = np.linalg.eigvalsh(newton_inertia)
-                        mjc_eigvals = mjc_inertia  # Already in diagonal form
+                        newton_eigvecs, newton_eigvals = wp.eig3(newton_inertia)
+                        newton_eigvecs = np.array(newton_eigvecs)
+                        newton_eigvecs = newton_eigvecs.reshape((3, 3))
 
-                        # Sort eigenvalues in descending order
-                        newton_eigvals.sort()
-                        newton_eigvals = newton_eigvals[::-1]
+                        newton_eigvals = np.array(newton_eigvals)
+
+                        mjc_eigvals = mjc_inertia  # Already in diagonal form
+                        mjc_iquat = np.roll(solver.mjw_model.body_iquat.numpy()[env_idx, mjc_idx].astype(np.float32), 1)
+
+                        # Sort eigenvalues in descending order and reorder eigenvectors by columns
+                        sort_indices = np.argsort(newton_eigvals)[::-1]
+                        newton_eigvals = newton_eigvals[sort_indices]
+                        newton_eigvecs = newton_eigvecs[:, sort_indices]
+
+                        newton_quat = wp.quat_from_matrix(
+                            wp.matrix_from_cols(
+                                wp.vec3(newton_eigvecs[:, 0]),
+                                wp.vec3(newton_eigvecs[:, 1]),
+                                wp.vec3(newton_eigvecs[:, 2]),
+                            )
+                        )
+                        newton_quat = wp.normalize(newton_quat)
 
                         for dim in range(3):
                             self.assertAlmostEqual(
-                                newton_eigvals[dim],
-                                mjc_eigvals[dim],
-                                places=6,
+                                float(newton_eigvals[dim]),
+                                float(mjc_eigvals[dim]),
+                                places=5,
                                 msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
+                            )
+                        # Handle quaternion sign ambiguity by ensuring dot product is non-negative
+                        newton_quat_np = np.array(newton_quat)
+                        mjc_iquat_np = np.array(mjc_iquat)
+                        if np.dot(newton_quat_np, mjc_iquat_np) < 0:
+                            newton_quat_np = -newton_quat_np
+
+                        for dim in range(4):
+                            self.assertAlmostEqual(
+                                float(mjc_iquat_np[dim]),
+                                float(newton_quat_np[dim]),
+                                places=5,
+                                msg=f"{msg_prefix}Inertia quaternion mismatch for body {body_idx} in environment {env_idx}",
                             )
 
         # Check initial inertia tensors
@@ -440,19 +477,14 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         self.state_in, self.state_out = self.state_out, self.state_in
 
         # Update inertia tensors again with new random values
-        updated_inertias = np.zeros((self.model.body_count, 3, 3))
+        updated_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
         for i in range(self.model.body_count):
             env_idx = i // bodies_per_env
             if env_idx == 0:
-                a = 2.5 + self.rng.uniform(0.0, 0.5)
-                b = 3.5 + self.rng.uniform(0.0, 0.5)
-                c = min(a + b - 0.1, 4.5)
-                updated_inertias[i] = np.diag([a, b, c])
+                a_base, b_base, c_max = 2.5, 3.5, 4.5
             else:
-                a = 3.5 + self.rng.uniform(0.0, 0.5)
-                b = 4.5 + self.rng.uniform(0.0, 0.5)
-                c = min(a + b - 0.1, 5.5)
-                updated_inertias[i] = np.diag([a, b, c])
+                a_base, b_base, c_max = 3.5, 4.5, 5.5
+            updated_inertias[i] = _make_spd_inertia(a_base, b_base, c_max)
         self.model.body_inertia.assign(updated_inertias)
 
         # Notify solver of inertia changes

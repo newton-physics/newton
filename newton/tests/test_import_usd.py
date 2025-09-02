@@ -113,24 +113,16 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(set(builder.body_key), {"/Articulation/Arm", "/Articulation/CenterPivot"})
 
-        # Should have 3 joints:
-        # 1. Free joint for articulation root (automatically added)
+        # Should have 2 joints:
+        # 1. Fixed joint with only body0 specified (CenterPivot to world)
         # 2. Revolute joint between CenterPivot and Arm (normal joint with both bodies)
-        # 3. Fixed joint with only body0 specified (CenterPivot to world)
-        self.assertEqual(builder.joint_count, 3)
+        self.assertEqual(builder.joint_count, 2)
 
         # Find joints by their keys to make test robust to ordering changes
         fixed_joint_idx = builder.joint_key.index("/Articulation/CenterPivot/FixedJoint")
         revolute_joint_idx = builder.joint_key.index("/Articulation/Arm/RevoluteJoint")
-        # The free joint typically has a generic key like "joint_1"
-        free_joint_idx = next(
-            i
-            for i, key in enumerate(builder.joint_key)
-            if key not in ["/Articulation/CenterPivot/FixedJoint", "/Articulation/Arm/RevoluteJoint"]
-        )
 
         # Verify joint types
-        self.assertEqual(builder.joint_type[free_joint_idx], newton.JointType.FREE)
         self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JointType.REVOLUTE)
         self.assertEqual(builder.joint_type[fixed_joint_idx], newton.JointType.FIXED)
 
