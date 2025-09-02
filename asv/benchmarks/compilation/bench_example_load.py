@@ -125,7 +125,7 @@ class SlowExampleClothTwist:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.cloth.example_cloth_twist.py",
+            "newton.examples.cloth.example_cloth_twist",
             "--num-frames",
             "1",
             "--viewer",
