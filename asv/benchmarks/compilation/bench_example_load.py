@@ -97,10 +97,10 @@ class SlowExampleClothFranka:
             sys.executable,
             "-m",
             "newton.examples.cloth.example_cloth_franka",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -126,10 +126,10 @@ class SlowExampleClothTwist:
             sys.executable,
             "-m",
             "newton.examples.cloth.example_cloth_twist.py",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
