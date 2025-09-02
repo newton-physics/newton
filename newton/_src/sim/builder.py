@@ -4438,20 +4438,28 @@ class ModelBuilder:
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
 
-        # iterate over collision groups (islands)
-        for group, shapes in self.shape_collision_group_map.items():
-            for s1, s2 in itertools.combinations(shapes, 2):
-                if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
+        # Sort shapes by env group in case theya re not sorted
+        sorted_shape_key = [x for _, x in sorted(zip(self.shape_group, self.shape_key))]
+        # Iterates over all shapes candidates
+        for s1 in range(len(sorted_shape_key)):
+            if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
+                continue
+
+            env1 = self.shape_group[s1]
+            collision_group1 = self.shape_collision_group[s1]
+            for s2 in range(s1, len(sorted_shape_key)):
                 if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
                     continue
 
-                # Check environment groups
-                env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
-                env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
-
-                # Skip shapes from different environments (unless one is global)
+                # Skip shapes from different environments (unless one is global). As the shapes are sorted,
+                # this means the shapes in this environment group have all been processed.
+                env2 = self.shape_group[s2]
                 if env1 != -1 and env2 != -1 and env1 != env2:
+                    break
+
+                # Skip shapes from different collision group (unless one is global).
+                collision_group2 = self.shape_collision_group[s2]
+                if collision_group1 != -1 and collision_group2 != -1 and collision_group1 != collision_group2:
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
@@ -4460,27 +4468,6 @@ class ModelBuilder:
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
                     filters.add((shape_a, shape_b))
-
-            if group != -1 and -1 in self.shape_collision_group_map:
-                # shapes with collision group -1 collide with all other shapes
-                for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
-                    if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-                    if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-
-                    # Check environment groups
-                    env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
-                    env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
-
-                    # Skip shapes from different environments (unless one is global)
-                    if env1 != -1 and env2 != -1 and env1 != env2:
-                        continue
-
-                    shape_a, shape_b = min(s1, s2), max(s1, s2)
-                    if (shape_a, shape_b) not in filters:
-                        contact_pairs.append((shape_a, shape_b))
-                        filters.add((shape_a, shape_b))
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
