@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import copy
 import ctypes
-import itertools
 import math
 import warnings
 from dataclasses import dataclass
@@ -4439,7 +4438,7 @@ class ModelBuilder:
         contact_pairs = []
 
         # Sort shapes by env group in case theya re not sorted
-        sorted_shape_key = [x for _, x in sorted(zip(self.shape_group, self.shape_key))]
+        sorted_shape_key = [x for _, x in sorted(zip(self.shape_group, self.shape_key, strict=False))]
         # Iterates over all shapes candidates
         for s1 in range(len(sorted_shape_key)):
             if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
