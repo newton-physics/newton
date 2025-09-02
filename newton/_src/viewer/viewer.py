@@ -94,6 +94,9 @@ class ViewerBase:
     def begin_frame(self, time):
         self.time = time
 
+    def is_paused(self):
+        return False
+
     def log_state(self, state):
         """Render the Newton model."""
 

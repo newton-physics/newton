@@ -38,8 +38,9 @@ def run(example):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
     while example.viewer.is_running():
-        with wp.ScopedTimer("step", active=False):
-            example.step()
+        if not example.viewer.is_paused():
+            with wp.ScopedTimer("step", active=False):
+                example.step()
 
         with wp.ScopedTimer("render", active=False):
             example.render()
