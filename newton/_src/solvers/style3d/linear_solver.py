@@ -151,6 +151,7 @@ def update_cg_direction_kernel(
     iter: int,
     z: wp.array(dtype=wp.vec3),
     rTz: wp.array(dtype=float),
+    p_prev: wp.array(dtype=wp.vec3),
     # outputs
     p: wp.array(dtype=wp.vec3),
 ):
@@ -158,8 +159,12 @@ def update_cg_direction_kernel(
     i = wp.tid()
     new_p = z[i]
     if iter > 0:
-        beta = rTz[iter] / rTz[iter - 1]
-        new_p += beta * p[i]
+        num = rTz[iter]
+        denom = rTz[iter - 1]
+        beta = wp.float32(0.0)
+        if (wp.abs(denom) > 1.0e-30) and (not wp.isnan(denom)) and (not wp.isnan(num)):
+            beta = num / denom
+        new_p += beta * p_prev[i]
     p[i] = new_p
 
 
@@ -175,7 +180,11 @@ def step_cg_kernel(
     r: wp.array(dtype=wp.vec3),
 ):
     i = wp.tid()
-    alpha = rTz[iter] / pTAp[iter]
+    num = rTz[iter]
+    denom = pTAp[iter]
+    alpha = wp.float32(0.0)
+    if (wp.abs(denom) > 1.0e-30) and (not wp.isnan(denom)) and (not wp.isnan(num)):
+        alpha = num / denom
     r[i] = r[i] - alpha * Ap[i]
     x[i] = x[i] + alpha * p[i]
 
@@ -299,7 +308,7 @@ class PcgSolver:
         wp.launch(
             update_cg_direction_kernel,
             dim=self.dim,
-            inputs=[iter, self.z, self.rTz],
+            inputs=[iter, self.z, self.rTz, self.p],
             outputs=[self.p],
             device=self.device,
         )
