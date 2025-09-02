@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 import unittest
 
@@ -21,8 +22,10 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton import JointType
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.utils import quat_between_axes
 
 devices = get_test_devices()
 
@@ -502,6 +505,422 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
+
+
+class TestImportSampleAssets(unittest.TestCase):
+    def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):
+        """Verify model based on the UsdPhysics Parsing Utils"""
+        # [1] https://openusd.org/release/api/usd_physics_page_front.html
+        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.Open(file)
+        parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+        # since the key is generated from USD paths we can assume that keys are unique
+        body_key_to_idx = dict(zip(model.body_key, range(model.body_count), strict=False))
+        shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count), strict=False))
+
+        parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody], strict=False))
+
+        # body presence
+        for body_path, _ in parsed_bodies:
+            assert body_key_to_idx.get(str(body_path), None) is not None
+        self.assertEqual(len(parsed_bodies), model.body_count)
+
+        # body colliders
+        # TODO: exclude or handle bodies that have child shapes
+        for body_path, body_desc in parsed_bodies:
+            body_idx = body_key_to_idx.get(str(body_path), None)
+
+            model_collisions = {model.shape_key[sk] for sk in model.body_shapes[body_idx]}
+            parsed_collisions = {str(collider) for collider in body_desc.collisions}
+            self.assertEqual(parsed_collisions, model_collisions)
+
+        # body mass properties
+        body_mass = model.body_mass.numpy()
+        body_inertia = model.body_inertia.numpy()
+        # in newton, only rigid bodies have mass
+        for body_path, _body_desc in parsed_bodies:
+            body_idx = body_key_to_idx.get(str(body_path), None)
+            prim = stage.GetPrimAtPath(body_path)
+            if prim.HasAPI(UsdPhysics.MassAPI):
+                mass_api = UsdPhysics.MassAPI(prim)
+                # Parents' explicit total masses override any mass properties specified further down in the subtree. [1]
+                if mass_api.GetMassAttr().HasAuthoredValue():
+                    mass = mass_api.GetMassAttr().Get()
+                    self.assertAlmostEqual(body_mass[body_idx], mass, places=5)
+                if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
+                    diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
+                    principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
+                    p = np.array(wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))).reshape(
+                        (3, 3)
+                    )
+                    inertia = p @ np.diag(diag_inertia) @ p.T
+                    assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
+        # Rigid bodies that don't have mass and inertia parameters authored will not be checked
+        # TODO: check bodies with CollisionAPI children that have MassAPI specified
+
+        joint_mapping = {
+            JointType.PRISMATIC: UsdPhysics.ObjectType.PrismaticJoint,
+            JointType.REVOLUTE: UsdPhysics.ObjectType.RevoluteJoint,
+            JointType.BALL: UsdPhysics.ObjectType.SphericalJoint,
+            JointType.FIXED: UsdPhysics.ObjectType.FixedJoint,
+            # JointType.FREE: None,
+            JointType.DISTANCE: UsdPhysics.ObjectType.DistanceJoint,
+            JointType.D6: UsdPhysics.ObjectType.D6Joint,
+        }
+
+        joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count), strict=False))
+        model_joint_type = model.joint_type.numpy()
+        joints_found = []
+
+        for joint_type, joint_objtype in joint_mapping.items():
+            for joint_path, _joint_desc in list(zip(*parsed.get(joint_objtype, ()), strict=False)):
+                joint_idx = joint_key_to_idx.get(str(joint_path), None)
+                joints_found.append(joint_idx)
+                assert joint_key_to_idx.get(str(joint_path), None) is not None
+                assert model_joint_type[joint_idx] == joint_type
+
+        # the parser will insert free joints as parents to floating bodies with nonzero mass
+        expected_model_joints = len(joints_found) + 1 if floating else len(joints_found)
+        self.assertEqual(model.joint_count, expected_model_joints)
+
+        body_q_array = model.body_q.numpy()
+        joint_dof_dim_array = model.joint_dof_dim.numpy()
+        body_positions = [body_q_array[i, 0:3].tolist() for i in range(body_q_array.shape[0])]
+        body_quaternions = [body_q_array[i, 3:7].tolist() for i in range(body_q_array.shape[0])]
+
+        total_dofs = 0
+        for j in range(model.joint_count):
+            lin = int(joint_dof_dim_array[j][0])
+            ang = int(joint_dof_dim_array[j][1])
+            total_dofs += lin + ang
+            jt = int(model.joint_type.numpy()[j])
+
+            if jt == JointType.REVOLUTE:
+                self.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == JointType.FIXED:
+                self.assertEqual((lin, ang), (0, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == JointType.FREE:
+                self.assertGreater(lin + ang, 0, f"{model.joint_key[j]} expected nonzero DOFs for free joint")
+            elif jt == JointType.PRISMATIC:
+                self.assertEqual((lin, ang), (1, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            elif jt == JointType.BALL:
+                self.assertEqual((lin, ang), (0, 3), f"{model.joint_key[j]} DOF dim mismatch")
+
+        self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
+        joint_enabled = model.joint_enabled.numpy()
+        self.assertTrue(all(joint_enabled[i] != 0 for i in range(len(joint_enabled))))
+
+        axis_vectors = {
+            "X": [1.0, 0.0, 0.0],
+            "Y": [0.0, 1.0, 0.0],
+            "Z": [0.0, 0.0, 1.0],
+        }
+
+        drive_gain_scale = 1.0
+        scene = UsdPhysics.Scene.Get(stage, Sdf.Path("/physicsScene"))
+        if scene:
+            attr = scene.GetPrim().GetAttribute("newton:joint_drive_gains_scaling")
+            if attr and attr.HasAuthoredValue():
+                drive_gain_scale = float(attr.Get())
+
+        for j, key in enumerate(model.joint_key):
+            prim = stage.GetPrimAtPath(key)
+            if not prim:
+                continue
+
+            dof_index = (
+                0 if j <= 0 else sum(int(joint_dof_dim_array[i][0] + joint_dof_dim_array[i][1]) for i in range(j))
+            )
+
+            p_rel = prim.GetRelationship("physics:body0")
+            c_rel = prim.GetRelationship("physics:body1")
+            p_targets = p_rel.GetTargets() if p_rel and p_rel.HasAuthoredTargets() else []
+            c_targets = c_rel.GetTargets() if c_rel and c_rel.HasAuthoredTargets() else []
+
+            if len(p_targets) == 1 and len(c_targets) == 1:
+                p_path = str(p_targets[0])
+                c_path = str(c_targets[0])
+                if p_path in body_key_to_idx and c_path in body_key_to_idx:
+                    self.assertEqual(int(model.joint_parent.numpy()[j]), body_key_to_idx[p_path])
+                    self.assertEqual(int(model.joint_child.numpy()[j]), body_key_to_idx[c_path])
+
+            if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint):
+                axis_attr = prim.GetAttribute("physics:axis")
+                axis_tok = axis_attr.Get() if axis_attr and axis_attr.HasAuthoredValue() else None
+                if axis_tok:
+                    expected_axis = axis_vectors[str(axis_tok)]
+                    actual_axis = model.joint_axis.numpy()[dof_index].tolist()
+
+                    self.assertTrue(
+                        all(abs(actual_axis[i] - expected_axis[i]) < 1e-6 for i in range(3))
+                        or all(abs(actual_axis[i] - (-expected_axis[i])) < 1e-6 for i in range(3))
+                    )
+
+                lower_attr = prim.GetAttribute("physics:lowerLimit")
+                upper_attr = prim.GetAttribute("physics:upperLimit")
+                lower = lower_attr.Get() if lower_attr and lower_attr.HasAuthoredValue() else None
+                upper = upper_attr.Get() if upper_attr and upper_attr.HasAuthoredValue() else None
+
+                if prim.IsA(UsdPhysics.RevoluteJoint):
+                    if lower is not None:
+                        self.assertAlmostEqual(
+                            float(model.joint_limit_lower.numpy()[dof_index]), math.radians(lower), places=5
+                        )
+                    if upper is not None:
+                        self.assertAlmostEqual(
+                            float(model.joint_limit_upper.numpy()[dof_index]), math.radians(upper), places=5
+                        )
+                else:
+                    if lower is not None:
+                        self.assertAlmostEqual(
+                            float(model.joint_limit_lower.numpy()[dof_index]), float(lower), places=5
+                        )
+                    if upper is not None:
+                        self.assertAlmostEqual(
+                            float(model.joint_limit_upper.numpy()[dof_index]), float(upper), places=5
+                        )
+
+            if prim.IsA(UsdPhysics.RevoluteJoint):
+                ke_attr = prim.GetAttribute("drive:angular:physics:stiffness")
+                kd_attr = prim.GetAttribute("drive:angular:physics:damping")
+            elif prim.IsA(UsdPhysics.PrismaticJoint):
+                ke_attr = prim.GetAttribute("drive:linear:physics:stiffness")
+                kd_attr = prim.GetAttribute("drive:linear:physics:damping")
+            else:
+                ke_attr = kd_attr = None
+
+            if ke_attr:
+                ke_val = ke_attr.Get() if ke_attr.HasAuthoredValue() else None
+                if ke_val is not None:
+                    ke = float(ke_val)
+                    self.assertAlmostEqual(
+                        float(model.joint_target_ke.numpy()[dof_index]), ke * math.degrees(drive_gain_scale), places=2
+                    )
+
+            if kd_attr:
+                kd_val = kd_attr.Get() if kd_attr.HasAuthoredValue() else None
+                if kd_val is not None:
+                    kd = float(kd_val)
+                    self.assertAlmostEqual(
+                        float(model.joint_target_kd.numpy()[dof_index]), kd * math.degrees(drive_gain_scale), places=2
+                    )
+
+        if compare_min_max_coords:
+            joint_X_p_array = model.joint_X_p.numpy()
+            joint_X_c_array = model.joint_X_c.numpy()
+            joint_X_p_positions = [joint_X_p_array[i, 0:3].tolist() for i in range(joint_X_p_array.shape[0])]
+            joint_X_p_quaternions = [joint_X_p_array[i, 3:7].tolist() for i in range(joint_X_p_array.shape[0])]
+            joint_X_c_positions = [joint_X_c_array[i, 0:3].tolist() for i in range(joint_X_c_array.shape[0])]
+            joint_X_c_quaternions = [joint_X_c_array[i, 3:7].tolist() for i in range(joint_X_c_array.shape[0])]
+
+            for j in range(model.joint_count):
+                p = int(model.joint_parent.numpy()[j])
+                c = int(model.joint_child.numpy()[j])
+                if p < 0 or c < 0:
+                    continue
+
+                parent_tf = wp.transform(wp.vec3(*body_positions[p]), wp.quat(*body_quaternions[p]))
+                child_tf = wp.transform(wp.vec3(*body_positions[c]), wp.quat(*body_quaternions[c]))
+                joint_parent_tf = wp.transform(wp.vec3(*joint_X_p_positions[j]), wp.quat(*joint_X_p_quaternions[j]))
+                joint_child_tf = wp.transform(wp.vec3(*joint_X_c_positions[j]), wp.quat(*joint_X_c_quaternions[j]))
+
+                lhs_tf = wp.transform_multiply(parent_tf, joint_parent_tf)
+                rhs_tf = wp.transform_multiply(child_tf, joint_child_tf)
+
+                lhs_p = wp.transform_get_translation(lhs_tf)
+                rhs_p = wp.transform_get_translation(rhs_tf)
+                lhs_q = wp.transform_get_rotation(lhs_tf)
+                rhs_q = wp.transform_get_rotation(rhs_tf)
+
+                self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)))
+
+                q_diff = lhs_q * wp.quat_inverse(rhs_q)
+                angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
+                self.assertLessEqual(angle_diff, 1e-3)
+
+        model.shape_body.numpy()
+        shape_type_array = model.shape_type.numpy()
+        shape_transform_array = model.shape_transform.numpy()
+        shape_scale_array = model.shape_scale.numpy()
+        shape_flags_array = model.shape_flags.numpy()
+
+        shape_to_path = {}
+        usd_shape_specs = {}
+
+        shape_type_mapping = {
+            newton.GeoType.BOX: UsdPhysics.ObjectType.CubeShape,
+            newton.GeoType.SPHERE: UsdPhysics.ObjectType.SphereShape,
+            newton.GeoType.CAPSULE: UsdPhysics.ObjectType.CapsuleShape,
+            newton.GeoType.CYLINDER: UsdPhysics.ObjectType.CylinderShape,
+            newton.GeoType.CONE: UsdPhysics.ObjectType.ConeShape,
+            newton.GeoType.MESH: UsdPhysics.ObjectType.MeshShape,
+            newton.GeoType.PLANE: UsdPhysics.ObjectType.PlaneShape,
+        }
+
+        for shape_type, shape_objtype in shape_type_mapping.items():
+            if shape_objtype not in parsed:
+                continue
+            for xpath, shape_spec in zip(*parsed[shape_objtype], strict=False):
+                path = str(xpath)
+                if path in shape_key_to_idx:
+                    sid = shape_key_to_idx[path]
+                    shape_to_path[sid] = path
+                    usd_shape_specs[sid] = shape_spec
+                    self.assertEqual(
+                        shape_type_array[sid],
+                        int(shape_type),
+                        f"Shape {sid} type mismatch: USD={shape_type}, Newton={shape_type_array[sid]}",
+                    )
+
+        def from_gfquat(gfquat):
+            return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
+
+        def quaternions_match(q1, q2, tolerance=1e-5):
+            return all(abs(q1[i] - q2[i]) < tolerance for i in range(4)) or all(
+                abs(q1[i] + q2[i]) < tolerance for i in range(4)
+            )
+
+        for sid, path in shape_to_path.items():
+            prim = stage.GetPrimAtPath(path)
+            shape_spec = usd_shape_specs[sid]
+            newton_type = shape_type_array[sid]
+            newton_transform = shape_transform_array[sid]
+            newton_scale = shape_scale_array[sid]
+            newton_flags = shape_flags_array[sid]
+
+            collision_enabled_usd = True
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                attr = prim.GetAttribute("physics:collisionEnabled")
+                if attr and attr.HasAuthoredValue():
+                    collision_enabled_usd = attr.Get()
+
+            collision_enabled_newton = bool(newton_flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
+            self.assertEqual(
+                collision_enabled_newton,
+                collision_enabled_usd,
+                f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}",
+            )
+
+            usd_quat = from_gfquat(shape_spec.localRot)
+            newton_pos = newton_transform[:3]
+            newton_quat = newton_transform[3:7]
+
+            for i, (n_pos, u_pos) in enumerate(zip(newton_pos, shape_spec.localPos, strict=False)):
+                self.assertAlmostEqual(
+                    n_pos, u_pos, places=5, msg=f"Shape {sid} position[{i}]: USD={u_pos}, Newton={n_pos}"
+                )
+
+            if newton_type in [3, 5]:
+                usd_axis = int(shape_spec.axis) if hasattr(shape_spec, "axis") else 2
+                axis_quat = (
+                    quat_between_axes(newton.Axis.Z, newton.Axis.X)
+                    if usd_axis == 0
+                    else quat_between_axes(newton.Axis.Z, newton.Axis.Y)
+                    if usd_axis == 1
+                    else wp.quat_identity()
+                )
+                expected_quat = wp.mul(usd_quat, axis_quat)
+            else:
+                expected_quat = usd_quat
+
+            if not quaternions_match(newton_quat, expected_quat):
+                q_diff = wp.mul(newton_quat, wp.quat_inverse(expected_quat))
+                angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
+                self.fail(
+                    f"Shape {sid} rotation mismatch: expected={expected_quat}, Newton={newton_quat}, angle_diff={math.degrees(angle_diff)}°"
+                )
+
+            if newton_type == newton.GeoType.CAPSULE:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+                self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
+            elif newton_type == newton.GeoType.BOX:
+                for i, (n_scale, u_extent) in enumerate(zip(newton_scale, shape_spec.halfExtents, strict=False)):
+                    self.assertAlmostEqual(
+                        n_scale, u_extent, places=5, msg=f"Box {sid} extent[{i}]: USD={u_extent}, Newton={n_scale}"
+                    )
+            elif newton_type == newton.GeoType.SPHERE:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+            elif newton_type == newton.GeoType.CYLINDER:
+                self.assertAlmostEqual(newton_scale[0], shape_spec.radius, places=5)
+                self.assertAlmostEqual(newton_scale[1], shape_spec.halfHeight, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ant(self):
+        builder = newton.ModelBuilder()
+
+        asset_path = newton.examples.get_asset("ant.usda")
+        builder.add_usd(
+            asset_path,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_anymal(self):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        asset_root = newton.utils.download_asset("anybotics_anymal_d/usd")
+        stage_path = None
+        for root, _, files in os.walk(asset_root):
+            if "anymal_d.usda" in files:
+                stage_path = os.path.join(root, "anymal_d.usda")
+                break
+        if not stage_path or not os.path.exists(stage_path):
+            raise unittest.SkipTest(f"Stage file not found: {stage_path}")
+
+        builder.add_usd(
+            stage_path,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(stage_path, model, True, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cartpole(self):
+        builder = newton.ModelBuilder()
+
+        asset_path = newton.examples.get_asset("cartpole.usda")
+        builder.add_usd(
+            asset_path,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=False)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_g1(self):
+        builder = newton.ModelBuilder()
+        asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
+
+        builder.add_usd(
+            asset_path,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=False, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_h1(self):
+        builder = newton.ModelBuilder()
+        asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usd")
+
+        builder.add_usd(
+            asset_path,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            load_non_physics_prims=False,
+        )
+        model = builder.finalize()
+        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
 
 
 if __name__ == "__main__":
