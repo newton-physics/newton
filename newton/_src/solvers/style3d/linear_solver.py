@@ -263,6 +263,7 @@ class PcgSolver:
     def __init__(self, dim: int, device, maxIter: int = 999):
         self.dim = dim  # pre-allocation
         self.device = device
+        self.maxIter = maxIter
         self.r = wp.array(shape=dim, dtype=wp.vec3, device=device)
         self.z = wp.array(shape=dim, dtype=wp.vec3, device=device)
         self.p = wp.array(shape=dim, dtype=wp.vec3, device=device)
@@ -359,6 +360,9 @@ class PcgSolver:
         iterations: int,
         additional_multiplier: Callable | None = None,
     ):
+        # Prevent out-of-bounds in rTz/pTAp when iterations > maxIter.
+        iterations = wp.min(iterations, self.maxIter)
+
         if x0 is None:
             x1.zero_()
         else:
