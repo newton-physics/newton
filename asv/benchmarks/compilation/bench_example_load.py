@@ -20,7 +20,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
-class SlowExampleAnymalMuJoCo:
+class SlowExampleRobotAnymal:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -38,11 +38,10 @@ class SlowExampleAnymalMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_anymal_c_walk",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--headless",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -51,7 +50,7 @@ class SlowExampleAnymalMuJoCo:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class SlowExampleCartpoleMuJoCo:
+class SlowExampleRobotCartpole:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -69,11 +68,10 @@ class SlowExampleCartpoleMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_cartpole",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--no-use-cuda-graph",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -82,7 +80,7 @@ class SlowExampleCartpoleMuJoCo:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class SlowExampleClothManipulation:
+class SlowExampleClothFranka:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -98,11 +96,11 @@ class SlowExampleClothManipulation:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_robot_manipulating_cloth",
-            "--stage-path",
-            "None",
+            "newton.examples.cloth.example_cloth_franka",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -111,7 +109,7 @@ class SlowExampleClothManipulation:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class SlowExampleClothSelfContactVBD:
+class SlowExampleClothTwist:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -127,11 +125,11 @@ class SlowExampleClothSelfContactVBD:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_cloth_self_contact",
-            "--stage-path",
-            "None",
+            "newton.examples.cloth.example_cloth_twist",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -140,7 +138,7 @@ class SlowExampleClothSelfContactVBD:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class SlowExampleHumanoidMuJoCo:
+class SlowExampleRobotHumanoid:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -158,12 +156,10 @@ class SlowExampleHumanoidMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_humanoid",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--headless",
-            "--no-use-cuda-graph",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
@@ -172,7 +168,7 @@ class SlowExampleHumanoidMuJoCo:
         print(f"Output:\n{result.stdout}\n{result.stderr}")
 
 
-class SlowExampleQuadrupedXPBD:
+class SlowExampleBasicUrdf:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -190,13 +186,24 @@ class SlowExampleQuadrupedXPBD:
             sys.executable,
             "-m",
             "newton.examples.basic.example_basic_urdf",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
         result = subprocess.run(command, capture_output=True, text=True, check=True)
 
         print(f"Output:\n{result.stdout}\n{result.stderr}")
+
+
+if __name__ == "__main__":
+    from newton.utils import run_benchmark
+
+    run_benchmark(SlowExampleBasicUrdf)
+    run_benchmark(SlowExampleRobotAnymal)
+    run_benchmark(SlowExampleRobotCartpole)
+    run_benchmark(SlowExampleRobotHumanoid)
+    run_benchmark(SlowExampleClothFranka)
+    run_benchmark(SlowExampleClothTwist)

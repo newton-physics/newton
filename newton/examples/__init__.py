@@ -34,9 +34,13 @@ def get_asset(filename: str) -> str:
 
 
 def run(example):
+    if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
+        example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
+
     while example.viewer.is_running():
-        with wp.ScopedTimer("step", active=False):
-            example.step()
+        if not example.viewer.is_paused():
+            with wp.ScopedTimer("step", active=False):
+                example.step()
 
         with wp.ScopedTimer("render", active=False):
             example.render()
@@ -122,6 +126,12 @@ def create_parser():
         "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to initialize the viewer headless (for OpenGL viewer only).",
+    )
 
     return parser
 
@@ -155,7 +165,7 @@ def init(parser=None):
 
     # Create viewer based on type
     if args.viewer == "gl":
-        viewer = newton.viewer.ViewerGL()
+        viewer = newton.viewer.ViewerGL(headless=args.headless)
     elif args.viewer == "usd":
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
