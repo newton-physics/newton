@@ -4426,27 +4426,21 @@ class ModelBuilder:
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
 
-        # Sort shapes by env group in case they are not sorted
-        indices = range(len(self.shape_group))
-        sorted_indices = sorted(indices, key=lambda i: self.shape_group[i])
+        # Sort shapes by env group in case they are not sorted, keep only colliding shapes
+        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
+        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_group[i])
 
-        # Iterates over all shapes candidates
+        # Iterate over all shapes candidates
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
-            if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                continue
-
             env1 = self.shape_group[s1]
             collision_group1 = self.shape_collision_group[s1]
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
-                if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
-
+                env2 = self.shape_group[s2]
                 # Skip shapes from different environments (unless one is global). As the shapes are sorted,
                 # this means the shapes in this environment group have all been processed.
-                env2 = self.shape_group[s2]
-                if env1 != -1 and env2 != -1 and env1 != env2:
+                if env1 != -1 and env1 != env2:
                     break
 
                 # Skip shapes from different collision group (unless one is global).
