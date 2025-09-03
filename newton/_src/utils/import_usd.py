@@ -31,6 +31,7 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
+from .schema_resolver import Resolver
 
 
 def parse_usd(
@@ -54,6 +55,8 @@ def parse_usd(
     load_non_physics_prims: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    schema_priority: list[str] | None = None,
+    collect_engine_specific_attrs: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -273,6 +276,12 @@ def parse_usd(
         builder = ModelBuilder()
 
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
+
+    # Initialize schema resolver according to precedence
+    if schema_priority is None:
+        schema_priority = ["newton", "mjc", "physx"]
+    R = Resolver(schema_priority)
+    engine_specific_attrs = {}
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -552,7 +561,7 @@ def parse_usd(
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
-        joint_armature = parse_float(joint_prim, "physxJoint:armature", default_joint_armature)
+        joint_armature = R.get_value(joint_prim, prim_type="joint", key="armature", default=0.0)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -561,16 +570,13 @@ def parse_usd(
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
         }
-        current_joint_limit_ke = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "newton:joint_limit_ke", default_joint_limit_ke
-        )
-        current_joint_limit_kd = parse_float_with_fallback(
-            (joint_prim, physics_scene_prim), "newton:joint_limit_kd", default_joint_limit_kd
-        )
 
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
+            # Resolve limit gains with precedence, fallback to builder defaults when missing
+            current_joint_limit_ke = R.get_value(joint_prim, prim_type="joint", key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke", default=default_joint_limit_ke)
+            current_joint_limit_kd = R.get_value(joint_prim, prim_type="joint", key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd", default=default_joint_limit_kd)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
@@ -676,6 +682,20 @@ def parse_usd(
                     UsdPhysics.JointDOF.RotZ: "rotZ",
                 }
                 if free_axis and dof in _trans_axes:
+                    # Per-axis translation names: transX/transY/transZ
+                    trans_name = {UsdPhysics.JointDOF.TransX: "transX", UsdPhysics.JointDOF.TransY: "transY", UsdPhysics.JointDOF.TransZ: "transZ"}[dof]
+                    current_joint_limit_ke = R.get_value(
+                        joint_prim,
+                        prim_type="joint",
+                        key=f"limit_{trans_name}_ke",
+                        default=default_joint_limit_ke,
+                    )
+                    current_joint_limit_kd = R.get_value(
+                        joint_prim,
+                        prim_type="joint",
+                        key=f"limit_{trans_name}_kd",
+                        default=default_joint_limit_kd,
+                    )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
@@ -692,6 +712,20 @@ def parse_usd(
                         )
                     )
                 elif free_axis and dof in _rot_axes:
+                    # Resolve per-axis rotational gains
+                    rot_name = _rot_names[dof]
+                    current_joint_limit_ke = R.get_value(
+                        joint_prim,
+                        prim_type="joint",
+                        key=f"limit_{rot_name}_ke",
+                        default=default_joint_limit_ke,
+                    )
+                    current_joint_limit_kd = R.get_value(
+                        joint_prim,
+                        prim_type="joint",
+                        key=f"limit_{rot_name}_kd",
+                        default=default_joint_limit_kd,
+                    )
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_rot_axes[dof],
@@ -755,6 +789,8 @@ def parse_usd(
         joint_drive_gains_scaling = parse_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
+        # Resolve scene time step and stash engine-specific attrs
+        physics_dt = R.get_value(physics_scene_prim, prim_type="scene", key="time_step", default=None)
     else:
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
         axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
@@ -868,6 +904,16 @@ def parse_usd(
             if warn_invalid_desc(path, desc):
                 continue
             prim = stage.GetPrimAtPath(path)
+            # Collect engine-specific attributes for the articulation root on first encounter
+            if collect_engine_specific_attrs:
+                R.collect_prim_engine_attrs(prim)
+                # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
+                try:
+                    parent_prim = prim.GetParent()
+                except Exception:
+                    parent_prim = None
+                if parent_prim is not None and parent_prim.IsValid():
+                    R.collect_prim_engine_attrs(parent_prim)
             builder.add_articulation(str(path))
             body_ids = {}
             current_body_id = 0
@@ -883,6 +929,9 @@ def parse_usd(
                     current_body_id = -1
                 else:
                     usd_prim = stage.GetPrimAtPath(Sdf.Path(key))
+                    if collect_engine_specific_attrs:
+                        # Collect on each articulated body prim encountered
+                        R.collect_prim_engine_attrs(usd_prim)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -1352,6 +1401,8 @@ def parse_usd(
 
             builder = multi_env_builder
 
+    # Finalize engine-specific attributes collected by the resolver
+    engine_specific_attrs = R.get_engine_specific_attrs()
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
@@ -1363,6 +1414,7 @@ def parse_usd(
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,
         "collapse_results": collapse_results,
+        "engine_specific_attrs": engine_specific_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
