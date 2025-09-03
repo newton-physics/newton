@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, ClassVar
+
 
 @dataclass
 class AttrSpec:
@@ -12,6 +14,7 @@ class AttrSpec:
         usd_name (str): The name of the USD attribute.
         transform (Callable[[Any], Any] | None): A function to transform the attribute value.
     """
+
     usd_name: str
     transform: Callable[[Any], Any] | None = None
 
@@ -20,8 +23,8 @@ class EngineSchemaPlugin:
     name: str
     # prim_type -> variable -> list[AttrSpec]
     mapping: dict[str, dict[str, list[AttrSpec]]]
-    extra_attr_prefixes: list[str] = []
-    
+    extra_attr_prefixes: ClassVar[list[str]] = []
+
     def __init__(self) -> None:
         # Precompute the full set of USD attribute names referenced by this plugin's mapping.
         names: set[str] = set()
@@ -38,7 +41,7 @@ class EngineSchemaPlugin:
                 for spec in specs:
                     names.add(spec.usd_name)
         self._engine_attributes: list[str] = list(names)
-    
+
     @property
     def engine_attr_prefix(self) -> str:
         """Return the main engine attribute prefix (e.g., 'newton:', 'physx', 'mjc:')"""
@@ -47,12 +50,12 @@ class EngineSchemaPlugin:
     def get_value(self, prim, prim_type: str, key: str) -> tuple[Any, str] | None:
         """
         Get attribute value for a given prim type and key.
-        
+
         Args:
             prim: USD prim to query
             prim_type: Prim type ("scene", "joint", "shape", "body", "material", "actuator")
             key: Attribute key within the prim type
-            
+
         Returns:
             Tuple of (value, usd_attr_name) if found, None otherwise
         """
@@ -64,7 +67,6 @@ class EngineSchemaPlugin:
                 return (spec.transform(v) if spec.transform is not None else v), spec.usd_name
         return None
 
-    
     def collect_prim_engine_attrs(self, prim) -> dict[str, Any]:
         """
         Collect engine-specific attributes for a single prim.
@@ -72,9 +74,11 @@ class EngineSchemaPlugin:
         """
         if prim is None:
             return {}
-            
+
         # Collect explicit attribute names defined in the plugin mapping (precomputed)
-        prim_engine_attrs = _collect_engine_mapped_attrs(prim, self._engine_attributes) if self._engine_attributes else {}
+        prim_engine_attrs = (
+            _collect_engine_mapped_attrs(prim, self._engine_attributes) if self._engine_attributes else {}
+        )
 
         # Collect attributes by known engine-specific prefixes
         all_prefixes = [self.engine_attr_prefix]
@@ -99,7 +103,7 @@ def _get_attr(prim, name: str):
 
 
 def _collect_engine_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
-    """ Collect engine-specific attributes authored on the prim that have direct mappings in the plugin mapping """
+    """Collect engine-specific attributes authored on the prim that have direct mappings in the plugin mapping"""
     out = {}
     for n in names:
         v = _get_attr(prim, n)
@@ -109,8 +113,8 @@ def _collect_engine_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
 
 
 def _collect_engine_specific_attrs(prim, prefixes: list[str]) -> dict[str, Any]:
-    """ Collect engine-specific attributes authored on the prim with the given prefixes. 
-    These attributes don't have direct mappings in the plugin mapping, but are still important to collect for later use """
+    """Collect engine-specific attributes authored on the prim with the given prefixes.
+    These attributes don't have direct mappings in the plugin mapping, but are still important to collect for later use"""
 
     out = {}
     try:
@@ -131,10 +135,9 @@ def _collect_engine_specific_attrs(prim, prefixes: list[str]) -> dict[str, Any]:
     return out
 
 
-
 class NewtonPlugin(EngineSchemaPlugin):
-    name = "newton"
-    mapping = {
+    name: ClassVar[str] = "newton"
+    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
         "scene": {
             "time_step": [AttrSpec("newton:timeStep")],
             "max_solver_iterations": [AttrSpec("newton:maxSolverIterations")],
@@ -202,8 +205,8 @@ class NewtonPlugin(EngineSchemaPlugin):
 
 
 class PhysxPlugin(EngineSchemaPlugin):
-    name = "physx"
-    extra_attr_prefixes = [
+    name: ClassVar[str] = "physx"
+    extra_attr_prefixes: ClassVar[list[str]] = [
         # Scene and rigid body
         "physxScene:",
         "physxRigidBody:",
@@ -222,15 +225,17 @@ class PhysxPlugin(EngineSchemaPlugin):
         # Articulations
         "physxArticulation:",
     ]
-    
+
     @property
     def engine_attr_prefix(self) -> str:
         """PhysX uses multiple prefixes, so we return the main one"""
         return "physx"
-    
-    mapping = {
+
+    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
         "scene": {
-            "time_step": [AttrSpec("physxScene:timeStepsPerSecond", lambda hz: (1.0 / hz) if (hz and hz > 0) else None)],
+            "time_step": [
+                AttrSpec("physxScene:timeStepsPerSecond", lambda hz: (1.0 / hz) if (hz and hz > 0) else None)
+            ],
             "max_solver_iterations": [AttrSpec("physxScene:maxVelocityIterationCount")],
             "enable_gravity": [AttrSpec("physxRigidBody:disableGravity", lambda value: not value)],
         },
@@ -276,10 +281,7 @@ class PhysxPlugin(EngineSchemaPlugin):
         },
         "body": {
             # Rigid body damping
-            "rigid_body_damping": [
-                AttrSpec("physxRigidBody:linearDamping"),
-                AttrSpec("physxRigidBody:angularDamping")
-            ],
+            "rigid_body_damping": [AttrSpec("physxRigidBody:linearDamping"), AttrSpec("physxRigidBody:angularDamping")],
         },
     }
 
@@ -321,9 +323,9 @@ def _solref_to_damping(solref):
 
 
 class MjcPlugin(EngineSchemaPlugin):
-    name = "mjc"
-    
-    mapping = {
+    name: ClassVar[str] = "mjc"
+
+    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
         "scene": {
             "time_step": [AttrSpec("mjc:option:timestep")],
             "max_solver_iterations": [AttrSpec("mjc:option:iterations")],
@@ -393,7 +395,7 @@ class Resolver:
     def __init__(self, engine_priority: list[str]):
         """
         Initialize resolver with engine priority list.
-        
+
         Args:
             engine_priority: List of engine names in priority order (e.g., ["newton", "physx", "mjc"])
         """
@@ -403,13 +405,13 @@ class Resolver:
             "physx": PhysxPlugin,
             "mjc": MjcPlugin,
         }
-        
+
         # Construct plugins based on priority order
         self.plugins = []
         for name in engine_priority:
             if name in available_plugins:
                 self.plugins.append(available_plugins[name]())
-        
+
         # Dictionary to accumulate engine-specific attributes as prims are encountered
         # Pre-initialize maps for each configured plugin
         self.engine_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {p.name: {} for p in self.plugins}
@@ -424,17 +426,17 @@ class Resolver:
         attrs = plugin.collect_prim_engine_attrs(prim)
         if attrs:
             self.engine_specific_attrs[plugin.name][prim_path] = attrs
-        
+
     def get_value(self, prim, prim_type: str, key: str, default: Any = None) -> Any:
         """
         Get attribute value for a given prim type and key with plugin precedence.
-        
+
         Args:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
             prim_type: Prim type ("scene", "joint", "shape", "body", "material", "actuator")
             key: Attribute key within the prim type
             default: Default value if not found
-            
+
         Returns:
             Attribute value if found, default otherwise
         """
@@ -450,15 +452,15 @@ class Resolver:
     def collect_prim_engine_attrs(self, prim) -> None:
         """
         Collect and accumulate engine-specific attributes for a single prim.
-        
+
         Args:
             prim: USD prim to collect engine attributes from
         """
         if prim is None:
             return
-            
+
         prim_path = str(prim.GetPath())
-        
+
         for plugin in self.plugins:
             # Only collect if we haven't seen this prim for this plugin
             if prim_path not in self.engine_specific_attrs[plugin.name]:
@@ -469,11 +471,9 @@ class Resolver:
     def get_engine_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """
         Get the accumulated engine-specific attributes.
-        
+
         Returns:
             Dictionary with structure: engine_name -> prim_path -> {attr_name: attr_value}
             e.g., {"mjc": {"/World/Cube": {"mjc:option:timestep": 0.01}}}
         """
         return self.engine_specific_attrs.copy()
-    
-

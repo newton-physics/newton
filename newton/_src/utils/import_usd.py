@@ -304,6 +304,7 @@ def parse_usd(
     path_shape_scale = {}
 
     physics_scene_prim = None
+    physics_dt = None
 
     visual_shape_cfg = ModelBuilder.ShapeConfig(
         density=0.0,
@@ -561,7 +562,7 @@ def parse_usd(
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
-        joint_armature = R.get_value(joint_prim, prim_type="joint", key="armature", default=0.0)
+        joint_armature = R.get_value(joint_prim, prim_type="joint", key="armature", default=default_joint_armature)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -575,8 +576,18 @@ def parse_usd(
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
             # Resolve limit gains with precedence, fallback to builder defaults when missing
-            current_joint_limit_ke = R.get_value(joint_prim, prim_type="joint", key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke", default=default_joint_limit_ke)
-            current_joint_limit_kd = R.get_value(joint_prim, prim_type="joint", key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd", default=default_joint_limit_kd)
+            current_joint_limit_ke = R.get_value(
+                joint_prim,
+                prim_type="joint",
+                key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
+                default=default_joint_limit_ke,
+            )
+            current_joint_limit_kd = R.get_value(
+                joint_prim,
+                prim_type="joint",
+                key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
+                default=default_joint_limit_kd,
+            )
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
@@ -683,7 +694,11 @@ def parse_usd(
                 }
                 if free_axis and dof in _trans_axes:
                     # Per-axis translation names: transX/transY/transZ
-                    trans_name = {UsdPhysics.JointDOF.TransX: "transX", UsdPhysics.JointDOF.TransY: "transY", UsdPhysics.JointDOF.TransZ: "transZ"}[dof]
+                    trans_name = {
+                        UsdPhysics.JointDOF.TransX: "transX",
+                        UsdPhysics.JointDOF.TransY: "transY",
+                        UsdPhysics.JointDOF.TransZ: "transZ",
+                    }[dof]
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type="joint",
@@ -1413,6 +1428,7 @@ def parse_usd(
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,
+        "physics_dt": physics_dt,
         "collapse_results": collapse_results,
         "engine_specific_attrs": engine_specific_attrs,
         # "articulation_roots": articulation_roots,
