@@ -721,15 +721,14 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.1"
-source = { git = "https://github.com/google-deepmind/mujoco_warp#e29f9283e791eb5f833c677249bccfad55d6bb41" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp#ca6e29285b856cc06bd39127aafadbf4dd56f944" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
     { name = "mujoco" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "warp-lang", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.9.0.dev20250825", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang" },
 ]
 
 [[package]]
@@ -791,8 +790,7 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
-    { name = "warp-lang", version = "1.8.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "warp-lang", version = "1.9.0.dev20250825", source = { registry = "https://pypi.nvidia.com/" }, marker = "sys_platform != 'darwin'" },
+    { name = "warp-lang" },
 ]
 
 [package.optional-dependencies]
@@ -2261,33 +2259,11 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.8.1"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'darwin'",
-    "python_full_version == '3.11.*' and sys_platform == 'darwin'",
-    "python_full_version < '3.11' and sys_platform == 'darwin'",
-]
-dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform == 'darwin'" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/73/bee69d372a799f213e50e89ab386fd55764d6ef05719b3c4b51617353ef9/warp_lang-1.8.1-py3-none-macosx_10_13_universal2.whl", hash = "sha256:64ed15a2b57f9abe803c0263b9507bf9cd627f8605f51f0dbed54fcc3a567b3f", size = 45325626, upload-time = "2025-08-01T17:40:11.465Z" },
-]
-
-[[package]]
-name = "warp-lang"
 version = "1.9.0.dev20250825"
 source = { registry = "https://pypi.nvidia.com/" }
-resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform != 'darwin'",
-    "python_full_version == '3.11.*' and sys_platform != 'darwin'",
-    "python_full_version < '3.11' and sys_platform != 'darwin'",
-]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform != 'darwin'" },
-    { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 wheels = [
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:28f7ef23bcd128bb6da2d2115b7eb34ebb0c8d28b522d71b287ae636516e28e3" },
