@@ -187,6 +187,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         body_d = builder.add_body(xform=wp.transform_identity())
         body_e = builder.add_body(xform=wp.transform_identity())
         body_f = builder.add_body(xform=wp.transform_identity())
+        body_g = builder.add_body(xform=wp.transform_identity())
 
         # Environment 0
         builder.current_env_group = 0
@@ -221,10 +222,15 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
 
         # Global environment
         builder.current_env_group = -1
-        # Shape F: collision group 1
-        cfg_f = ModelBuilder.ShapeConfig(collision_group=1)
+        # Shape F: collision group 2, not a colliding shape
+        cfg_f = ModelBuilder.ShapeConfig(collision_group=2, has_shape_collision=False)
         builder.add_shape_sphere(
-            body=body_f, xform=wp.transform(wp.vec3(0, 4, 0), wp.quat_identity()), radius=0.5, cfg=cfg_f
+            body=body_f, xform=wp.transform(wp.vec3(0, 2, 0), wp.quat_identity()), radius=0.5, cfg=cfg_f
+        )
+        # Shape G: collision group 1
+        cfg_g = ModelBuilder.ShapeConfig(collision_group=1)
+        builder.add_shape_sphere(
+            body=body_g, xform=wp.transform(wp.vec3(0, 4, 0), wp.quat_identity()), radius=0.5, cfg=cfg_g
         )
 
         model = builder.finalize(device=self.device)
@@ -242,18 +248,19 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         # - None (no shapes with compatible collision groups overlap)
 
         # Expected cross-environment pairs (only with global):
-        # - (0, 5): A (env0, group1) and F (global, group1)
-        # - (2, 5): C (env0, group-1) and F (global, group1)
-        # - (3, 5): D (env1, group1) and F (global, group1)
+        # - (0, 6): A (env0, group1) and G (global, group1)
+        # - (2, 6): C (env0, group-1) and G (global, group1)
+        # - (3, 6): D (env1, group1) and G (global, group1)
 
         # No pairs between env0 and env1
+        # F is not a colliding shape
 
         expected_pairs = {
             (0, 2),  # A-C in env0
             (1, 2),  # B-C in env0
-            (0, 5),  # A-F (env0-global)
-            (2, 5),  # C-F (env0-global)
-            (3, 5),  # D-F (env1-global)
+            (0, 6),  # A-G (env0-global)
+            (2, 6),  # C-G (env0-global)
+            (3, 6),  # D-G (env1-global)
         }
 
         self.assertEqual(contact_set, expected_pairs, f"Contact pairs mismatch. Got: {contact_set}")
