@@ -355,7 +355,6 @@ class ModelBuilder:
         self.shape_material_restitution = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
-        self.shape_collision_group_map = {}
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
         # environment group index for each shape
@@ -1056,12 +1055,6 @@ class ModelBuilder:
         shape_count_offset = self.shape_count
         for i, j in builder.shape_collision_filter_pairs:
             self.shape_collision_filter_pairs.add((i + shape_count_offset, j + shape_count_offset))
-
-        # Copy collision group map directly
-        for group, shapes in builder.shape_collision_group_map.items():
-            if group not in self.shape_collision_group_map:
-                self.shape_collision_group_map[group] = []
-            self.shape_collision_group_map[group].extend([s + shape_count_offset for s in shapes])
 
         # Handle environment group assignments
         # For particles
@@ -2434,9 +2427,6 @@ class ModelBuilder:
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_collision_group.append(cfg.collision_group)
-        if cfg.collision_group not in self.shape_collision_group_map:
-            self.shape_collision_group_map[cfg.collision_group] = []
-        self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
@@ -4170,7 +4160,6 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
             m.shape_collision_group = self.shape_collision_group
-            m.shape_collision_group_map = self.shape_collision_group_map
 
             # ---------------------
             # springs
