@@ -1033,7 +1033,6 @@ def update_geom_properties_kernel(
     shape_kd: wp.array(dtype=float),
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
-    shape_type: wp.array(dtype=wp.int32),
     to_newton_shape_index: wp.array2d(dtype=wp.int32),
     shape_incoming_xform: wp.array(dtype=wp.transform),
     torsional_friction: float,
@@ -1054,41 +1053,46 @@ def update_geom_properties_kernel(
     if shape_idx < 0:
         return
 
-    # update bounding radius
-    geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
+    if shape_collision_radius:
+        # update bounding radius
+        geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
 
-    # update friction (slide, torsion, roll)
-    mu = shape_mu[shape_idx]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
+    if shape_mu:
+        # update friction (slide, torsion, roll)
+        mu = shape_mu[shape_idx]
+        geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
-    # update solref (stiffness, damping as time constants)
-    # MuJoCo uses time constants, Newton uses direct stiffness/damping
-    # convert using heuristic: time_const = sqrt(mass/stiffness)
-    ke = shape_ke[shape_idx]
-    kd = shape_kd[shape_idx]
-    if ke > 0.0:
-        # use provided time constant for stiffness
-        time_const_stiff = contact_stiffness_time_const
-        if kd > 0.0:
-            time_const_damp = kd / (2.0 * wp.sqrt(ke))
+    if shape_ke and shape_kd:
+        # update solref (stiffness, damping as time constants)
+        # MuJoCo uses time constants, Newton uses direct stiffness/damping
+        # convert using heuristic: time_const = sqrt(mass/stiffness)
+        ke = shape_ke[shape_idx]
+        kd = shape_kd[shape_idx]
+        if ke > 0.0:
+            # use provided time constant for stiffness
+            time_const_stiff = contact_stiffness_time_const
+            if kd > 0.0:
+                time_const_damp = kd / (2.0 * wp.sqrt(ke))
+            else:
+                time_const_damp = 1.0
         else:
+            time_const_stiff = contact_stiffness_time_const
             time_const_damp = 1.0
-    else:
-        time_const_stiff = contact_stiffness_time_const
-        time_const_damp = 1.0
-    geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+        geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
-    # update size
-    geom_size[worldid, geom_idx] = shape_size[shape_idx]
+    if shape_size:
+        # update size
+        geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
-    # update position and orientation
-    tf = shape_transform[shape_idx]
-    incoming_xform = shape_incoming_xform[shape_idx]
-    tf = incoming_xform * tf
-    pos = tf.p
-    quat = tf.q
-    geom_pos[worldid, geom_idx] = pos
-    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+    if shape_transform:
+        # update position and orientation
+        tf = shape_transform[shape_idx]
+        incoming_xform = shape_incoming_xform[shape_idx]
+        tf = incoming_xform * tf
+        pos = tf.p
+        quat = tf.q
+        geom_pos[worldid, geom_idx] = pos
+        geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
 
 class SolverMuJoCo(SolverBase):
@@ -2337,9 +2341,11 @@ class SolverMuJoCo(SolverBase):
 
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
-            flags = SolverNotifyFlags.BODY_INERTIAL_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES
-            if model.shape_material_mu is not None:
-                flags |= SolverNotifyFlags.SHAPE_PROPERTIES
+            flags = (
+                SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+                | SolverNotifyFlags.JOINT_DOF_PROPERTIES
+                | SolverNotifyFlags.SHAPE_PROPERTIES
+            )
             self.notify_model_changed(flags)
 
             # TODO find better heuristics to determine nconmax and njmax
@@ -2353,7 +2359,11 @@ class SolverMuJoCo(SolverBase):
                 nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
             njmax = max(njmax, self.mj_data.nefc)
             self.mjw_data = mujoco_warp.put_data(
-                self.mj_model, self.mj_data, nworld=nworld, nconmax=nconmax, njmax=njmax
+                self.mj_model,
+                self.mj_data,
+                nworld=nworld,
+                nconmax=nconmax,
+                njmax=njmax,
             )
 
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
@@ -2546,7 +2556,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_material_kd,
                 self.model.shape_scale,
                 self.model.shape_transform,
-                self.model.shape_type,
                 self.to_newton_shape_index,
                 self.shape_incoming_xform,
                 self.model.rigid_contact_torsional_friction,

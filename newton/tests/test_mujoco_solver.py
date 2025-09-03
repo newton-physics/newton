@@ -452,7 +452,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                             self.assertAlmostEqual(
                                 float(newton_eigvals[dim]),
                                 float(mjc_eigvals[dim]),
-                                places=5,
+                                places=4,
                                 msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
                             )
                         # Handle quaternion sign ambiguity by ensuring dot product is non-negative

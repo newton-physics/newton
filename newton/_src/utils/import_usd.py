@@ -880,7 +880,7 @@ def parse_usd(
                 if verbose:
                     print(f"\t{p!s}")
                 key = str(p)
-                
+
                 if any(re.match(p, key) for p in ignore_paths):
                     continue
 
@@ -1044,7 +1044,9 @@ def parse_usd(
                 material = material_specs[""]
                 if len(shape_spec.materials) >= 1:
                     if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{body_path}'.\nUsing only the first one.")
+                        print(
+                            f"Warning: More than one material found on shape at '{body_path}'.\nUsing only the first one."
+                        )
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
                         print(
