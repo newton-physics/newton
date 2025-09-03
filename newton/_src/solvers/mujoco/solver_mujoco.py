@@ -1937,7 +1937,7 @@ class SolverMuJoCo(SolverBase):
         self.selected_bodies = wp.array(selected_bodies, dtype=wp.int32, device=model.device)
         selected_shapes_set = set(selected_shapes)
 
-        def add_geoms(newton_body_id: int, incoming_xform: wp.transform | None = None):
+        def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
             shapes = model.body_shapes.get(newton_body_id)
             if not shapes:
