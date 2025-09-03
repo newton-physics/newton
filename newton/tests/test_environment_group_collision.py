@@ -248,9 +248,9 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         # - None (no shapes with compatible collision groups overlap)
 
         # Expected cross-environment pairs (only with global):
-        # - (0, 5): A (env0, group1) and G (global, group1)
-        # - (2, 5): C (env0, group-1) and G (global, group1)
-        # - (3, 5): D (env1, group1) and G (global, group1)
+        # - (0, 6): A (env0, group1) and G (global, group1)
+        # - (2, 6): C (env0, group-1) and G (global, group1)
+        # - (3, 6): D (env1, group1) and G (global, group1)
 
         # No pairs between env0 and env1
         # F is not a colliding shape
