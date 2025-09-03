@@ -166,6 +166,30 @@ uv sync --extra examples
       <code>uv run --extra torch-cu12 -m newton.examples robot_anymal_c_walk</code>
     </td>
   </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_ur10.jpg" alt="UR10">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples robot_policy</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples robot_ur10</code>
+    </td>
+    <td align="center">
+    </td>
+  </tr>
 </table>
 
 ## Cloth Examples

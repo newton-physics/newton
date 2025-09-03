@@ -18,7 +18,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 
 import newton.examples
 from newton.examples.cloth.example_cloth_franka import Example as ExampleClothManipulation
-from newton.examples.cloth.example_cloth_twist import Example as ExampleClothSelfContact
+from newton.examples.cloth.example_cloth_twist import Example as ExampleClothTwist
 from newton.viewer import ViewerNull
 
 
@@ -38,16 +38,23 @@ class FastExampleClothManipulation:
         wp.synchronize_device()
 
 
-class FastExampleClothSelfContactVBD:
+class FastExampleClothTwist:
     repeat = 5
     number = 1
 
     def setup(self):
         self.num_frames = 100
-        self.example = ExampleClothSelfContact(ViewerNull(num_frames=self.num_frames))
+        self.example = ExampleClothTwist(ViewerNull(num_frames=self.num_frames))
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         newton.examples.run(self.example)
 
         wp.synchronize_device()
+
+
+if __name__ == "__main__":
+    from newton.utils import run_benchmark
+
+    run_benchmark(FastExampleClothManipulation)
+    run_benchmark(FastExampleClothTwist)

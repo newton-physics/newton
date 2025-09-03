@@ -17,7 +17,7 @@ from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .broad_phase_sap import BroadPhaseSAP
 from .flags import ParticleFlags, ShapeFlags
 from .gjk import build_ccd_generic
-from .inertia import compute_shape_inertia, transform_inertia
+from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
 from .types import (
     MESH_MAXHULLVERT,
     SDF,
@@ -39,5 +39,6 @@ __all__ = [
     "build_ccd_generic",
     "compute_shape_inertia",
     "compute_shape_radius",
+    "compute_sphere_inertia",
     "transform_inertia",
 ]

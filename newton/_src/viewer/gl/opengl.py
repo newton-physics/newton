@@ -1181,6 +1181,9 @@ class RendererGL:
 
     # public query for key state
     def is_key_down(self, symbol: int) -> bool:
+        if self.headless:
+            return False
+
         return bool(self._key_handler[symbol])
 
     def _setup_sky_mesh(self):
