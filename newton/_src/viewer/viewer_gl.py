@@ -414,10 +414,6 @@ class ViewerGL(ViewerBase):
         """
         self._update()
 
-        # continue running the viewer update while the simulation is paused
-        while self.is_paused():
-            self._update()
-
     def apply_forces(self, state):
         """
         Apply viewer-driven forces (picking, wind) to the model.
