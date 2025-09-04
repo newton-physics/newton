@@ -240,6 +240,7 @@ class Example:
             ls_iterations=ls_iteration,
             njmax=njmax,
             ncon_per_env=nconmax,
+            ls_parallel=True,
         )
 
         if stage_path and not headless:
