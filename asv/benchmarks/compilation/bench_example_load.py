@@ -17,6 +17,9 @@ import subprocess
 import sys
 
 import warp as wp
+
+wp.config.quiet = True
+
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
@@ -38,8 +41,6 @@ class SlowExampleRobotAnymal:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_anymal_c_walk",
-            "--num-frames",
-            "1",
             "--viewer",
             "null",
         ]
@@ -200,10 +201,28 @@ class SlowExampleBasicUrdf:
 
 if __name__ == "__main__":
     from newton.utils import run_benchmark
+    import argparse
 
-    run_benchmark(SlowExampleBasicUrdf)
-    run_benchmark(SlowExampleRobotAnymal)
-    run_benchmark(SlowExampleRobotCartpole)
-    run_benchmark(SlowExampleRobotHumanoid)
-    run_benchmark(SlowExampleClothFranka)
-    run_benchmark(SlowExampleClothTwist)
+    benchmark_list = {
+        "SlowExampleBasicUrdf" : SlowExampleBasicUrdf,
+        "SlowExampleRobotAnymal" : SlowExampleRobotAnymal,
+        "SlowExampleRobotCartpole" : SlowExampleRobotCartpole,
+        "SlowExampleRobotHumanoid" : SlowExampleRobotHumanoid,
+        "SlowExampleClothFranka" : SlowExampleClothFranka,
+        "SlowExampleClothTwist" : SlowExampleClothTwist,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b", "--bench", default=None, action='append', choices=benchmark_list.keys(), help="Run a single benchmark."
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        run_benchmark(benchmark)
