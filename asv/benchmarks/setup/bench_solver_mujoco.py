@@ -59,7 +59,7 @@ class KpiInitializeSolverMuJoCo:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot):
+    def time_initialize_solverMuJoCo(self, robot, num_envs):
         _ = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
         wp.synchronize_device()
 
@@ -86,7 +86,7 @@ class FastInitializeSolverMuJoCo:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot):
+    def time_initialize_solverMuJoCo(self, robot, num_envs):
         _ = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
         wp.synchronize_device()
 
