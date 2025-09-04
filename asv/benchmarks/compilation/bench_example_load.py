@@ -41,6 +41,8 @@ class SlowExampleRobotAnymal:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_anymal_c_walk",
+            "--num-frames",
+            "1",
             "--viewer",
             "null",
         ]
