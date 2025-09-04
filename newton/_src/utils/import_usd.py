@@ -1044,21 +1044,19 @@ def parse_usd(
             for xpath, shape_spec in zip(paths, shape_specs, strict=False):
                 if warn_invalid_desc(xpath, shape_spec):
                     continue
-                shape_path = str(xpath)
-                if any(re.match(p, shape_path) for p in ignore_paths):
+                path = str(xpath)
+                if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
                 # print(prim)
                 # print(shape_spec)
-                if shape_path in path_shape_map:
+                if path in path_shape_map:
                     if verbose:
-                        print(f"Shape at {shape_path} already added, skipping.")
+                        print(f"Shape at {path} already added, skipping.")
                     continue
-                shape_path = str(shape_spec.rigidBody)
-                if any(re.match(p, shape_path) for p in ignore_paths):
-                    continue
+                body_path = str(shape_spec.rigidBody)
                 # print("shape ", prim, "body =" , body_path)
-                body_id = path_body_map.get(shape_path, -1)
+                body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
                 scale = parse_scale(prim)
                 collision_group = -1
@@ -1070,16 +1068,14 @@ def parse_usd(
                 material = material_specs[""]
                 if len(shape_spec.materials) >= 1:
                     if len(shape_spec.materials) > 1 and verbose:
-                        print(
-                            f"Warning: More than one material found on shape at '{shape_path}'.\nUsing only the first one."
-                        )
+                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
                         print(
-                            f"\tMaterial of '{shape_path}':\tfriction: {material.dynamicFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
-                    print(f"No material found for shape at '{shape_path}'.")
+                    print(f"No material found for shape at '{path}'.")
                 prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot))
                 if body_id == -1:
@@ -1099,11 +1095,11 @@ def parse_usd(
                         ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
-                        density=body_density.get(shape_path, default_shape_density),
+                        density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
                     ),
-                    "key": shape_path,
+                    "key": path,
                 }
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
@@ -1167,7 +1163,7 @@ def parse_usd(
                             faces.append(indices[[face_id, face_id + 2, face_id + 3]])
                         elif verbose:
                             print(
-                                f"Error while parsing USD mesh {shape_path}: encountered polygon with {count} vertices, but only triangles and quads are supported."
+                                f"Error while parsing USD mesh {path}: encountered polygon with {count} vertices, but only triangles and quads are supported."
                             )
                             continue
                         face_id += count
@@ -1184,7 +1180,7 @@ def parse_usd(
                             if remeshing_method is None:
                                 if verbose:
                                     print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{shape_path}'."
+                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
                                     )
                             else:
                                 if remeshing_method not in remeshing_queue:
@@ -1205,13 +1201,13 @@ def parse_usd(
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
 
-                path_shape_map[shape_path] = shape_id
-                path_shape_scale[shape_path] = scale
+                path_shape_map[path] = shape_id
+                path_shape_scale[path] = scale
 
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
                     for other_path in other_paths:
-                        path_collision_filters.add((shape_path, str(other_path)))
+                        path_collision_filters.add((path, str(other_path)))
 
                 if not prim.HasAPI(UsdPhysics.CollisionAPI) or not parse_generic(
                     prim, "physics:collisionEnabled", True
@@ -1248,11 +1244,11 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for body_p, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
-            prim = stage.GetPrimAtPath(body_p)
+        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
+            prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
-            body_path = str(body_p)
+            body_path = str(path)
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
