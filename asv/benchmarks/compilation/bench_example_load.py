@@ -48,9 +48,7 @@ class SlowExampleRobotAnymal:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleRobotCartpole:
@@ -78,9 +76,7 @@ class SlowExampleRobotCartpole:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleClothFranka:
@@ -107,9 +103,7 @@ class SlowExampleClothFranka:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleClothTwist:
@@ -136,9 +130,7 @@ class SlowExampleClothTwist:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleRobotHumanoid:
@@ -166,9 +158,7 @@ class SlowExampleRobotHumanoid:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleBasicUrdf:
@@ -196,9 +186,7 @@ class SlowExampleBasicUrdf:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 if __name__ == "__main__":
