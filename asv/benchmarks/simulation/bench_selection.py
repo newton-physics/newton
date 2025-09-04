@@ -39,16 +39,17 @@ class FastExampleSelectionCartpoleMuJoCo:
 
 
 if __name__ == "__main__":
-    from newton.utils import run_benchmark
     import argparse
 
+    from newton.utils import run_benchmark
+
     benchmark_list = {
-        "FastExampleSelectionCartpoleMuJoCo" : FastExampleSelectionCartpoleMuJoCo,
+        "FastExampleSelectionCartpoleMuJoCo": FastExampleSelectionCartpoleMuJoCo,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "-b", "--bench", default=None, action='append', choices=benchmark_list.keys(), help="Run a single benchmark."
+        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
     )
     args = parser.parse_known_args()[0]
 
