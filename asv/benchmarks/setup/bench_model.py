@@ -24,6 +24,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 
 from newton.examples.example_mujoco import Example
 
+
 class KpiInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
     param_names = ["robot", "num_envs"]
@@ -79,6 +80,7 @@ class FastInitializeModel:
             model = builder.finalize()
 
         del model
+
 
 if __name__ == "__main__":
     import argparse

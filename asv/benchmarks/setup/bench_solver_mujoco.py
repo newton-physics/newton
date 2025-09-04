@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gc
 
 import warp as wp
 
@@ -24,6 +23,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 
 from newton.examples.example_mujoco import Example
 from newton.solvers import SolverMuJoCo
+
 
 class KpiInitializeSolverMuJoCo:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
@@ -51,7 +51,7 @@ class KpiInitializeSolverMuJoCo:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_solverMuJoCo(self, robot, num_envs):
-        solver = SolverMuJoCo(self._model)
+        _solver = SolverMuJoCo(self._model)
         wp.synchronize_device()
 
 
@@ -78,8 +78,9 @@ class FastInitializeSolverMuJoCo:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_solverMuJoCo(self, robot, num_envs):
-        solver = SolverMuJoCo(self._model)
+        _solver = SolverMuJoCo(self._model)
         wp.synchronize_device()
+
 
 if __name__ == "__main__":
     import argparse
