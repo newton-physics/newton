@@ -578,7 +578,7 @@ class ModelBuilder:
 
     def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
         # compute positional offsets per environment
-        spacing = np.array(spacing)
+        spacing = np.array(spacing, dtype=np.float32)
         nonzeros = np.nonzero(spacing)[0]
         num_dim = nonzeros.shape[0]
         if num_dim > 0:
@@ -605,9 +605,9 @@ class ModelBuilder:
                     offset[1] = d1 * spacing[1]
                     offset[2] = d2 * spacing[2]
                     spacings.append(offset)
-            spacings = np.array(spacings)
+            spacings = np.array(spacings, dtype=np.float32)
         else:
-            spacings = np.zeros((num_copies, 3))
+            spacings = np.zeros((num_copies, 3), dtype=np.float32)
         min_offsets = np.min(spacings, axis=0)
         correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
         # ensure the envs are not shifted below the ground plane
