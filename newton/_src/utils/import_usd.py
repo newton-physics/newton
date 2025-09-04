@@ -738,16 +738,16 @@ def parse_usd(
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
             print("Only the first PhysicsScene is considered")
-        articulation_path, scene_desc = paths[0], scene_descs[0]
+        path, scene_desc = paths[0], scene_descs[0]
         if verbose:
-            print("Found PhysicsScene:", articulation_path)
+            print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
         axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
-        physics_scene_prim = stage.GetPrimAtPath(articulation_path)
+        physics_scene_prim = stage.GetPrimAtPath(path)
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 
@@ -862,8 +862,8 @@ def parse_usd(
                 UsdPhysics.ObjectType.DistanceJoint,
             }:
                 paths, joint_specs = value
-                for joint_path, joint_spec in zip(paths, joint_specs, strict=False):
-                    joint_descriptions[str(joint_path)] = joint_spec
+                for path, joint_spec in zip(paths, joint_specs, strict=False):
+                    joint_descriptions[str(path)] = joint_spec
 
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
         # maps from articulation_id to bool indicating if self-collisions are enabled
@@ -871,24 +871,23 @@ def parse_usd(
 
         articulation_id = builder.articulation_count
         body_data = {}
-        for articulation_path, desc in zip(paths, articulation_descs, strict=False):
-            if warn_invalid_desc(articulation_path, desc):
+        for path, desc in zip(paths, articulation_descs, strict=False):
+            if warn_invalid_desc(path, desc):
                 continue
-            if str(articulation_path) in ignored_body_paths:
+            if any(re.match(p, path) for p in ignore_paths):
                 continue
-            prim = stage.GetPrimAtPath(articulation_path)
-            builder.add_articulation(str(articulation_path))
+            prim = stage.GetPrimAtPath(path)
+            builder.add_articulation(str(path))
             body_ids = {}
             current_body_id = 0
             art_bodies = []
             if verbose:
-                print(f"Bodies under articulation {articulation_path!s}:")
+                print(f"Bodies under articulation {path!s}:")
             for p in desc.articulatedBodies:
                 if verbose:
                     print(f"\t{p!s}")
                 key = str(p)
-
-                if any(re.match(p, key) for p in ignore_paths):
+                if key in ignored_body_paths:
                     continue
 
                 if p == Sdf.Path.emptyPath:
@@ -927,17 +926,17 @@ def parse_usd(
             joint_names = []
             joint_edges: list[tuple[int, int]] = []
             for p in desc.articulatedJoints:
-                joint_path = str(p)
-                if any(re.match(p, joint_path) for p in ignore_paths):
+                joint_key = str(p)
+                joint_desc = joint_descriptions[joint_key]
+                if any(re.match(p, joint_key) for p in ignore_paths):
                     continue
-                joint_desc = joint_descriptions[joint_path]
                 if str(joint_desc.body0) in ignored_body_paths:
                     continue
                 if str(joint_desc.body1) in ignored_body_paths:
                     continue
+                joint_names.append(joint_key)
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
-                joint_names.append(joint_path)
 
             # add joints in topological order
             single_body_articulation = False
@@ -1020,12 +1019,10 @@ def parse_usd(
             articulation_id += 1
 
     # insert remaining bodies that were not part of any articulation so far
-    for articulation_path, rigid_body_desc in body_specs.items():
-        if str(articulation_path) in ignored_body_paths:
-            continue
+    for path, rigid_body_desc in body_specs.items():
         parse_body(
             rigid_body_desc,
-            stage.GetPrimAtPath(articulation_path),
+            stage.GetPrimAtPath(path),
             incoming_xform=incoming_world_xform,
         )
 
@@ -1328,18 +1325,18 @@ def parse_usd(
         for art_id, bodies in articulation_bodies.items():
             articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
-        for body_path, body_id in path_body_map.items():
+        for path, body_id in path_body_map.items():
             if body_id in body_remap:
                 new_id = body_remap[body_id]
             elif body_id in body_merged_parent:
                 # this body has been merged with another body
                 new_id = body_remap[body_merged_parent[body_id]]
-                path_body_relative_transform[body_path] = body_merged_transform[body_id]
+                path_body_relative_transform[path] = body_merged_transform[body_id]
             else:
                 # this body has not been merged
                 new_id = body_id
 
-            path_body_map[body_path] = new_id
+            path_body_map[path] = new_id
         merged_body_data = collapse_results["merged_body_data"]
 
     path_original_body_map = path_body_map.copy()
@@ -1361,23 +1358,23 @@ def parse_usd(
                 original_body_count = multi_env_builder.body_count
                 art_count = multi_env_builder.articulation_count
                 # print("articulation_bodies = ", articulation_bodies)
-                for shape_path, shape_id in path_shape_map.items():
-                    new_path = shape_path.replace(cloned_env, env_path)
+                for path, shape_id in path_shape_map.items():
+                    new_path = path.replace(cloned_env, env_path)
                     path_shape_map_updates[new_path] = shape_id + shape_count
-                for body_path, body_id in path_body_map.items():
-                    new_path = body_path.replace(cloned_env, env_path)
+                for path, body_id in path_body_map.items():
+                    new_path = path.replace(cloned_env, env_path)
                     path_body_map_updates[new_path] = body_id + body_count
                     if collapse_fixed_joints:
-                        original_body_id = path_original_body_map[body_path]
+                        original_body_id = path_original_body_map[path]
                         path_original_body_map[new_path] = original_body_id + original_body_count
-                    if body_path in merged_body_data:
-                        merged_body_data[new_path] = merged_body_data[body_path]
-                        parent_path = merged_body_data[body_path]["parent_body"]
+                    if path in merged_body_data:
+                        merged_body_data[new_path] = merged_body_data[path]
+                        parent_path = merged_body_data[path]["parent_body"]
                         new_parent_path = parent_path.replace(cloned_env, env_path)
                         merged_body_data[new_path]["parent_body"] = new_parent_path
 
-                for shape_path, scale in path_shape_scale.items():
-                    new_path = shape_path.replace(cloned_env, env_path)
+                for path, scale in path_shape_scale.items():
+                    new_path = path.replace(cloned_env, env_path)
                     path_shape_scale_updates[new_path] = scale
                 for art_id, bodies in articulation_bodies.items():
                     articulation_bodies_updates[art_id + art_count] = [b + body_count for b in bodies]
