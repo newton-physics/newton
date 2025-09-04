@@ -874,7 +874,7 @@ def parse_usd(
         for path, desc in zip(paths, articulation_descs, strict=False):
             if warn_invalid_desc(path, desc):
                 continue
-            if any(re.match(p, path) for p in ignore_paths):
+            if any(re.match(p, str(path)) for p in ignore_paths):
                 continue
             prim = stage.GetPrimAtPath(path)
             builder.add_articulation(str(path))
