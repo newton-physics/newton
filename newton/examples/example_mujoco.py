@@ -99,12 +99,7 @@ def _setup_g1(articulation_builder):
         enable_self_collisions=False,
     )
     simplified_meshes = {}
-    try:
-        import tqdm  # noqa: PLC0415
-
-        meshes = tqdm.tqdm(articulation_builder.shape_source, desc="Simplifying meshes")
-    except ImportError:
-        meshes = articulation_builder.shape_source
+    meshes = articulation_builder.shape_source
     for i, m in enumerate(meshes):
         if m is None:
             continue
