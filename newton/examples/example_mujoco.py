@@ -99,12 +99,7 @@ def _setup_g1(articulation_builder):
         enable_self_collisions=False,
     )
     simplified_meshes = {}
-    try:
-        import tqdm  # noqa: PLC0415
-
-        meshes = tqdm.tqdm(articulation_builder.shape_source, desc="Simplifying meshes")
-    except ImportError:
-        meshes = articulation_builder.shape_source
+    meshes = articulation_builder.shape_source
     for i, m in enumerate(meshes):
         if m is None:
             continue
@@ -313,14 +308,14 @@ class Example:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
         builder = newton.ModelBuilder()
-        offsets = newton.examples.compute_env_offsets(num_envs)
-        for i in range(num_envs):
-            if randomize:
-                articulation_builder.joint_q[root_dofs:] = rng.uniform(
-                    -1.0, 1.0, size=(len(articulation_builder.joint_q) - root_dofs,)
+        builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
+        if randomize:
+            njoint = len(articulation_builder.joint_q)
+            for i in range(num_envs):
+                istart = i * njoint
+                builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
+                    -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
-
         builder.add_ground_plane()
         return builder
 

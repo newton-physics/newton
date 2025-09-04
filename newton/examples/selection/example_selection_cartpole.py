@@ -34,7 +34,6 @@ from newton.selection import ArticulationView
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
-VERBOSE = True
 
 
 @wp.kernel
@@ -56,7 +55,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16):
+    def __init__(self, viewer, num_envs=16, verbose=True):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -91,7 +90,7 @@ class Example:
         # =======================
         # get cartpole view
         # =======================
-        self.cartpoles = ArticulationView(self.model, "/cartPole", verbose=VERBOSE)
+        self.cartpoles = ArticulationView(self.model, "/cartPole", verbose=verbose)
 
         # =========================
         # randomize initial state
@@ -187,8 +186,6 @@ if __name__ == "__main__":
         default=16,
         help="Total number of simulated environments.",
     )
-
-    args = parser.parse_known_args()[0]
 
     viewer, args = newton.examples.init(parser)
 
