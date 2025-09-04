@@ -2282,7 +2282,6 @@ class SolverMuJoCo(SolverBase):
             if geom_idx >= 0:
                 shape_to_geom_idx[shape] = geom_idx
                 geom_to_shape_idx[geom_idx] = shape
-        shape_mapping = shape_to_geom_idx  # Replace with actual indices
 
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
