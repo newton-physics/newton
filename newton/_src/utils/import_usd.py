@@ -310,6 +310,9 @@ def parse_usd(
             or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
         ):
             return
+        path_name = str(prim.GetPath())
+        if any(re.match(path, path_name) for path in ignore_paths):
+            return
         xform = incoming_xform * parse_xform(prim)
         if prim.IsInstance():
             proto = prim.GetPrototype()
@@ -323,9 +326,6 @@ def parse_usd(
         if type_name.endswith("joint"):
             return
         scale = parse_scale(prim)
-        path_name = str(prim.GetPath())
-        if any(re.match(path, path_name) for path in ignore_paths):
-            return
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
