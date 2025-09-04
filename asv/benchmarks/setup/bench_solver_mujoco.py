@@ -26,8 +26,8 @@ from newton.solvers import SolverMuJoCo
 
 
 class KpiInitializeSolverMuJoCo:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
-    param_names = ["robot", "num_envs"]
+    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192], [None, 150, 150, None, None, None])
+    param_names = ["robot", "num_envs", "nconmax"]
 
     rounds = 1
     number = 1
@@ -35,7 +35,7 @@ class KpiInitializeSolverMuJoCo:
     min_run_count = 1
     timeout = 3600
 
-    def setup(self, robot, num_envs):
+    def setup(self, robot, num_envs, nconmax):
         wp.init()
 
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
@@ -44,41 +44,41 @@ class KpiInitializeSolverMuJoCo:
         self._model = builder.finalize()
 
         # Load a small model to cache the kernels
-        solver = SolverMuJoCo(self._model)
+        solver = SolverMuJoCo(self._model, ncon_per_env=nconmax)
         del solver
 
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot, num_envs):
-        _solver = SolverMuJoCo(self._model)
+    def time_initialize_solverMuJoCo(self, nconmax):
+        _ = SolverMuJoCo(self._model, ncon_per_env=nconmax)
         wp.synchronize_device()
 
 
 class FastInitializeSolverMuJoCo:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
-    param_names = ["robot", "num_envs"]
+    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256], [None, 150, 150, None, None, None])
+    param_names = ["robot", "num_envs", "nconmax"]
 
     rounds = 1
     number = 1
     repeat = 3
     min_run_count = 1
 
-    def setup(self, robot, num_envs):
+    def setup(self, robot, num_envs, nconmax):
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
         # finalize model
         self._model = builder.finalize()
 
         # Load a small model to cache the kernels
-        solver = SolverMuJoCo(self._model)
+        solver = SolverMuJoCo(self._model, ncon_per_env=nconmax)
         del solver
 
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot, num_envs):
-        _solver = SolverMuJoCo(self._model)
+    def time_initialize_solverMuJoCo(self, nconmax):
+        _ = SolverMuJoCo(self._model, ncon_per_env=nconmax)
         wp.synchronize_device()
 
 
