@@ -312,15 +312,21 @@ class Example:
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
-        builder = newton.ModelBuilder()
-        offsets = newton.examples.compute_env_offsets(num_envs)
-        for i in range(num_envs):
-            if randomize:
+        if randomize:
+            for i in range(num_envs):
                 articulation_builder.joint_q[root_dofs:] = rng.uniform(
                     -1.0, 1.0, size=(len(articulation_builder.joint_q) - root_dofs,)
                 ).tolist()
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 
+        builder = newton.ModelBuilder()
+        builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
+        if randomize:
+            njoint = len(articulation_builder.joint_q)
+            for i in range(num_envs):
+                istart = i * njoint
+                builder.joint_q[istart + root_dofs:istart + njoint] = rng.uniform(
+                    -1.0, 1.0, size=(njoint - root_dofs)
+                ).tolist()
         builder.add_ground_plane()
         return builder
 
