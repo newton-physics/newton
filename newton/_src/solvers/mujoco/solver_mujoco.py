@@ -988,6 +988,55 @@ def update_dof_properties_kernel(
     dof_frictionloss[worldid, dof_in_env] = joint_friction[tid]
 
 
+@wp.kernel
+def update_joint_transforms_kernel(
+    joint_X_p: wp.array(dtype=wp.transform),
+    joint_X_c: wp.array(dtype=wp.transform),
+    joint_dof_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array2d(dtype=wp.int32),
+    joint_original_axis: wp.array(dtype=wp.vec3),
+    joint_child: wp.array(dtype=wp.int32),
+    joints_per_env: int,
+    dofs_per_env: int,
+    # outputs
+    joint_pos: wp.array2d(dtype=wp.vec3),
+    joint_axis: wp.array2d(dtype=wp.vec3),
+    body_pos: wp.array2d(dtype=wp.vec3),
+    body_quat: wp.array2d(dtype=wp.quat),
+):
+    tid = wp.tid()
+    worldid = tid // joints_per_env
+    joint_in_env = tid % joints_per_env
+
+    child_xform = joint_X_c[tid]
+    parent_xform = joint_X_p[tid]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
+    dof_start = joint_dof_start[tid]
+    dof_in_env = dof_start % dofs_per_env
+
+    # update linear dofs
+    for i in range(lin_axis_count):
+        axis = joint_original_axis[dof_start + i]
+        ai = dof_in_env + i
+        joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
+        joint_pos[worldid, ai] = child_xform.p
+
+    # update angular dofs
+    for i in range(ang_axis_count):
+        axis = joint_original_axis[dof_start + lin_axis_count + i]
+        ai = dof_in_env + lin_axis_count + i
+        joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
+        joint_pos[worldid, ai] = child_xform.p
+
+    # update body pos and quat from parent joint transform
+    body_id = joint_child[joint_in_env] + 1  # +1 because body_id is 1-indexed in MuJoCo
+    if body_id > 0:
+        tf = parent_xform * wp.transform_inverse(child_xform)
+        body_pos[worldid, body_id] = tf.p
+        body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+
+
 @wp.kernel(enable_backward=False)
 def update_incoming_shape_xform_kernel(
     geom_to_shape_idx: wp.array(dtype=wp.int32),
@@ -2372,8 +2421,8 @@ class SolverMuJoCo(SolverBase):
         model_fields_to_expand = [
             # "qpos0",
             # "qpos_spring",
-            # "body_pos",
-            # "body_quat",
+            "body_pos",
+            "body_quat",
             "body_ipos",
             "body_iquat",
             "body_mass",
@@ -2384,8 +2433,8 @@ class SolverMuJoCo(SolverBase):
             # "body_gravcomp",
             # "jnt_solref",
             # "jnt_solimp",
-            # "jnt_pos",
-            # "jnt_axis",
+            "jnt_pos",
+            "jnt_axis",
             # "jnt_stiffness",
             # "jnt_range",
             # "jnt_actfrcrange",
@@ -2503,6 +2552,7 @@ class SolverMuJoCo(SolverBase):
     def update_joint_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
+        joints_per_env = self.model.joint_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
         if self.mjc_axis_to_actuator is not None:
@@ -2535,6 +2585,29 @@ class SolverMuJoCo(SolverBase):
                 dofs_per_env,
             ],
             outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            device=self.model.device,
+        )
+
+        # Update joint positions, joint axes, and relative body transforms
+        wp.launch(
+            update_joint_transforms_kernel,
+            dim=self.model.joint_count,
+            inputs=[
+                self.model.joint_X_p,
+                self.model.joint_X_c,
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.model.joint_axis,
+                self.model.joint_child,
+                joints_per_env,
+                dofs_per_env,
+            ],
+            outputs=[
+                self.mjw_model.jnt_pos,
+                self.mjw_model.jnt_axis,
+                self.mjw_model.body_pos,
+                self.mjw_model.body_quat,
+            ],
             device=self.model.device,
         )
 
