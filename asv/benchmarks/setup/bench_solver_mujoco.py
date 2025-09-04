@@ -25,13 +25,13 @@ from newton.examples.example_mujoco import Example
 from newton.solvers import SolverMuJoCo
 
 nconmax = {
-        "humanoid": None,
-        "g1": 150,
-        "h1": 150,
-        "cartpole": None,
-        "ant": None,
-        "quadruped": None,
-    }
+    "humanoid": None,
+    "g1": 150,
+    "h1": 150,
+    "cartpole": None,
+    "ant": None,
+    "quadruped": None,
+}
 
 
 class KpiInitializeSolverMuJoCo:
