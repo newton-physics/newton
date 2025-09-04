@@ -64,7 +64,7 @@ class FastInitializeSolverMuJoCo:
     repeat = 3
     min_run_count = 1
 
-    def setup_cache(self, robot, num_envs):
+    def setup(self, robot, num_envs):
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
         # finalize model
