@@ -64,6 +64,9 @@ class KpiInitializeModel:
             # Load the model to cache the kernels
             solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
             del solver
+            del _model
+            del builder
+            gc.collect()
 
             wp.synchronize_device()
 
@@ -88,6 +91,8 @@ class KpiInitializeModel:
 
                 del solver
                 del model
+                del builder
+                gc.collect()
 
             timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
             timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
