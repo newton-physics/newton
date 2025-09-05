@@ -924,6 +924,10 @@ def parse_usd(
                 body_ids[key] = current_body_id
                 current_body_id += 1
 
+            if len(body_ids) == 0:
+                # no bodies under the articulation or we ignored all of them
+                continue
+
             joint_names = []
             joint_edges: list[tuple[int, int]] = []
             for p in desc.articulatedJoints:
@@ -939,17 +943,16 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            # add joints in topological order
-            single_body_articulation = False
+            articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
+
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. a free rigid body.
-                # We need to insert a free joint later and make sure the rigid body is inserted
-                # if `bodies_follow_joint_ordering` is True. Therefore, we here insert a dummy joint.
-                joint_edges = [(-1, 0)]
-                sorted_joints = [0]
-                single_body_articulation = True
+                child_body_id = art_bodies[0]
+                builder.add_joint_free(child=child_body_id)
+                builder.joint_q[-7:] = articulation_xform
+                sorted_joints = []
             else:
-                # we have an articulation with joints, we need to sort them
+                # we have an articulation with joints, we need to sort them topologically
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
@@ -959,29 +962,25 @@ def parse_usd(
                 else:
                     sorted_joints = np.arange(len(joint_names))
 
-            # insert the bodies in the order of the joints
-            if bodies_follow_joint_ordering:
-                inserted_bodies = set()
-                for jid in sorted_joints:
-                    parent, child = joint_edges[jid]
-                    if parent >= 0 and parent not in inserted_bodies:
-                        b = add_body(**body_data[parent])
-                        inserted_bodies.add(parent)
-                        art_bodies.append(b)
-                        path_body_map[body_data[parent]["key"]] = b
-                    if child >= 0 and child not in inserted_bodies:
-                        b = add_body(**body_data[child])
-                        inserted_bodies.add(child)
-                        art_bodies.append(b)
-                        path_body_map[body_data[child]["key"]] = b
+            if len(sorted_joints) > 0:
+                # insert the bodies in the order of the joints
+                if bodies_follow_joint_ordering:
+                    inserted_bodies = set()
+                    for jid in sorted_joints:
+                        parent, child = joint_edges[jid]
+                        if parent >= 0 and parent not in inserted_bodies:
+                            b = add_body(**body_data[parent])
+                            inserted_bodies.add(parent)
+                            art_bodies.append(b)
+                            path_body_map[body_data[parent]["key"]] = b
+                        if child >= 0 and child not in inserted_bodies:
+                            b = add_body(**body_data[child])
+                            inserted_bodies.add(child)
+                            art_bodies.append(b)
+                            path_body_map[body_data[child]["key"]] = b
 
-            articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
-            first_joint_parent = joint_edges[sorted_joints[0]][0]
-            if first_joint_parent != -1 or single_body_articulation:
-                if single_body_articulation:
-                    # just a single rigid body articulation
-                    child_body_id = art_bodies[0]
-                else:
+                first_joint_parent = joint_edges[sorted_joints[0]][0]
+                if first_joint_parent != -1:
                     # the mechanism is floating since there is no joint connecting it to the world
                     # we explicitly add a free joint connecting the first body in the articulation to the world
                     # to make sure Featherstone and MuJoCo can simulate it
@@ -990,10 +989,9 @@ def parse_usd(
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
-                builder.add_joint_free(child=child_body_id)
-                builder.joint_q[-7:] = articulation_xform
+                    builder.add_joint_free(child=child_body_id)
+                    builder.joint_q[-7:] = articulation_xform
 
-            if not single_body_articulation:
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
                     if joint_id == 0 and first_joint_parent == -1:
