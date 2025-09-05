@@ -16,8 +16,13 @@
 ###########################################################################
 # Example Robot Allegro Hand
 #
-# Shows how to set up a simulation of a Allegro Hand articulation
-# from a Mujoco file using newton.ModelBuilder.add_mjcf().
+# Shows how to set up a simulation of a Allegro hand articulation
+# from a USD file using newton.ModelBuilder.add_usd().
+# We also apply a sinusoidal trajectory to the joint targets and
+# apply a continuous rotation to the fixed root joint in the form
+# of the joint parent transform. The MuJoCo solver is updated
+# about this change in the joint parent transform by calling
+# self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES).
 #
 # Command: python -m newton.examples robot_allegro_hand --num-envs 16
 #
