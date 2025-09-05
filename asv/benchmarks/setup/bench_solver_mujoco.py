@@ -52,7 +52,7 @@ class KpiInitializeSolverMuJoCo:
         # finalize model
         self._model = builder.finalize()
 
-        # Load a small model to cache the kernels
+        # Load the model to cache the kernels
         solver = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
         del solver
 
@@ -79,7 +79,7 @@ class FastInitializeSolverMuJoCo:
         # finalize model
         self._model = builder.finalize()
 
-        # Load a small model to cache the kernels
+        # Load the model to cache the kernels
         solver = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
         del solver
 
