@@ -16,8 +16,8 @@
 import gc
 import itertools
 import time
-import numpy as np
 
+import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
@@ -34,6 +34,7 @@ nconmax = {
     "ant": None,
     "quadruped": None,
 }
+
 
 class KpiInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
@@ -70,7 +71,6 @@ class KpiInitializeModel:
             timings_solver = []
 
             for _ in range(self.repeat):
-
                 modelBuilder_beg = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
@@ -80,7 +80,6 @@ class KpiInitializeModel:
                 modelBuilder_end = time.perf_counter()
                 timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
 
-            
                 solver_beg = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
@@ -97,11 +96,14 @@ class KpiInitializeModel:
 
     def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
         return timings["solver"][(robot, num_envs)]
+
     track_time_initialize_solverMuJoCo.unit = "ms"
-    
+
     def track_time_initialize_model(self, timings, robot, num_envs):
         return timings["modelBuilder"][(robot, num_envs)]
+
     track_time_initialize_model.unit = "ms"
+
 
 class FastInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
@@ -137,7 +139,6 @@ class FastInitializeModel:
             timings_solver = []
 
             for _ in range(self.repeat):
-
                 modelBuilder_beg = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
@@ -147,7 +148,6 @@ class FastInitializeModel:
                 modelBuilder_end = time.perf_counter()
                 timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
 
-            
                 solver_beg = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
@@ -164,10 +164,12 @@ class FastInitializeModel:
 
     def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
         return timings["solver"][(robot, num_envs)]
+
     track_time_initialize_solverMuJoCo.unit = "ms"
-    
+
     def track_time_initialize_model(self, timings, robot, num_envs):
         return timings["modelBuilder"][(robot, num_envs)]
+
     track_time_initialize_model.unit = "ms"
 
     def peakmem_initialize_model_cpu(self, _, robot, num_envs):
