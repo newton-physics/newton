@@ -272,7 +272,8 @@ def parse_usd(
         multi_env_builder = builder
         builder = ModelBuilder()
 
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
+    non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
