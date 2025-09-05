@@ -1638,6 +1638,7 @@ class SolverMuJoCo(SolverBase):
             color_groups = color_graph(
                 num_nodes=int(selected_shapes.max() + 1),
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
+                balance_colors=False,
             )
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
             num_colors = 0
