@@ -2409,13 +2409,7 @@ class SolverMuJoCo(SolverBase):
 
             # so far we have only defined the first environment,
             # now complete the data from the Newton model
-            flags = (
-                SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
-                | SolverNotifyFlags.JOINT_PROPERTIES
-                | SolverNotifyFlags.JOINT_DOF_PROPERTIES
-                | SolverNotifyFlags.SHAPE_PROPERTIES
-            )
-            self.notify_model_changed(flags)
+            self.notify_model_changed(SolverNotifyFlags.ALL)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
