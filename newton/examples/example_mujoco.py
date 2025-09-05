@@ -145,7 +145,7 @@ def _setup_cartpole(articulation_builder):
     )
 
     # Setting root pose
-    root_dofs = 3
+    root_dofs = 1
     articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
 
     return root_dofs
