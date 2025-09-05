@@ -1,0 +1,125 @@
+<mujoco model="MuJoCo Model">
+  <compiler angle="radian"/>
+
+  <option timestep="0.01" solver="CG" iterations="20" ls_iterations="10"/>
+
+  <default>
+    <geom friction="1 0.5 0.001"/>
+  </default>
+
+  <worldbody>
+    <geom name="plane_91" size="5 5 5" type="plane" contype="4" conaffinity="2147483643" friction="0.75 0.375 0.00075" rgba="0 0.3 0.6 1"/>
+    <body name="base">
+      <inertial pos="-0.00688675 -6.8956e-05 0.00326569" quat="0.00462293 0.712445 0.00382046 0.701703" mass="68.1429" diaginertia="18004.1 18003.9 18000.5"/>
+      <joint name="floating_base" type="free"/>
+      <geom name="box_1" size="0.29 0.07 0.09" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_2" size="0.09 0.0725" pos="0.2175 0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_3" size="0.09 0.0725" pos="-0.2175 0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_4" size="0.09 0.0725" pos="0.2175 -0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_5" size="0.09 0.0725" pos="-0.2175 -0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="box_11" size="0.055 0.07 0.09" pos="0.4695 0 0" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_12" size="0.09 0.055" pos="0.4695 0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_13" size="0.09 0.055" pos="0.4695 -0.07 0" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="box_17" size="0.055 0.07 0.09" pos="-0.4695 -4.80825e-09 0" quat="-4.37114e-08 0 0 1" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_18" size="0.09 0.055" pos="-0.4695 -0.07 0" quat="-3.09086e-08 -0.707107 -3.09086e-08 0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_19" size="0.09 0.055" pos="-0.4695 0.07 0" quat="-3.09086e-08 -0.707107 -3.09086e-08 0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="box_24" size="0.012 0.012 0.005" pos="0.2488 0.00835 0.05128" quat="0.707107 0 0 0.707107" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <geom name="capsule_28" size="0.07 0.06" pos="-0.364 0 0.1335" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+      <body name="RH_HIP" pos="-0.2999 -0.104 0" quat="-1.13133e-08 -4.2222e-08 -0.965926 -0.258819">
+        <inertial pos="0.0566606 -0.015294 -0.00829785" quat="0.159528 0.71116 -0.436685 0.52736" mass="2.781" diaginertia="0.0273262 0.0253858 0.00430199"/>
+        <joint name="RH_HAA" pos="0 0 0" axis="-1 0 0" limited="true" range="-0.49 0.72" armature="0.06"/>
+        <geom name="capsule_78" size="0.05 0.07" pos="0.0599 -0.0119598 -0.006905" quat="0.353553 0.612372 -0.612372 0.353553" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+        <body name="RH_THIGH" pos="0.0599 -0.0725816 -0.041905" quat="-0.183013 0.683013 -0.683013 -0.183013">
+          <inertial pos="0.0308147 4.65038e-05 -0.245696" quat="0.818879 -0.0898829 -0.133935 0.550835" mass="3.071" diaginertia="0.206701 0.206498 0.00466666"/>
+          <joint name="RH_HFE" pos="0 0 0" axis="-1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+          <geom name="capsule_80" size="0.065 0.04" pos="0.04 2.38419e-09 0" quat="0.5 0.5 0.5 0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="box_81" size="0.0375 0.03 0.141313" pos="0.03 1.78814e-09 -0.141313" quat="0.707107 0 0 0.707107" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="capsule_83" size="0.05 0.07" pos="0.0303 5.97835e-09 -0.285" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <body name="RH_SHANK" pos="0.1003 5.97835e-09 -0.285">
+            <inertial pos="0.005462 -0.0612528 -0.0806598" quat="0.99273 -0.118481 -0.0190399 -0.00930062" mass="0.58842" diaginertia="0.0348154 0.0339208 0.00108912"/>
+            <joint name="RH_KFE" pos="0 0 0" axis="-1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+            <geom name="capsule_85" size="0.06 0.02" pos="0.02 1.19209e-09 0" quat="0.5 0.5 0.5 0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="box_86" size="0.057499 0.03375 0.02" pos="0.02 -0.057499 0" quat="0.5 0.5 0.5 0.5" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="capsule_88" size="0.0175 0.141252" pos="0.01305 -0.08795 -0.168985" quat="0.707107 0 0 0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="sphere_89" size="0.03" pos="0.01305 -0.08795 -0.31547" quat="0.707107 0 0 0.707107" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          </body>
+        </body>
+      </body>
+      <body name="LH_HIP" pos="-0.2999 0.104 0" quat="-1.13133e-08 4.2222e-08 0.965926 -0.258819">
+        <inertial pos="0.0567633 0.015294 -0.00829784" quat="0.691328 0.139556 -0.534992 0.465159" mass="2.781" diaginertia="0.0273148 0.0253111 0.00438805"/>
+        <joint name="LH_HAA" pos="0 0 0" axis="-1 0 0" limited="true" range="-0.72 0.49" armature="0.06"/>
+        <geom name="capsule_63" size="0.05 0.07" pos="0.0599 0.0119598 -0.006905" quat="-0.353553 0.612372 0.612372 0.353553" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+        <body name="LH_THIGH" pos="0.0599 0.0725816 -0.041905" quat="0.183013 0.683013 0.683013 -0.183013">
+          <inertial pos="0.0308147 4.64952e-05 -0.245696" quat="0.824891 -0.0883635 -0.134943 0.541791" mass="3.071" diaginertia="0.206706 0.206493 0.00466665"/>
+          <joint name="LH_HFE" pos="0 0 0" axis="1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+          <geom name="capsule_65" size="0.065 0.04" pos="0.04 -2.38419e-09 0" quat="0.5 0.5 -0.5 -0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="box_66" size="0.0375 0.03 0.141313" pos="0.03 -1.78814e-09 -0.141313" quat="0.707107 0 0 -0.707107" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="capsule_68" size="0.05 0.07" pos="0.0303 -5.97835e-09 -0.285" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <body name="LH_SHANK" pos="0.1003 -5.97835e-09 -0.285">
+            <inertial pos="0.005462 0.0612528 -0.0806598" quat="0.99273 0.118481 -0.0190399 0.00930062" mass="0.58842" diaginertia="0.0348154 0.0339208 0.00108912"/>
+            <joint name="LH_KFE" pos="0 0 0" axis="1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+            <geom name="capsule_70" size="0.06 0.02" pos="0.02 -1.19209e-09 0" quat="0.5 0.5 -0.5 -0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="box_71" size="0.057499 0.03375 0.02" pos="0.02 0.057499 0" quat="0.5 0.5 -0.5 -0.5" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="capsule_73" size="0.0175 0.141252" pos="0.01305 0.08795 -0.168985" quat="0.707107 0 0 -0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="sphere_74" size="0.03" pos="0.01305 0.08795 -0.31547" quat="0.707107 0 0 -0.707107" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          </body>
+        </body>
+      </body>
+      <body name="RF_HIP" pos="0.2999 -0.104 0" quat="0.258819 -0.965926 0 0">
+        <inertial pos="0.0567633 0.015294 -0.00829784" quat="0.691328 0.139556 -0.534992 0.465159" mass="2.781" diaginertia="0.0273148 0.0253111 0.00438805"/>
+        <joint name="RF_HAA" pos="0 0 0" axis="1 0 0" limited="true" range="-0.49 0.72" armature="0.06"/>
+        <geom name="capsule_48" size="0.05 0.07" pos="0.0599 0.0119598 -0.006905" quat="-0.353553 0.612372 0.612372 0.353553" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+        <body name="RF_THIGH" pos="0.0599 0.0725816 -0.041905" quat="0.183013 0.683013 0.683013 -0.183013">
+          <inertial pos="0.0308147 4.65038e-05 -0.245696" quat="0.824891 -0.0883635 -0.134943 0.541791" mass="3.071" diaginertia="0.206706 0.206493 0.00466665"/>
+          <joint name="RF_HFE" pos="0 0 0" axis="-1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+          <geom name="capsule_50" size="0.065 0.04" pos="0.04 2.38419e-09 0" quat="0.5 0.5 0.5 0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="box_51" size="0.0375 0.03 0.141313" pos="0.03 1.78814e-09 -0.141313" quat="0.707107 0 0 0.707107" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="capsule_53" size="0.05 0.07" pos="0.0303 5.97835e-09 -0.285" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <body name="RF_SHANK" pos="0.1003 5.97835e-09 -0.285">
+            <inertial pos="0.005462 0.0612528 -0.0806598" quat="0.99273 0.118481 -0.0190399 0.00930068" mass="0.58842" diaginertia="0.0348154 0.0339208 0.00108912"/>
+            <joint name="RF_KFE" pos="0 0 0" axis="-1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+            <geom name="capsule_55" size="0.06 0.02" pos="0.02 1.19209e-09 0" quat="0.5 0.5 0.5 0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="box_56" size="0.057499 0.03375 0.02" pos="0.02 0.057499 0" quat="0.5 0.5 0.5 0.5" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="capsule_58" size="0.0175 0.141252" pos="0.01305 0.08795 -0.168985" quat="0.707107 0 0 0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="sphere_59" size="0.03" pos="0.01305 0.08795 -0.31547" quat="0.707107 0 0 0.707107" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          </body>
+        </body>
+      </body>
+      <body name="LF_HIP" pos="0.2999 0.104 0" quat="0.258819 0.965926 0 0">
+        <inertial pos="0.0566606 -0.015294 -0.00829784" quat="0.159528 0.71116 -0.436685 0.52736" mass="2.781" diaginertia="0.0273262 0.0253858 0.00430199"/>
+        <joint name="LF_HAA" pos="0 0 0" axis="1 0 0" limited="true" range="-0.72 0.49" armature="0.06"/>
+        <geom name="capsule_33" size="0.05 0.07" pos="0.0599 -0.0119598 -0.006905" quat="-0.353553 -0.612372 0.612372 -0.353553" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+        <body name="LF_THIGH" pos="0.0599 -0.0725816 -0.041905" quat="0.183013 -0.683013 0.683013 0.183013">
+          <inertial pos="0.0308147 4.64952e-05 -0.245696" quat="0.818879 -0.0898829 -0.133935 0.550835" mass="3.071" diaginertia="0.206701 0.206498 0.00466666"/>
+          <joint name="LF_HFE" pos="0 0 0" axis="1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+          <geom name="capsule_35" size="0.065 0.04" pos="0.04 -2.38419e-09 0" quat="0.5 0.5 -0.5 -0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="box_36" size="0.0375 0.03 0.141313" pos="0.03 -1.78814e-09 -0.141313" quat="0.707107 0 0 -0.707107" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <geom name="capsule_38" size="0.05 0.07" pos="0.0303 -5.97835e-09 -0.285" quat="0.707107 0 0.707107 0" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          <body name="LF_SHANK" pos="0.1003 -5.97835e-09 -0.285">
+            <inertial pos="0.005462 -0.0612528 -0.0806598" quat="0.99273 -0.118481 -0.0190399 -0.00930068" mass="0.58842" diaginertia="0.0348154 0.0339208 0.00108912"/>
+            <joint name="LF_KFE" pos="0 0 0" axis="1 0 0" limited="true" range="-9.42478 9.42478" armature="0.06"/>
+            <geom name="capsule_40" size="0.06 0.02" pos="0.02 -1.19209e-09 0" quat="0.5 0.5 -0.5 -0.5" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="box_41" size="0.057499 0.03375 0.02" pos="0.02 -0.057499 0" quat="0.5 0.5 -0.5 -0.5" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="capsule_43" size="0.0175 0.141252" pos="0.01305 -0.08795 -0.168985" quat="0.707107 0 0 -0.707107" type="capsule" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+            <geom name="sphere_44" size="0.03" pos="0.01305 -0.08795 -0.31547" quat="0.707107 0 0 -0.707107" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <general joint="RH_HAA" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="RH_HFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="RH_KFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LH_HAA" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LH_HFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LH_KFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="RF_HAA" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="RF_HFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="RF_KFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LF_HAA" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LF_HFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+    <general joint="LF_KFE" forcerange="-1000000 1000000" biastype="affine" gainprm="150" biasprm="0 -150 -5"/>
+  </actuator>
+</mujoco>

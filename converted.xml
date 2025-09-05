@@ -1,0 +1,30 @@
+<mujoco model="MuJoCo Model">
+  <compiler angle="radian"/>
+
+  <option timestep="0.01" impratio="100" cone="elliptic"/>
+
+  <default>
+    <geom friction="1 0.5 0.001"/>
+  </default>
+
+  <worldbody>
+    <body name="body_0" pos="0 0.5 0">
+      <inertial pos="0 0 0" quat="0 0.707107 0 0.707107" mass="350" diaginertia="43.4583 36.4583 21.5833"/>
+      <geom name="box_0" size="0.5 0.35 0.25" type="box" contype="2" conaffinity="2147483645" friction="0.75 0.375 0.00075"/>
+    </body>
+    <body name="body_1">
+      <inertial pos="0 0 0" quat="0 0.707107 0 0.707107" mass="350" diaginertia="43.4583 36.4583 21.5833"/>
+      <joint name="joint_2" type="free"/>
+      <geom name="box_1" size="0.5 0.35 0.25" type="box" contype="4" conaffinity="2147483643" friction="0.75 0.375 0.00075"/>
+    </body>
+    <body name="body_0_2" pos="0 3.5 0">
+      <inertial pos="0 0 0" quat="0 0.707107 0 0.707107" mass="350" diaginertia="43.4583 36.4583 21.5833"/>
+      <geom name="box_2" size="0.5 0.35 0.25" type="box" contype="8" conaffinity="2147483639" friction="0.75 0.375 0.00075"/>
+    </body>
+    <body name="body_1_2">
+      <inertial pos="0 0 0" quat="0 0.707107 0 0.707107" mass="350" diaginertia="43.4583 36.4583 21.5833"/>
+      <joint name="joint_2_2" type="free"/>
+      <geom name="box_3" size="0.5 0.35 0.25" type="box" contype="16" conaffinity="2147483631" friction="0.75 0.375 0.00075"/>
+    </body>
+  </worldbody>
+</mujoco>

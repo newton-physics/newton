@@ -1,0 +1,271 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (50000.03000000001, -1.1102236907589713e-11, 0)
+                double radius = 500
+            }
+            dictionary Perspective = {
+                double3 position = (0.6518274526522897, 0.6518274526523028, 0.6518274530297519)
+                double3 target = (-5.3118145437736075e-9, -5.3118011100750095e-9, 1.0623615542826315e-8)
+            }
+            dictionary Right = {
+                double3 position = (0, -50000.03, -1.1102236907589713e-11)
+                double radius = 500
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 50000.03)
+                double radius = 500
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary navmeshSettings = {
+            double agentHeight = 180
+            double agentRadius = 20
+            bool excludeRigidBodies = 1
+            uint64 ver = 1
+            double voxelCeiling = 460
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./dex_cube_instanceable.usd"
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+            float3 "rtx:debugView:pixelDebug:textColor" = (0, 1e18, 0)
+            float3 "rtx:fog:fogColor" = (0.75, 0.75, 0.75)
+            float3 "rtx:index:regionOfInterestMax" = (0, 0, 0)
+            float3 "rtx:index:regionOfInterestMin" = (0, 0, 0)
+            float3 "rtx:iray:environment_dome_ground_position" = (0, 0, 0)
+            float3 "rtx:iray:environment_dome_ground_reflectivity" = (0, 0, 0)
+            float3 "rtx:iray:environment_dome_rotation_axis" = (3.4028235e38, 3.4028235e38, 3.4028235e38)
+            float3 "rtx:post:backgroundZeroAlpha:backgroundDefaultColor" = (0, 0, 0)
+            float3 "rtx:post:colorcorr:contrast" = (1, 1, 1)
+            float3 "rtx:post:colorcorr:gain" = (1, 1, 1)
+            float3 "rtx:post:colorcorr:gamma" = (1, 1, 1)
+            float3 "rtx:post:colorcorr:offset" = (0, 0, 0)
+            float3 "rtx:post:colorcorr:saturation" = (1, 1, 1)
+            float3 "rtx:post:colorgrad:blackpoint" = (0, 0, 0)
+            float3 "rtx:post:colorgrad:contrast" = (1, 1, 1)
+            float3 "rtx:post:colorgrad:gain" = (1, 1, 1)
+            float3 "rtx:post:colorgrad:gamma" = (1, 1, 1)
+            float3 "rtx:post:colorgrad:lift" = (0, 0, 0)
+            float3 "rtx:post:colorgrad:multiply" = (1, 1, 1)
+            float3 "rtx:post:colorgrad:offset" = (0, 0, 0)
+            float3 "rtx:post:colorgrad:whitepoint" = (1, 1, 1)
+            float3 "rtx:post:lensDistortion:lensFocalLengthArray" = (10, 30, 50)
+            float3 "rtx:post:lensFlares:anisoFlareFalloffX" = (450, 475, 500)
+            float3 "rtx:post:lensFlares:anisoFlareFalloffY" = (10, 10, 10)
+            float3 "rtx:post:lensFlares:cutoffPoint" = (2, 2, 2)
+            float3 "rtx:post:lensFlares:haloFlareFalloff" = (10, 10, 10)
+            float3 "rtx:post:lensFlares:haloFlareRadius" = (75, 75, 75)
+            float3 "rtx:post:lensFlares:isotropicFlareFalloff" = (50, 50, 50)
+            float3 "rtx:post:tonemap:whitepoint" = (1, 1, 1)
+            float3 "rtx:raytracing:inscattering:singleScatteringAlbedo" = (0.9, 0.9, 0.9)
+            float3 "rtx:raytracing:inscattering:transmittanceColor" = (0.5, 0.5, 0.5)
+            float3 "rtx:sceneDb:ambientLightColor" = (0.1, 0.1, 0.1)
+        }
+    }
+    defaultPrim = "DexCube"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\eric-\\source\\repos\\newton\\newton\\examples\\assets\\dex_cube_instanceable.usd
+"""
+    metersPerUnit = 1
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+over "Flattened_Prototype_1"
+{
+    def Cube "collisions" (
+        apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        float3[] extent = [(-0.03, -0.03, -0.03), (0.03, 0.03, 0.03)]
+        float physxCollision:contactOffset = 0.001
+        float physxCollision:minTorsionalPatchRadius = 0.008
+        float physxCollision:restOffset = 0
+        float physxCollision:torsionalPatchRadius = 0.1
+        uniform token purpose = "guide"
+        double size = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.05999999865889549, 0.05999999865889549, 0.05999999865889549)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
+over "Flattened_Prototype_2"
+{
+    def Mesh "visuals"
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+        rel material:binding = </Flattened_Prototype_2/Looks/DexMaterial>
+        normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)] (
+            interpolation = "faceVarying"
+        )
+        point3f[] points = [(-1, -1, 1), (-1, 1, 1), (-1, 1, -1), (-1, -1, -1), (-1, -1, -1), (-1, 1, -1), (1, 1, -1), (1, -1, -1), (1, -1, -1), (1, 1, -1), (1, 1, 1), (1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1), (-1, -1, 1), (-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1), (1, 1, -1), (-1, 1, -1), (-1, 1, 1), (1, 1, 1)]
+        texCoord2f[] primvars:st = [(1, 0.333333), (1, 0.666667), (0.5, 0.666667), (0.5, 0.333333), (0.5, 0.666667), (0.5, 1), (0, 1), (-0, 0.666667), (0.5, 0.333333), (0.5, 0.666667), (-0, 0.666667), (-0, 0.333333), (1, -0), (1, 0.333333), (0.5, 0.333333), (0.5, 0), (0.5, 0), (0.5, 0.333333), (-0, 0.333333), (0, 0), (1, 0.666667), (1, 1), (0.5, 1), (0.5, 0.666667)] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "bilinear"
+        token visibility = "inherited"
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.03, 0.03, 0.03)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def Scope "Looks"
+    {
+        def Material "DexMaterial"
+        {
+            token outputs:mdl:displacement.connect = </Flattened_Prototype_2/Looks/DexMaterial/Shader.outputs:out>
+            token outputs:mdl:surface.connect = </Flattened_Prototype_2/Looks/DexMaterial/Shader.outputs:out>
+            token outputs:mdl:volume.connect = </Flattened_Prototype_2/Looks/DexMaterial/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                float inputs:albedo_add = 0 (
+                    customData = {
+                        float default = 0
+                        dictionary soft_range = {
+                            float max = 1
+                            float min = -1
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Albedo Add"
+                    doc = "Adds a constant value to the diffuse color "
+                    hidden = false
+                )
+                float inputs:albedo_brightness = 1 (
+                    customData = {
+                        float default = 1
+                        dictionary soft_range = {
+                            float max = 1
+                            float min = 0
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Albedo Brightness"
+                    doc = "Multiplier for the diffuse color "
+                    hidden = false
+                )
+                float inputs:albedo_desaturation = 0 (
+                    customData = {
+                        float default = 0
+                        dictionary soft_range = {
+                            float max = 1
+                            float min = 0
+                        }
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Albedo Desaturation"
+                    doc = "Desaturates the diffuse color"
+                    hidden = false
+                )
+                color3f inputs:diffuse_color_constant = (0.134017, 0.365916, 0.8) (
+                    customData = {
+                        float3 default = (0.2, 0.2, 0.2)
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Base Color"
+                    doc = "This is the base color"
+                    hidden = false
+                )
+                asset inputs:diffuse_texture = @C:/Users/eric-/source/repos/newton/newton/examples/assets/Materials/dex_cube_mod.png@ (
+                    customData = {
+                        asset default = @@
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Albedo Map"
+                    hidden = false
+                )
+                color3f inputs:diffuse_tint = (1, 1, 1) (
+                    customData = {
+                        float3 default = (1, 1, 1)
+                    }
+                    displayGroup = "Albedo"
+                    displayName = "Color Tint"
+                    doc = "When enabled, this color value is multiplied over the final albedo color"
+                    hidden = false
+                )
+                color3f inputs:emissive_color = (0, 0, 0) (
+                    customData = {
+                        float3 default = (1, 0.1, 0.1)
+                    }
+                    displayGroup = "Emissive"
+                    displayName = "Emissive Color"
+                    doc = "The emission color"
+                    hidden = false
+                )
+                bool inputs:excludeFromWhiteMode = 0 (
+                    customData = {
+                        bool default = 0
+                    }
+                    displayGroup = "Material Flags"
+                    displayName = "Exclude from White Mode"
+                    hidden = false
+                )
+                token outputs:out
+            }
+        }
+    }
+}
+
+def Xform "DexCubeArticulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+)
+{
+    bool physxArticulation:enabledSelfCollisions = 0
+    float3 xformOp:rotateXYZ = (0, 0, 0)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+    def Xform "DexCube" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        vector3f physics:angularVelocity = (0, 0, 0)
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 0.216
+        bool physics:rigidBodyEnabled = 1
+        vector3f physics:velocity = (0, 0, 0)
+        float physxRigidBody:maxLinearVelocity = 1000
+        token ui:displayGroup = "Material Graphs"
+        token ui:displayName = "object"
+        int ui:order = 1024
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = true
+            add references = </Flattened_Prototype_2>
+        )
+        {
+        }
+
+        def Xform "collisions" (
+            instanceable = true
+            add references = </Flattened_Prototype_1>
+        )
+        {
+            rel material:binding = </DexCube/CubeMaterial> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            rel material:binding:physics = </DexCube/CubeMaterial> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+        }
+    }
+}

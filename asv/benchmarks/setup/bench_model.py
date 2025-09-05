@@ -16,6 +16,7 @@
 import gc
 import itertools
 import time
+import numpy as np
 
 import numpy as np
 import warp as wp
@@ -35,7 +36,6 @@ nconmax = {
     "quadruped": None,
 }
 
-
 class KpiInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
     param_names = ["robot", "num_envs"]
@@ -53,7 +53,7 @@ class KpiInitializeModel:
             raise NotImplementedError("CUDA is not available")
 
         timings = {}
-        timings["model_builder"] = {}
+        timings["modelBuilder"] = {}
         timings["solver"] = {}
 
         for robot, num_envs in itertools.product(self.params[0], self.params[1]):
@@ -64,51 +64,45 @@ class KpiInitializeModel:
             # Load the model to cache the kernels
             solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
             del solver
-            del _model
-            del builder
-            gc.collect()
 
             wp.synchronize_device()
 
-            timings_model_builder = []
+            timings_modelBuilder = []
             timings_solver = []
 
             for _ in range(self.repeat):
-                model_builder_begin = time.perf_counter()
+
+                modelBuilder_beg = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
                 # finalize model
                 model = builder.finalize()
                 wp.synchronize_device()
-                model_builder_end = time.perf_counter()
-                timings_model_builder.append(model_builder_end - model_builder_begin)
+                modelBuilder_end = time.perf_counter()
+                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
 
-                solver_begin = time.perf_counter()
+            
+                solver_beg = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
                 solver_end = time.perf_counter()
-                timings_solver.append(solver_end - solver_begin)
+                timings_solver.append(solver_end - solver_beg)
 
                 del solver
                 del model
-                del builder
-                gc.collect()
 
-            timings["model_builder"][(robot, num_envs)] = np.median(timings_model_builder) * 1000
+            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
             timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
 
         return timings
 
     def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
         return timings["solver"][(robot, num_envs)]
-
     track_time_initialize_solverMuJoCo.unit = "ms"
-
+    
     def track_time_initialize_model(self, timings, robot, num_envs):
-        return timings["model_builder"][(robot, num_envs)]
-
+        return timings["modelBuilder"][(robot, num_envs)]
     track_time_initialize_model.unit = "ms"
-
 
 class FastInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
@@ -126,60 +120,57 @@ class FastInitializeModel:
             raise NotImplementedError("CUDA is not available")
 
         timings = {}
-        timings["model_builder"] = {}
+        timings["modelBuilder"] = {}
         timings["solver"] = {}
 
         for robot, num_envs in itertools.product(self.params[0], self.params[1]):
             builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
             # finalize model
-            model = builder.finalize()
+            _model = builder.finalize()
 
             # Load the model to cache the kernels
-            solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
+            solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
             del solver
-            del model
-            del builder
-            gc.collect()
 
             wp.synchronize_device()
 
-            timings_model_builder = []
+            timings_modelBuilder = []
             timings_solver = []
 
             for _ in range(self.repeat):
-                model_builder_begin = time.perf_counter()
+
+                modelBuilder_beg = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
                 # finalize model
                 model = builder.finalize()
                 wp.synchronize_device()
-                model_builder_end = time.perf_counter()
-                timings_model_builder.append(model_builder_end - model_builder_begin)
+                modelBuilder_end = time.perf_counter()
+                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
 
-                solver_begin = time.perf_counter()
+            
+                solver_beg = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
                 solver_end = time.perf_counter()
-                timings_solver.append(solver_end - solver_begin)
+                timings_solver.append(solver_end - solver_beg)
 
                 del solver
                 del model
-                del builder
-                gc.collect()
 
-            timings["model_builder"][(robot, num_envs)] = np.median(timings_model_builder) * 1000
+            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
             timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
 
         return timings
 
     def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
+        unit = "ms"
         return timings["solver"][(robot, num_envs)]
-
     track_time_initialize_solverMuJoCo.unit = "ms"
-
+    
     def track_time_initialize_model(self, timings, robot, num_envs):
-        return timings["model_builder"][(robot, num_envs)]
-
+        unit = "ms"
+        return timings["modelBuilder"][(robot, num_envs)]
     track_time_initialize_model.unit = "ms"
 
     def peakmem_initialize_model_cpu(self, _, robot, num_envs):

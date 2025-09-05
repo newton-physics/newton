@@ -55,10 +55,12 @@ class Example:
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
         builder = newton.ModelBuilder()
-        builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
+        with wp.ScopedTimer("replicate", detailed=True):
+            builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
 
         # finalize model
-        self.model = builder.finalize()
+        with wp.ScopedTimer("finalize", detailed=True):
+            self.model = builder.finalize()
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
         # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
@@ -115,7 +117,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=8192, help="Total number of simulated environments.")
     viewer, args = newton.examples.init(parser)
 
     example = Example(viewer, args.num_envs)

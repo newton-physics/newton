@@ -14,61 +14,86 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Robot Humanoid
+# Example Robot Allegro Hand
 #
-# Shows how to set up a simulation of a humanoid articulation
-# from MJCF using newton.ModelBuilder.add_mjcf().
+# Shows how to set up a simulation of a Allegro Hand articulation
+# from a Mujoco file using newton.ModelBuilder.add_mjcf().
 #
-# Command: python -m newton.examples robot_humanoid --num-envs 16
+# Command: python -m newton.examples robot_allegro_hand --num-envs 16
 #
 ###########################################################################
 
 import warp as wp
-
 import newton
-import newton.examples
 
+import newton.examples
 
 class Example:
     def __init__(self, viewer, num_envs=4):
-        self.fps = 60
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
+
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_envs = num_envs
 
         self.viewer = viewer
 
-        humanoid = newton.ModelBuilder()
-        humanoid.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        humanoid.default_shape_cfg.ke = 5.0e4
-        humanoid.default_shape_cfg.kd = 5.0e2
-        humanoid.default_shape_cfg.kf = 1.0e3
-        humanoid.default_shape_cfg.mu = 0.75
+        self.device = wp.get_device()
 
-        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+        env = newton.ModelBuilder()
+        env.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        env.default_shape_cfg.ke = 5.0e4
+        env.default_shape_cfg.kd = 5.0e2
+        env.default_shape_cfg.kf = 1.0e3
+        env.default_shape_cfg.mu = 0.75
 
-        humanoid.add_mjcf(
-            mjcf_filename,
-            ignore_names=["floor", "ground"],
-            xform=wp.transform(wp.vec3(0, 0, 1.3)),
+        fixed_box = env.add_body()
+        env.add_shape_box(fixed_box, hx=0.5, hy=0.35, hz=0.25)
+        env.add_joint_fixed(-1, fixed_box, parent_xform=wp.transform(p=wp.vec3(0.0, 2.0, 0), q=wp.quat_identity()))
+
+        falling_box = env.add_body(xform=wp.transform(p=wp.vec3(0.0, 2.0, 1), q=wp.quat_identity()))
+        env.add_shape_box(falling_box, hx=0.5, hy=0.35, hz=0.25)
+        env.add_joint_free(falling_box)
+
+        world = newton.ModelBuilder()
+        world.replicate(env, self.num_envs, spacing=(3, 3, 0))
+
+        self.model = world.finalize()
+
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
+
+
+
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            use_mujoco_cpu=False,
+            solver="newton",
+            integrator="euler",
+            # njmax=200,
+            ncon_per_env=150,
+            cone="elliptic",
+            impratio=100,
+            iterations=100,
+            ls_iterations=50,
+            save_to_mjcf="converted.xml",
+            separate_envs_to_worlds=False,
         )
-
-        for i in range(len(humanoid.joint_dof_mode)):
-            humanoid.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-            humanoid.joint_target_ke[i] = 150
-            humanoid.joint_target_kd[i] = 5
-
-        builder = newton.ModelBuilder()
-        builder.replicate(humanoid, self.num_envs, spacing=(3, 3, 0))
-
-        builder.add_ground_plane()
-
-        self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
-
+        # self.solver = newton.solvers.SolverXPBD(
+        #     self.model,
+        # )
+        # with open(asset_file, "r") as f:
+        #     spec = mujoco.MjSpec.from_string(f.read())
+            
+        # compare spec with solver.spec
+        # print(spec.option.solver)
+        # print(self.solver.spec.option.solver)
+        # print(spec.option.integrator)
+        # print(self.solver.spec.option.integrator)
+        # print(spec.option.iterations)
+        # print(self.solver.spec.option.iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -80,10 +105,10 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        # if wp.get_device().is_cuda:
+        #     with wp.ScopedCapture() as capture:
+        #         self.simulate()
+        #     self.graph = capture.graph
 
     def simulate(self):
         self.contacts = self.model.collide(self.state_0)
@@ -112,6 +137,8 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+        self.solver.render_mujoco_viewer()
+
     def test(self):
         pass
 
@@ -122,6 +149,7 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
+    viewer._paused = True
     example = Example(viewer, args.num_envs)
 
     newton.examples.run(example)
