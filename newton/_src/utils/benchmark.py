@@ -41,15 +41,12 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
     else:
         combinations = [()]
 
-    #if hasattr(benchmark_cls, "setup_cache"):
-    #    cached_data = benchmark_cls.setup_cache()
-
     results = {}
+    cached_data = None
+    
     # For each parameter combination:
-    for params in combinations:
-        #if cached_data:
-        #    params = (params, cached_data)
-
+    for i, params in enumerate(combinations):
+        
         # Create a fresh benchmark instance.
         instance = benchmark_cls()
         
@@ -64,6 +61,10 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
             if not isinstance(params, (list, tuple)):
                 params = (params,)
             param_dict = None
+        
+        # Call setup_cache on the first combination only
+        if i == 0 and hasattr(benchmark_cls, "setup_cache"):
+            cached_data = instance.setup_cache()
         
         if hasattr(instance, "setup"):
             if param_dict is not None:
@@ -82,27 +83,45 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                     for _ in range(number):
                         start = time.perf_counter()
                         if param_dict is not None:
-                            method(**param_dict)
+                            if cached_data is not None:
+                                method(cached_data, **param_dict)
+                            else:
+                                method(**param_dict)
                         else:
-                            method(*params)
+                            if cached_data is not None:
+                                method(cached_data, *params)
+                            else:
+                                method(*params)
                         t = time.perf_counter() - start
                         samples.append(t)
                 elif attr.startswith("track_"):
                     # Run tracking benchmarks multiple times and record returned values.
                     for _ in range(number):
                         if param_dict is not None:
-                            val = method(**param_dict)
+                            if cached_data is not None:
+                                val = method(cached_data, **param_dict)
+                            else:
+                                val = method(**param_dict)
                         else:
-                            val = method(*params)
+                            if cached_data is not None:
+                                val = method(cached_data, *params)
+                            else:
+                                val = method(*params)
                         samples.append(val)
                 # Compute the average result.
                 avg = sum(samples) / len(samples)
                 results[(attr, params)] = avg
         if hasattr(instance, "teardown"):
             if param_dict is not None:
-                instance.teardown(**param_dict)
+                if cached_data is not None:
+                    instance.teardown(cached_data, **param_dict)
+                else:
+                    instance.teardown(**param_dict)
             else:
-                instance.teardown(*params)
+                if cached_data is not None:
+                    instance.teardown(cached_data, *params)
+                else:
+                    instance.teardown(*params)
 
     if print_results:
         print("\n=== Benchmark Results ===")
