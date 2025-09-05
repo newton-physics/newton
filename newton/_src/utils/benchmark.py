@@ -21,12 +21,12 @@ def _convert_params_to_dict(params, param_names):
     """Convert params to keyword arguments using param_names."""
     if not param_names:
         return None
-    
+
     # Handle single value case by wrapping in tuple
-    if not isinstance(params, (list, tuple)):
+    if not isinstance(params, (list | tuple)):
         params = (params,)
-    
-    return dict(zip(param_names, params))
+
+    return dict(zip(param_names, params, strict=False))
 
 
 def _call_with_params(method, param_dict, params, cached_data):
@@ -60,7 +60,7 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
         param_lists = benchmark_cls.params
         # If param_lists contains multiple lists, generate all combinations
         # If it's a single list, just use it directly
-        if len(param_lists) > 1 and all(isinstance(item, (list, tuple)) for item in param_lists):
+        if len(param_lists) > 1 and all(isinstance(item, (list | tuple)) for item in param_lists):
             combinations = itertools.product(*param_lists)
         else:
             combinations = param_lists
@@ -69,28 +69,27 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
 
     results = {}
     cached_data = None
-    
+
     # For each parameter combination:
     for i, params in enumerate(combinations):
-        
         # Create a fresh benchmark instance.
         instance = benchmark_cls()
-        
+
         # Convert params to keyword arguments using param_names
         param_names = getattr(benchmark_cls, "param_names", None)
         param_dict = _convert_params_to_dict(params, param_names)
-        
+
         # Ensure params is always a tuple for consistent handling
-        if not isinstance(params, (list, tuple)):
-            params = (params,)
-        
+        if not isinstance(params, (list | tuple)):
+            params_tuple = (params,)
+
         # Call setup_cache on the first combination only
         if i == 0 and hasattr(benchmark_cls, "setup_cache"):
             print(f"\n[Benchmark] Running {benchmark_cls.__name__}.setup_cache")
             cached_data = instance.setup_cache()
-        
+
         if hasattr(instance, "setup"):
-            _call_with_params(instance.setup, param_dict, params, cached_data)
+            _call_with_params(instance.setup, param_dict, params_tuple, cached_data)
 
         # Iterate over all attributes to find benchmark methods.
         for attr in dir(instance):
@@ -102,19 +101,19 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()
-                        _call_with_params(method, param_dict, params, cached_data)
+                        _call_with_params(method, param_dict, params_tuple, cached_data)
                         t = time.perf_counter() - start
                         samples.append(t)
                 elif attr.startswith("track_"):
                     # Run tracking benchmarks multiple times and record returned values.
                     for _ in range(number):
-                        val = _call_with_params(method, param_dict, params, cached_data)
+                        val = _call_with_params(method, param_dict, params_tuple, cached_data)
                         samples.append(val)
                 # Compute the average result.
                 avg = sum(samples) / len(samples)
                 results[(attr, params)] = avg
         if hasattr(instance, "teardown"):
-            _call_with_params(instance.teardown, param_dict, params, cached_data)
+            _call_with_params(instance.teardown, param_dict, params_tuple, cached_data)
 
     if print_results:
         print("\n=== Benchmark Results ===")
