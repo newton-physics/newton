@@ -14,16 +14,26 @@
 # limitations under the License.
 
 import gc
+import itertools
+import time
+import numpy as np
 
 import warp as wp
 
 wp.config.enable_backward = False
 wp.config.quiet = True
 
-from asv_runner.benchmarks.mark import skip_benchmark_if
-
 from newton.examples.example_mujoco import Example
+from newton.solvers import SolverMuJoCo
 
+nconmax = {
+    "humanoid": None,
+    "g1": 150,
+    "h1": 150,
+    "cartpole": None,
+    "ant": None,
+    "quadruped": None,
+}
 
 class KpiInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
@@ -35,17 +45,63 @@ class KpiInitializeModel:
     min_run_count = 1
     timeout = 3600
 
-    def setup(self, robot, num_envs):
+    def setup_cache(self):
         wp.init()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_model(self, robot, num_envs):
-        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+        if wp.get_cuda_device_count() == 0:
+            raise NotImplementedError("CUDA is not available")
 
-        # finalize model
-        _model = builder.finalize()
-        wp.synchronize_device()
+        timings = {}
+        timings["modelBuilder"] = {}
+        timings["solver"] = {}
 
+        for robot, num_envs in itertools.product(self.params[0], self.params[1]):
+            builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+            # finalize model
+            _model = builder.finalize()
+
+            # Load the model to cache the kernels
+            solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
+            del solver
+
+            wp.synchronize_device()
+
+            timings_modelBuilder = []
+            timings_solver = []
+
+            for _ in range(self.repeat):
+
+                modelBuilder_beg = time.perf_counter()
+                builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+                # finalize model
+                model = builder.finalize()
+                wp.synchronize_device()
+                modelBuilder_end = time.perf_counter()
+                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
+
+            
+                solver_beg = time.perf_counter()
+                solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
+                wp.synchronize_device()
+                solver_end = time.perf_counter()
+                timings_solver.append(solver_end - solver_beg)
+
+                del solver
+                del model
+
+            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
+            timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
+
+        return timings
+
+    def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
+        return timings["solver"][(robot, num_envs)]
+    track_time_initialize_solverMuJoCo.unit = "ms"
+    
+    def track_time_initialize_model(self, timings, robot, num_envs):
+        return timings["modelBuilder"][(robot, num_envs)]
+    track_time_initialize_model.unit = "ms"
 
 class FastInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
@@ -57,18 +113,64 @@ class FastInitializeModel:
     min_run_count = 1
 
     def setup_cache(self):
-        # Load a small model to cache the kernels
-        builder = Example.create_model_builder("cartpole", 1, randomize=False, seed=123)
-        model = builder.finalize(device="cpu")
-        del model
+        wp.init()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_model(self, robot, num_envs):
-        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+        if wp.get_cuda_device_count() == 0:
+            raise NotImplementedError("CUDA is not available")
 
-        # finalize model
-        _model = builder.finalize()
-        wp.synchronize_device()
+        timings = {}
+        timings["modelBuilder"] = {}
+        timings["solver"] = {}
+
+        for robot, num_envs in itertools.product(self.params[0], self.params[1]):
+            builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+            # finalize model
+            _model = builder.finalize()
+
+            # Load the model to cache the kernels
+            solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
+            del solver
+
+            wp.synchronize_device()
+
+            timings_modelBuilder = []
+            timings_solver = []
+
+            for _ in range(self.repeat):
+
+                modelBuilder_beg = time.perf_counter()
+                builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+                # finalize model
+                model = builder.finalize()
+                wp.synchronize_device()
+                modelBuilder_end = time.perf_counter()
+                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
+
+            
+                solver_beg = time.perf_counter()
+                solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
+                wp.synchronize_device()
+                solver_end = time.perf_counter()
+                timings_solver.append(solver_end - solver_beg)
+
+                del solver
+                del model
+
+            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
+            timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
+
+        return timings
+
+    def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
+        unit = "ms"
+        return timings["solver"][(robot, num_envs)]
+    track_time_initialize_solverMuJoCo.unit = "ms"
+    
+    def track_time_initialize_model(self, timings, robot, num_envs):
+        unit = "ms"
+        return timings["modelBuilder"][(robot, num_envs)]
+    track_time_initialize_model.unit = "ms"
 
     def peakmem_initialize_model_cpu(self, robot, num_envs):
         gc.collect()
