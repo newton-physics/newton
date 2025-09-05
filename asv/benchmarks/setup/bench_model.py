@@ -163,16 +163,14 @@ class FastInitializeModel:
         return timings
 
     def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
-        unit = "ms"
         return timings["solver"][(robot, num_envs)]
     track_time_initialize_solverMuJoCo.unit = "ms"
     
     def track_time_initialize_model(self, timings, robot, num_envs):
-        unit = "ms"
         return timings["modelBuilder"][(robot, num_envs)]
     track_time_initialize_model.unit = "ms"
 
-    def peakmem_initialize_model_cpu(self, robot, num_envs):
+    def peakmem_initialize_model_cpu(self, _, robot, num_envs):
         gc.collect()
 
         with wp.ScopedDevice("cpu"):
