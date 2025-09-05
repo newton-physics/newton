@@ -91,6 +91,9 @@ class ViewerGL(ViewerBase):
             "error_message": "",
         }
 
+        # Geometry visualization toggle
+        self.show_collision_geometry = False
+
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
         self.renderer.register_mouse_press(self.on_mouse_press)
@@ -890,6 +893,14 @@ class ViewerGL(ViewerBase):
                     show_triangles = self.show_triangles
                     changed, self.show_triangles = imgui.checkbox("Show Cloth", show_triangles)
 
+                    # Geometry type visualization toggle
+                    show_collision_geometry = self.show_collision_geometry
+                    changed, self.show_collision_geometry = imgui.checkbox(
+                        "Show Collision Geometry", show_collision_geometry
+                    )
+                    if changed:
+                        self._update_geometry_visibility()
+
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
                 # Render UI callbacks for side panel
@@ -1419,3 +1430,27 @@ class ViewerGL(ViewerBase):
             else:
                 # For non-numeric values, just show as text
                 imgui.text(f"{name}: {val}")
+
+    def _update_geometry_visibility(self):
+        """Update shape visibility based on current geometry toggle setting."""
+        if not hasattr(self, "model") or self.model is None:
+            return
+
+        # Clear all shape instances and repopulate with new visibility rules
+        # This is simpler and more reliable than trying to selectively update
+        self._shape_instances.clear()
+
+        # Remove rendered objects for shapes
+        objects_to_remove = [name for name in self.objects.keys() if name.startswith("/model/shapes/")]
+        for name in objects_to_remove:
+            del self.objects[name]
+
+        # Repopulate shapes with new visibility rules
+        self._populate_shapes()
+
+        # Mark model as changed to ensure materials are updated in the renderer
+        self.model_changed = True
+
+        # Update transforms with current body positions if we have a cached state
+        if hasattr(self, "_last_state") and self._last_state is not None:
+            super().log_state(self._last_state)
