@@ -1407,8 +1407,10 @@ class SolverMuJoCo(SolverBase):
     def notify_model_changed(self, flags: int):
         if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
             self.update_model_inertial_properties()
-        if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
+        if flags & SolverNotifyFlags.JOINT_PROPERTIES:
             self.update_joint_properties()
+        if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
+            self.update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self.update_geom_properties()
 
@@ -2408,6 +2410,7 @@ class SolverMuJoCo(SolverBase):
             # now complete the data from the Newton model
             flags = (
                 SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+                | SolverNotifyFlags.JOINT_PROPERTIES
                 | SolverNotifyFlags.JOINT_DOF_PROPERTIES
                 | SolverNotifyFlags.SHAPE_PROPERTIES
             )
@@ -2566,10 +2569,9 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_joint_properties(self):
+    def update_joint_dof_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
-        joints_per_env = self.model.joint_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
         if self.mjc_axis_to_actuator is not None:
@@ -2604,6 +2606,10 @@ class SolverMuJoCo(SolverBase):
             outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
             device=self.model.device,
         )
+
+    def update_joint_properties(self):
+        """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
+        joints_per_env = self.model.joint_count // self.model.num_envs
 
         # Update joint positions, joint axes, and relative body transforms
         wp.launch(
