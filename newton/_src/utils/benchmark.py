@@ -32,17 +32,45 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
     # Determine all parameter combinations (if any).
     if hasattr(benchmark_cls, "params"):
         param_lists = benchmark_cls.params
-        combinations = list(itertools.product(*param_lists))
+        # If param_lists contains multiple lists, generate all combinations
+        # If it's a single list, just use it directly
+        if len(param_lists) > 1 and all(isinstance(item, (list, tuple)) for item in param_lists):
+            combinations = itertools.product(*param_lists)
+        else:
+            combinations = param_lists
     else:
         combinations = [()]
+
+    #if hasattr(benchmark_cls, "setup_cache"):
+    #    cached_data = benchmark_cls.setup_cache()
 
     results = {}
     # For each parameter combination:
     for params in combinations:
+        #if cached_data:
+        #    params = (params, cached_data)
+
         # Create a fresh benchmark instance.
         instance = benchmark_cls()
+        
+        # Convert params to keyword arguments using param_names
+        if hasattr(benchmark_cls, "param_names"):
+            # Handle single value case by wrapping in tuple
+            if not isinstance(params, (list, tuple)):
+                params = (params,)
+            param_dict = dict(zip(benchmark_cls.param_names, params))
+        else:
+            # Fallback to positional args
+            if not isinstance(params, (list, tuple)):
+                params = (params,)
+            param_dict = None
+        
         if hasattr(instance, "setup"):
-            instance.setup(*params)
+            if param_dict is not None:
+                instance.setup(**param_dict)
+            else:
+                instance.setup(*params)
+
         # Iterate over all attributes to find benchmark methods.
         for attr in dir(instance):
             if attr.startswith("time_") or attr.startswith("track_"):
@@ -53,19 +81,28 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()
-                        method(*params)
+                        if param_dict is not None:
+                            method(**param_dict)
+                        else:
+                            method(*params)
                         t = time.perf_counter() - start
                         samples.append(t)
                 elif attr.startswith("track_"):
                     # Run tracking benchmarks multiple times and record returned values.
                     for _ in range(number):
-                        val = method(*params)
+                        if param_dict is not None:
+                            val = method(**param_dict)
+                        else:
+                            val = method(*params)
                         samples.append(val)
                 # Compute the average result.
                 avg = sum(samples) / len(samples)
                 results[(attr, params)] = avg
         if hasattr(instance, "teardown"):
-            instance.teardown(*params)
+            if param_dict is not None:
+                instance.teardown(**param_dict)
+            else:
+                instance.teardown(*params)
 
     if print_results:
         print("\n=== Benchmark Results ===")
