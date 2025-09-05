@@ -120,6 +120,8 @@ def _setup_h1(articulation_builder):
     articulation_builder.default_joint_cfg.armature = 0.1
     articulation_builder.default_body_armature = 0.1
 
+    assert False
+
     asset_path = newton.utils.download_asset("unitree_h1")
     articulation_builder.add_mjcf(
         str(asset_path / "mjcf" / "h1_with_hand.xml"),
