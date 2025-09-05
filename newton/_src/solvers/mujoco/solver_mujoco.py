@@ -998,6 +998,7 @@ def update_joint_transforms_kernel(
     joint_child: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
+    body_mapping: wp.array(dtype=wp.int32),
     joints_per_env: int,
     # outputs
     joint_pos: wp.array2d(dtype=wp.vec3),
@@ -1036,11 +1037,11 @@ def update_joint_transforms_kernel(
         joint_pos[worldid, ai] = child_xform.p
 
     # update body pos and quat from parent joint transform
-    body_id = joint_child[joint_in_env] + 1  # +1 because body_id is 1-indexed in MuJoCo
-    if body_id > 0:
-        tf = parent_xform * wp.transform_inverse(child_xform)
-        body_pos[worldid, body_id] = tf.p
-        body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    child = joint_child[joint_in_env]  # Newton body id
+    body_id = body_mapping[child]  # MuJoCo body id
+    tf = parent_xform * wp.transform_inverse(child_xform)
+    body_pos[worldid, body_id] = tf.p
+    body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
 
 @wp.kernel(enable_backward=False)
@@ -2624,6 +2625,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_child,
                 self.model.joint_type,
                 self.joint_mjc_dof_start,
+                self.to_mjc_body_index,
                 joints_per_env,
             ],
             outputs=[

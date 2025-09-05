@@ -156,7 +156,7 @@ class Example:
             )
 
             # update the solver since we have updated the joint parent transforms
-            self.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+            self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
