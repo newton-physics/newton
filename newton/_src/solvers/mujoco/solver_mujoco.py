@@ -1191,23 +1191,16 @@ class SolverMuJoCo(SolverBase):
 
     .. code-block:: python
 
-        import mujoco
-        import mujoco.viewer
-        import mujoco_warp
+        import newton
 
         solver = newton.solvers.SolverMuJoCo(model)
-        mjm, mjd = solver.mj_model, solver.mj_data
-        m, d = solver.mjw_model, solver.mjw_data
-        viewer = mujoco.viewer.launch_passive(mjm, mjd)
 
         for _ in range(num_frames):
             # step the solver
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
 
-            if not solver.use_mujoco_cpu:
-                mujoco_warp.get_data_into(mjd, mjm, d)
-            viewer.sync()
+            solver.render_mujoco_viewer()
     """
 
     def __init__(
@@ -1328,6 +1321,9 @@ class SolverMuJoCo(SolverBase):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
+
+        self._viewer = None
+        """Instance of the MuJoCo viewer for debugging."""
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
@@ -1719,9 +1715,6 @@ class SolverMuJoCo(SolverBase):
         cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
-        # these numbers come from the cartpole.xml model
-        # joint_solref=(0.08, 1.0),
-        # joint_solimp=(0.9, 0.95, 0.001, 0.5, 2.0),
         geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
@@ -2047,6 +2040,8 @@ class SolverMuJoCo(SolverBase):
                     assert stype == GeoType.PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
+                    # make ground plane blue in the MuJoCo viewer
+                    geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
                 if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
@@ -2325,6 +2320,12 @@ class SolverMuJoCo(SolverBase):
         self.mj_model.opt.solver = solver
         self.mj_model.opt.impratio = impratio
         self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
+        # make the headlights brighter to improve visibility
+        # in the MuJoCo viewer
+        self.mj_model.vis.headlight.ambient[:] = [0.3, 0.3, 0.3]
+        self.mj_model.vis.headlight.diffuse[:] = [0.7, 0.7, 0.7]
+        self.mj_model.vis.headlight.specular[:] = [0.9, 0.9, 0.9]
 
         self.update_mjc_data(self.mj_data, model, state)
 
@@ -2636,7 +2637,7 @@ class SolverMuJoCo(SolverBase):
 
         # Get number of geoms and worlds from MuJoCo model
         num_geoms = self.mj_model.ngeom
-        num_worlds = self.model.num_envs  # why is there no 'self.mjw_model.nworld'?
+        num_worlds = self.model.num_envs
 
         wp.launch(
             update_geom_properties_kernel,
@@ -2664,3 +2665,62 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
+    def render_mujoco_viewer(
+        self,
+        show_left_ui: bool = True,
+        show_right_ui: bool = True,
+        show_contact_points: bool = True,
+        show_contact_forces: bool = False,
+        show_transparent_geoms: bool = True,
+    ):
+        """Create and synchronize the MuJoCo viewer.
+        The viewer will be created if it is not already open.
+
+        .. note::
+
+            The MuJoCo viewer only supports rendering Newton models with a single environment,
+            unless :attr:`use_mujoco_cpu` is :obj:`True`.
+
+            The MuJoCo viewer is only meant as a debugging tool.
+
+        Args:
+            show_left_ui: Whether to show the left UI.
+            show_right_ui: Whether to show the right UI.
+            show_contact_points: Whether to show contact points.
+            show_contact_forces: Whether to show contact forces.
+            show_transparent_geoms: Whether to show transparent geoms.
+        """
+        if self._viewer is None:
+            import mujoco  # noqa: PLC0415
+            import mujoco.viewer  # noqa: PLC0415
+
+            self._viewer = mujoco.viewer.launch_passive(
+                self.mj_model, self.mj_data, show_left_ui=show_left_ui, show_right_ui=show_right_ui
+            )
+            # Enter the context manager to keep the viewer alive
+            self._viewer.__enter__()
+
+            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = show_contact_points
+            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = show_contact_forces
+            self._viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = show_transparent_geoms
+
+        if self._viewer.is_running():
+            if not self.use_mujoco_cpu:
+                self.mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
+
+            self._viewer.sync()
+
+    def close_mujoco_viewer(self):
+        """Close the MuJoCo viewer if it exists."""
+        if self._viewer is not None:
+            try:
+                self._viewer.__exit__(None, None, None)
+            except Exception:
+                pass  # Ignore errors during cleanup
+            finally:
+                self._viewer = None
+
+    def __del__(self):
+        """Cleanup method to close the viewer when the solver is destroyed."""
+        self.close_mujoco_viewer()
