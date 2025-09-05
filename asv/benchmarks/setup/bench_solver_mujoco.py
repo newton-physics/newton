@@ -15,6 +15,9 @@
 
 
 import warp as wp
+import time
+import numpy as np
+import itertools
 
 wp.config.enable_backward = False
 wp.config.quiet = True
@@ -43,6 +46,7 @@ class KpiInitializeSolverMuJoCo:
     repeat = 3
     min_run_count = 1
     timeout = 3600
+    
 
     def setup(self, robot, num_envs):
         wp.init()
@@ -59,9 +63,21 @@ class KpiInitializeSolverMuJoCo:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot, num_envs):
-        _ = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
-        wp.synchronize_device()
+    def track_time_initialize_solverMuJoCo(self, robot, num_envs):
+
+        unit = "ms"
+        timings = []
+
+        for _ in range(self.repeat):
+            run_beg = time.perf_counter()
+            solver = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
+            wp.synchronize_device()
+            run_end = time.perf_counter()
+            timings.append(run_end - run_beg)
+
+            del solver
+
+        return np.median(timings) * 1000
 
 
 class FastInitializeSolverMuJoCo:
@@ -73,22 +89,66 @@ class FastInitializeSolverMuJoCo:
     repeat = 3
     min_run_count = 1
 
-    def setup(self, robot, num_envs):
+    #timings_solver = {}
+    #timings_modelBuilder = {}
+
+    def setup_cache(self):
         wp.init()
-        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
-        # finalize model
-        self._model = builder.finalize()
 
-        # Load the model to cache the kernels
-        solver = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
-        del solver
+        timings = {}
+        timings["modelBuilder"] = {}
+        timings["solver"] = {}
 
-        wp.synchronize_device()
+        for robot, num_envs in itertools.product(self.params[0], self.params[1]):
+            builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+            # finalize model
+            _model = builder.finalize()
+
+            # Load the model to cache the kernels
+            solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
+            del solver
+
+            wp.synchronize_device()
+
+            timings_modelBuilder = []
+            timings_solver = []
+
+            for _ in range(self.repeat):
+
+                modelBuilder_beg = time.perf_counter()
+                builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+                # finalize model
+                model = builder.finalize()
+                wp.synchronize_device()
+                modelBuilder_end = time.perf_counter()
+                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
+
+            
+                solver_beg = time.perf_counter()
+                solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
+                wp.synchronize_device()
+                solver_end = time.perf_counter()
+                timings_solver.append(solver_end - solver_beg)
+
+                del solver
+                del model
+
+            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
+            timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
+
+        return timings
+
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_initialize_solverMuJoCo(self, robot, num_envs):
-        _ = SolverMuJoCo(self._model, ncon_per_env=nconmax[robot])
-        wp.synchronize_device()
+    def track_time_initialize_solverMuJoCo(self, timings, robot, num_envs):
+        unit = "ms"
+        return timings["solver"][(robot, num_envs)]
+    
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_time_initialize_modelBuilderMuJoCo(self, timings, robot, num_envs):
+        unit = "ms"
+        return timings["modelBuilder"][(robot, num_envs)]
 
 
 if __name__ == "__main__":
