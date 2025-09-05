@@ -996,8 +996,9 @@ def update_joint_transforms_kernel(
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joint_original_axis: wp.array(dtype=wp.vec3),
     joint_child: wp.array(dtype=wp.int32),
+    joint_type: wp.array(dtype=wp.int32),
+    joint_mjc_dof_start: wp.array(dtype=wp.int32),
     joints_per_env: int,
-    dofs_per_env: int,
     # outputs
     joint_pos: wp.array2d(dtype=wp.vec3),
     joint_axis: wp.array2d(dtype=wp.vec3),
@@ -1008,24 +1009,29 @@ def update_joint_transforms_kernel(
     worldid = tid // joints_per_env
     joint_in_env = tid % joints_per_env
 
+    jtype = joint_type[tid]
+    if jtype == JointType.FREE:
+        # we do not set joint transforms for free joints
+        return
+
     child_xform = joint_X_c[tid]
     parent_xform = joint_X_p[tid]
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
-    dof_start = joint_dof_start[tid]
-    dof_in_env = dof_start % dofs_per_env
+    newton_dof_start = joint_dof_start[tid]
+    mjc_dof_start = joint_mjc_dof_start[joint_in_env]
 
     # update linear dofs
     for i in range(lin_axis_count):
-        axis = joint_original_axis[dof_start + i]
-        ai = dof_in_env + i
+        axis = joint_original_axis[newton_dof_start + i]
+        ai = mjc_dof_start + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
 
     # update angular dofs
     for i in range(ang_axis_count):
-        axis = joint_original_axis[dof_start + lin_axis_count + i]
-        ai = dof_in_env + lin_axis_count + i
+        axis = joint_original_axis[newton_dof_start + lin_axis_count + i]
+        ai = mjc_dof_start + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
 
@@ -1268,6 +1274,8 @@ class SolverMuJoCo(SolverBase):
 
         self.shape_incoming_xform: wp.array(dtype=wp.transform) | None = None
         """The transform applied to Newton's shape frame to match MuJoCo's geom frame. This only affects mesh shapes (MuJoCo aligns them with their inertial frames). Shape [shape_count], dtype transform."""
+        self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
+        """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Shape [joint_count], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
@@ -2069,6 +2077,10 @@ class SolverMuJoCo(SolverBase):
         # add static geoms attached to the worldbody
         add_geoms(-1)
 
+        # maps from Newton joint index to the start index of its joint axes in MuJoCo
+        # (only defined for the joints of the first environment)
+        joint_mjc_dof_start = np.zeros((model.joint_count,), dtype=np.int32)
+
         # add joints, bodies and geoms
         for ji in joint_order:
             parent, child = joints_simple[ji]
@@ -2116,6 +2128,8 @@ class SolverMuJoCo(SolverBase):
                 while name in joint_names:
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
+
+            joint_mjc_dof_start[ji] = len(spec.joints)
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -2350,6 +2364,9 @@ class SolverMuJoCo(SolverBase):
             # mapping from Newton shape id to a corrective transform
             # that maps from Newton's shape frame to MuJoCo's internal geom frame
             self.shape_incoming_xform = wp.full(model.shape_count, wp.transform_identity(), dtype=wp.transform)
+
+            # mapping from Newton joint index to the start index of its joint axes in MuJoCo
+            self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
 
             if self.mjw_model.geom_pos.size:
                 wp.launch(
@@ -2599,8 +2616,9 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_dof_dim,
                 self.model.joint_axis,
                 self.model.joint_child,
+                self.model.joint_type,
+                self.joint_mjc_dof_start,
                 joints_per_env,
-                dofs_per_env,
             ],
             outputs=[
                 self.mjw_model.jnt_pos,
