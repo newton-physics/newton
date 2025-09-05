@@ -477,6 +477,40 @@ class ModelBuilder:
         self.equality_constraint_type = []
         self.equality_constraint_body1 = []
         self.equality_constraint_body2 = []
+
+        # Custom properties (user-defined per-frequency arrays)
+        # name -> {"assignment": str, "frequency": str, "data_type": str, "default": Any, "values": dict[int, Any]}
+        self.custom_properties: dict[str, dict[str, object]] = {}
+
+    def add_custom_property(
+        self, name: str, frequency: str, default=None, data_type: str | None = None, assignment: str = "model"
+    ):
+        """Define a custom per-entity property to be added to the Model.
+
+        Args:
+            name: Variable name to expose on the Model
+            frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
+            data_type: Logical type name (e.g., "float", "int32", "bool", "vec3")
+        """
+        if name in self.custom_properties:
+            # validate that specification matches exactly
+            existing_freq = self.custom_properties[name].get("frequency")
+            existing_dtype = self.custom_properties[name].get("data_type")
+            existing_assign = self.custom_properties[name].get("assignment")
+            # if caller did not pass data_type, treat as unspecified (i.e., must match existing)
+            target_dtype = data_type if data_type is not None else existing_dtype
+            if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
+                raise ValueError(
+                    f"Custom property '{name}' already exists with frequency='{existing_freq}', data_type='{existing_dtype}', assignment='{existing_assign}'. "
+                )
+            return
+        self.custom_properties[name] = {
+            "assignment": assignment,
+            "frequency": frequency,
+            "data_type": data_type or (type(default).__name__ if default is not None else "float"),
+            "default": default,
+            "values": {},  # index -> value overrides
+        }
         self.equality_constraint_anchor = []
         self.equality_constraint_relpose = []
         self.equality_constraint_torquescale = []
@@ -4414,6 +4448,134 @@ class ModelBuilder:
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
+
+            # Add custom properties onto the model
+            if hasattr(self, "custom_properties") and self.custom_properties:
+                # robust vec3 alias detection without relying on external schema names
+                def _is_vec3_type_name(type_name: object) -> bool:
+                    if not isinstance(type_name, str):
+                        return False
+                    cleaned = "".join(ch for ch in type_name if ch.isalnum()).lower()
+                    return ("vec3" in cleaned) or ("float3" in cleaned) or ("vector3f" in cleaned)
+
+                for var_name, spec in self.custom_properties.items():
+                    frequency = spec.get("frequency")
+                    if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
+                        continue
+                    # choose a default that matches data_type when missing
+                    if "default" in spec:
+                        default_val = spec.get("default")
+                    else:
+                        dt = spec.get("data_type", "float")
+                        if dt in ("float", "double"):
+                            default_val = 0.0
+                        elif dt in ("int", "int32", "uint", "uint32"):
+                            default_val = 0
+                        elif dt in ("bool",):
+                            default_val = False
+                        elif _is_vec3_type_name(dt):
+                            default_val = (0.0, 0.0, 0.0)
+                        else:
+                            # fallback to zero for unknown scalar types
+                            default_val = 0.0
+                    overrides = spec.get("values", {})
+
+                    # determine count by frequency
+                    if frequency == "body":
+                        count = m.body_count
+                    elif frequency == "shape":
+                        count = m.shape_count
+                    elif frequency == "joint":
+                        count = m.joint_count
+                    elif frequency == "joint_dof":
+                        count = m.joint_dof_count
+                    elif frequency == "joint_coord":
+                        count = m.joint_coord_count
+                    else:
+                        continue
+
+                    # Choose dtype based on provided data_type; default to float32
+                    data_type = spec.get("data_type", "float")
+                    # Detect vec3 either by declared data_type or by default value shape
+                    is_vec3_decl = _is_vec3_type_name(data_type)
+                    is_vec3_default = False
+                    if default_val is not None:
+                        try:
+                            is_vec3_default = np.size(default_val) == 3
+                        except Exception:
+                            is_vec3_default = False
+
+                    if is_vec3_decl or is_vec3_default:
+                        # store as 3-vector; expect default_val to be 3-tuple-like
+                        # Fallback to zeros if not provided
+                        try:
+                            base = np.array(
+                                default_val if default_val is not None else (0.0, 0.0, 0.0), dtype=np.float32
+                            ).reshape(
+                                3,
+                            )
+                        except Exception:
+                            base = np.array((0.0, 0.0, 0.0), dtype=np.float32)
+                        arr = np.tile(base, (count, 1))
+                        for idx, val in overrides.items():
+                            i = int(idx)
+                            if 0 <= i < count:
+                                try:
+                                    arr[i] = np.array(val, dtype=np.float32).reshape(
+                                        3,
+                                    )
+                                except Exception:
+                                    # best-effort conversion
+                                    try:
+                                        arr[i] = np.array([val[0], val[1], val[2]], dtype=np.float32)
+                                    except Exception:
+                                        pass
+                        wp_arr = wp.array(arr, dtype=wp.vec3, requires_grad=requires_grad)
+                        # record assignment for downstream objects (state/control/contacts)
+                        m.attribute_assignment[var_name] = spec.get("assignment", "model")
+                        if not hasattr(m, var_name):
+                            m.add_attribute(var_name, wp_arr, frequency)
+                        continue
+
+                    if data_type in ("float", "double"):
+                        np_dtype = np.float32
+                        wp_dtype = wp.float32
+                    elif data_type in ("int", "int32", "uint", "uint32"):
+                        np_dtype = np.int32
+                        wp_dtype = wp.int32
+                    elif data_type in ("bool",):
+                        np_dtype = np.bool_
+                        wp_dtype = wp.bool
+                    else:
+                        # fallback to float scalar
+                        np_dtype = np.float32
+                        wp_dtype = wp.float32
+
+                    # Fill with default; treat None as typified zero
+                    fill_val = default_val
+                    if fill_val is None:
+                        if np_dtype is np.float32:
+                            fill_val = 0.0
+                        elif np_dtype is np.int32:
+                            fill_val = 0
+                        elif np_dtype is np.bool_:
+                            fill_val = False
+                        else:
+                            fill_val = 0.0
+                    arr = np.full(count, fill_val, dtype=np_dtype)
+                    for idx, val in overrides.items():
+                        i = int(idx)
+                        if 0 <= i < count:
+                            try:
+                                arr[i] = val
+                            except Exception:
+                                pass
+
+                    wp_arr = wp.array(arr, dtype=wp_dtype, requires_grad=requires_grad)
+                    # record assignment and register on the model so Selection can discover it
+                    m.attribute_assignment[var_name] = spec.get("assignment", "model")
+                    if not hasattr(m, var_name):
+                        m.add_attribute(var_name, wp_arr, frequency)
 
             return m
 

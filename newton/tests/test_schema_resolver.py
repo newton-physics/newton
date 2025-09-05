@@ -209,7 +209,7 @@ class TestSchemaResolver(unittest.TestCase):
             if armature1 != "not set" and armature2 != "not set":
                 self.assertEqual(armature1, armature2)
 
-    def test_resolver_with_usd_stage(self):
+    def test_resolver(self):
         """Test schema resolver directly with USD stage."""
 
         # Open the USD stage
@@ -289,7 +289,7 @@ class TestSchemaResolver(unittest.TestCase):
                 self.assertAlmostEqual(time_step, expected_time_step, places=6)
                 print(f"  - Correctly converted 120 Hz -> {time_step:.6f} seconds")
 
-    def test_mjc_solref_copy_and_import_usd(self):
+    def test_mjc_solref(self):
         """Load pre-authored ant_mixed.usda and compare resolved gains under different priorities."""
 
         test_dir = Path(__file__).parent
@@ -323,6 +323,99 @@ class TestSchemaResolver(unittest.TestCase):
         for physx_kd, mjc_kd in zip(builder_newton.joint_limit_kd, builder_mjc.joint_limit_kd, strict=False):
             self.assertAlmostEqual(mjc_kd, 2.0 * physx_kd, places=6)
 
+    def test_newton_custom_properties(self):
+        """Read pre-authored newton custom properties in ant_mixed.usda and validate import/modelBuilder."""
+        # Use ant_mixed.usda which contains authored custom attributes
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        dst = assets_dir / "ant_mixed.usda"
+        self.assertTrue(dst.exists(), f"Missing mixed USD: {dst}")
+
+        builder = ModelBuilder()
+        result = parse_usd(
+            builder=builder,
+            source=str(dst),
+            schema_priority=["newton", "physx", "mjc"],
+            collect_engine_specific_attrs=True,
+            verbose=False,
+        )
+
+        engine_attrs = result.get("engine_specific_attrs", {})
+        self.assertIn("newton", engine_attrs)
+
+        # Body property checks
+        body_path = "/ant/front_left_leg"
+        self.assertIn(body_path, engine_attrs["newton"])
+        self.assertIn("newton:model:body:testBodyScalar", engine_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyVec", engine_attrs["newton"][body_path])
+        self.assertAlmostEqual(engine_attrs["newton"][body_path]["newton:model:body:testBodyScalar"], 1.5, places=6)
+        # also validate vector value in engine attrs
+        vec_val = engine_attrs["newton"][body_path]["newton:model:body:testBodyVec"]
+        self.assertAlmostEqual(float(vec_val[0]), 0.1, places=6)
+        self.assertAlmostEqual(float(vec_val[1]), 0.2, places=6)
+        self.assertAlmostEqual(float(vec_val[2]), 0.3, places=6)
+        # Joint property checks (authored on front_left_leg joint)
+        joint_name = "/ant/joints/front_left_leg"
+        self.assertIn(joint_name, engine_attrs["newton"])  # engine attrs recorded
+        self.assertIn("newton:state:joint:testJointScalar", engine_attrs["newton"][joint_name])
+        # also validate state/control joint custom attrs in engine attrs
+        self.assertIn("newton:state:joint:testStateJointScalar", engine_attrs["newton"][joint_name])
+        self.assertIn("newton:control:joint:testControlJointScalar", engine_attrs["newton"][joint_name])
+
+        model = builder.finalize()
+        state = model.state()
+        self.assertEqual(model.get_attribute_frequency("testBodyVec"), "body")
+
+        body_map = result["path_body_map"]
+        idx = body_map[body_path]
+        # Custom properties are currently materialized on Model (not State)
+        body_scalar = model.testBodyScalar.numpy()
+        self.assertAlmostEqual(float(body_scalar[idx]), 1.5, places=6)
+
+        body_vec = model.testBodyVec.numpy()
+        self.assertAlmostEqual(float(body_vec[idx, 0]), 0.1, places=6)
+        self.assertAlmostEqual(float(body_vec[idx, 1]), 0.2, places=6)
+        self.assertAlmostEqual(float(body_vec[idx, 2]), 0.3, places=6)
+
+        # For prims without authored values, ensure defaults are present:
+        # Pick a different body (e.g., front_right_leg) that didn't author testBodyScalar
+        other_body = "/ant/front_right_leg"
+        self.assertIn(other_body, body_map)
+        other_idx = body_map[other_body]
+        # The default for float is 0.0
+        self.assertAlmostEqual(float(body_scalar[other_idx]), 0.0, places=6)
+        # The default for vector3f is (0,0,0)
+        self.assertAlmostEqual(float(body_vec[other_idx, 0]), 0.0, places=6)
+        self.assertAlmostEqual(float(body_vec[other_idx, 1]), 0.0, places=6)
+        self.assertAlmostEqual(float(body_vec[other_idx, 2]), 0.0, places=6)
+
+        # Joint custom property materialization and defaults
+        self.assertEqual(model.get_attribute_frequency("testJointScalar"), "joint")
+        # Authored joint value
+        self.assertIn(joint_name, builder.joint_key)
+        joint_idx = builder.joint_key.index(joint_name)
+        joint_arr = model.testJointScalar.numpy()
+        self.assertAlmostEqual(float(joint_arr[joint_idx]), 2.25, places=6)
+        # Non-authored joint should be default 0.0
+        other_joint = "/ant/joints/front_right_leg"
+        self.assertIn(other_joint, builder.joint_key)
+        other_joint_idx = builder.joint_key.index(other_joint)
+        self.assertAlmostEqual(float(joint_arr[other_joint_idx]), 0.0, places=6)
+
+        # Validate state-assigned custom property mirrors initial values
+        # testStateJointScalar is authored on a joint with assignment="state"
+        self.assertTrue(hasattr(state, "testStateJointScalar"))
+        state_joint = state.testStateJointScalar.numpy()
+        self.assertAlmostEqual(float(state_joint[joint_idx]), 4.0, places=6)
+        self.assertAlmostEqual(float(state_joint[other_joint_idx]), 0.0, places=6)
+
+        # Validate control-assigned custom property mirrors initial values
+        control = model.control()
+        self.assertTrue(hasattr(control, "testControlJointScalar"))
+        control_joint = control.testControlJointScalar.numpy()
+        self.assertAlmostEqual(float(control_joint[joint_idx]), 5.5, places=6)
+        self.assertAlmostEqual(float(control_joint[other_joint_idx]), 0.0, places=6)
+
 
 def run_tests():
     """Run all tests."""
@@ -346,18 +439,3 @@ if __name__ == "__main__":
 
     success = run_tests()
 
-    if success:
-        print("\n" + "=" * 60)
-        print("All USD tests passed!")
-        print("\nKey validations:")
-        print("- USD import with schema resolver works correctly")
-        print("- PhysX attributes from ant.usda are properly resolved")
-        print("- Engine-specific attributes are collected from USD content")
-        print("- Schema priority affects USD import behavior")
-        print("- Joint armature values (0.01) resolved from physxJoint:armature")
-        print("- Limit damping values (0.1) resolved from physxLimit:angular:damping")
-        print("- Time step conversion works with real USD physics scene")
-    else:
-        print("\n" + "=" * 60)
-        print("Some USD tests failed! ❌")
-        sys.exit(1)

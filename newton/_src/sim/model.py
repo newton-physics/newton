@@ -380,6 +380,9 @@ class Model:
         self.attribute_frequency = {}
         """Classifies each attribute as per body, per joint, per DOF, etc."""
 
+        self.attribute_assignment = {}
+        """Assignment for custom attributes: one of {"model","state","control","contact"}."""
+
         # attributes per body
         self.attribute_frequency["body_q"] = "body"
         self.attribute_frequency["body_qd"] = "body"
@@ -473,6 +476,16 @@ class Model:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
+        # attach custom properties with assignment=="state"
+        for name, freq in list(self.attribute_frequency.items()):
+            if self.attribute_assignment.get(name) != "state":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            # clone onto state with same dtype
+            setattr(s, name, wp.clone(src, requires_grad=requires_grad))
+
         return s
 
     def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
@@ -508,6 +521,17 @@ class Model:
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
+        # attach custom properties with assignment=="control"
+        for name, freq in list(self.attribute_frequency.items()):
+            if self.attribute_assignment.get(name) != "control":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            if clone_variables:
+                setattr(c, name, wp.clone(src, requires_grad=requires_grad))
+            else:
+                setattr(c, name, src)
         return c
 
     def collide(
@@ -570,7 +594,20 @@ class Model:
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
         self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
-        return self._collision_pipeline.collide(self, state)
+        contacts = self._collision_pipeline.collide(self, state)
+        # attach custom properties with assignment=="contact"
+        for name, freq in list(self.attribute_frequency.items()):
+            if self.attribute_assignment.get(name) != "contact":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            # for now, just mirror the arrays; future: derive per-contact sizing
+            try:
+                setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
+            except Exception:
+                setattr(contacts, name, src)
+        return contacts
 
     def add_attribute(self, name: str, attrib: wp.array, frequency: str):
         """

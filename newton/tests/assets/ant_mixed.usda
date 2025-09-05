@@ -286,6 +286,12 @@ def Xform "ant" (
             float state:angular:physics:position = 0
             float state:angular:physics:velocity = 0
             float physxJoint:armature = 0.01
+            
+            # custom newton property (joint frequency)
+            float newton:state:joint:testJointScalar = 2.25
+            # additional custom newton properties (state/control on joint)
+            float newton:state:joint:testStateJointScalar = 4.0
+            float newton:control:joint:testControlJointScalar = 5.5
         }
 
         def PhysicsRevoluteJoint "front_left_foot" (
@@ -564,6 +570,10 @@ def Xform "ant" (
                 uniform token[] xformOpOrder = ["xformOp:transform"]
             }
         }
+        
+        # custom newton properties (body frequency)
+        float newton:model:body:testBodyScalar = 1.5
+        vector3f newton:model:body:testBodyVec = (0.1, 0.2, 0.3)
     }
 
     def Xform "front_left_foot" (

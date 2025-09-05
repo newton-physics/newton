@@ -556,6 +556,9 @@ def parse_usd(
             return
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
+        # collect engine-specific attributes on the joint prim if requested
+        if collect_engine_specific_attrs:
+            R.collect_prim_engine_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
             joint_desc, path_body_map, get_transforms=True
         )
@@ -571,6 +574,9 @@ def parse_usd(
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
         }
+
+        # joint index before insertion
+        joint_index = builder.joint_count
 
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
@@ -781,6 +787,9 @@ def parse_usd(
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
 
+        # map the joint path to the index at insertion time
+        path_joint_map[str(joint_path)] = joint_index
+
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     if UsdPhysics.ObjectType.Scene in ret_dict:
@@ -830,6 +839,8 @@ def parse_usd(
         )
 
     joint_descriptions = {}
+    # maps from joint prim path to joint index in builder
+    path_joint_map: dict[str, int] = {}
     body_specs = {}
     material_specs = {}
     # maps from rigid body path to density value if it has been defined
@@ -1418,6 +1429,64 @@ def parse_usd(
 
     # Finalize engine-specific attributes collected by the resolver
     engine_specific_attrs = R.get_engine_specific_attrs()
+
+    # Custom properties: collect from resolver and stage into builder.custom_properties
+    custom_props = R.get_custom_properties() or {}
+
+    # builder is expected to expose add_custom_property; if missing, instruct upgrade instead of overriding
+    if not hasattr(builder, "add_custom_property"):
+        raise AttributeError(
+            "ModelBuilder is missing 'add_custom_property'. Please upgrade Newton to a version that supports custom properties."
+        )
+
+    def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
+        v = value
+        spec = builder.custom_properties.get(cp_name)
+        if spec is None:
+            return
+        overrides = spec.get("values")
+        if overrides is None:
+            return
+        # only model-assigned arrays currently materialized; state/control/contact could be added later
+        if frequency == "body":
+            idx = path_body_map.get(prim_path, -1)
+            if idx >= 0:
+                overrides[int(idx)] = v
+        elif frequency == "shape":
+            idx = path_shape_map.get(prim_path, -1)
+            if idx >= 0:
+                overrides[int(idx)] = v
+        elif frequency == "joint":
+            idx = path_joint_map.get(prim_path, -1)
+            if idx >= 0:
+                overrides[int(idx)] = v
+        elif frequency == "joint_dof":
+            j = path_joint_map.get(prim_path, -1)
+            if j >= 0:
+                dof_begin = builder.joint_qd_start[j]
+                dof_end = (
+                    builder.joint_qd_start[j + 1] if (j + 1) < len(builder.joint_qd_start) else builder.joint_dof_count
+                )
+                for k in range(int(dof_begin), int(dof_end)):
+                    overrides[k] = v
+        elif frequency == "joint_coord":
+            j = path_joint_map.get(prim_path, -1)
+            if j >= 0:
+                coord_begin = builder.joint_q_start[j]
+                coord_end = (
+                    builder.joint_q_start[j + 1] if (j + 1) < len(builder.joint_q_start) else builder.joint_coord_count
+                )
+                for k in range(int(coord_begin), int(coord_end)):
+                    overrides[k] = v
+
+    for (assignment, frequency, variable), spec in custom_props.items():
+        default_val = spec.get("default", None)
+        data_type = spec.get("data_type", None)
+        builder.add_custom_property(
+            variable, frequency, default=default_val, data_type=data_type, assignment=assignment
+        )
+        for pth, val in spec.get("occurrences", {}).items():
+            _assign_value(variable, frequency, pth, val)
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
