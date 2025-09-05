@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import os
 import re
 import warnings
@@ -72,7 +73,7 @@ def parse_usd(
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -852,6 +853,9 @@ def parse_usd(
                     body_density[body_path] = density
             # <--- Marking for deprecation
 
+    # maps from articulation_id to bool indicating if self-collisions are enabled
+    articulation_has_self_collision = {}
+
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         for key, value in ret_dict.items():
             if key in {
@@ -867,18 +871,16 @@ def parse_usd(
                     joint_descriptions[str(path)] = joint_spec
 
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
-        # maps from articulation_id to bool indicating if self-collisions are enabled
-        articulation_has_self_collision = {}
 
         articulation_id = builder.articulation_count
         body_data = {}
         for path, desc in zip(paths, articulation_descs, strict=False):
             if warn_invalid_desc(path, desc):
                 continue
-            if any(re.match(p, str(path)) for p in ignore_paths):
+            articulation_path = str(path)
+            if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
-            prim = stage.GetPrimAtPath(path)
-            builder.add_articulation(str(path))
+            articulation_prim = stage.GetPrimAtPath(path)
             body_ids = {}
             current_body_id = 0
             art_bodies = []
@@ -943,11 +945,17 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
+            articulation_xform = wp.mul(incoming_world_xform, parse_xform(articulation_prim))
 
+            builder.add_articulation(articulation_path)
             if len(joint_edges) == 0:
+                assert len(body_ids) == 1, "An articulation without joints must have exactly one body"
                 # We have an articulation without joints, i.e. a free rigid body.
-                child_body_id = art_bodies[0]
+                if bodies_follow_joint_ordering:
+                    body_data_index = next(iter(body_ids.values()))
+                    child_body_id = add_body(**body_data[body_data_index])
+                else:
+                    child_body_id = art_bodies[0]
                 builder.add_joint_free(child=child_body_id)
                 builder.joint_q[-7:] = articulation_xform
                 sorted_joints = []
@@ -1011,7 +1019,7 @@ def parse_usd(
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
             articulation_has_self_collision[articulation_id] = parse_generic(
-                prim,
+                articulation_prim,
                 "physxArticulation:enabledSelfCollisions",
                 default=enable_self_collisions,
             )
@@ -1233,12 +1241,10 @@ def parse_usd(
     # apply collision filters from articulations that have self collisions disabled
     for art_id, bodies in articulation_bodies.items():
         if not articulation_has_self_collision[art_id]:
-            for body1 in bodies:
-                for body2 in bodies:
-                    if body1 != body2:
-                        for shape1 in builder.body_shapes[body1]:
-                            for shape2 in builder.body_shapes[body2]:
-                                builder.shape_collision_filter_pairs.add((shape1, shape2))
+            for body1, body2 in itertools.combinations(bodies, 2):
+                for shape1 in builder.body_shapes[body1]:
+                    for shape2 in builder.body_shapes[body2]:
+                        builder.shape_collision_filter_pairs.add((shape1, shape2))
 
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
