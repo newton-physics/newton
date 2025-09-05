@@ -28,6 +28,7 @@
 #
 ###########################################################################
 
+import itertools
 import re
 
 import warp as wp
@@ -42,6 +43,8 @@ hand_rotation = wp.normalize(wp.quat(0.283, 0.683, -0.622, 0.258))
 @wp.kernel
 def move_hand(
     joint_qd_start: wp.array(dtype=wp.int32),
+    joint_limit_lower: wp.array(dtype=wp.float32),
+    joint_limit_upper: wp.array(dtype=wp.float32),
     sim_time: wp.array(dtype=wp.float32),
     sim_dt: float,
     # outputs
@@ -56,10 +59,14 @@ def move_hand(
 
     # animate the finger joints
     for i in range(20):
-        joint_target[root_dof_start + i] = wp.sin(t + float(i) * 0.1) * 0.2 + 0.5
+        di = root_dof_start + i
+        target = wp.sin(t + float(i * 6) * 0.1) * 0.15 + 0.3
+        joint_target[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
-    q = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), t * 0.2)
+    q = wp.quat_identity()
+    q *= wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.sin(t) * 0.1)
+    q *= wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -t * 0.02)
     root_xform = joint_parent_xform[root_joint_id]
     joint_parent_xform[root_joint_id] = wp.transform(root_xform.p, q * hand_rotation)
 
@@ -95,6 +102,14 @@ class Example:
             hide_collision_shapes=False,
         )
 
+        # manually disable self collisions for the hand links
+        joint_start, joint_end = tuple(allegro_hand.articulation_start)  # there are only 2 entries currently
+        bodies = [allegro_hand.joint_child[j] for j in range(joint_start, joint_end)]
+        for body1, body2 in itertools.combinations(bodies, 2):
+            for shape1 in allegro_hand.body_shapes[body1]:
+                for shape2 in allegro_hand.body_shapes[body2]:
+                    allegro_hand.shape_collision_filter_pairs.add((shape1, shape2))
+
         # hide collision shapes for the hand links
         for i, key in enumerate(allegro_hand.shape_key):
             if re.match(".*Robot/.*?/collision", key) and "palm_link" not in key:
@@ -113,6 +128,9 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
+        # print("Colliders:")
+        # print("\n".join(map(str, ((np.array(self.model.shape_key)[self.model.shape_contact_pairs.numpy()])).tolist())))
+
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         self.env_time = wp.zeros(self.num_envs, dtype=wp.float32)
@@ -127,6 +145,7 @@ class Example:
             cone="elliptic",
             iterations=100,
             ls_iterations=50,
+            use_mujoco_cpu=False,
         )
 
         self.state_0 = self.model.state()
@@ -156,11 +175,17 @@ class Example:
             wp.launch(
                 move_hand,
                 dim=self.num_envs,
-                inputs=[self.model.joint_qd_start, self.env_time, self.sim_dt],
+                inputs=[
+                    self.model.joint_qd_start,
+                    self.model.joint_limit_lower,
+                    self.model.joint_limit_upper,
+                    self.env_time,
+                    self.sim_dt,
+                ],
                 outputs=[self.control.joint_target, self.model.joint_X_p],
             )
 
-            # update the solver since we have updated the joint parent transforms
+            # # update the solver since we have updated the joint parent transforms
             self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -181,6 +206,8 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+        # self.solver.render_mujoco_viewer()
 
     def test(self):
         pass
