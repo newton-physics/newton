@@ -15,6 +15,24 @@
 
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .broad_phase_sap import BroadPhaseSAP
+from .collision_primitive import (
+    box_box,
+    capsule_box,
+    capsule_capsule,
+    mat23f,
+    mat43f,
+    mat83f,
+    plane_box,
+    plane_capsule,
+    plane_cylinder,
+    plane_ellipsoid,
+    plane_sphere,
+    sphere_box,
+    sphere_capsule,
+    sphere_cylinder,
+    sphere_sphere,
+    vec8f,
+)
 from .flags import ParticleFlags, ShapeFlags
 from .gjk import build_ccd_generic
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
@@ -36,9 +54,25 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
+    "box_box",
     "build_ccd_generic",
+    "capsule_box",
+    "capsule_capsule",
     "compute_shape_inertia",
     "compute_shape_radius",
     "compute_sphere_inertia",
+    "mat23f",
+    "mat43f",
+    "mat83f",
+    "plane_box",
+    "plane_capsule",
+    "plane_cylinder",
+    "plane_ellipsoid",
+    "plane_sphere",
+    "sphere_box",
+    "sphere_capsule",
+    "sphere_cylinder",
+    "sphere_sphere",
     "transform_inertia",
+    "vec8f",
 ]
