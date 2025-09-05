@@ -4,6 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from pxr import Usd
+
 
 @dataclass
 class AttrSpec:
@@ -115,26 +117,18 @@ def _collect_engine_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _collect_engine_specific_attrs(prim, prefixes: list[str]) -> dict[str, Any]:
-    """Collect engine-specific attributes authored on the prim with the given prefixes.
-    These attributes don't have direct mappings in the plugin mapping, but are still important to collect for later use"""
+def _collect_engine_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any]:
+    """Collect engine-specific authored attributes using USD namespace queries."""
 
-    out = {}
-    try:
-        attrs = prim.GetAttributes()
-    except Exception:
+    out: dict[str, Any] = {}
+    if prim is None:
         return out
-    for a in attrs:
-        try:
-            name = a.GetName()
-        except Exception:
-            continue
-        if any(name.startswith(p) for p in prefixes):
-            if a.IsValid() and a.HasAuthoredValue():
-                try:
-                    out[name] = a.Get()
-                except Exception:
-                    pass
+
+    for ns in namespaces:
+        for prop in prim.GetAuthoredPropertiesInNamespace(ns):
+            if isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
+                out[prop.GetName()] = prop.Get()
+
     return out
 
 
@@ -211,22 +205,22 @@ class PhysxPlugin(EngineSchemaPlugin):
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
-        "physxScene:",
-        "physxRigidBody:",
+        "physxScene",
+        "physxRigidBody",
         # Collisions and meshes
-        "physxCollision:",
-        "physxConvexHullCollision:",
-        "physxConvexDecompositionCollision:",
-        "physxTriangleMeshCollision:",
-        "physxTriangleMeshSimplificationCollision:",
-        "physxSDFMeshCollision:",
+        "physxCollision",
+        "physxConvexHullCollision",
+        "physxConvexDecompositionCollision",
+        "physxTriangleMeshCollision",
+        "physxTriangleMeshSimplificationCollision",
+        "physxSDFMeshCollision",
         # Materials
-        "physxMaterial:",
+        "physxMaterial",
         # Joints and limits
-        "physxJoint:",
-        "physxLimit:",
+        "physxJoint",
+        "physxLimit",
         # Articulations
-        "physxArticulation:",
+        "physxArticulation",
     ]
 
     @property
@@ -300,10 +294,8 @@ def _solref_to_stiffness(solref):
     except Exception:
         return None
     # Direct mode: both negative → interpret as (damping, stiffness)
-    if timeconst is not None and timeconst < 0.0 and dampratio < 0.0:
+    if timeconst <= 0.0 or dampratio <= 0.0:
         return -timeconst
-    if not (timeconst and timeconst > 0.0):
-        return None
     return 1.0 / (timeconst * timeconst)
 
 
@@ -318,10 +310,8 @@ def _solref_to_damping(solref):
     except Exception:
         return None
     # Direct mode: both negative → interpret as (damping, stiffness)
-    if timeconst < 0.0 and dampratio < 0.0:
+    if timeconst <= 0.0 or dampratio <= 0.0:
         return -dampratio
-    if not (dampratio and dampratio > 0.0):
-        return None
     return (2.0 * dampratio) / timeconst
 
 

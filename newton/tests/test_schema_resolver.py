@@ -196,17 +196,7 @@ class TestSchemaResolver(unittest.TestCase):
         print("Schema priority test:")
         print(f"  - Both imports successful with {len(result1['path_body_map'])} bodies")
         print(f"  - Both imports have {builder1.joint_count} joints")
-
-        # Compare joint armature values - they should be the same since ant.usda only has PhysX values
-        if builder1.joint_count > 0:
-            armature1 = builder1.joint_armature[0] if builder1.joint_armature[0] > 0 else "not set"
-            armature2 = builder2.joint_armature[0] if builder2.joint_armature[0] > 0 else "not set"
-            print(f"  - First joint armature (Newton priority): {armature1}")
-            print(f"  - First joint armature (PhysX priority): {armature2}")
-
-            # Since ant.usda only has PhysX attributes, both should be the same
-            if armature1 != "not set" and armature2 != "not set":
-                self.assertEqual(armature1, armature2)
+        self.assertEqual(builder1.joint_armature[6], builder2.joint_armature[6])
 
     def test_resolver(self):
         """Test schema resolver directly with USD stage."""
@@ -414,6 +404,60 @@ class TestSchemaResolver(unittest.TestCase):
         control_joint = control.testControlJointScalar.numpy()
         self.assertAlmostEqual(float(control_joint[joint_idx]), 5.5, places=6)
         self.assertAlmostEqual(float(control_joint[other_joint_idx]), 0.0, places=6)
+
+    def test_physx_engine_specific_attrs_in_ant_mixed(self):
+        """Validate PhysX engine-specific attributes are collected from ant_mixed.usda."""
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        usd_path = assets_dir / "ant_mixed.usda"
+        self.assertTrue(usd_path.exists(), f"Missing mixed USD: {usd_path}")
+
+        builder = ModelBuilder()
+        result = parse_usd(
+            builder=builder,
+            source=str(usd_path),
+            schema_priority=["newton", "physx", "mjc"],
+            collect_engine_specific_attrs=True,
+            verbose=False,
+        )
+
+        engine_attrs = result.get("engine_specific_attrs", {})
+        self.assertIn("physx", engine_attrs, "PhysX engine attributes should be collected")
+        physx_attrs = engine_attrs["physx"]
+        self.assertIsInstance(physx_attrs, dict)
+
+        # Accumulate authored PhysX properties of interest
+        articulation_found = []
+        joint_armature_found = []
+        limit_damping_found = []
+
+        for prim_path, attrs in physx_attrs.items():
+            if "physxArticulation:enabledSelfCollisions" in attrs:
+                articulation_found.append((prim_path, attrs["physxArticulation:enabledSelfCollisions"]))
+            if "physxJoint:armature" in attrs:
+                joint_armature_found.append((prim_path, attrs["physxJoint:armature"]))
+            if "physxLimit:angular:damping" in attrs:
+                limit_damping_found.append((prim_path, attrs["physxLimit:angular:damping"]))
+
+        # We expect at least one instance of each from ant_mixed.usda
+        self.assertGreater(
+            len(articulation_found), 0, "Should find physxArticulation:enabledSelfCollisions on articulation root"
+        )
+        self.assertGreater(len(joint_armature_found), 0, "Should find physxJoint:armature on joints")
+        self.assertGreater(len(limit_damping_found), 0, "Should find physxLimit:angular:damping on joints")
+
+        # Validate values against authored USD
+        # Articulation self-collisions should be false/0 on /ant
+        for prim_path, val in articulation_found:
+            if str(prim_path) == "/ant" or "/ant" in str(prim_path):
+                self.assertEqual(bool(val), False)
+                break
+
+        # Joint armature and limit damping should match authored values
+        for _prim_path, val in joint_armature_found[:3]:
+            self.assertAlmostEqual(float(val), 0.01, places=6)
+        for _prim_path, val in limit_damping_found[:3]:
+            self.assertAlmostEqual(float(val), 0.1, places=6)
 
 
 def run_tests():
