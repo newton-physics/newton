@@ -477,7 +477,7 @@ class Model:
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         # attach custom properties with assignment=="state"
-        for name, freq in list(self.attribute_frequency.items()):
+        for name, _freq in list(self.attribute_frequency.items()):
             if self.attribute_assignment.get(name) != "state":
                 continue
             src = getattr(self, name, None)
@@ -522,7 +522,7 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         # attach custom properties with assignment=="control"
-        for name, freq in list(self.attribute_frequency.items()):
+        for name, _freq in list(self.attribute_frequency.items()):
             if self.attribute_assignment.get(name) != "control":
                 continue
             src = getattr(self, name, None)
@@ -596,13 +596,12 @@ class Model:
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom properties with assignment=="contact"
-        for name, freq in list(self.attribute_frequency.items()):
+        for name, _freq in list(self.attribute_frequency.items()):
             if self.attribute_assignment.get(name) != "contact":
                 continue
             src = getattr(self, name, None)
             if src is None:
                 continue
-            # for now, just mirror the arrays; future: derive per-contact sizing
             try:
                 setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
             except Exception:

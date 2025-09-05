@@ -25,8 +25,8 @@ class EngineSchemaPlugin:
     # prim_type -> variable -> list[AttrSpec]
     mapping: dict[str, dict[str, list[AttrSpec]]]
 
-    # extra_attr_prefixes is a list of prefixes for extra attributes that are not in the mapping.
-    extra_attr_prefixes: ClassVar[list[str]] = []
+    # extra_attr_namespaces is a list of namespaces for extra attributes that are not in the mapping.
+    extra_attr_namespaces: ClassVar[list[str]] = []
 
     def __init__(self) -> None:
         # Precompute the full set of USD attribute names referenced by this plugin's mapping.
@@ -85,8 +85,8 @@ class EngineSchemaPlugin:
 
         # Collect attributes by known engine-specific prefixes
         all_prefixes = [self.engine_attr_prefix]
-        if self.extra_attr_prefixes:
-            all_prefixes.extend(self.extra_attr_prefixes)
+        if self.extra_attr_namespaces:
+            all_prefixes.extend(self.extra_attr_namespaces)
         prefixed_attrs = _collect_engine_specific_attrs(prim, all_prefixes)
 
         # Merge and return (explicit names take precedence)
@@ -209,7 +209,7 @@ class NewtonPlugin(EngineSchemaPlugin):
 
 class PhysxPlugin(EngineSchemaPlugin):
     name: ClassVar[str] = "physx"
-    extra_attr_prefixes: ClassVar[list[str]] = [
+    extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
         "physxScene:",
         "physxRigidBody:",

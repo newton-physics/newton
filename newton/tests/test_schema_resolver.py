@@ -12,7 +12,6 @@ Prerequisites:
 - Run from newton/tests directory: python3 test_schema_resolver.py
 """
 
-import sys
 import unittest
 from pathlib import Path
 
@@ -438,4 +437,3 @@ if __name__ == "__main__":
     print("=" * 60)
 
     success = run_tests()
-

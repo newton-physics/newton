@@ -112,6 +112,10 @@ def parse_usd(
             * - "collapse_results"
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
     """
+    # default schema priority (avoid mutable default argument)
+    if schema_priority is None:
+        schema_priority = ["newton", "mjc", "physx"]
+
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
     except ImportError as e:
@@ -278,8 +282,6 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
 
     # Initialize schema resolver according to precedence
-    if schema_priority is None:
-        schema_priority = ["newton", "mjc", "physx"]
     R = Resolver(schema_priority)
     engine_specific_attrs = {}
 
