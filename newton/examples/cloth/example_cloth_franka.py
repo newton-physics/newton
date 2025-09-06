@@ -556,7 +556,7 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
     parser.set_defaults(num_frames=3850)
     viewer, args = newton.examples.init(parser)
 

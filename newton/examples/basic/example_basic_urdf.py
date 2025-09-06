@@ -136,7 +136,7 @@ class Example:
 
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
     parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
 
     # Parse arguments and initialize viewer

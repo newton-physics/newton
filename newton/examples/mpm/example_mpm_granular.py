@@ -159,7 +159,7 @@ if __name__ == "__main__":
     import argparse
 
     # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
 
     # Add MPM-specific arguments
     parser.add_argument("--collider", default="cube", type=str)

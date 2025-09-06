@@ -194,7 +194,7 @@ class Example:
 
 if __name__ == "__main__":
     # Create parser with base arguments
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
 
     # Add solver-specific arguments
     parser.add_argument(

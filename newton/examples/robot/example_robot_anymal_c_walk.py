@@ -230,7 +230,12 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    # Create parser with common arguments
+    parser = newton.examples.create_parser(add_help=True)
+    parser.description = "Demonstrates ANYmal C quadruped robot walking simulation using Newton physics."
+
+    # Parse arguments and initialize viewer
+    viewer, args = newton.examples.init(parser)
 
     example = Example(viewer)
 

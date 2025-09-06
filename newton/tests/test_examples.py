@@ -53,7 +53,7 @@ def _build_command_line_options(test_options: dict[str, Any]) -> list:
         if isinstance(value, bool):
             # Default behavior expecting argparse.BooleanOptionalAction support
             additional_options.append(f"--{'no-' if not value else ''}{key.replace('_', '-')}")
-        if isinstance(value, list):
+        elif isinstance(value, list):
             additional_options.extend([f"--{key.replace('_', '-')}"] + [str(v) for v in value])
         else:
             # Just add --key value

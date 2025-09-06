@@ -363,7 +363,7 @@ class Example:
 
 
 def main():
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
     parser.add_argument("--repeats", type=int, default=3, help="Number of times to run the benchmark.")
     parser.add_argument(
         "--batch-sizes",

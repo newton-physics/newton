@@ -386,7 +386,7 @@ if __name__ == "__main__":
     import argparse
 
     # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
+    parser = newton.examples.create_parser(add_help=True)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
     parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
