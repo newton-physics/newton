@@ -2681,7 +2681,8 @@ class SolverMuJoCo(SolverBase):
         .. note::
 
             The MuJoCo viewer only supports rendering Newton models with a single environment,
-            unless :attr:`use_mujoco_cpu` is :obj:`True`.
+            unless :attr:`use_mujoco_cpu` is :obj:`True` or the solver was initialized with
+            :attr:`separate_envs_to_worlds` set to :obj:`False`.
 
             The MuJoCo viewer is only meant as a debugging tool.
 
