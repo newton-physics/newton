@@ -4438,54 +4438,58 @@ class ModelBuilder:
 
             # Add custom properties onto the model
             if hasattr(self, "custom_properties") and self.custom_properties:
-                # helper: map warp dtype to (np dtype, warp dtype) for scalars
-                def _scalar_np_wp_dtype(d: object) -> tuple[np.dtype, object]:
-                    if d in (wp.float16, wp.float32, wp.float64):
-                        return (np.float32, wp.float32)
-                    if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
-                        return (np.int32, wp.int32)
-                    if d is wp.bool:
-                        return (np.bool_, wp.bool)
-                    return (np.float32, wp.float32)
-
-                # helper: default value for dtype when not specified
+                # need to contruct wp arrays from the underlying data
+                # some of the elements of may have been overridden before finalize which need to be reflected in the wp arrays
+                # default value for dtype when not specified
                 def _default_for_dtype(d: object):
-                    if d is wp.vec3:
-                        return (0.0, 0.0, 0.0)
-                    np_dt, _ = _scalar_np_wp_dtype(d)
-                    if np_dt is np.float32:
-                        return 0.0
-                    if np_dt is np.int32:
-                        return 0
-                    if np_dt is np.bool_:
+                    # vectors default to zeros of their length
+                    if wp.types.type_is_vector(d):
+                        length = getattr(d, "_shape_", (1,))[0] or 1
+                        return np.zeros(
+                            length,
+                            dtype=wp.types.warp_type_to_np_dtype.get(
+                                getattr(d, "_wp_scalar_type_", wp.float32), np.float32
+                            ),
+                        )
+                    # scalars
+                    if d is wp.bool:
                         return False
+                    if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
+                        return 0
                     return 0.0
 
-                # helper: build wp.array from count, dtype, default and overrides
+                # build wp.array from count, dtype, default and overrides
                 def _build_wp_array(count: int, d: object, default_val, overrides: dict[int, Any]):
-                    if d is wp.vec3:
+                    # Vector path
+                    if wp.types.type_is_vector(d):
+                        length = getattr(d, "_shape_", (1,))[0] or 1
+                        scalar_wp = getattr(d, "_wp_scalar_type_", wp.float32)
+                        scalar_np = wp.types.warp_type_to_np_dtype.get(scalar_wp, np.float32)
                         try:
                             base = np.array(
-                                default_val if default_val is not None else (0.0, 0.0, 0.0), dtype=np.float32
-                            ).reshape(3)
+                                default_val if default_val is not None else np.zeros(length, dtype=scalar_np),
+                                dtype=scalar_np,
+                            ).reshape(length)
                         except Exception:
-                            base = np.array((0.0, 0.0, 0.0), dtype=np.float32)
+                            base = np.zeros(length, dtype=scalar_np)
                         arr = np.tile(base, (count, 1))
+                        # override values
                         for idx, val in overrides.items():
                             i = int(idx)
                             if 0 <= i < count:
                                 try:
-                                    arr[i] = np.array(val, dtype=np.float32).reshape(3)
+                                    arr[i] = np.array(val, dtype=scalar_np).reshape(length)
                                 except Exception:
                                     try:
-                                        arr[i] = np.array([val[0], val[1], val[2]], dtype=np.float32)
+                                        arr[i] = np.array(list(val)[:length], dtype=scalar_np)
                                     except Exception:
                                         pass
-                        return wp.array(arr, dtype=wp.vec3, requires_grad=requires_grad)
+                        return wp.array(arr, dtype=d, requires_grad=requires_grad)
 
-                    np_dt, wp_dt = _scalar_np_wp_dtype(d)
+                    # Scalar path
+                    scalar_np = wp.types.warp_type_to_np_dtype.get(d, np.float32)
                     fill_val = default_val if default_val is not None else _default_for_dtype(d)
-                    arr = np.full(count, fill_val, dtype=np_dt)
+                    arr = np.full(count, fill_val, dtype=scalar_np)
                     for idx, val in overrides.items():
                         i = int(idx)
                         if 0 <= i < count:
@@ -4493,7 +4497,7 @@ class ModelBuilder:
                                 arr[i] = val
                             except Exception:
                                 pass
-                    return wp.array(arr, dtype=wp_dt, requires_grad=requires_grad)
+                    return wp.array(arr, dtype=d, requires_grad=requires_grad)
 
                 for var_name, spec in self.custom_properties.items():
                     frequency = spec.get("frequency")

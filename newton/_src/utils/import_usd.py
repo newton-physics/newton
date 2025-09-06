@@ -1429,17 +1429,8 @@ def parse_usd(
 
             builder = multi_env_builder
 
-    # Finalize engine-specific attributes collected by the resolver
     engine_specific_attrs = R.get_engine_specific_attrs()
-
-    # Custom properties: collect from resolver and stage into builder.custom_properties
     custom_props = R.get_custom_properties() or {}
-
-    # builder is expected to expose add_custom_property; if missing, instruct upgrade instead of overriding
-    if not hasattr(builder, "add_custom_property"):
-        raise AttributeError(
-            "ModelBuilder is missing 'add_custom_property'. Please upgrade Newton to a version that supports custom properties."
-        )
 
     def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
         v = value
@@ -1449,7 +1440,6 @@ def parse_usd(
         overrides = spec.get("values")
         if overrides is None:
             return
-        # only model-assigned arrays currently materialized; state/control/contact could be added later
         if frequency == "body":
             idx = path_body_map.get(prim_path, -1)
             if idx >= 0:

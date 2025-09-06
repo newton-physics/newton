@@ -292,6 +292,9 @@ def Xform "ant" (
             # additional custom newton properties (state/control on joint)
             float newton:state:joint:testStateJointScalar = 4.0
             float newton:control:joint:testControlJointScalar = 5.5
+            bool newton:state:joint:testStateJointBool = 1
+            int newton:control:joint:testControlJointInt = 3
+            vector3f newton:model:joint:testJointVec = (0.5, 0.6, 0.7)
         }
 
         def PhysicsRevoluteJoint "front_left_foot" (
@@ -574,6 +577,9 @@ def Xform "ant" (
         # custom newton properties (body frequency)
         float newton:model:body:testBodyScalar = 1.5
         vector3f newton:model:body:testBodyVec = (0.1, 0.2, 0.3)
+        bool newton:model:body:testBodyBool = 1
+        int newton:model:body:testBodyInt = 7
+        vector3f newton:state:body:testBodyVec3B = (1.1, 2.2, 3.3)
     }
 
     def Xform "front_left_foot" (

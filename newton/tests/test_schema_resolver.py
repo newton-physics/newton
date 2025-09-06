@@ -337,6 +337,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIn(body_path, engine_attrs["newton"])
         self.assertIn("newton:model:body:testBodyScalar", engine_attrs["newton"][body_path])
         self.assertIn("newton:model:body:testBodyVec", engine_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyBool", engine_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyInt", engine_attrs["newton"][body_path])
+        self.assertIn("newton:state:body:testBodyVec3B", engine_attrs["newton"][body_path])
         self.assertAlmostEqual(engine_attrs["newton"][body_path]["newton:model:body:testBodyScalar"], 1.5, places=6)
         # also validate vector value in engine attrs
         vec_val = engine_attrs["newton"][body_path]["newton:model:body:testBodyVec"]
@@ -350,6 +353,9 @@ class TestSchemaResolver(unittest.TestCase):
         # also validate state/control joint custom attrs in engine attrs
         self.assertIn("newton:state:joint:testStateJointScalar", engine_attrs["newton"][joint_name])
         self.assertIn("newton:control:joint:testControlJointScalar", engine_attrs["newton"][joint_name])
+        self.assertIn("newton:state:joint:testStateJointBool", engine_attrs["newton"][joint_name])
+        self.assertIn("newton:control:joint:testControlJointInt", engine_attrs["newton"][joint_name])
+        self.assertIn("newton:model:joint:testJointVec", engine_attrs["newton"][joint_name])
 
         model = builder.finalize()
         state = model.state()
@@ -365,6 +371,17 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(float(body_vec[idx, 0]), 0.1, places=6)
         self.assertAlmostEqual(float(body_vec[idx, 1]), 0.2, places=6)
         self.assertAlmostEqual(float(body_vec[idx, 2]), 0.3, places=6)
+        self.assertTrue(hasattr(model, "testBodyBool"))
+        self.assertTrue(hasattr(model, "testBodyInt"))
+        self.assertTrue(hasattr(state, "testBodyVec3B"))
+        body_bool = model.testBodyBool.numpy()
+        body_int = model.testBodyInt.numpy()
+        body_vec_b = state.testBodyVec3B.numpy()
+        self.assertEqual(int(body_bool[idx]), 1)
+        self.assertEqual(int(body_int[idx]), 7)
+        self.assertAlmostEqual(float(body_vec_b[idx, 0]), 1.1, places=6)
+        self.assertAlmostEqual(float(body_vec_b[idx, 1]), 2.2, places=6)
+        self.assertAlmostEqual(float(body_vec_b[idx, 2]), 3.3, places=6)
 
         # For prims without authored values, ensure defaults are present:
         # Pick a different body (e.g., front_right_leg) that didn't author testBodyScalar
@@ -397,6 +414,11 @@ class TestSchemaResolver(unittest.TestCase):
         state_joint = state.testStateJointScalar.numpy()
         self.assertAlmostEqual(float(state_joint[joint_idx]), 4.0, places=6)
         self.assertAlmostEqual(float(state_joint[other_joint_idx]), 0.0, places=6)
+        # bool state property
+        self.assertTrue(hasattr(state, "testStateJointBool"))
+        state_joint_bool = state.testStateJointBool.numpy()
+        self.assertEqual(int(state_joint_bool[joint_idx]), 1)
+        self.assertEqual(int(state_joint_bool[other_joint_idx]), 0)
 
         # Validate control-assigned custom property mirrors initial values
         control = model.control()
@@ -404,6 +426,11 @@ class TestSchemaResolver(unittest.TestCase):
         control_joint = control.testControlJointScalar.numpy()
         self.assertAlmostEqual(float(control_joint[joint_idx]), 5.5, places=6)
         self.assertAlmostEqual(float(control_joint[other_joint_idx]), 0.0, places=6)
+        # int control property
+        self.assertTrue(hasattr(control, "testControlJointInt"))
+        control_joint_int = control.testControlJointInt.numpy()
+        self.assertEqual(int(control_joint_int[joint_idx]), 3)
+        self.assertEqual(int(control_joint_int[other_joint_idx]), 0)
 
     def test_physx_engine_specific_attrs_in_ant_mixed(self):
         """Validate PhysX engine-specific attributes are collected from ant_mixed.usda."""
