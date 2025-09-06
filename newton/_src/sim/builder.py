@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import copy
 import ctypes
-import itertools
 import math
 import warnings
 from dataclasses import dataclass
@@ -356,7 +355,6 @@ class ModelBuilder:
         self.shape_material_restitution = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
-        self.shape_collision_group_map = {}
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
         # environment group index for each shape
@@ -477,40 +475,6 @@ class ModelBuilder:
         self.equality_constraint_type = []
         self.equality_constraint_body1 = []
         self.equality_constraint_body2 = []
-
-        # Custom properties (user-defined per-frequency arrays)
-        # name -> {"assignment": str, "frequency": str, "data_type": str, "default": Any, "values": dict[int, Any]}
-        self.custom_properties: dict[str, dict[str, object]] = {}
-
-    def add_custom_property(
-        self, name: str, frequency: str, default=None, data_type: str | None = None, assignment: str = "model"
-    ):
-        """Define a custom per-entity property to be added to the Model.
-
-        Args:
-            name: Variable name to expose on the Model
-            frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
-            data_type: Logical type name (e.g., "float", "int32", "bool", "vec3")
-        """
-        if name in self.custom_properties:
-            # validate that specification matches exactly
-            existing_freq = self.custom_properties[name].get("frequency")
-            existing_dtype = self.custom_properties[name].get("data_type")
-            existing_assign = self.custom_properties[name].get("assignment")
-            # if caller did not pass data_type, treat as unspecified (i.e., must match existing)
-            target_dtype = data_type if data_type is not None else existing_dtype
-            if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
-                raise ValueError(
-                    f"Custom property '{name}' already exists with frequency='{existing_freq}', data_type='{existing_dtype}', assignment='{existing_assign}'. "
-                )
-            return
-        self.custom_properties[name] = {
-            "assignment": assignment,
-            "frequency": frequency,
-            "data_type": data_type or (type(default).__name__ if default is not None else "float"),
-            "default": default,
-            "values": {},  # index -> value overrides
-        }
         self.equality_constraint_anchor = []
         self.equality_constraint_relpose = []
         self.equality_constraint_torquescale = []
@@ -519,6 +483,37 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+        # Custom properties (user-defined per-frequency arrays)
+        # name -> {"assignment": str, "frequency": str, "dtype": wp.dtype, "default": Any, "values": dict[int, Any]}
+        self.custom_properties: dict[str, dict[str, object]] = {}
+
+    def add_custom_property(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
+        """Define a custom per-entity property to be added to the Model.
+
+        Args:
+            name: Variable name to expose on the Model
+            frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        """
+        if name in self.custom_properties:
+            # validate that specification matches exactly
+            existing_freq = self.custom_properties[name].get("frequency")
+            existing_dtype = self.custom_properties[name].get("dtype")
+            existing_assign = self.custom_properties[name].get("assignment")
+            # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
+            target_dtype = dtype if dtype is not None else existing_dtype
+            if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
+                raise ValueError(
+                    f"Custom property '{name}' already exists with frequency='{existing_freq}', dtype='{existing_dtype}', assignment='{existing_assign}'. "
+                )
+            return
+        self.custom_properties[name] = {
+            "assignment": assignment,
+            "frequency": frequency,
+            "dtype": dtype,
+            "default": default,
+            "values": {},  # index -> value overrides
+        }
 
     @property
     def up_vector(self) -> Vec3:
@@ -764,6 +759,8 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        schema_priority: list[str] | None = None,
+        collect_engine_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -1091,12 +1088,6 @@ class ModelBuilder:
         shape_count_offset = self.shape_count
         for i, j in builder.shape_collision_filter_pairs:
             self.shape_collision_filter_pairs.add((i + shape_count_offset, j + shape_count_offset))
-
-        # Copy collision group map directly
-        for group, shapes in builder.shape_collision_group_map.items():
-            if group not in self.shape_collision_group_map:
-                self.shape_collision_group_map[group] = []
-            self.shape_collision_group_map[group].extend([s + shape_count_offset for s in shapes])
 
         # Handle environment group assignments
         # For particles
@@ -2469,9 +2460,6 @@ class ModelBuilder:
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_collision_group.append(cfg.collision_group)
-        if cfg.collision_group not in self.shape_collision_group_map:
-            self.shape_collision_group_map[cfg.collision_group] = []
-        self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
@@ -4205,7 +4193,6 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
             m.shape_collision_group = self.shape_collision_group
-            m.shape_collision_group_map = self.shape_collision_group_map
 
             # ---------------------
             # springs
@@ -4451,34 +4438,67 @@ class ModelBuilder:
 
             # Add custom properties onto the model
             if hasattr(self, "custom_properties") and self.custom_properties:
-                # robust vec3 alias detection without relying on external schema names
-                def _is_vec3_type_name(type_name: object) -> bool:
-                    if not isinstance(type_name, str):
+                # helper: map warp dtype to (np dtype, warp dtype) for scalars
+                def _scalar_np_wp_dtype(d: object) -> tuple[np.dtype, object]:
+                    if d in (wp.float16, wp.float32, wp.float64):
+                        return (np.float32, wp.float32)
+                    if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
+                        return (np.int32, wp.int32)
+                    if d is wp.bool:
+                        return (np.bool_, wp.bool)
+                    return (np.float32, wp.float32)
+
+                # helper: default value for dtype when not specified
+                def _default_for_dtype(d: object):
+                    if d is wp.vec3:
+                        return (0.0, 0.0, 0.0)
+                    np_dt, _ = _scalar_np_wp_dtype(d)
+                    if np_dt is np.float32:
+                        return 0.0
+                    if np_dt is np.int32:
+                        return 0
+                    if np_dt is np.bool_:
                         return False
-                    cleaned = "".join(ch for ch in type_name if ch.isalnum()).lower()
-                    return ("vec3" in cleaned) or ("float3" in cleaned) or ("vector3f" in cleaned)
+                    return 0.0
+
+                # helper: build wp.array from count, dtype, default and overrides
+                def _build_wp_array(count: int, d: object, default_val, overrides: dict[int, Any]):
+                    if d is wp.vec3:
+                        try:
+                            base = np.array(
+                                default_val if default_val is not None else (0.0, 0.0, 0.0), dtype=np.float32
+                            ).reshape(3)
+                        except Exception:
+                            base = np.array((0.0, 0.0, 0.0), dtype=np.float32)
+                        arr = np.tile(base, (count, 1))
+                        for idx, val in overrides.items():
+                            i = int(idx)
+                            if 0 <= i < count:
+                                try:
+                                    arr[i] = np.array(val, dtype=np.float32).reshape(3)
+                                except Exception:
+                                    try:
+                                        arr[i] = np.array([val[0], val[1], val[2]], dtype=np.float32)
+                                    except Exception:
+                                        pass
+                        return wp.array(arr, dtype=wp.vec3, requires_grad=requires_grad)
+
+                    np_dt, wp_dt = _scalar_np_wp_dtype(d)
+                    fill_val = default_val if default_val is not None else _default_for_dtype(d)
+                    arr = np.full(count, fill_val, dtype=np_dt)
+                    for idx, val in overrides.items():
+                        i = int(idx)
+                        if 0 <= i < count:
+                            try:
+                                arr[i] = val
+                            except Exception:
+                                pass
+                    return wp.array(arr, dtype=wp_dt, requires_grad=requires_grad)
 
                 for var_name, spec in self.custom_properties.items():
                     frequency = spec.get("frequency")
                     if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
                         continue
-                    # choose a default that matches data_type when missing
-                    if "default" in spec:
-                        default_val = spec.get("default")
-                    else:
-                        dt = spec.get("data_type", "float")
-                        if dt in ("float", "double"):
-                            default_val = 0.0
-                        elif dt in ("int", "int32", "uint", "uint32"):
-                            default_val = 0
-                        elif dt in ("bool",):
-                            default_val = False
-                        elif _is_vec3_type_name(dt):
-                            default_val = (0.0, 0.0, 0.0)
-                        else:
-                            # fallback to zero for unknown scalar types
-                            default_val = 0.0
-                    overrides = spec.get("values", {})
 
                     # determine count by frequency
                     if frequency == "body":
@@ -4494,85 +4514,11 @@ class ModelBuilder:
                     else:
                         continue
 
-                    # Choose dtype based on provided data_type; default to float32
-                    data_type = spec.get("data_type", "float")
-                    # Detect vec3 either by declared data_type or by default value shape
-                    is_vec3_decl = _is_vec3_type_name(data_type)
-                    is_vec3_default = False
-                    if default_val is not None:
-                        try:
-                            is_vec3_default = np.size(default_val) == 3
-                        except Exception:
-                            is_vec3_default = False
+                    dtype = spec.get("dtype", wp.float32)
+                    default_val = spec.get("default", _default_for_dtype(dtype))
+                    overrides = spec.get("values", {})
 
-                    if is_vec3_decl or is_vec3_default:
-                        # store as 3-vector; expect default_val to be 3-tuple-like
-                        # Fallback to zeros if not provided
-                        try:
-                            base = np.array(
-                                default_val if default_val is not None else (0.0, 0.0, 0.0), dtype=np.float32
-                            ).reshape(
-                                3,
-                            )
-                        except Exception:
-                            base = np.array((0.0, 0.0, 0.0), dtype=np.float32)
-                        arr = np.tile(base, (count, 1))
-                        for idx, val in overrides.items():
-                            i = int(idx)
-                            if 0 <= i < count:
-                                try:
-                                    arr[i] = np.array(val, dtype=np.float32).reshape(
-                                        3,
-                                    )
-                                except Exception:
-                                    # best-effort conversion
-                                    try:
-                                        arr[i] = np.array([val[0], val[1], val[2]], dtype=np.float32)
-                                    except Exception:
-                                        pass
-                        wp_arr = wp.array(arr, dtype=wp.vec3, requires_grad=requires_grad)
-                        # record assignment for downstream objects (state/control/contacts)
-                        m.attribute_assignment[var_name] = spec.get("assignment", "model")
-                        if not hasattr(m, var_name):
-                            m.add_attribute(var_name, wp_arr, frequency)
-                        continue
-
-                    if data_type in ("float", "double"):
-                        np_dtype = np.float32
-                        wp_dtype = wp.float32
-                    elif data_type in ("int", "int32", "uint", "uint32"):
-                        np_dtype = np.int32
-                        wp_dtype = wp.int32
-                    elif data_type in ("bool",):
-                        np_dtype = np.bool_
-                        wp_dtype = wp.bool
-                    else:
-                        # fallback to float scalar
-                        np_dtype = np.float32
-                        wp_dtype = wp.float32
-
-                    # Fill with default; treat None as typified zero
-                    fill_val = default_val
-                    if fill_val is None:
-                        if np_dtype is np.float32:
-                            fill_val = 0.0
-                        elif np_dtype is np.int32:
-                            fill_val = 0
-                        elif np_dtype is np.bool_:
-                            fill_val = False
-                        else:
-                            fill_val = 0.0
-                    arr = np.full(count, fill_val, dtype=np_dtype)
-                    for idx, val in overrides.items():
-                        i = int(idx)
-                        if 0 <= i < count:
-                            try:
-                                arr[i] = val
-                            except Exception:
-                                pass
-
-                    wp_arr = wp.array(arr, dtype=wp_dtype, requires_grad=requires_grad)
-                    # record assignment and register on the model so Selection can discover it
+                    wp_arr = _build_wp_array(count, dtype, default_val, overrides)
                     m.attribute_assignment[var_name] = spec.get("assignment", "model")
                     if not hasattr(m, var_name):
                         m.add_attribute(var_name, wp_arr, frequency)
@@ -4600,20 +4546,26 @@ class ModelBuilder:
         filters = copy.copy(self.shape_collision_filter_pairs)
         contact_pairs = []
 
-        # iterate over collision groups (islands)
-        for group, shapes in self.shape_collision_group_map.items():
-            for s1, s2 in itertools.combinations(shapes, 2):
-                if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
-                if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
+        # Sort shapes by env group in case they are not sorted, keep only colliding shapes
+        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
+        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_group[i])
 
-                # Check environment groups
-                env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
-                env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
+        # Iterate over all shapes candidates
+        for i1 in range(len(sorted_indices)):
+            s1 = sorted_indices[i1]
+            env1 = self.shape_group[s1]
+            collision_group1 = self.shape_collision_group[s1]
+            for i2 in range(i1 + 1, len(sorted_indices)):
+                s2 = sorted_indices[i2]
+                env2 = self.shape_group[s2]
+                # Skip shapes from different environments (unless one is global). As the shapes are sorted,
+                # this means the shapes in this environment group have all been processed.
+                if env1 != -1 and env1 != env2:
+                    break
 
-                # Skip shapes from different environments (unless one is global)
-                if env1 != -1 and env2 != -1 and env1 != env2:
+                # Skip shapes from different collision group (unless one is global).
+                collision_group2 = self.shape_collision_group[s2]
+                if collision_group1 != -1 and collision_group2 != -1 and collision_group1 != collision_group2:
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
@@ -4622,27 +4574,6 @@ class ModelBuilder:
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
                     filters.add((shape_a, shape_b))
-
-            if group != -1 and -1 in self.shape_collision_group_map:
-                # shapes with collision group -1 collide with all other shapes
-                for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
-                    if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-                    if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-
-                    # Check environment groups
-                    env1 = self.shape_group[s1] if s1 < len(self.shape_group) else -1
-                    env2 = self.shape_group[s2] if s2 < len(self.shape_group) else -1
-
-                    # Skip shapes from different environments (unless one is global)
-                    if env1 != -1 and env2 != -1 and env1 != env2:
-                        continue
-
-                    shape_a, shape_b = min(s1, s2), max(s1, s2)
-                    if (shape_a, shape_b) not in filters:
-                        contact_pairs.append((shape_a, shape_b))
-                        filters.add((shape_a, shape_b))
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)

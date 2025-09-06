@@ -1483,10 +1483,8 @@ def parse_usd(
 
     for (assignment, frequency, variable), spec in custom_props.items():
         default_val = spec.get("default", None)
-        data_type = spec.get("data_type", None)
-        builder.add_custom_property(
-            variable, frequency, default=default_val, data_type=data_type, assignment=assignment
-        )
+        dtype = spec.get("dtype", None)
+        builder.add_custom_property(variable, frequency, default=default_val, dtype=dtype, assignment=assignment)
         for pth, val in spec.get("occurrences", {}).items():
             _assign_value(variable, frequency, pth, val)
     return {

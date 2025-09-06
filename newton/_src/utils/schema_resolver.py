@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import warp as wp
 from pxr import Usd
 
 
@@ -290,11 +291,10 @@ def _solref_to_stiffness(solref):
     """
     try:
         timeconst = float(solref[0])
-        dampratio = float(solref[1]) if len(solref) > 1 else None
     except Exception:
         return None
     # Direct mode: both negative → interpret as (damping, stiffness)
-    if timeconst <= 0.0 or dampratio <= 0.0:
+    if timeconst <= 0.0:
         return -timeconst
     return 1.0 / (timeconst * timeconst)
 
@@ -451,6 +451,22 @@ class Resolver:
 
     def _accumulate_custom_properties(self, prim_path: str, attrs: dict[str, Any]) -> None:
         """collect custom properties from a pre-fetched attribute map (name->value)."""
+
+        def _infer_wp_dtype(v: Any):
+            # Heuristic mapping from USD value to Warp dtype
+            try:
+                # Vector3-like
+                if hasattr(v, "__len__") and len(v) == 3:
+                    return wp.vec3
+            except Exception:
+                pass
+            if isinstance(v, bool):
+                return wp.bool
+            if isinstance(v, int):
+                return wp.int32
+            # default to float32 for scalars
+            return wp.float32
+
         for name, value in attrs.items():
             parsed = self._parse_custom_attr_name(name)
             if not parsed:
@@ -459,12 +475,12 @@ class Resolver:
             key = (assignment, frequency, variable)
             spec = self._custom_properties.get(key)
             if spec is None:
-                data_type = type(value).__name__
+                dtype = _infer_wp_dtype(value)
                 spec = {
                     "assignment": assignment,
                     "frequency": frequency,
                     "name": variable,
-                    "data_type": data_type,
+                    "dtype": dtype,
                     "occurrences": {},
                 }
                 self._custom_properties[key] = spec
@@ -530,7 +546,7 @@ class Resolver:
 
         returns:
             dict keyed by (assignment, frequency, variable_name) with entries:
-                {"assignment","frequency","name","data_type","default","occurrences"}
+                {"assignment","frequency","name","dtype","default","occurrences"}
         """
         # return a shallow copy; nested dicts are fine to share for our usage
         return self._custom_properties.copy()
