@@ -483,6 +483,37 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+        # Custom properties (user-defined per-frequency arrays)
+        # name -> {"assignment": str, "frequency": str, "dtype": wp.dtype, "default": Any, "values": dict[int, Any]}
+        self.custom_properties: dict[str, dict[str, object]] = {}
+
+    def add_custom_property(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
+        """Define a custom per-entity property to be added to the Model.
+
+        Args:
+            name: Variable name to expose on the Model
+            frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        """
+        if name in self.custom_properties:
+            # validate that specification matches exactly
+            existing_freq = self.custom_properties[name].get("frequency")
+            existing_dtype = self.custom_properties[name].get("dtype")
+            existing_assign = self.custom_properties[name].get("assignment")
+            # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
+            target_dtype = dtype if dtype is not None else existing_dtype
+            if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
+                raise ValueError(
+                    f"Custom property '{name}' already exists with frequency='{existing_freq}', dtype='{existing_dtype}', assignment='{existing_assign}'. "
+                )
+            return
+        self.custom_properties[name] = {
+            "assignment": assignment,
+            "frequency": frequency,
+            "dtype": dtype,
+            "default": default,
+            "values": {},  # index -> value overrides
+        }
 
     @property
     def up_vector(self) -> Vec3:
@@ -728,6 +759,8 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        schema_priority: list[str] | None = None,
+        collect_engine_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -4402,6 +4435,97 @@ class ModelBuilder:
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
+
+            # Add custom properties onto the model
+            if hasattr(self, "custom_properties") and self.custom_properties:
+                # need to contruct wp arrays from the underlying data
+                # some of the elements of may have been overridden before finalize which need to be reflected in the wp arrays
+                # default value for dtype when not specified
+                def _default_for_dtype(d: object):
+                    # vectors default to zeros of their length
+                    if wp.types.type_is_vector(d):
+                        length = getattr(d, "_shape_", (1,))[0] or 1
+                        return np.zeros(
+                            length,
+                            dtype=wp.types.warp_type_to_np_dtype.get(
+                                getattr(d, "_wp_scalar_type_", wp.float32), np.float32
+                            ),
+                        )
+                    # scalars
+                    if d is wp.bool:
+                        return False
+                    if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
+                        return 0
+                    return 0.0
+
+                # build wp.array from count, dtype, default and overrides
+                def _build_wp_array(count: int, d: object, default_val, overrides: dict[int, Any]):
+                    # Vector path
+                    if wp.types.type_is_vector(d):
+                        length = getattr(d, "_shape_", (1,))[0] or 1
+                        scalar_wp = getattr(d, "_wp_scalar_type_", wp.float32)
+                        scalar_np = wp.types.warp_type_to_np_dtype.get(scalar_wp, np.float32)
+                        try:
+                            base = np.array(
+                                default_val if default_val is not None else np.zeros(length, dtype=scalar_np),
+                                dtype=scalar_np,
+                            ).reshape(length)
+                        except Exception:
+                            base = np.zeros(length, dtype=scalar_np)
+                        arr = np.tile(base, (count, 1))
+                        # override values
+                        for idx, val in overrides.items():
+                            i = int(idx)
+                            if 0 <= i < count:
+                                try:
+                                    arr[i] = np.array(val, dtype=scalar_np).reshape(length)
+                                except Exception:
+                                    try:
+                                        arr[i] = np.array(list(val)[:length], dtype=scalar_np)
+                                    except Exception:
+                                        pass
+                        return wp.array(arr, dtype=d, requires_grad=requires_grad)
+
+                    # Scalar path
+                    scalar_np = wp.types.warp_type_to_np_dtype.get(d, np.float32)
+                    fill_val = default_val if default_val is not None else _default_for_dtype(d)
+                    arr = np.full(count, fill_val, dtype=scalar_np)
+                    for idx, val in overrides.items():
+                        i = int(idx)
+                        if 0 <= i < count:
+                            try:
+                                arr[i] = val
+                            except Exception:
+                                pass
+                    return wp.array(arr, dtype=d, requires_grad=requires_grad)
+
+                for var_name, spec in self.custom_properties.items():
+                    frequency = spec.get("frequency")
+                    if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
+                        continue
+
+                    # determine count by frequency
+                    if frequency == "body":
+                        count = m.body_count
+                    elif frequency == "shape":
+                        count = m.shape_count
+                    elif frequency == "joint":
+                        count = m.joint_count
+                    elif frequency == "joint_dof":
+                        count = m.joint_dof_count
+                    elif frequency == "joint_coord":
+                        count = m.joint_coord_count
+                    else:
+                        continue
+
+                    dtype = spec.get("dtype", wp.float32)
+                    default_val = spec.get("default", _default_for_dtype(dtype))
+                    overrides = spec.get("values", {})
+
+                    wp_arr = _build_wp_array(count, dtype, default_val, overrides)
+                    m.attribute_assignment[var_name] = spec.get("assignment", "model")
+                    if not hasattr(m, var_name):
+                        m.add_attribute(var_name, wp_arr, frequency)
 
             return m
 
