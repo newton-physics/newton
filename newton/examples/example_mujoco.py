@@ -381,7 +381,9 @@ if __name__ == "__main__":
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
-    parser.add_argument("--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search.")
+    parser.add_argument(
+        "--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search."
+    )
 
     args = parser.parse_known_args()[0]
 
