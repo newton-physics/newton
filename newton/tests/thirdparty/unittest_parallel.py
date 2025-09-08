@@ -28,6 +28,7 @@ import pickle
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 from contextlib import contextmanager
 from io import StringIO
@@ -230,23 +231,57 @@ def main(argv=None):
                     test_manager = ParallelTestManager(manager, args, temp_dir)
                     try:
                         results = pool.map(test_manager.run_tests, test_suites)
-                    except (pickle.PicklingError, TypeError, AttributeError) as e:
-                        print(f"\n=== PICKLE ERROR DEBUGGING (Pool) ===")
-                        print(f"Error: {e}")
-                        print(f"Error type: {type(e)}")
-                        print(f"Number of test suites: {len(test_suites)}")
+                    except Exception as e:
+                        print(f"\n=== DETAILED PICKLE ERROR DEBUGGING (Pool) ===")
+                        print(f"Exception: {e}")
+                        print(f"Exception type: {type(e).__name__}")
+                        print(f"Exception module: {type(e).__module__}")
+                        print(f"Full traceback:")
+                        traceback.print_exc()
                         
-                        # Try to identify which test suite is problematic
-                        for i, suite in enumerate(test_suites):
+                        def inspect_unpickleable(obj, path="", max_depth=3, current_depth=0):
+                            if current_depth > max_depth:
+                                return
+                            
                             try:
-                                pickle.dumps(suite)
-                                print(f"Suite {i}: OK - {suite}")
-                            except Exception as suite_error:
-                                print(f"Suite {i}: FAILED - {suite}")
-                                print(f"  Suite error: {suite_error}")
-                                print(f"  Suite type: {type(suite)}")
-                                if hasattr(suite, '__dict__'):
-                                    print(f"  Suite attributes: {list(suite.__dict__.keys())}")
+                                pickle.dumps(obj)
+                                return  # Object is pickleable
+                            except Exception as pickle_err:
+                                print(f"\n--- Unpickleable object at {path or 'root'} ---")
+                                print(f"  Object: {obj}")
+                                print(f"  Type: {type(obj)}")
+                                print(f"  Pickle error: {pickle_err}")
+                                
+                                # Try to inspect attributes
+                                if hasattr(obj, '__dict__') and current_depth < max_depth:
+                                    print(f"  Attributes:")
+                                    for attr_name, attr_value in obj.__dict__.items():
+                                        attr_path = f"{path}.{attr_name}" if path else attr_name
+                                        try:
+                                            pickle.dumps(attr_value)
+                                            print(f"    {attr_name}: OK ({type(attr_value).__name__})")
+                                        except Exception as attr_err:
+                                            print(f"    {attr_name}: FAILED - {attr_err}")
+                                            # Recurse deeper
+                                            inspect_unpickleable(attr_value, attr_path, max_depth, current_depth + 1)
+                                
+                                # Also check if it's a test case with special methods
+                                if isinstance(obj, unittest.TestCase):
+                                    print(f"  TestCase methods that might be problematic:")
+                                    for method_name in dir(obj):
+                                        if method_name.startswith('test_') or method_name in ['setUp', 'tearDown']:
+                                            method = getattr(obj, method_name, None)
+                                            if method:
+                                                try:
+                                                    pickle.dumps(method)
+                                                    print(f"    {method_name}: OK")
+                                                except Exception as method_err:
+                                                    print(f"    {method_name}: FAILED - {method_err}")
+                        
+                        print(f"Number of test suites: {len(test_suites)}")
+                        for i, suite in enumerate(test_suites[:5]):  # Limit to first 5 for readability
+                            print(f"\n=== Inspecting Suite {i}: {suite} ===")
+                            inspect_unpickleable(suite, f"suite[{i}]")
                         
                         raise
             else:
@@ -260,23 +295,57 @@ def main(argv=None):
                     test_manager = ParallelTestManager(manager, args, temp_dir)
                     try:
                         results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
-                    except (pickle.PicklingError, TypeError, AttributeError) as e:
-                        print(f"\n=== PICKLE ERROR DEBUGGING ===")
-                        print(f"Error: {e}")
-                        print(f"Error type: {type(e)}")
-                        print(f"Number of test suites: {len(test_suites)}")
+                    except Exception as e:
+                        print(f"\n=== DETAILED PICKLE ERROR DEBUGGING (Executor) ===")
+                        print(f"Exception: {e}")
+                        print(f"Exception type: {type(e).__name__}")
+                        print(f"Exception module: {type(e).__module__}")
+                        print(f"Full traceback:")
+                        traceback.print_exc()
                         
-                        # Try to identify which test suite is problematic
-                        for i, suite in enumerate(test_suites):
+                        def inspect_unpickleable(obj, path="", max_depth=3, current_depth=0):
+                            if current_depth > max_depth:
+                                return
+                            
                             try:
-                                pickle.dumps(suite)
-                                print(f"Suite {i}: OK - {suite}")
-                            except Exception as suite_error:
-                                print(f"Suite {i}: FAILED - {suite}")
-                                print(f"  Suite error: {suite_error}")
-                                print(f"  Suite type: {type(suite)}")
-                                if hasattr(suite, '__dict__'):
-                                    print(f"  Suite attributes: {list(suite.__dict__.keys())}")
+                                pickle.dumps(obj)
+                                return  # Object is pickleable
+                            except Exception as pickle_err:
+                                print(f"\n--- Unpickleable object at {path or 'root'} ---")
+                                print(f"  Object: {obj}")
+                                print(f"  Type: {type(obj)}")
+                                print(f"  Pickle error: {pickle_err}")
+                                
+                                # Try to inspect attributes
+                                if hasattr(obj, '__dict__') and current_depth < max_depth:
+                                    print(f"  Attributes:")
+                                    for attr_name, attr_value in obj.__dict__.items():
+                                        attr_path = f"{path}.{attr_name}" if path else attr_name
+                                        try:
+                                            pickle.dumps(attr_value)
+                                            print(f"    {attr_name}: OK ({type(attr_value).__name__})")
+                                        except Exception as attr_err:
+                                            print(f"    {attr_name}: FAILED - {attr_err}")
+                                            # Recurse deeper
+                                            inspect_unpickleable(attr_value, attr_path, max_depth, current_depth + 1)
+                                
+                                # Also check if it's a test case with special methods
+                                if isinstance(obj, unittest.TestCase):
+                                    print(f"  TestCase methods that might be problematic:")
+                                    for method_name in dir(obj):
+                                        if method_name.startswith('test_') or method_name in ['setUp', 'tearDown']:
+                                            method = getattr(obj, method_name, None)
+                                            if method:
+                                                try:
+                                                    pickle.dumps(method)
+                                                    print(f"    {method_name}: OK")
+                                                except Exception as method_err:
+                                                    print(f"    {method_name}: FAILED - {method_err}")
+                        
+                        print(f"Number of test suites: {len(test_suites)}")
+                        for i, suite in enumerate(test_suites[:5]):  # Limit to first 5 for readability
+                            print(f"\n=== Inspecting Suite {i}: {suite} ===")
+                            inspect_unpickleable(suite, f"suite[{i}]")
                         
                         raise
         else:
