@@ -2448,4 +2448,3 @@ def apply_rigid_restitution(
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         dq = wp.quat_rotate(q_b, I_inv_b * rxn_b * dv_b)
         wp.atomic_add(deltas, body_b, wp.spatial_vector(n * m_inv_b * dv_b, dq))
-

@@ -683,7 +683,6 @@ def eval_articulation_ik(
         joint_q[q_start + 5] = q_pc[2]
         joint_q[q_start + 6] = q_pc[3]
 
-
         joint_qd[qd_start + 0] = v_err_c[0]
         joint_qd[qd_start + 1] = v_err_c[1]
         joint_qd[qd_start + 2] = v_err_c[2]

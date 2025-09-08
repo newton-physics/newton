@@ -31,7 +31,7 @@ def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     Returns:
         vec3: The velocity of the point.
     """
-    return  wp.spatial_top(qd) + wp.cross(wp.spatial_bottom(qd), r)
+    return wp.spatial_top(qd) + wp.cross(wp.spatial_bottom(qd), r)
 
 
 @wp.func
@@ -238,7 +238,7 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
 
     .. math::
 
-       x' = \begin{bmatrix} R & [p]_{\times} R \\ 0 & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & [p]_{\\times} R \\\\ 0 & R \\end{bmatrix} x
 
     where *R* and *p* are the rotation and translation components of ``t`` and
     ``[p]_x`` is the skew-symmetric matrix of *p*.
@@ -258,8 +258,8 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
     v = wp.spatial_top(x)
     w = wp.spatial_bottom(x)
 
-    v = wp.quat_rotate(q, v) + wp.cross(p, wp.quat_rotate(q, w))
     w = wp.quat_rotate(q, w)
+    v = wp.quat_rotate(q, v) + wp.cross(p, w)
 
     return wp.spatial_vector(v, w)
 
@@ -277,7 +277,7 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
 
     .. math::
 
-       x' = \begin{bmatrix} R & 0 \\ [p]_{\times} R & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & 0 \\\\ [p]_{\\times} R & R \\end{bmatrix} x
 
     Args:
         t (transform): The transform from the **source** frame to the
