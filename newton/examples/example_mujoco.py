@@ -206,6 +206,7 @@ class Example:
         njmax=None,
         nconmax=None,
         builder=None,
+        ls_parallel=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -404,6 +405,7 @@ if __name__ == "__main__":
             ls_iteration=args.ls_iteration,
             njmax=args.njmax,
             nconmax=args.nconmax,
+            ls_parallel=args.ls_parallel,
         )
 
         # Print simulation configuration summary
@@ -437,6 +439,7 @@ if __name__ == "__main__":
         )
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
+        print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
         print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
         print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
         print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")
