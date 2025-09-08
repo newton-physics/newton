@@ -959,13 +959,13 @@ class ModelBuilder:
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
+        #transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
-        def transform_mul(a, b):
-            out = wp.transformf()
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
+        #def transform_mul(a, b):
+        #    out = wp.transformf()
+        #    transform_mul_cfunc(a, b, ctypes.byref(out))
+        #    return out
 
         start_particle_idx = self.particle_count
         if builder.particle_count:
@@ -1006,7 +1006,7 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, wp.transform(*builder.shape_transform[s])))
+                    self.shape_transform.append(xform * wp.transform(*builder.shape_transform[s]))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
@@ -1026,11 +1026,11 @@ class ModelBuilder:
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
-                        tf = transform_mul(xform, xform_prev)
+                        tf = xform * xform_prev
                         joint_q[qi : qi + 3] = tf.p
                         joint_q[qi + 3 : qi + 7] = tf.q
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = transform_mul(xform, wp.transform(*joint_X_p[i]))
+                        joint_X_p[i] = xform * wp.transform(*joint_X_p[i])
             self.joint_X_p.extend(joint_X_p)
             self.joint_q.extend(joint_q)
 
@@ -1044,7 +1044,7 @@ class ModelBuilder:
 
         for i in range(builder.body_count):
             if xform is not None:
-                self.body_q.append(transform_mul(xform, wp.transform(*builder.body_q[i])))
+                self.body_q.append(xform * wp.transform(*builder.body_q[i]))
             else:
                 self.body_q.append(builder.body_q[i])
 
