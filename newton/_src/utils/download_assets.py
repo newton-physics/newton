@@ -76,11 +76,12 @@ def download_git_folder(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    # Create a unique folder name based on git URL, folder path, and branch
+    # Create a unique folder name based on git URL, folder path, branch, and process ID
     url_hash = hashlib.md5(f"{git_url}#{folder_path}#{branch}".encode()).hexdigest()[:8]
     repo_name = Path(git_url.rstrip("/")).stem.replace(".git", "")
     folder_name = folder_path.replace("/", "_").replace("\\", "_")
-    cache_folder = cache_path / f"{repo_name}_{folder_name}_{url_hash}"
+    process_id = os.getpid()
+    cache_folder = cache_path / f"{repo_name}_{folder_name}_{url_hash}_pid{process_id}"
 
     # Check if already cached and not forcing refresh
     if cache_folder.exists() and not force_refresh:
