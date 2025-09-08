@@ -173,14 +173,14 @@ jobs:
 
           # Get the SHA of the currently checked out commit
           HEAD_SHA=\$(git rev-parse HEAD)
-          echo "Checked out commit SHA: ${HEAD_SHA}"
+          echo "Checked out commit SHA: \${HEAD_SHA}"
 
           echo "Running Newton benchmarks..."
           uv venv
           source .venv/bin/activate
           uv pip install asv virtualenv
           asv machine --yes
-          asv continuous --launch-method spawn --interleave-rounds --append-samples --no-only-changed -b Fast ${{ github.event.pull_request.base.sha }} \$HEAD_SHA 2>&1
+          asv continuous --launch-method spawn --interleave-rounds --append-samples --no-only-changed -e -b Fast ${{ github.event.pull_request.base.sha }} \$HEAD_SHA 2>&1 || (asv compare --split ${{ github.event.pull_request.base.sha }} \$HEAD_SHA 2>&1 && exit 2)
           EOF
 
           # Prepare script to be passed as SSM parameters

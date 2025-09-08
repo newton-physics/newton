@@ -17,6 +17,9 @@ import subprocess
 import sys
 
 import warp as wp
+
+wp.config.quiet = True
+
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
@@ -45,9 +48,7 @@ class SlowExampleRobotAnymal:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleRobotCartpole:
@@ -75,9 +76,7 @@ class SlowExampleRobotCartpole:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleClothFranka:
@@ -104,9 +103,7 @@ class SlowExampleClothFranka:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleClothTwist:
@@ -133,9 +130,7 @@ class SlowExampleClothTwist:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleRobotHumanoid:
@@ -163,9 +158,7 @@ class SlowExampleRobotHumanoid:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 class SlowExampleBasicUrdf:
@@ -193,17 +186,34 @@ class SlowExampleBasicUrdf:
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
 if __name__ == "__main__":
+    import argparse
+
     from newton.utils import run_benchmark
 
-    run_benchmark(SlowExampleBasicUrdf)
-    run_benchmark(SlowExampleRobotAnymal)
-    run_benchmark(SlowExampleRobotCartpole)
-    run_benchmark(SlowExampleRobotHumanoid)
-    run_benchmark(SlowExampleClothFranka)
-    run_benchmark(SlowExampleClothTwist)
+    benchmark_list = {
+        "SlowExampleBasicUrdf": SlowExampleBasicUrdf,
+        "SlowExampleRobotAnymal": SlowExampleRobotAnymal,
+        "SlowExampleRobotCartpole": SlowExampleRobotCartpole,
+        "SlowExampleRobotHumanoid": SlowExampleRobotHumanoid,
+        "SlowExampleClothFranka": SlowExampleClothFranka,
+        "SlowExampleClothTwist": SlowExampleClothTwist,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        run_benchmark(benchmark)

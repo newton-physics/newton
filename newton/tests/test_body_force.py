@@ -188,7 +188,7 @@ devices = get_test_devices()
 solvers = {
     # "featherstone": create_featherstone_solver,
     # Disabled after fixing use_mujoco_cpu, see Issue #582
-    # "mujoco_cpu": create_mujoco_cpu_solver,
+    "mujoco_cpu": create_mujoco_cpu_solver,
     "mujoco_warp": create_mujoco_warp_solver,
     "xpbd": create_xpbd_solver,
     "semi_implicit": create_semi_implicit_solver,
