@@ -236,8 +236,58 @@ def main(argv=None):
                         print(f"Exception: {e}")
                         print(f"Exception type: {type(e).__name__}")
                         print(f"Exception module: {type(e).__module__}")
+                        
+                        # Check for common pickle error patterns
+                        if isinstance(e, TypeError):
+                            print(f"  >> This is a TypeError - likely 'can't pickle X objects'")
+                            error_msg = str(e).lower()
+                            if "warp" in error_msg or "wp." in error_msg:
+                                print(f"  >> WARP-RELATED: {e}")
+                            elif "array" in error_msg:
+                                print(f"  >> ARRAY-RELATED: {e}")
+                            elif "cuda" in error_msg or "device" in error_msg:
+                                print(f"  >> DEVICE-RELATED: {e}")
+                        elif isinstance(e, AttributeError): 
+                            print(f"  >> This is an AttributeError - likely missing attribute during pickle")
+                        elif isinstance(e, ValueError):
+                            print(f"  >> This is a ValueError - likely invalid value during pickle")
+                        
                         print(f"Full traceback:")
                         traceback.print_exc()
+                        
+                        # Try to find the exact problematic object by testing each component
+                        print(f"\n--- Testing individual components ---")
+                        try:
+                            pickle.dumps(test_manager)
+                            print("test_manager: OK")
+                        except Exception as tm_err:
+                            print(f"test_manager: FAILED - {tm_err}")
+                            
+                        print(f"Testing first few test suites individually:")
+                        for i, suite in enumerate(test_suites[:3]):
+                            try:
+                                pickle.dumps(suite)
+                                print(f"  suite[{i}]: OK")
+                            except Exception as suite_err:
+                                print(f"  suite[{i}]: FAILED - {suite_err}")
+                                print(f"    Suite type: {type(suite)}")
+                                print(f"    Suite repr: {repr(suite)[:200]}...")
+                                
+                                # Test the actual function call that's failing
+                                print(f"    Testing pool.map arguments:")
+                                try:
+                                    # Test if we can pickle the method reference
+                                    pickle.dumps(test_manager.run_tests)
+                                    print(f"      test_manager.run_tests: OK")
+                                except Exception as method_err:
+                                    print(f"      test_manager.run_tests: FAILED - {method_err}")
+                                    
+                                try:
+                                    # Test if we can pickle the call arguments
+                                    pickle.dumps((test_manager.run_tests, suite))
+                                    print(f"      (method, suite) tuple: OK")
+                                except Exception as tuple_err:
+                                    print(f"      (method, suite) tuple: FAILED - {tuple_err}")
                         
                         def inspect_unpickleable(obj, path="", max_depth=3, current_depth=0):
                             if current_depth > max_depth:
@@ -251,6 +301,18 @@ def main(argv=None):
                                 print(f"  Object: {obj}")
                                 print(f"  Type: {type(obj)}")
                                 print(f"  Pickle error: {pickle_err}")
+                                
+                                # Check for specific Warp-related types
+                                obj_type_name = type(obj).__name__
+                                obj_module = getattr(type(obj), '__module__', '')
+                                if 'warp' in obj_module.lower() or obj_type_name.startswith('wp.'):
+                                    print(f"  >> WARP OBJECT DETECTED: {obj_module}.{obj_type_name}")
+                                elif hasattr(obj, 'device') and hasattr(obj, 'size'):
+                                    print(f"  >> Looks like a Warp array-like object")
+                                elif 'cuda' in obj_module.lower() or 'device' in obj_type_name.lower():
+                                    print(f"  >> DEVICE/CUDA OBJECT: {obj_module}.{obj_type_name}")
+                                elif obj_type_name in ['SolverMuJoCo', 'SolverVBD', 'SolverXPBD']:
+                                    print(f"  >> NEWTON SOLVER OBJECT: {obj_type_name}")
                                 
                                 # Try to inspect attributes
                                 if hasattr(obj, '__dict__') and current_depth < max_depth:
@@ -300,8 +362,58 @@ def main(argv=None):
                         print(f"Exception: {e}")
                         print(f"Exception type: {type(e).__name__}")
                         print(f"Exception module: {type(e).__module__}")
+                        
+                        # Check for common pickle error patterns  
+                        if isinstance(e, TypeError):
+                            print(f"  >> This is a TypeError - likely 'can't pickle X objects'")
+                            error_msg = str(e).lower()
+                            if "warp" in error_msg or "wp." in error_msg:
+                                print(f"  >> WARP-RELATED: {e}")
+                            elif "array" in error_msg:
+                                print(f"  >> ARRAY-RELATED: {e}")
+                            elif "cuda" in error_msg or "device" in error_msg:
+                                print(f"  >> DEVICE-RELATED: {e}")
+                        elif isinstance(e, AttributeError):
+                            print(f"  >> This is an AttributeError - likely missing attribute during pickle")
+                        elif isinstance(e, ValueError):
+                            print(f"  >> This is a ValueError - likely invalid value during pickle")
+                        
                         print(f"Full traceback:")
                         traceback.print_exc()
+                        
+                        # Try to find the exact problematic object by testing each component
+                        print(f"\n--- Testing individual components ---")
+                        try:
+                            pickle.dumps(test_manager)
+                            print("test_manager: OK")
+                        except Exception as tm_err:
+                            print(f"test_manager: FAILED - {tm_err}")
+                            
+                        print(f"Testing first few test suites individually:")
+                        for i, suite in enumerate(test_suites[:3]):
+                            try:
+                                pickle.dumps(suite)
+                                print(f"  suite[{i}]: OK")
+                            except Exception as suite_err:
+                                print(f"  suite[{i}]: FAILED - {suite_err}")
+                                print(f"    Suite type: {type(suite)}")
+                                print(f"    Suite repr: {repr(suite)[:200]}...")
+                                
+                                # Test the actual function call that's failing
+                                print(f"    Testing executor.map arguments:")
+                                try:
+                                    # Test if we can pickle the method reference
+                                    pickle.dumps(test_manager.run_tests)
+                                    print(f"      test_manager.run_tests: OK")
+                                except Exception as method_err:
+                                    print(f"      test_manager.run_tests: FAILED - {method_err}")
+                                    
+                                try:
+                                    # Test if we can pickle the call arguments
+                                    pickle.dumps((test_manager.run_tests, suite))
+                                    print(f"      (method, suite) tuple: OK")
+                                except Exception as tuple_err:
+                                    print(f"      (method, suite) tuple: FAILED - {tuple_err}")
                         
                         def inspect_unpickleable(obj, path="", max_depth=3, current_depth=0):
                             if current_depth > max_depth:
@@ -315,6 +427,18 @@ def main(argv=None):
                                 print(f"  Object: {obj}")
                                 print(f"  Type: {type(obj)}")
                                 print(f"  Pickle error: {pickle_err}")
+                                
+                                # Check for specific Warp-related types
+                                obj_type_name = type(obj).__name__
+                                obj_module = getattr(type(obj), '__module__', '')
+                                if 'warp' in obj_module.lower() or obj_type_name.startswith('wp.'):
+                                    print(f"  >> WARP OBJECT DETECTED: {obj_module}.{obj_type_name}")
+                                elif hasattr(obj, 'device') and hasattr(obj, 'size'):
+                                    print(f"  >> Looks like a Warp array-like object")
+                                elif 'cuda' in obj_module.lower() or 'device' in obj_type_name.lower():
+                                    print(f"  >> DEVICE/CUDA OBJECT: {obj_module}.{obj_type_name}")
+                                elif obj_type_name in ['SolverMuJoCo', 'SolverVBD', 'SolverXPBD']:
+                                    print(f"  >> NEWTON SOLVER OBJECT: {obj_type_name}")
                                 
                                 # Try to inspect attributes
                                 if hasattr(obj, '__dict__') and current_depth < max_depth:
