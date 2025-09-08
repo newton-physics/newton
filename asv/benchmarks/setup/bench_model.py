@@ -140,20 +140,20 @@ class FastInitializeModel:
 
             wp.synchronize_device()
 
-            timings_modelBuilder = []
+            timings_model_builder = []
             timings_solver = []
 
             for _ in range(self.repeat):
-                modelBuilder_beg = time.perf_counter()
+                model_builder_begin = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
                 # finalize model
                 model = builder.finalize()
                 wp.synchronize_device()
-                modelBuilder_end = time.perf_counter()
-                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
+                model_builder_end = time.perf_counter()
+                timings_model_builder.append(model_builder_end - model_builder_begin)
 
-                solver_beg = time.perf_counter()
+                solver_begin = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
                 solver_end = time.perf_counter()
