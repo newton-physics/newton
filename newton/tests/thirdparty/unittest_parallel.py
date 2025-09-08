@@ -199,7 +199,7 @@ def main(argv=None):
             test_suites = list(_iter_module_suites(discover_suite))
 
         # Don't use more processes than test suites
-        process_count = max(1, min(len(test_suites), process_count))
+        process_count = 1# max(1, min(len(test_suites), process_count))
 
         if not args.serial_fallback:
             # Report test suites and processes
