@@ -51,17 +51,32 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     test.assertAlmostEqual(lin_vel[up_axis.value], -0.981, delta=1e-5)
 
 
+def create_featherstone_solver(model):
+    return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+
+def create_mujoco_cpu_solver(model):
+    return newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
+    )
+
+def create_mujoco_warp_solver(model):
+    return newton.solvers.SolverMuJoCo(
+        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
+    )
+
+def create_xpbd_solver(model):
+    return newton.solvers.SolverXPBD(model, angular_damping=0.0)
+
+def create_semi_implicit_solver(model):
+    return newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+
 devices = get_test_devices()
 solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
-    ),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
-    ),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "featherstone": create_featherstone_solver,
+    "mujoco_cpu": create_mujoco_cpu_solver,
+    "mujoco_warp": create_mujoco_warp_solver,
+    "xpbd": create_xpbd_solver,
+    "semi_implicit": create_semi_implicit_solver,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

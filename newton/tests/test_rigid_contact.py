@@ -178,13 +178,28 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     assert_np_equal(body_q[:, 3:], expected_quats, tol=1e-1)
 
 
+def create_featherstone_solver(model):
+    return newton.solvers.SolverFeatherstone(model)
+
+def create_mujoco_cpu_solver(model):
+    return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)
+
+def create_mujoco_warp_solver(model):
+    return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)
+
+def create_xpbd_solver(model):
+    return newton.solvers.SolverXPBD(model, iterations=2)
+
+def create_semi_implicit_solver(model):
+    return newton.solvers.SolverSemiImplicit(model)
+
 devices = get_test_devices()
 solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+    "featherstone": create_featherstone_solver,
+    "mujoco_cpu": create_mujoco_cpu_solver,
+    "mujoco_warp": create_mujoco_warp_solver,
+    "xpbd": create_xpbd_solver,
+    "semi_implicit": create_semi_implicit_solver,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
