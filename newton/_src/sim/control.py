@@ -21,6 +21,7 @@ import warp as wp
 
 if TYPE_CHECKING:
     from .model import Model
+from .joints import JointType
 from .state import State
 
 
@@ -47,8 +48,8 @@ class Control:
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
 
-        # New targets kept separate for clarity. If not set, PD will treat them as zeros.
         self.joint_pos_target: wp.array | None = None
+        # should thos be joint_dof_count +1 dim
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.joint_vel_target: wp.array | None = None
@@ -110,18 +111,33 @@ def pd_actuator_kernel(
     joint_qd: wp.array(dtype=wp.float32),
     q_target: wp.array(dtype=wp.float32),
     qd_target: wp.array(dtype=wp.float32),
-    axes_per_env: int,
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_type: wp.array(dtype=wp.int32),
     # outputs
     joint_f: wp.array(dtype=wp.float32),
 ):
-    worldid, axisid = wp.tid()
+    joint_id = wp.tid()
+    if joint_type[joint_id] == int(JointType.FREE):
+        return  # skip the free joint
+    qi = joint_q_start[joint_id]
+    qdi = joint_qd_start[joint_id]
+    dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
-    kp = kp_dof[worldid * axes_per_env + axisid]
-    kd = kd_dof[worldid * axes_per_env + axisid]
+    for j in range(dim):
+        qj = qi + j
+        qdj = qdi + j
+        q = joint_q[qj]
+        qd = joint_qd[qdj]
 
-    vel_err = 0.0 - joint_qd[worldid * axes_per_env + axisid]
-    pos_err = q_target[worldid * axes_per_env + axisid] - joint_q[worldid * axes_per_env + axisid]
-    joint_f[worldid * axes_per_env + axisid] = +kp * pos_err + kd * vel_err
+        tq = q_target[qdj]
+        tqd = qd_target[qdj]
+        Kp = kp_dof[qdj]
+        Kd = kd_dof[qdj]
+        tq = Kp * (tq - q) + Kd * (tqd - qd)
+        joint_f[qdj] = tq
+
 
 
 class Actuator:
@@ -137,10 +153,10 @@ class Actuator:
     """
 
     def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
-        print("compute_force", axes_per_env, nworld, control.joint_pos_target, model.joint_target_ke, model.joint_target_kd)
+
         wp.launch(
             pd_actuator_kernel,
-            dim=(nworld, axes_per_env),
+            dim=model.joint_count,
             inputs=[
                 model.joint_target_ke,
                 model.joint_target_kd,
@@ -148,11 +164,13 @@ class Actuator:
                 state.joint_qd,
                 control.joint_pos_target,
                 control.joint_vel_target,
-                axes_per_env,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_type,
             ],
             outputs=[
                 control.joint_f,
             ],
             device=model.device,
         )
-        print("resulting forces", control.joint_f)
