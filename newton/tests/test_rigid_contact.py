@@ -181,17 +181,22 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
 def create_featherstone_solver(model):
     return newton.solvers.SolverFeatherstone(model)
 
+
 def create_mujoco_cpu_solver(model):
     return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True)
+
 
 def create_mujoco_warp_solver(model):
     return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)
 
+
 def create_xpbd_solver(model):
     return newton.solvers.SolverXPBD(model, iterations=2)
 
+
 def create_semi_implicit_solver(model):
     return newton.solvers.SolverSemiImplicit(model)
+
 
 devices = get_test_devices()
 solvers = {

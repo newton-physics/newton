@@ -96,11 +96,14 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
 def create_mujoco_cpu_solver(model):
     return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
 
+
 def create_mujoco_warp_solver(model):
     return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
 
+
 def create_xpbd_solver(model):
     return newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5)
+
 
 devices = get_test_devices()
 solvers = {

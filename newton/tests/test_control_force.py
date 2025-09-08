@@ -125,20 +125,20 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
 
 
 def create_mujoco_cpu_solver(model):
-    return newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
-    )
+    return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True)
+
 
 def create_mujoco_warp_solver(model):
-    return newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
-    )
+    return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True)
+
 
 def create_xpbd_solver(model):
     return newton.solvers.SolverXPBD(model, angular_damping=0.0)
 
+
 def create_semi_implicit_solver(model):
     return newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+
 
 devices = get_test_devices()
 solvers = {

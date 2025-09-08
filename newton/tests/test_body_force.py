@@ -175,14 +175,21 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
 
 
+def create_mujoco_cpu_solver(model):
+    return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+
+
 def create_mujoco_warp_solver(model):
     return newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+
 
 def create_xpbd_solver(model):
     return newton.solvers.SolverXPBD(model, angular_damping=0.0)
 
+
 def create_semi_implicit_solver(model):
     return newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+
 
 devices = get_test_devices()
 solvers = {
