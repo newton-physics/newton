@@ -24,6 +24,7 @@ import argparse
 import concurrent.futures  # NVIDIA Modification
 import multiprocessing
 import os
+import pickle
 import sys
 import tempfile
 import time
@@ -227,7 +228,27 @@ def main(argv=None):
                     initargs=(manager.Lock(), shared_index, args, temp_dir),
                 ) as pool:
                     test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = pool.map(test_manager.run_tests, test_suites)
+                    try:
+                        results = pool.map(test_manager.run_tests, test_suites)
+                    except (pickle.PicklingError, TypeError, AttributeError) as e:
+                        print(f"\n=== PICKLE ERROR DEBUGGING (Pool) ===")
+                        print(f"Error: {e}")
+                        print(f"Error type: {type(e)}")
+                        print(f"Number of test suites: {len(test_suites)}")
+                        
+                        # Try to identify which test suite is problematic
+                        for i, suite in enumerate(test_suites):
+                            try:
+                                pickle.dumps(suite)
+                                print(f"Suite {i}: OK - {suite}")
+                            except Exception as suite_error:
+                                print(f"Suite {i}: FAILED - {suite}")
+                                print(f"  Suite error: {suite_error}")
+                                print(f"  Suite type: {type(suite)}")
+                                if hasattr(suite, '__dict__'):
+                                    print(f"  Suite attributes: {list(suite.__dict__.keys())}")
+                        
+                        raise
             else:
                 # NVIDIA Modification added concurrent.futures
                 with concurrent.futures.ProcessPoolExecutor(
@@ -237,7 +258,27 @@ def main(argv=None):
                     initargs=(manager.Lock(), shared_index, args, temp_dir),
                 ) as executor:
                     test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                    try:
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                    except (pickle.PicklingError, TypeError, AttributeError) as e:
+                        print(f"\n=== PICKLE ERROR DEBUGGING ===")
+                        print(f"Error: {e}")
+                        print(f"Error type: {type(e)}")
+                        print(f"Number of test suites: {len(test_suites)}")
+                        
+                        # Try to identify which test suite is problematic
+                        for i, suite in enumerate(test_suites):
+                            try:
+                                pickle.dumps(suite)
+                                print(f"Suite {i}: OK - {suite}")
+                            except Exception as suite_error:
+                                print(f"Suite {i}: FAILED - {suite}")
+                                print(f"  Suite error: {suite_error}")
+                                print(f"  Suite type: {type(suite)}")
+                                if hasattr(suite, '__dict__'):
+                                    print(f"  Suite attributes: {list(suite.__dict__.keys())}")
+                        
+                        raise
         else:
             # This entire path is an NVIDIA Modification
 
