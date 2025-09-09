@@ -1944,7 +1944,7 @@ class SolverImplicitMPM(SolverBase):
         max_color_count = min(max_color_count, colored_element_count)
 
         color_counts_host = fem.borrow_temporary(
-            self.temporary_store, shape=max_color_count + 1, dtype=int, device="cpu", pinned=True
+            self.temporary_store, shape=max_color_count + 1, dtype=int, device="cpu", pinned=colors.array.device.is_cuda
         )
 
         wp.utils.radix_sort_pairs(
