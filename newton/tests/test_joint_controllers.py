@@ -31,7 +31,7 @@ class TestJointController(unittest.TestCase):
     pass
 
 
-def test_revolute_controller(test: TestJointController, device, solver_fn, pos_target_val, vel_target_val, expected_pos, expected_vel):
+def test_revolute_controller(test: TestJointController, device, solver_fn, pos_target_val, vel_target_val, expected_pos, expected_vel, target_ke, target_kd):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
@@ -53,8 +53,8 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, pos_t
         # limit_upper=wp.pi,
         limit_ke=0.0,
         limit_kd=0.0,
-        target_ke=2000.0,
-        target_kd=500.0,
+        target_ke=target_ke,
+        target_kd=target_kd,
     )
 
     model = builder.finalize(device=device)
@@ -117,6 +117,8 @@ for device in devices:
             vel_target_val=0.0,
             expected_pos=wp.pi / 2.0,
             expected_vel=0.0,
+            target_ke=2000.0,
+            target_kd=500.0,
         )
         # TODO: XPBD velocity control is not working correctly
         if solver_name == "mujoco_warp" or solver_name == "mujoco_cpu":
@@ -130,6 +132,8 @@ for device in devices:
                 vel_target_val=wp.pi / 2.0,
                 expected_pos=None,
                 expected_vel=wp.pi / 2.0,
+                target_ke=0.0,
+                target_kd=500.0,
             )
 
 if __name__ == "__main__":

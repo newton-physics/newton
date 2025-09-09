@@ -56,7 +56,7 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 1.3)),
         )
 
-        for i in range(len(humanoid.joint_dof_mode)):
+        for i in range(len(humanoid.joint_target_ke)):
             humanoid.joint_target_ke[i] = 150
             humanoid.joint_target_kd[i] = 5
 

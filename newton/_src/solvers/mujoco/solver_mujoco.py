@@ -1283,7 +1283,7 @@ class SolverMuJoCo(SolverBase):
         return hasattr(data, "nworld")
 
     def apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
-        if control is None or control.joint_f is None:
+        if control is None or control.joint_f_total is None:
             if state.body_f is None:
                 return
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
@@ -1303,13 +1303,13 @@ class SolverMuJoCo(SolverBase):
         if control is not None:
             control.compute_actuator_forces(model, state, nworld, axes_per_env)
 
-            if control.joint_f is not None:
+            if control.joint_f_total is not None:
                 wp.launch(
                     apply_mjc_qfrc_kernel,
                     dim=(nworld, joints_per_env),
                     inputs=[
                         state.body_q,
-                        control.joint_f,
+                        control.joint_f_total,
                         model.joint_type,
                         model.body_com,
                         model.joint_child,

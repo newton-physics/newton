@@ -1138,7 +1138,6 @@ def solve_simple_body_joints(
     joint_limit_upper: wp.array(dtype=float),
     joint_qd_start: wp.array(dtype=int),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_dof_mode: wp.array(dtype=int),
     joint_axis: wp.array(dtype=wp.vec3),
     joint_target: wp.array(dtype=float),
     joint_target_ke: wp.array(dtype=float),

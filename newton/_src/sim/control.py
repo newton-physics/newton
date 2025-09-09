@@ -48,6 +48,8 @@ class Control:
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
 
+        self.joint_f_total: wp.array | None = None
+
         self.joint_pos_target: wp.array | None = None
         # should thos be joint_dof_count +1 dim
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
@@ -97,7 +99,7 @@ class Control:
             - For convenience, if ``joint_f`` is ``None`` and the model has joints,
               a zero array will be allocated on the model's device.
         """
-        self.joint_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
 
         for actuator in self.actuators:
             actuator.compute_force(model, state, self, nworld, axes_per_env)
@@ -115,28 +117,33 @@ def pd_actuator_kernel(
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_type: wp.array(dtype=wp.int32),
-    # outputs
     joint_f: wp.array(dtype=wp.float32),
+    # outputs
+    joint_f_total: wp.array(dtype=wp.float32),
 ):
     joint_id = wp.tid()
-    if joint_type[joint_id] == int(JointType.FREE):
-        return  # skip the free joint
     qi = joint_q_start[joint_id]
     qdi = joint_qd_start[joint_id]
     dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
-    for j in range(dim):
-        qj = qi + j
-        qdj = qdi + j
-        q = joint_q[qj]
-        qd = joint_qd[qdj]
+    if joint_type[joint_id] == int(JointType.FREE):
+        for j in range(dim):
+            qdj = qdi + j
+            joint_f_total[qdj] = joint_f[qdj]
+    else:
 
-        tq = q_target[qdj]
-        tqd = qd_target[qdj]
-        Kp = kp_dof[qdj]
-        Kd = kd_dof[qdj]
-        tq = Kp * (tq - q) + Kd * (tqd - qd)
-        joint_f[qdj] = tq
+        for j in range(dim):
+            qj = qi + j
+            qdj = qdi + j
+            q = joint_q[qj]
+            qd = joint_qd[qdj]
+
+            tq = q_target[qdj]
+            tqd = qd_target[qdj]
+            Kp = kp_dof[qdj]
+            Kd = kd_dof[qdj]
+            tq = Kp * (tq - q) + Kd * (tqd - qd)
+            joint_f_total[qdj] = tq + joint_f[qdj]
 
 
 
@@ -168,9 +175,10 @@ class Actuator:
                 model.joint_qd_start,
                 model.joint_dof_dim,
                 model.joint_type,
+                control.joint_f,
             ],
             outputs=[
-                control.joint_f,
+                control.joint_f_total,
             ],
             device=model.device,
         )
