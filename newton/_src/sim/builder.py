@@ -23,7 +23,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from typing import Any, Literal
-from .joints import ActuatorType
+
 import numpy as np
 import warp as wp
 
@@ -56,6 +56,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
+    ActuatorType,
     EqType,
     JointType,
     get_joint_dof_count,
@@ -2111,7 +2112,7 @@ class ModelBuilder:
                         "vel_target": self.joint_vel_target[j],
                         "effort_limit": self.joint_effort_limit[j],
                         "gear_ratio": self.joint_gear_ratio[j],
-+                       "actuator_type": self.joint_actuator_type[j],
+                        "actuator_type": self.joint_actuator_type[j],
                     }
                 )
 

@@ -516,9 +516,10 @@ class Model:
             c.muscle_activations = self.muscle_activations
 
         if self.joint_count > 0:
+            import numpy as np
+
             from .control import PDActuator
             from .joints import ActuatorType
-            import numpy as np
 
             joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
 
