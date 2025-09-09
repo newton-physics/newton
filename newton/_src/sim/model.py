@@ -22,7 +22,8 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .contacts import Contacts
-from .control import Control
+from .control import Control, PDActuator
+from .joints import ActuatorType
 from .state import State
 
 
@@ -516,11 +517,6 @@ class Model:
             c.muscle_activations = self.muscle_activations
 
         if self.joint_count > 0:
-            import numpy as np
-
-            from .control import PDActuator
-            from .joints import ActuatorType
-
             joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
 
             actuator_type_to_dofs = {}

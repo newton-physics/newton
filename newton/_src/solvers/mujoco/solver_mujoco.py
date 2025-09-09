@@ -1734,7 +1734,6 @@ class SolverMuJoCo(SolverBase):
 
         joint_qd_start = model.joint_qd_start.numpy()
         joint_armature = model.joint_armature.numpy()
-        joint_effort_limit = model.joint_effort_limit.numpy()
         # MoJoCo doesn't have velocity limit
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()

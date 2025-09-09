@@ -54,6 +54,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
+from .collide import count_rigid_contact_points
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     ActuatorType,
@@ -4085,8 +4086,6 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
-        from .collide import count_rigid_contact_points
-
         # ensure the env count is set correctly
         self.num_envs = max(1, self.num_envs)
 
