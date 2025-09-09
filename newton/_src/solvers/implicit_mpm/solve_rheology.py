@@ -39,6 +39,9 @@ wp.set_module_options({"enable_backward": False})
 
 
 class YieldParamVec(wp.vec4):
+    """Compact yield surface definition in an interpolation-friendly format:
+    [p_max, -p_min, s_max, mu p_max] in scaled units."""
+
     @wp.func
     def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
         tangential_scale = wp.sqrt(3.0 / 2.0)
@@ -48,6 +51,22 @@ class YieldParamVec(wp.vec4):
             yield_stress * tangential_scale,
             friction_coeff * yield_pressure * tangential_scale,
         )
+
+
+@wp.func
+def normal_yield_bounds(yield_params: YieldParamVec):
+    """Extract bounds for the normal stress from the yield surface definition."""
+    return -yield_params[1], yield_params[0]
+
+
+@wp.func
+def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
+    """Maximum deviatoric stress for a given value of the normal stress."""
+    p_min, p_max = normal_yield_bounds(yield_params)
+
+    mu = wp.where(p_max > 0.0, yield_params[3] / p_max, 0.0)
+    s = yield_params[2]
+    return s + wp.min(0.5 * yield_params[3], mu * wp.min(r_N - p_min, p_max - r_N))
 
 
 @wp.kernel
@@ -111,7 +130,6 @@ def compute_delassus_diagonal(
         diag_block += (b_val * inv_frac) @ wp.transpose(b_val)
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
-    # diag_block += wp.clamp(1.0e-1 * wp.trace(diag_block), 1.0e-7, 1.0e-4) * wp.identity(n=6, dtype=float)
 
     # Remove shear-divergence coupling
     # (current implementation of solve_coulomb_aniso normal and tangential responses are independent)
@@ -147,14 +165,20 @@ def project_initial_stress(
     stress: wp.array(dtype=vec6),
     yield_stress: wp.array(dtype=YieldParamVec),
 ):
+    """Project the initial stress guess onto the yield surface."""
+
     tau_i = wp.tid()
 
     yield_params = yield_stress[tau_i]
 
     sig = stress[tau_i]
 
-    # FIXME find a more focused way to do this
-    if yield_params[1] > 0.0:
+    # Only accept initial stress guesses when there's no adhesion
+    # Otherwise there's risk of amplifying instabilities in the stress space
+    # (e.g. checkerboard patterns)
+    # TODO find a more focused way to do this
+    p_min, p_max = normal_yield_bounds(yield_params)
+    if p_min < 0.0:
         sig = vec6(0.0)
 
     nor = vec6(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -162,13 +186,15 @@ def project_initial_stress(
 
 
 @wp.kernel
-def rotate_compliance_mat(
+def rotate_and_scale_compliance_mat(
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
     compliance_mat_values: wp.array(dtype=mat66),
     delassus_rotation: wp.array(dtype=mat66),
     delassus_diagonal: wp.array(dtype=vec6),
 ):
+    """Rotate and scale the compliance matrix according to the local basis."""
+
     sig_i = wp.tid()
     block_beg = compliance_mat_offsets[sig_i]
     block_end = compliance_mat_offsets[sig_i + 1]
@@ -185,23 +211,19 @@ def rotate_compliance_mat(
 
 
 @wp.kernel
-def scale_transposed_strain_mat(
+def rotate_and_scale_transposed_strain_mat(
     tr_strain_mat_offsets: wp.array(dtype=int),
     tr_strain_mat_columns: wp.array(dtype=int),
     tr_strain_mat_values: wp.array(dtype=mat36),
     inv_volume: wp.array(dtype=float),
     delassus_rotation: wp.array(dtype=mat66),
+    delassus_diagonal: wp.array(dtype=vec6),
 ):
     """
-    Scales the values of the transposed strain matrix (B^T).
-
-    For each particle (u_i), this kernel iterates through its contributions
-    to constraints (tau_i) in the transposed strain matrix.
-    It scales the matrix entries (tr_strain_mat_values) by the particle's
-    inverse volume and applies the Delassus rotation associated with the
-    constraint. This prepares B^T for matrix-vector products in the
-    solver iterations.
+    Rotate and scale the transposed strain matrix according to the local basis.
+    (Jacobi solver only)
     """
+
     u_i = wp.tid()
     block_beg = tr_strain_mat_offsets[u_i]
     block_end = tr_strain_mat_offsets[u_i + 1]
@@ -209,7 +231,12 @@ def scale_transposed_strain_mat(
     for b in range(block_beg, block_end):
         tau_i = tr_strain_mat_columns[b]
 
-        tr_strain_mat_values[b] = inv_volume[u_i] * tr_strain_mat_values[b] @ delassus_rotation[tau_i]
+        tr_strain_mat_values[b] = (
+            inv_volume[u_i]
+            * tr_strain_mat_values[b]
+            @ delassus_rotation[tau_i]
+            @ wp.diag(1.0 / delassus_diagonal[tau_i])
+        )
 
 
 @wp.kernel
@@ -230,16 +257,8 @@ def postprocess_stress_and_strain(
     plastic_strain: wp.array(dtype=vec6),
 ):
     """
-    Transforms stress and computes elastic strain back to the original basis
-    after the solver iterations.
-
-    For each constraint (i):
-    1. Retrieves the Delassus rotation and diagonal values.
-    2. Computes the local elastic strain based on the current stress and the
-       stress-strain matrix in the rotated frame.
-    3. Rotates the final stress back to the original coordinate system.
-    4. Rotates and scales the local elastic strain back to the original system
-       and stores it in `elastic_strain` (which was `strain_rhs` before solver).
+    Transforms stress back to the original basis and computes final
+    elastic and plastic strain deltas after the solver iterations.
     """
     tau_i = wp.tid()
     rot = delassus_rotation[tau_i]
@@ -286,7 +305,12 @@ def eval_sliding_residual(alpha: float, D: vec6, b_T: vec6):
 @wp.func
 def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
     """Solves for the tangential component of the relative velocity in the 'sliding' case
-    of the frictional contact model."""
+    of the frictional contact model.
+
+    Returns:
+        Tangential component of the relative velocity u_T such that
+        u_T = alpha r_T = D r_T + b_T and |r_T| = yield_stress
+    """
 
     if yield_stress <= 0.0:
         return b_T
@@ -295,8 +319,7 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
     # find alpha, r_t,  mu_rn, (D + alpha/(mu r_n) I) r_t + b_t = 0, |r_t| = mu r_n
     # find alpha,  |(D mu r_n + alpha I)^{-1} b_t|^2 = 1.0
 
-    mu_rn = yield_stress
-    Dmu_rn = D * mu_rn
+    Dmu_rn = D * yield_stress
 
     alpha_0 = wp.length(b_T)
     alpha_max = alpha_0 - wp.min(Dmu_rn)
@@ -321,27 +344,23 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
 
 
 @wp.func
-def normal_yield_bounds(yield_params: YieldParamVec):
-    return -yield_params[1], yield_params[0]
-
-
-@wp.func
-def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
-    p_min, p_max = normal_yield_bounds(yield_params)
-
-    mu = wp.where(p_max > 0.0, yield_params[3] / p_max, 0.0)
-    s = yield_params[2]
-    return s + wp.min(0.5 * yield_params[3], mu * wp.min(r_N - p_min, p_max - r_N))
-
-
-@wp.func
-def solve_coulomb_aniso(
+def solve_flow_rule_aniso(
     D: vec6,
     b: vec6,
     nor: vec6,
     off: float,
     yield_params: YieldParamVec,
 ):
+    """Solves the local non-associated flow-rule problem.
+    u = D r + b
+
+    r_N = r_N- + r_N+
+    u_n           \in NC(p_min <= r_N- <= 0)
+    u_n + off nor \in NC(0 <= r_N+ <= p_max)
+
+    u_T \in NC(|r_T| <= alpha s(r_N))
+    """
+
     # Note: this assumes that D.nor = lambda nor
     # i.e. nor should be along one canonical axis
     # (solve_sliding aniso would get a lot more complex otherwise as normal and tangential
@@ -353,7 +372,7 @@ def solve_coulomb_aniso(
     r_N0 = wp.dot(r_0, nor)
     r_N_min, r_N_max = normal_yield_bounds(yield_params)
 
-    r_N = wp.where(b_N > 0.0, wp.max(r_N0, r_N_min), wp.clamp(r_N0 - off / D[0], 0.0, r_N_max))
+    r_N = wp.clamp(r_N0, r_N_min, 0.0) + wp.clamp(r_N0 - off / D[0], 0.0, r_N_max)
 
     u_N = r_N * wp.cw_mul(nor, D) + b_N * nor
 
@@ -374,6 +393,8 @@ def project_stress(
     nor: vec6,
     yield_params: YieldParamVec,
 ):
+    """Projects a stress vector onto the yield surface."""
+
     r_N = wp.dot(r, nor)
     r_T = r - r_N * nor
 
@@ -401,6 +422,7 @@ def compute_local_strain(
     velocities: wp.array(dtype=wp.vec3),
     local_stress: wp.array(dtype=vec6),
 ):
+    """Computes the local strain based on the current stress and velocities."""
     tau = local_strain_rhs[tau_i]
 
     # tau += B v
@@ -430,10 +452,12 @@ def solve_local_stress(
     unilateral_strain_offset: wp.array(dtype=float),
     local_stress: wp.array(dtype=vec6),
 ):
+    """Computes the stress delta required to satisfy the local flow rule."""
+
     nor = delassus_normal[tau_i]
     cur_stress = local_stress[tau_i]
 
-    tau_new = solve_coulomb_aniso(
+    tau_new = solve_flow_rule_aniso(
         D,
         local_strain - cur_stress,
         nor,
@@ -463,13 +487,6 @@ def solve_local_stress_jacobi(
 ):
     """
     Solves the local stress problem for each constraint in a Jacobi-like manner.
-
-    This kernel iterates over each constraint (tau_i) and calls the
-    `solve_local_stress` function. It uses the `delassus_diagonal`
-    as the D matrix for the local solve. The result (delta_correction)
-    represents the change in stress required to satisfy the local
-    constitutive model. In a Jacobi scheme, these corrections are typically
-    accumulated and then applied globally.
     """
     tau_i = wp.tid()
     D = delassus_diagonal[tau_i]
@@ -499,7 +516,7 @@ def solve_local_stress_jacobi(
 
 
 @wp.func
-def apply_stress_delta_gs(
+def apply_stress_delta(
     tau_i: int,
     D: vec6,
     delta_stress: vec6,
@@ -509,6 +526,8 @@ def apply_stress_delta_gs(
     inv_mass_matrix: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
 ):
+    """Updates particle velocities from a local stress delta."""
+
     block_beg = strain_mat_offsets[tau_i]
     block_end = strain_mat_offsets[tau_i + 1]
 
@@ -532,25 +551,19 @@ def apply_stress_gs(
     velocities: wp.array(dtype=wp.vec3),
 ):
     """
-    Applies the current stress to update particle velocities in a Gauss-Seidel manner,
-    typically used for an initial guess or applying accumulated stress.
-
-    This kernel processes a batch of constraints defined by `color_indices`
-    and `color_offset`. For each constraint `tau_i` in the batch:
-    1. Retrieves the Delassus diagonal `D`.
-    2. Calls `apply_stress_delta_gs` with the current `stress[tau_i]` as the
-       delta_stress. This effectively applies the full current stress to update
-       velocities of particles connected to this constraint.
+    Update particle velocities from the current stress. Uses a coloring approach to
+    avoid avoid race conditions. Used for Gauss-Seidel solver where the transposed
+    strain matrix is not assembled
     """
 
     base_index = color_indices[wp.tid() + color_offset]
-    for k in range(color_nodes_per_element):
-        tau_i = base_index * color_nodes_per_element + k
-
+    beg = base_index * color_nodes_per_element
+    end = beg + color_nodes_per_element
+    for tau_i in range(beg, end):
         D = delassus_diagonal[tau_i]
         cur_stress = local_stress[tau_i]
 
-        apply_stress_delta_gs(
+        apply_stress_delta(
             tau_i,
             D,
             cur_stress,
@@ -584,21 +597,14 @@ def solve_local_stress_gs(
     delta_correction: wp.array(dtype=vec6),
 ):
     """
-    Solves the local stress problem and immediately applies the resulting stress
-    delta to particle velocities in a Gauss-Seidel fashion.
-
-    This kernel processes a batch of constraints defined by `color_indices`
-    and `color_offset`. For each constraint `tau_i` in the batch:
-    1. Retrieves the Delassus diagonal `D`.
-    2. Calls `solve_local_stress` to compute the `delta_correction` for `stress[tau_i]`.
-       This function updates `stress[tau_i]` and `delta_correction[tau_i]`.
-    3. Calls `apply_stress_delta_gs` to immediately propagate the effect of
-       `delta_correction[tau_i]` to the velocities of connected particles.
+    Solves the local flow rule and immediately applies the resulting stress
+    delta to particle velocities, using a coloring approach
+    to avoid avoid race conditions.
     """
     base_index = color_indices[wp.tid() + color_offset]
-    for k in range(color_nodes_per_element):
-        tau_i = base_index * color_nodes_per_element + k
-
+    beg = base_index * color_nodes_per_element
+    end = beg + color_nodes_per_element
+    for tau_i in range(beg, end):
         D = delassus_diagonal[tau_i]
         local_strain = compute_local_strain(
             tau_i,
@@ -623,7 +629,7 @@ def solve_local_stress_gs(
             local_stress,
         )
 
-        apply_stress_delta_gs(
+        apply_stress_delta(
             tau_i,
             D,
             delta_stress,
@@ -649,13 +655,6 @@ def apply_collider_impulse(
 ):
     """
     Applies pre-computed impulses to particles and colliders.
-
-    For each particle/collider pair (i):
-    1. Updates the particle's velocity based on its inverse mass and the impulse.
-    2. Updates the collider's velocity based on its inverse mass and the negative
-       of the impulse (action-reaction).
-    This is typically used to apply an initial guess for contact impulses or
-    to apply accumulated impulses from a solver.
     """
     i = wp.tid()
 
@@ -673,6 +672,10 @@ def solve_coulomb_isotropic(
     nor: wp.vec3,
     u: wp.vec3,
 ):
+    """Solves for the relative velocity in the Coulomb friction model,
+    assuming an isotropic velocity-impulse relationship, u = r + b
+    """
+
     u_n = wp.dot(u, nor)
     if u_n < 0.0:
         u -= u_n * nor
@@ -732,9 +735,30 @@ def solve_nodal_friction(
     collider_velocities[i] -= collider_inv_mass[i] * delta_impulse
 
 
+_TILED_SUM_BLOCK_DIM = 512
+
+
+@wp.kernel
+def _tiled_sum_kernel(
+    square_input: bool,
+    data: wp.array(dtype=float),
+    partial_sums: wp.array(dtype=float),
+):
+    block_id = wp.tid()
+
+    tile = wp.tile_load(data, shape=_TILED_SUM_BLOCK_DIM, offset=block_id * _TILED_SUM_BLOCK_DIM)
+
+    if square_input:
+        tile = wp.tile_map(wp.mul, tile, tile)
+
+    wp.tile_store(partial_sums, wp.tile_sum(tile), offset=block_id)
+
+
 class ArraySquaredNorm:
-    def __init__(self, max_length: int, tile_size=512, device=None, temporary_store=None):
-        self.tile_size = tile_size
+    """Utility to compute squared L2 norm of a large array via tiled reductions."""
+
+    def __init__(self, max_length: int, device=None, temporary_store=None):
+        self.tile_size = _TILED_SUM_BLOCK_DIM
         self.device = device
 
         num_blocks = (max_length + self.tile_size - 1) // self.tile_size
@@ -745,8 +769,18 @@ class ArraySquaredNorm:
             temporary_store, shape=(num_blocks,), dtype=float, device=self.device
         )
 
-        self.sum_squared_kernel = self._create_block_sum_kernel(square_input=True)
-        self.sum_kernel = self._create_block_sum_kernel(square_input=False)
+        square_input = True
+        self.sum_launch: wp.Launch = wp.launch(
+            _tiled_sum_kernel,
+            dim=(num_blocks, self.tile_size),
+            inputs=(
+                square_input,
+                self.partial_sums_a.array,
+            ),
+            outputs=(self.partial_sums_b.array,),
+            block_dim=self.tile_size,
+            record_cmd=True,
+        )
 
     # Result contains a single value, the sum of the array (will get updated by this function)
     def compute_squared_norm(self, data: wp.array(dtype=Any)):
@@ -754,26 +788,23 @@ class ArraySquaredNorm:
         if data.dtype != float:
             data = wp.array(data, dtype=float).flatten()
 
-        kernel = self.sum_squared_kernel
         array_length = data.shape[0]
+        square_input = True
 
         flip_flop = False
         while True:
             num_blocks = (array_length + self.tile_size - 1) // self.tile_size
-
             partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b).array[:num_blocks]
 
-            wp.launch_tiled(
-                kernel,
-                dim=num_blocks,
-                inputs=(data,),
-                outputs=(partial_sums,),
-                block_dim=self.tile_size,
-            )
+            self.sum_launch.set_param_at_index(0, square_input)
+            self.sum_launch.set_param_at_index(1, data)
+            self.sum_launch.set_param_at_index(2, partial_sums)
+            self.sum_launch.set_dim((num_blocks, self.tile_size))
+            self.sum_launch.launch()
 
             array_length = num_blocks
             data = partial_sums
-            kernel = self.sum_kernel
+            square_input = False
 
             flip_flop = not flip_flop
 
@@ -781,28 +812,6 @@ class ArraySquaredNorm:
                 break
 
         return data[:1]
-
-    def _create_block_sum_kernel(self, square_input):
-        tile_size = self.tile_size
-
-        @fem.cache.dynamic_kernel(suffix=f"{tile_size}{square_input}")
-        def block_sum_kernel(
-            data: wp.array(dtype=float, ndim=1),
-            partial_sums: wp.array(dtype=float),
-        ):
-            block_id, tid_block = wp.tid()
-            start = block_id * tile_size
-
-            t = wp.tile_load(data, shape=tile_size, offset=start)
-
-            if wp.static(square_input):
-                t = wp.tile_map(wp.mul, t, t)
-
-            tile_sum = wp.tile_sum(t)
-            if tid_block == 0:
-                partial_sums[block_id] = tile_sum[0]
-
-        return block_sum_kernel
 
 
 @wp.kernel
@@ -822,9 +831,22 @@ def update_condition(
 
 
 def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity):
-    """Apply rigidity matrix to the collider velocity delta
+    """Apply collider rigidity feedback to the current collider velocities.
 
-    collider_velocity += rigidity_mat * (collider_velocity - prev_collider_velocity)
+    Computes and applies a velocity correction induced by the rigid coupling
+    matrix according to the relation:
+
+        collider_velocity += rigidity_mat @ (collider_velocity - prev_collider_velocity)
+
+    Then saves the updated collider velocity into ``prev_collider_velocity``
+    for the next iteration.
+
+    Args:
+        rigidity_mat: Block-sparse rigidity matrix returned by
+            ``build_rigidity_matrix``.
+        prev_collider_velocity: Velocity vector from the previous iteration
+            (updated in place at the end of the call).
+        collider_velocity: Current collider velocity vector to be corrected in place.
     """
     # velocity delta
     fem.utils.array_axpy(
@@ -873,6 +895,62 @@ def solve_rheology(
     use_graph=True,
     verbose=wp.config.verbose,
 ):
+    """Solve coupled plasticity and collider contact to compute grid velocities.
+
+    This function executes the implicit rheology loop that couples plastic
+    stress update and nodal frictional contact with colliders:
+
+    - Builds the Delassus operator diagonal blocks and rotates all local
+      quantities into the decoupled eigenbasis (normal vs tangential).
+    - Runs either Gauss-Seidel (with coloring) or Jacobi iterations to solve
+      the local stress projection problem per strain node.
+    - Applies collider impulses and, when provided, a rigidity coupling step on
+      collider velocities each iteration.
+    - Iterates until the residual on the stress update falls below
+      ``tolerance`` or ``max_iterations`` is reached. Optionally records and
+      executes CUDA graphs to reduce CPU overhead.
+
+    On exit, the stress field is rotated back to world space and the elastic
+    strain increment and plastic strain delta fields are produced.
+
+    Args:
+        max_iterations: Maximum number of nonlinear iterations.
+        tolerance: Solver tolerance for the stress residual (L2 norm).
+        strain_mat: Strain-to-velocity block-sparse matrix (B).
+        transposed_strain_mat: Preallocated B^T container (required for Jacobi),
+            ignored for Gauss-Seidel.
+        compliance_mat: Optional compliance matrix for elastic materials.
+        inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
+            the solver updates.
+        node_volume: Per-strain-node particle volume measure.
+        yield_params: Yield parameters per strain node.
+        unilateral_strain_offset: Per-node offset enforcing unilateral
+            incompressibility (void fraction/critical fraction).
+        strain_rhs: Initial strain right-hand side; becomes elastic strain at
+            the end of the solve.
+        plastic_strain_delta: Output plastic strain increment per node.
+        stress: In/out stress variable per node (rotated internally).
+        velocity: Grid velocity degrees of freedom to be updated in place.
+        collider_friction: Per-velocity-node collider friction coefficients; <0
+            disables contact at that node.
+        collider_adhesion: Per-velocity-node adhesion coefficients scaled by
+            dt and voxel size.
+        collider_normals: Per-velocity-node contact normals.
+        collider_velocities: Per-velocity-node collider rigid velocities.
+        collider_inv_mass: Per-velocity-node collider inverse masses.
+        collider_impulse: In/out stored collider impulses (warm start).
+        color_offsets: Optional coloring offsets for Gauss-Seidel.
+        color_indices: Optional coloring indices for Gauss-Seidel.
+        color_nodes_per_element: Number of nodes per colored element.
+        rigidity_mat: Optional rigidity matrix coupling nodes to collider DOFs.
+        temporary_store: Temporary storage arena for intermediate arrays.
+        use_graph: If True, uses conditional CUDA graphs for the iteration loop.
+        verbose: If True, prints residuals/iteration counts.
+
+    Returns:
+        A captured execution graph handle when ``use_graph`` is True and the
+        device supports it; otherwise ``None``.
+    """
     delta_stress = fem.borrow_temporary_like(stress, temporary_store)
 
     delassus_rotation = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
@@ -889,9 +967,23 @@ def solve_rheology(
     if not gs:
         sp.bsr_set_transpose(dest=transposed_strain_mat, src=strain_mat)
 
-    compliance_mat_diagonal = sp.bsr_get_diag(compliance_mat) if compliance_mat else None
     if compliance_mat is None:
-        compliance_mat = sp.bsr_zeros(strain_mat.nrow, strain_mat.nrow, mat66)
+        compliance_mat_diagonal = None
+        compliance_mat_values = None
+        compliance_mat_columns = None
+        # make a zero-stride array for compliance_mat_offsets
+        compliance_mat_offsets_tmp = fem.borrow_temporary(temporary_store, shape=1, dtype=int)
+        compliance_mat_offsets_tmp.array.zero_()
+        compliance_mat_offsets = wp.array(
+            ptr=compliance_mat_offsets_tmp.array.ptr, shape=stress.shape[0] + 1, strides=(0,), dtype=int
+        )
+    else:
+        compliance_mat_diagonal_temp = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
+        compliance_mat_diagonal = compliance_mat_diagonal_temp.array
+        sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
+        compliance_mat_values = compliance_mat.values
+        compliance_mat_offsets = compliance_mat.offsets
+        compliance_mat_columns = compliance_mat.columns
 
     # Project initial stress on yield surface
     wp.launch(
@@ -906,7 +998,7 @@ def solve_rheology(
     # Compute and factorize diagonal blacks, rotate strain matrix to diagonal basis
     # NOTE: we reuse the same memory for local versions of the variables
     local_strain_mat_values = strain_mat.values
-    local_compliance_mat_values = compliance_mat.values
+    local_compliance_mat_values = compliance_mat_values
     local_strain_rhs = strain_rhs
     local_stress = stress
 
@@ -936,12 +1028,12 @@ def solve_rheology(
 
     if compliance_mat is not None:
         wp.launch(
-            kernel=rotate_compliance_mat,
-            dim=compliance_mat.nrow,
+            kernel=rotate_and_scale_compliance_mat,
+            dim=stress.shape[0],
             inputs=[
-                compliance_mat.offsets,
-                compliance_mat.columns,
-                compliance_mat.values,
+                compliance_mat_offsets,
+                compliance_mat_columns,
+                compliance_mat_values,
                 delassus_rotation.array,
                 delassus_diagonal.array,
             ],
@@ -984,8 +1076,8 @@ def solve_rheology(
                 color_nodes_per_element,
                 color_indices,
                 yield_params,
-                compliance_mat.offsets,
-                compliance_mat.columns,
+                compliance_mat_offsets,
+                compliance_mat_columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
@@ -1008,7 +1100,7 @@ def solve_rheology(
     else:
         # Apply local scaling and rotations to transposed strain matrix
         wp.launch(
-            kernel=scale_transposed_strain_mat,
+            kernel=rotate_and_scale_transposed_strain_mat,
             dim=inv_volume.shape[0],
             inputs=[
                 transposed_strain_mat.offsets,
@@ -1016,6 +1108,7 @@ def solve_rheology(
                 transposed_strain_mat.values,
                 inv_volume,
                 delassus_rotation.array,
+                delassus_diagonal.array,
             ],
         )
 
@@ -1028,8 +1121,8 @@ def solve_rheology(
             dim=stress.shape[0],
             inputs=[
                 yield_params,
-                compliance_mat.offsets,
-                compliance_mat.columns,
+                compliance_mat_offsets,
+                compliance_mat_columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
@@ -1156,7 +1249,8 @@ def solve_rheology(
         if verbose:
             res = math.sqrt(residual.numpy()[0]) / residual_scale
             print(
-                f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after {iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
+                f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
+                f"{iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
             )
     else:
         solve_graph = None
@@ -1186,8 +1280,8 @@ def solve_rheology(
         inputs=[
             delassus_rotation.array,
             delassus_diagonal.array,
-            compliance_mat.offsets,
-            compliance_mat.columns,
+            compliance_mat_offsets,
+            compliance_mat_columns,
             local_compliance_mat_values,
             strain_mat.offsets,
             strain_mat.columns,

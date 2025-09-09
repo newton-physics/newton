@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .render_grains import sample_render_grains, update_render_grains
 from .solver_implicit_mpm import SolverImplicitMPM
 
-__all__ = ["SolverImplicitMPM", "sample_render_grains", "update_render_grains"]
+__all__ = ["SolverImplicitMPM"]

@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import warp as wp
 import warp.fem as fem
 import warp.sparse as wps
@@ -29,7 +44,7 @@ _GROUND_PROJECTION_THRESHOLD = 0.5
 
 @wp.struct
 class Collider:
-    """Collider data passed to kernels and integrands."""
+    """Packed collider parameters and geometry queried during rasterization."""
 
     meshes: wp.array(dtype=wp.uint64)
     """Meshes of the collider"""
@@ -164,6 +179,26 @@ def project_outside_collider(
     velocities_out: wp.array(dtype=wp.vec3),
     velocity_gradients_out: wp.array(dtype=wp.mat33),
 ):
+    """Project particles outside colliders and apply Coulomb response.
+
+    For active particles, queries the nearest collider surface, computes the
+    penetration at the end of the step, applies a Coulomb friction response
+    against the collider velocity, projects positions outside by the required
+    signed distance, and rigidifies the particle velocity gradient. Inactive
+    particles are passed through unchanged.
+
+    Args:
+        positions: Current particle positions.
+        velocities: Current particle velocities.
+        velocity_gradients: Current particle velocity gradients.
+        particle_flags: Per-particle flags (used to gate inactive particles).
+        collider: Collider description and geometry.
+        voxel_size: Grid voxel edge length (used for thresholds/scales).
+        dt: Timestep length.
+        positions_out: Output particle positions.
+        velocities_out: Output particle velocities.
+        velocity_gradients_out: Output particle velocity gradients.
+    """
     i = wp.tid()
 
     pos_adv = positions[i]
@@ -214,6 +249,26 @@ def rasterize_collider(
     collider_adhesion: wp.array(dtype=float),
     collider_ids: wp.array(dtype=int),
 ):
+    """Sample collider data at grid nodes.
+
+    Writes per-node signed distance, contact normal, collider velocity, and
+    material parameters (friction and adhesion). Nodes that are too far from
+    any collider are marked inactive with a null id and zeroed outputs. The
+    adhesion value is scaled by ``dt * voxel_size`` to match the nodal impulse
+    units used by the solver.
+
+    Args:
+        collider: Collider description and geometry.
+        voxel_size: Grid voxel edge length (sets query/extrapolation band).
+        dt: Timestep length (used to scale adhesion).
+        node_positions: Grid node positions to sample at.
+        collider_sdf: Output signed distance per node.
+        collider_velocity: Output collider velocity per node.
+        collider_normals: Output contact normals per node.
+        collider_friction: Output friction coefficient per node, or -1 if inactive.
+        collider_adhesion: Output scaled adhesion per node.
+        collider_ids: Output collider id per node, or null id if inactive.
+    """
     i = wp.tid()
     x = node_positions[i]
     sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider)
@@ -316,7 +371,28 @@ def allot_collider_mass(
     collider_total_volumes: wp.array(dtype=float),
     collider_inv_mass_matrix: wp.array(dtype=float),
 ):
-    """Allot collider mass to the nodes."""
+    """Accumulate collider mass onto grid nodes and compute inverse masses.
+
+    This function first integrates the per-mesh volume contribution of all
+    active collider regions using the provided ``collider_quadrature`` and the
+    ``collider_volumes`` integrand. It then computes per-node inverse masses for
+    nodes tagged by ``collider_ids`` as being within the collider influence.
+
+    - Dynamic colliders (finite mass) contribute a non-zero inverse mass that
+      is proportional to the local node volume and the collider density
+      (mass/total volume per collider mesh).
+    - Kinematic colliders (infinite mass) and nodes not influenced by a
+      collider receive an inverse mass of zero.
+
+    Args:
+        voxel_size: Grid voxel edge length.
+        node_volumes: Per-velocity-node volume fractions (in voxel units).
+        collider: Packed collider parameters and geometry handles.
+        collider_quadrature: Quadrature used to integrate collider volumes.
+        collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
+        collider_total_volumes: Output per-collider total volumes (accumulated).
+        collider_inv_mass_matrix: Output per-node inverse masses due to collider compliance.
+    """
 
     vel_node_count = node_volumes.shape[0]
 
@@ -354,10 +430,33 @@ def build_rigidity_matrix(
     collider_inv_inertia: wp.array(dtype=wp.mat33),
     collider_total_volumes: wp.array(dtype=float),
 ):
-    """Build the rigidity matrix for the colliders,
-    that is, the matrix that relates per-node displacements to
-    the rigid-body displacement, according to the center-of-mass
-    and inertia tensors of the colliders.
+    """Assemble the collider rigidity matrix that couples node motion to rigid DOFs.
+
+    Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
+    maps nodal velocity corrections to rigid-body displacements. Only nodes
+    with a valid collider id and only dynamic colliders (finite mass) produce
+    non-zero blocks.
+
+    Internally constructs:
+      - J: kinematic Jacobian blocks per node relating rigid velocity to nodal velocity.
+      - IJtm: mass- and inertia-scaled transpose mapping.
+      - Iphi_diag: diagonal term that enforces non-rigid (complementary) DOFs.
+
+    The returned matrix is J @ IJtm + diag(Iphi_diag). It is later used to
+    propagate rigid coupling when solving collider friction.
+
+    Args:
+        voxel_size: Grid voxel edge length.
+        node_volumes: Per-velocity-node volume fractions.
+        node_positions: World-space node positions (3D).
+        collider: Packed collider parameters and geometry handles.
+        collider_ids: Per-velocity-node collider id, or -2 when not active.
+        collider_coms: Per-collider centers of mass in world space.
+        collider_inv_inertia: Per-collider inverse inertia tensors in world space.
+        collider_total_volumes: Per-collider integrated volumes used to derive densities.
+
+    Returns:
+        A ``warp.sparse.BsrMatrix`` representing the rigidity coupling.
     """
 
     vel_node_count = node_volumes.shape[0]

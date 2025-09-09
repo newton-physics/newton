@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import warp as wp
 import warp.fem as fem
 
@@ -108,10 +123,22 @@ def project_grains(
 
 
 def sample_render_grains(state: newton.State, particle_radius: float, grains_per_particle: int):
-    """
-    Create point samples for rendering at higher resolution than the simulation particles.
-    Point samples are advected passievely with the continuum velocity field while being constrained
-    to lie within the affinely deformed simulation particles.
+    """Generate per-particle point samples used for high-resolution rendering.
+
+    For each simulation particle, this creates ``grains_per_particle`` random
+    points uniformly within a cube of size ``2 * particle_radius`` centered at
+    the particle position. The resulting 2D array can be updated each time step
+    using ``update_render_grains`` to passively advect and project grains within
+    the affinely deformed particle shape.
+
+    Args:
+        state: Current Newton state providing particle positions.
+        particle_radius: Rendering grain sampling radius per particle.
+        grains_per_particle: Number of grains to sample per particle.
+
+    Returns:
+        A ``wp.array`` with shape ``(num_particles, grains_per_particle)`` of
+        type ``wp.vec3`` containing grain positions.
     """
 
     grains = wp.empty((state.particle_count, grains_per_particle), dtype=wp.vec3, device=state.particle_q.device)
@@ -137,11 +164,28 @@ def update_render_grains(
     particle_radius: float,
     dt: float,
 ):
-    """Passively advect the render grains in the velocity field"""
+    """Advect grain samples with the grid velocity and keep them inside the deformed particle.
+
+     The grains are advanced by composing two motions within the time step:
+     1) a particle-local affine update using the particle velocity gradient and
+        particle positions (APIC-like), and 2) a grid-based PIC advection using
+        the current velocity field. After advection, positions are projected
+        back using an ellipsoidal appoximation of the particle defined by its
+        deformation frame and ``particle_radius``.
+
+    If no velocity field is available in the ``state`` the function
+    returns without modification.
+
+     Args:
+         state_prev: Previous state (t_n) with particle positions and frames.
+         state: Current state (t_{n+1}) providing velocity field and particles.
+         grains: 2D array of grain positions per particle to be updated in place.
+         particle_radius: Particle rendering radius used for projection.
+         dt: Time step duration.
+    """
 
     if state.velocity_field is None:
         return
-
     grain_pos = grains.flatten()
     domain = fem.Cells(state.velocity_field.space.geometry)
     grain_pic = fem.PicQuadrature(domain, positions=grain_pos)

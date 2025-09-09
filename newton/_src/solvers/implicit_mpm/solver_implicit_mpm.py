@@ -34,6 +34,7 @@ from .rasterized_collisions import (
     project_outside_collider,
     rasterize_collider,
 )
+from .render_grains import sample_render_grains, update_render_grains
 from .solve_rheology import YieldParamVec, solve_rheology
 
 __all__ = ["SolverImplicitMPM"]
@@ -84,11 +85,6 @@ mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
 @fem.integrand
 def integrate_fraction(s: fem.Sample, phi: fem.Field, domain: fem.Domain, inv_cell_volume: float):
     return phi(s) * inv_cell_volume
-
-
-@fem.integrand
-def integrate_fraction_field(s: fem.Sample, phi: fem.Field, fraction: fem.Field, inv_cell_volume: float):
-    return phi(s) * fraction(s) * inv_cell_volume
 
 
 @fem.integrand
@@ -492,8 +488,6 @@ def compliance_form(
     elastic_strains: wp.array(dtype=wp.mat33),
     inv_cell_volume: float,
 ):
-    # Cauchy strain
-
     F = elastic_strains[s.qp_index]
 
     compliance, poisson, damping = extract_elastic_parameters(elastic_parameters(s))
@@ -561,6 +555,7 @@ class ImplicitMPMOptions:
 
 
 def _refit_test_field(test, space, space_restriction):
+    """Rebind an existing test field to a new space and restriction."""
     test._space = space
     test._space_partition = space_restriction.space_partition
     test.space_restriction = space_restriction
@@ -568,12 +563,14 @@ def _refit_test_field(test, space, space_restriction):
 
 
 def _refit_trial_field(trial, space, space_restriction):
+    """Rebind an existing trial field to a new space and restriction."""
     trial._space = space
     trial._space_partition = space_restriction.space_partition
     trial.domain = space_restriction.domain
 
 
 def _refit_discrete_field(field, space, space_partition):
+    """Rebind a discrete field to a new space and resize its storage if needed."""
     field._space = space
     field._space_partition = space_partition
     node_count = space_partition.node_count()
@@ -584,7 +581,7 @@ def _refit_discrete_field(field, space, space_partition):
 
 
 class _ImplicitMPMScratchpad:
-    """Sxratch data for the implicit MPM solver"""
+    """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
 
     def __init__(self):
         self.velocity_test = None
@@ -632,12 +629,14 @@ class _ImplicitMPMScratchpad:
         geo_partition: fem.GeometryPartition,
         strain_basis_str: str,
     ):
+        """Create velocity and strain function spaces over the given geometry."""
         self.domain = fem.Cells(geo_partition)
 
         self._create_velocity_function_space()
         self._create_strain_function_space(strain_basis_str)
 
     def _create_velocity_function_space(self):
+        """Create velocity and fraction spaces and their partition/restriction."""
         domain = self.domain
         grid = domain.geometry
 
@@ -658,6 +657,7 @@ class _ImplicitMPMScratchpad:
         self._vel_space_restriction = vel_space_restriction
 
     def _create_strain_function_space(self, strain_basis_str: str):
+        """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
         domain = self.domain
         grid = domain.geometry
 
@@ -686,6 +686,7 @@ class _ImplicitMPMScratchpad:
         self._strain_space_restriction = strain_space_restriction
 
     def require_velocity_space_fields(self, has_compliant_particles: bool):
+        """Ensure velocity-space fields exist and match current spaces."""
         velocity_basis = self._velocity_basis
         velocity_space = self._velocity_space
         vel_space_restriction = self._vel_space_restriction
@@ -739,6 +740,7 @@ class _ImplicitMPMScratchpad:
         self.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
 
     def require_strain_space_fields(self):
+        """Ensure strain-space fields exist and match current spaces."""
         strain_basis = self._strain_basis
         sym_strain_space = self._sym_strain_space
         strain_space_restriction = self._strain_space_restriction
@@ -790,6 +792,7 @@ class _ImplicitMPMScratchpad:
         coloring: bool,
         temporary_store: fem.TemporaryStore,
     ):
+        """Allocate transient arrays sized to current grid and options."""
         vel_node_count = self._vel_space_restriction.space_partition.node_count()
         strain_node_count = self._strain_space_restriction.space_partition.node_count()
 
@@ -818,6 +821,7 @@ class _ImplicitMPMScratchpad:
             self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2 + 1, dtype=int)
 
     def release_temporaries(self):
+        """Release previously allocated temporaries to the store."""
         self.inv_mass_matrix.release()
         self.node_positions.release()
         self.collider_normal.release()
@@ -840,6 +844,9 @@ class _ImplicitMPMScratchpad:
 
 
 def _particle_parameter(num_particles, model_value: float | wp.array | None = None, default_value=None):
+    """Helper function to create a particle-wise parameter array, taking defaults either from the model
+    or the global options."""
+
     if model_value is None:
         return wp.full(num_particles, default_value, dtype=float)
     elif isinstance(model_value, wp.array):
@@ -852,14 +859,15 @@ def _particle_parameter(num_particles, model_value: float | wp.array | None = No
 
 
 class ImplicitMPMModel:
-    """
-    A model that wraps a Newton model and adds implicit MPM capabilities.
+    """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
-    This model is used to solve the implicit MPM equations.
+    Holds particle material parameters, collider parameters, and convenience
+    arrays derived from the wrapped ``model`` and ``ImplicitMPMOptions``. The
+    instance is consumed by ``SolverImplicitMPM`` during time stepping.
 
     Args:
-        model: The Newton model to wrap.
-        options: The options for the implicit MPM solver.
+        model: The base Newton model to augment.
+        options: Options controlling particle and collider defaults.
     """
 
     def __init__(self, model: newton.Model, options: ImplicitMPMOptions):
@@ -887,13 +895,35 @@ class ImplicitMPMModel:
         self.setup_collider()
 
     def notify_particle_material_changed(self):
+        """Refresh cached extrema for material parameters.
+
+        Tracks the minimum Young's modulus and maximum hardening across
+        particles to quickly toggle code paths (e.g., compliant particles or
+        hardening enabled) without recomputing per step.
+        """
         self.min_young_modulus = np.min(self.material_parameters.young_modulus.numpy())
         self.max_hardening = np.max(self.material_parameters.hardening.numpy())
 
     def notify_collider_changed(self):
+        """Refresh cached extrema for collider parameters.
+
+        Tracks the minimum collider mass to determine whether compliant
+        colliders are present and to enable/disable related computations.
+        """
         self.min_collider_mass = np.min(self.collider.masses.numpy()) if len(self.collider.masses) > 0 else _INFINITY
 
     def setup_particle_material(self, options: ImplicitMPMOptions):
+        """Initialize per-particle material and derived fields from the model.
+
+        Computes particle volumes and densities from the model's particle mass
+        and radius, sets up elastic and plasticity parameters with optional
+        hardening, and stores them into ``self.material_parameters``. Also
+        caches extrema used by the solver for fast feature toggles.
+
+        Args:
+            options: Solver options used to fill defaults for missing model
+                parameters (e.g., global Young's modulus, damping, Poisson).
+        """
         model = self.model
 
         num_particles = model.particle_q.shape[0]
@@ -901,9 +931,8 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             # Assume that particles represent a cuboid volume of space
             # (they are typically laid out on a grid)
-            self.particle_volume = wp.array(
-                8.0 * _particle_parameter(num_particles, model.particle_radius).numpy() ** 3
-            )
+            self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
             self.particle_density = model.particle_mass / self.particle_volume
 
             # Elastic stress-strain matrix from Poisson's ratio and compliance
@@ -935,17 +964,21 @@ class ImplicitMPMModel:
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
     ):
-        """Setups the collision geometry for the implicit MPM solver.
+        """Initialize collider parameters and defaults from inputs.
 
+        Populates the ``Collider`` struct with mesh handles and per-mesh
+        properties (thickness, friction, adhesion, mass, projection threshold),
+        using solver defaults when lists are not provided. Also sets the ground
+        plane parameters from the wrapped model's up axis.
 
         Args:
-            model: The model to read ground collision properties from.
-            colliders: A list of warp triangular meshes to use as colliders.
-            collider_thicknesses: The thicknesses of the colliders.
-            collider_projection_threshold: The projection threshold for the colliders, i.e, the maximum acceptable penetration depth before projecting particles out.
-            collider_masses: The masses of the colliders.
-            collider_friction: The friction coefficients of the colliders.
-            collider_adhesion: The adhesion coefficients of the colliders (Pa).
+            colliders: Warp triangular meshes used as colliders.
+            collider_thicknesses: Per-mesh signed distance offsets (m).
+            collider_projection_threshold: Per-mesh projection thresholds as a
+                fraction of the voxel size.
+            collider_masses: Per-mesh masses; very large values mark kinematic colliders.
+            collider_friction: Per-mesh Coulomb friction coefficients.
+            collider_adhesion: Per-mesh adhesion (Pa).
         """
 
         self._collider_meshes = colliders  # Keep a ref so that meshes are not garbage collected
@@ -1141,7 +1174,12 @@ class SolverImplicitMPM(SolverBase):
 
     @staticmethod
     def enrich_state(state: newton.State):
-        """Enrich the state with additional fields for tracking particle strain and deformation."""
+        """Allocate additional per-particle and per-step fields used by the solver.
+
+        Adds velocity gradient, elastic and plastic deformation storage, and
+        per-particle rendering transforms. Initializes grid-attached fields to
+        None so they can be created on demand during stepping.
+        """
 
         device = state.particle_qd.device
 
@@ -1191,7 +1229,12 @@ class SolverImplicitMPM(SolverBase):
             self.mpm_model.notify_particle_material_changed()
 
     def project_outside(self, state_in: newton.State, state_out: newton.State, dt: float):
-        """Projects particles outside of the colliders"""
+        """Project particles outside colliders prior to the main solve.
+
+        Uses a signed-distance query and local Coulomb response to remove
+        inadmissible penetration and adjust particle velocities/gradients for a
+        stable start of the implicit step.
+        """
         wp.launch(
             project_outside_collider,
             dim=state_in.particle_count,
@@ -1213,10 +1256,11 @@ class SolverImplicitMPM(SolverBase):
         )
 
     def collect_collider_impulses(self, state: newton.State):
-        """Returns the list of collider impulses and the positions at which they are applied.
+        """Collect current collider impulses and their application positions.
 
-        Note: the identifier of the collider is not included in the returned values but can be retrieved from the state
-        as `state.collider_ids`.
+        The impulses are returned in world units, integrating the internal
+        nodal impulse density over the voxel volume. Collider ids can be
+        retrieved from ``state.collider_ids`` if needed.
         """
         x = state.velocity_field.space.node_positions()
 
@@ -1239,7 +1283,12 @@ class SolverImplicitMPM(SolverBase):
         min_stretch: float = 0.25,
         max_stretch: float = 2.0,
     ):
-        """Updates the particle frames to account for the deformation of the particles"""
+        """Update per-particle deformation frames for rendering and projection.
+
+        Integrates the particle deformation gradient using the velocity gradient
+        and clamps its principal stretches to the provided bounds for
+        robustness.
+        """
 
         wp.launch(
             update_particle_frames,
@@ -1255,9 +1304,55 @@ class SolverImplicitMPM(SolverBase):
             device=state.particle_qd_grad.device,
         )
 
+    def sample_render_grains(state: newton.State, grains_per_particle: int):
+        """Generate per-particle point samples used for high-resolution rendering.
+
+        Args:
+            state: Current Newton state providing particle positions.
+            grains_per_particle: Number of grains to sample per particle.
+
+        Returns:
+            A ``wp.array`` with shape ``(num_particles, grains_per_particle)`` of
+            type ``wp.vec3`` containing grain positions.
+        """
+
+        return sample_render_grains(state, self.mpm_model.particle_radius, grains_per_particle)
+
+    def update_render_grains(
+        state_prev: newton.State,
+        state: newton.State,
+        grains: wp.array,
+        dt: float,
+    ):
+        """Advect grain samples with the grid velocity and keep them inside the deformed particle.
+
+        Args:
+            state_prev: Previous state (t_n).
+            state: Current state (t_{n+1}).
+            grains: 2D array of grain positions per particle to be updated in place. See ``sample_render_grains``.
+            dt: Time step duration.
+        """
+
+        return update_render_grains(state_prev, state, grains, self.mpm_model.particle_radius, dt)
+
     def _allocate_grid(
         self, positions: wp.array, voxel_size, temporary_store: fem.TemporaryStore, padding_voxels: int = 0
     ):
+        """Create a grid (sparse or dense) covering all particle positions.
+
+        Uses a sparse ``Nanogrid`` when requested; otherwise computes an axis
+        aligned bounding box and instantiates a dense ``Grid3D`` with optional
+        padding in voxel units.
+
+        Args:
+            positions: Particle positions to bound.
+            voxel_size: Grid voxel edge length.
+            temporary_store: Temporary storage for intermediate buffers.
+            padding_voxels: Additional empty voxels to add around the bounds.
+
+        Returns:
+            A geometry partition suitable for FEM field assembly.
+        """
         with wp.ScopedTimer(
             "Allocate grid",
             active=self._enable_timers,
@@ -1312,6 +1407,12 @@ class SolverImplicitMPM(SolverBase):
         return grid
 
     def _rebuild_scratchpad(self, state_in: newton.State):
+        """(Re)create function spaces and allocate per-step temporaries.
+
+        Allocates the grid based on current particle positions, rebuilds
+        velocity and strain spaces as needed, configures collision data, and
+        optionally computes a Gauss-Seidel coloring for the strain nodes.
+        """
         geo_partition = self._allocate_grid(
             state_in.particle_q,
             voxel_size=self.mpm_model.voxel_size,
@@ -1351,6 +1452,13 @@ class SolverImplicitMPM(SolverBase):
         dt: float,
         scratch: _ImplicitMPMScratchpad,
     ):
+        """Single implicit MPM step: bin, rasterize, assemble, solve, advect.
+
+        Executes the full pipeline for one time step, including particle
+        binning, collider rasterization, RHS assembly, strain/compliance matrix
+        computation, warm-starting, coupled rheology/contact solve, strain
+        updates, and particle advection.
+        """
         domain = scratch.domain
         inv_cell_volume = 1.0 / self.mpm_model.voxel_size**3
 
@@ -1795,6 +1903,12 @@ class SolverImplicitMPM(SolverBase):
             )
 
     def _warmstart_fields(self, scratch: _ImplicitMPMScratchpad, state_in: newton.State, state_out: newton.State):
+        """Interpolate previous grid fields into the current grid layout.
+
+        Transfers impulse and stress fields from the previous grid to the new
+        grid (handling nonconforming cases), and initializes the output state's
+        grid fields to the current scratchpad fields.
+        """
         domain = scratch.velocity_test.domain
 
         if state_in.impulse_field is not None:
@@ -1842,12 +1956,16 @@ class SolverImplicitMPM(SolverBase):
         self,
         scratch: _ImplicitMPMScratchpad,
     ):
+        """Compute Gauss-Seidel coloring of strain nodes to avoid write conflicts.
+
+        Writes scratch.color_offsets, scratch.color_indices and scratch.color_nodes_per_element.
+        """
+
         space_partition = scratch._strain_space_restriction.space_partition
         grid = space_partition.geo_partition.geometry
 
         nodes_per_element = space_partition.space_topology.MAX_NODES_PER_ELEMENT
         is_dg = space_partition.geo_partition.cell_count() * nodes_per_element == space_partition.node_count()
-
         strain_node_count = space_partition.node_count()
 
         if is_dg:
