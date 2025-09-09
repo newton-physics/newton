@@ -891,7 +891,7 @@ class ClothSim:
                 self.simulate()
 
             if self.viewer is not None:
-                self.viewer.begin_frame()
+                self.viewer.begin_frame(self.sim_time)
                 self.viewer.log_state(self.state0)
                 self.viewer.end_frame()
             self.sim_time = self.sim_time + self.frame_dt
