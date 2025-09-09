@@ -109,5 +109,6 @@ class EqType(IntEnum):
 __all__ = [
     "EqType",
     "JointType",
+    "ActuatorType",
     "get_joint_dof_count",
 ]

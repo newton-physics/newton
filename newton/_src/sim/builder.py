@@ -223,14 +223,15 @@ class ModelBuilder:
             self.limit_kd = limit_kd
             """The damping stiffness of the joint axis limits. Defaults to 1e1."""
             self.pos_target = pos_target
-            self.vel_target = vel_target
-            """The target position or velocity (depending on the mode) of the joint axis.
-            If `mode` is `JointMode.TARGET_POSITION` and the initial `target` is outside the limits,
+            """The target position of the joint axis.
+            If the initial `target` is outside the limits,
             it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            self.vel_target = vel_target
+            """The target velocity of the joint axis."""
             self.target_ke = target_ke
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
             self.target_kd = target_kd
-            """The mode of the joint axis (e.g., `JointMode.TARGET_POSITION` or `JointMode.TARGET_VELOCITY`). Defaults to `JointMode.TARGET_POSITION`."""
+            """The derivative gain of the target drive PD controller. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis. Defaults to 1e-2."""
             self.effort_limit = effort_limit
@@ -685,7 +686,7 @@ class ModelBuilder:
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
-        from ..utils.import_urdf import parse_urdf
+        from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
         return parse_urdf(
             self,
@@ -781,7 +782,7 @@ class ModelBuilder:
                 * - "collapse_results"
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
         """
-        from ..utils.import_usd import parse_usd
+        from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
         return parse_usd(
             self,
@@ -862,7 +863,7 @@ class ModelBuilder:
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
-        from ..utils.import_mjcf import parse_mjcf
+        from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
         return parse_mjcf(
             self,
@@ -1935,8 +1936,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt
-        import networkx as nx
+        import matplotlib.pyplot as plt  # noqa: PLC0415
+        import networkx as nx  # noqa: PLC0415
 
         def joint_type_str(type):
             if type == JointType.FREE:
@@ -2856,10 +2857,10 @@ class ModelBuilder:
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
-                    import coacd
+                    import coacd  # noqa: PLC0415
                 else:
                     # convex decomposition using V-HACD
-                    import trimesh
+                    import trimesh  # noqa: PLC0415
 
                 decompositions = {}
 

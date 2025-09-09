@@ -161,8 +161,12 @@ class Example:
         ]
 
         for i in range(len(builder.joint_target_ke)):
-            builder.joint_target_ke[i] = 150
-            builder.joint_target_kd[i] = 5
+            if i < 6:
+                builder.joint_target_ke[i] = 0
+                builder.joint_target_kd[i] = 0
+            else:
+                builder.joint_target_ke[i] = 150
+                builder.joint_target_kd[i] = 5
 
         # add sand particles
         max_fraction = 1.0

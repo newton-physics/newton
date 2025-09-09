@@ -973,11 +973,7 @@ def eval_joint_force(
     limit_ke: float,
     limit_kd: float,
 ) -> float:
-    """Joint force evaluation for a single degree of freedom.
-
-    Uses the same PD control logic as the control module:
-    force = kp * (pos_target - q) + kd * (vel_target - qd) + limit_forces
-    """
+    """Joint force evaluation for a single degree of freedom."""
 
     limit_f = 0.0
     damping_f = 0.0
