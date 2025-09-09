@@ -252,9 +252,11 @@ class Example:
         )
 
         if stage_path and not headless:
-            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
+            self.renderer = newton.viewer.ViewerGL()
         else:
             self.renderer = None
+
+        self.renderer.set_model(self.model)
 
         self.control = self.model.control()
         self.state_0, self.state_1 = self.model.state(), self.model.state()
@@ -293,7 +295,7 @@ class Example:
             return
 
         self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
+        self.renderer.log_state(self.state_0)
         self.renderer.end_frame()
 
     @staticmethod
@@ -441,7 +443,7 @@ if __name__ == "__main__":
         )
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
-        print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
+        # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
         print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
         print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
         print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")

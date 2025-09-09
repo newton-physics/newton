@@ -220,6 +220,7 @@ def main():
         "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
         "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
         "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
+        "sensor_contact": "newton.examples.sensors.example_sensor_contact",
     }
 
     if len(sys.argv) < 2:

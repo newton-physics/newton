@@ -510,6 +510,20 @@ add_example_test(
 )
 
 
+class TestSensorExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensors_contact",
+    devices=test_devices,
+    test_options={"num_frames": 4 * 36},  # train_iters * sim_steps
+    test_options_cpu={"num_frames": 2 * 36},
+    use_viewer=True,
+)
+
+
 class TestOtherExamples(unittest.TestCase):
     pass
 
@@ -520,21 +534,6 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"viewer": "null", "num_frames": 100},
     use_viewer=True,
-)
-
-add_example_test(
-    TestOtherExamples,
-    name="example_rigid_force",
-    devices=test_devices,
-    test_options={"headless": True},
-)
-
-add_example_test(
-    TestOtherExamples,
-    name="example_contact_sensor",
-    devices=test_devices,
-    test_options={"stage_path": "None", "num_frames": 100},
-    test_options_cpu={"num_frames": 10},
 )
 
 
