@@ -1611,8 +1611,8 @@ def solve_body_joints(
         kd_sum = float(0.0)
         axis_limits = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        axis_pos_target_ke = wp.mat33(0.0)  # [weighted_pos_targets, ke_weights, unused]
-        axis_vel_target_kd = wp.mat33(0.0)  # [weighted_vel_targets, kd_weights, unused]
+        axis_pos_target_ke = wp.mat33(0.0)
+        axis_vel_target_kd = wp.mat33(0.0)
         # avoid a for loop here since local variables would need to be modified which is not yet differentiable
         if lin_axis_count > 0:
             axis = joint_axis[axis_start]
@@ -1709,11 +1709,11 @@ def solve_body_joints(
                 pos_target = axis_pos_target[dim]
                 pos_target = wp.clamp(pos_target, lower, upper)
 
-                vel_target_final = axis_vel_target[dim]
+                vel_target = axis_vel_target[dim]
 
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
-                    vel_err = derr - vel_target_final
+                    vel_err = derr - vel_target
                     err = pos_err + vel_err * dt
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
@@ -1913,11 +1913,11 @@ def solve_body_joints(
                 pos_target = axis_pos_target[dim]
                 pos_target = wp.clamp(pos_target, lower, upper)
 
-                vel_target_final = axis_vel_target[dim]
+                vel_target = axis_vel_target[dim]
 
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
-                    vel_err = derr - vel_target_final
+                    vel_err = derr - vel_target
                     err = pos_err + vel_err * dt
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
