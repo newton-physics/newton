@@ -307,8 +307,9 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
 
     for _k in range(24):
         f_cur, df_dalpha = eval_sliding_residual(alpha_cur, Dmu_rn, b_T)
-        delta_alpha = f_cur / df_dalpha
+        delta_alpha = -f_cur / df_dalpha
 
+        # delta_alpha should always be positive, no need to take abs
         if delta_alpha < __SLIDING_NEWTON_TOL:
             break
 
