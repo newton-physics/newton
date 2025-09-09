@@ -416,6 +416,8 @@ class Model:
         self.attribute_frequency["joint_axis"] = "joint_dof"
         self.attribute_frequency["joint_target_ke"] = "joint_dof"
         self.attribute_frequency["joint_target_kd"] = "joint_dof"
+        self.attribute_frequency["joint_pos_target"] = "joint_dof"
+        self.attribute_frequency["joint_vel_target"] = "joint_dof"
         self.attribute_frequency["joint_limit_lower"] = "joint_dof"
         self.attribute_frequency["joint_limit_upper"] = "joint_dof"
         self.attribute_frequency["joint_limit_ke"] = "joint_dof"

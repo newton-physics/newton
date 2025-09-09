@@ -25,6 +25,12 @@ from .joints import JointType
 from .state import State
 
 
+@wp.kernel
+def zero_array_kernel(arr: wp.array(dtype=wp.float32)):
+    i = wp.tid()
+    arr[i] = 0.0
+
+
 class Control:
     """Time-varying control data for a :class:`Model`.
 
@@ -71,7 +77,6 @@ class Control:
             Support for muscle dynamics is not yet implemented.
         """
 
-        # Actuator list. Each actuator can contribute forces into ``joint_f``.
         self.actuators: list[Actuator] = []
 
     def clear(self) -> None:
@@ -93,7 +98,16 @@ class Control:
 
     def compute_actuator_forces(self, model: Model, state: State, nworld: int, axes_per_env: int) -> None:
         """Compute and accumulate forces from all actuators into ``joint_f``."""
-        self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        if self.joint_f_total is None:
+            self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        else:
+            # Use efficient kernel to zero existing array instead of reallocating
+            wp.launch(
+                zero_array_kernel,
+                dim=model.joint_dof_count,
+                inputs=[self.joint_f_total],
+                device=model.device,
+            )
 
         for actuator in self.actuators:
             actuator.compute_force(model, state, self, nworld, axes_per_env)
@@ -137,7 +151,7 @@ def pd_actuator_kernel(
             Kp = kp_dof[qdj]
             Kd = kd_dof[qdj]
             tq = Kp * (tq - q) + Kd * (tqd - qd)
-            joint_f_total[qdj] = gear_ratio[qdj] * (tq + joint_f[qdj])
+            joint_f_total[qdj] += gear_ratio[qdj] * (tq + joint_f[qdj])
 
 
 class Actuator(ABC):
