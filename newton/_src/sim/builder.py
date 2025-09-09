@@ -2110,6 +2110,8 @@ class ModelBuilder:
                         "pos_target": self.joint_pos_target[j],
                         "vel_target": self.joint_vel_target[j],
                         "effort_limit": self.joint_effort_limit[j],
+                        "gear_ratio": self.joint_gear_ratio[j],
++                       "actuator_type": self.joint_actuator_type[j],
                     }
                 )
 

@@ -985,9 +985,11 @@ def eval_joint_force(
     if q < limit_lower:
         limit_f = limit_ke * (limit_lower - q)
         damping_f = -limit_kd * qd
+        target_f = target_ke * pos_err
     elif q > limit_upper:
         limit_f = limit_ke * (limit_upper - q)
         damping_f = -limit_kd * qd
+        target_f = target_ke * pos_err
 
     return limit_f + damping_f + target_f
 
