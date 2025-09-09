@@ -1109,46 +1109,41 @@ def update_geom_properties_kernel(
     if shape_idx < 0:
         return
 
-    if shape_collision_radius:
-        # update bounding radius
-        geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
+    # update bounding radius
+    geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
 
-    if shape_mu:
-        # update friction (slide, torsion, roll)
-        mu = shape_mu[shape_idx]
-        geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
+    # update friction (slide, torsion, roll)
+    mu = shape_mu[shape_idx]
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
-    if shape_ke and shape_kd:
-        # update solref (stiffness, damping as time constants)
-        # MuJoCo uses time constants, Newton uses direct stiffness/damping
-        # convert using heuristic: time_const = sqrt(mass/stiffness)
-        ke = shape_ke[shape_idx]
-        kd = shape_kd[shape_idx]
-        if ke > 0.0:
-            # use provided time constant for stiffness
-            time_const_stiff = contact_stiffness_time_const
-            if kd > 0.0:
-                time_const_damp = kd / (2.0 * wp.sqrt(ke))
-            else:
-                time_const_damp = 1.0
+    # update solref (stiffness, damping as time constants)
+    # MuJoCo uses time constants, Newton uses direct stiffness/damping
+    # convert using heuristic: time_const = sqrt(mass/stiffness)
+    ke = shape_ke[shape_idx]
+    kd = shape_kd[shape_idx]
+    if ke > 0.0:
+        # use provided time constant for stiffness
+        time_const_stiff = contact_stiffness_time_const
+        if kd > 0.0:
+            time_const_damp = kd / (2.0 * wp.sqrt(ke))
         else:
-            time_const_stiff = contact_stiffness_time_const
             time_const_damp = 1.0
-        geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+    else:
+        time_const_stiff = contact_stiffness_time_const
+        time_const_damp = 1.0
+    geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
 
-    if shape_size:
-        # update size
-        geom_size[worldid, geom_idx] = shape_size[shape_idx]
+    # update size
+    geom_size[worldid, geom_idx] = shape_size[shape_idx]
 
-    if shape_transform:
-        # update position and orientation
-        tf = shape_transform[shape_idx]
-        incoming_xform = shape_incoming_xform[shape_idx]
-        tf = incoming_xform * tf
-        pos = tf.p
-        quat = tf.q
-        geom_pos[worldid, geom_idx] = pos
-        geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+    # update position and orientation
+    tf = shape_transform[shape_idx]
+    incoming_xform = shape_incoming_xform[shape_idx]
+    tf = incoming_xform * tf
+    pos = tf.p
+    quat = tf.q
+    geom_pos[worldid, geom_idx] = pos
+    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
 
 
 class SolverMuJoCo(SolverBase):
@@ -2538,6 +2533,9 @@ class SolverMuJoCo(SolverBase):
                 setattr(mj_model, field, tile(array))
 
     def update_model_inertial_properties(self):
+        if self.model.body_count == 0:
+            return
+
         bodies_per_env = self.model.body_count // self.model.num_envs
 
         wp.launch(
@@ -2568,6 +2566,9 @@ class SolverMuJoCo(SolverBase):
 
     def update_joint_dof_properties(self):
         """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        if self.model.joint_dof_count == 0:
+            return
+
         dofs_per_env = self.model.joint_dof_count // self.model.num_envs
 
         # Update actuator force ranges (effort limits) if actuators exist
@@ -2606,6 +2607,9 @@ class SolverMuJoCo(SolverBase):
 
     def update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
+        if self.model.joint_count == 0:
+            return
+
         joints_per_env = self.model.joint_count // self.model.num_envs
 
         # Update joint positions, joint axes, and relative body transforms
@@ -2638,6 +2642,9 @@ class SolverMuJoCo(SolverBase):
 
         # Get number of geoms and worlds from MuJoCo model
         num_geoms = self.mj_model.ngeom
+        if num_geoms == 0:
+            return
+
         num_worlds = self.model.num_envs
 
         wp.launch(
