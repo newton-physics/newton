@@ -29,6 +29,7 @@ import newton
 import newton.examples
 import newton.utils
 
+
 class Example:
     def __init__(self, viewer, num_envs=8):
         self.fps = 50
@@ -98,7 +99,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda and False:
+        if self.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

@@ -179,7 +179,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if self.device.is_cuda and False:
+        if self.device.is_cuda:
             torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
             self.control.joint_pos_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from __future__ import annotations
-
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -49,9 +49,9 @@ class Control:
         """
 
         self.joint_f_total: wp.array | None = None
+        """Total joint forces, shape ``(joint_dof_count,)``, type ``float``."""
 
         self.joint_pos_target: wp.array | None = None
-        # should thos be joint_dof_count +1 dim
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.joint_vel_target: wp.array | None = None
@@ -92,13 +92,7 @@ class Control:
             self.joint_vel_target.zero_()
 
     def compute_actuator_forces(self, model: Model, state: State, nworld: int, axes_per_env: int) -> None:
-        """Compute and accumulate forces from all actuators into ``joint_f``.
-
-        Notes:
-            - This method zeros ``joint_f`` before accumulation.
-            - For convenience, if ``joint_f`` is ``None`` and the model has joints,
-              a zero array will be allocated on the model's device.
-        """
+        """Compute and accumulate forces from all actuators into ``joint_f``."""
         self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
 
         for actuator in self.actuators:
@@ -118,6 +112,7 @@ def pd_actuator_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_type: wp.array(dtype=wp.int32),
     joint_f: wp.array(dtype=wp.float32),
+    gear_ratio: wp.array(dtype=wp.float32),
     # outputs
     joint_f_total: wp.array(dtype=wp.float32),
 ):
@@ -131,7 +126,6 @@ def pd_actuator_kernel(
             qdj = qdi + j
             joint_f_total[qdj] = joint_f[qdj]
     else:
-
         for j in range(dim):
             qj = qi + j
             qdj = qdi + j
@@ -143,24 +137,47 @@ def pd_actuator_kernel(
             Kp = kp_dof[qdj]
             Kd = kd_dof[qdj]
             tq = Kp * (tq - q) + Kd * (tqd - qd)
-            joint_f_total[qdj] = tq + joint_f[qdj]
+            joint_f_total[qdj] = gear_ratio[qdj] * (tq + joint_f[qdj])
 
 
+class Actuator(ABC):
+    """Abstract base class for actuators that apply forces/torques to joint DOFs."""
 
-class Actuator:
-    """Simple PD actuator acting on a set of joint DOFs.
+    def __init__(self):
+        self.gear_ratio: wp.array | None = None
+
+    @abstractmethod
+    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+        """Compute and apply actuator forces to the control.joint_f_total array.
+
+        Args:
+            model: The physics model containing joint parameters
+            state: Current state of joints (positions, velocities)
+            control: Control targets and force output
+            nworld: Number of worlds/environments
+            axes_per_env: Number of axes per environment
+        """
+        pass
+
+
+class PDActuator(Actuator):
+    """PD actuator acting on a set of joint DOFs.
 
     This actuator computes torques/forces for the specified DOF indices using a PD law:
 
         tau = kp * (q_target - q) + kd * (qd_target - qd)
 
-    Position tracking is only applied for joints where the number of coordinates equals
-    the number of DOFs (e.g., revolute, prismatic, D6). For joints like FREE or BALL,
-    where coordinate and DOF dimensions differ, only the velocity term is applied.
+    Attributes:
+        gear_ratio: Array of gear ratios per DOF. Contains the actual gear ratio when this
+                   actuator type is applied to a DOF, otherwise 0.0. This allows multiple
+                   actuators to control different subsets of DOFs.
     """
 
-    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+    def __init__(self):
+        super().__init__()
 
+    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+        """Compute PD control forces for all DOFs controlled by this actuator."""
         wp.launch(
             pd_actuator_kernel,
             dim=model.joint_count,
@@ -176,6 +193,7 @@ class Actuator:
                 model.joint_dof_dim,
                 model.joint_type,
                 control.joint_f,
+                self.gear_ratio,
             ],
             outputs=[
                 control.joint_f_total,

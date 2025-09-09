@@ -55,7 +55,6 @@ class TestJointDrive(unittest.TestCase):
         else:
             print("unsupported joint type")
 
-
         pos_err = pos_target - q
         vel_err = vel_target - qd
         F = ke * pos_err + kd * vel_err
@@ -177,7 +176,6 @@ class TestJointDrive(unittest.TestCase):
         # Perform 1 sim step.
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
-
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
 
@@ -218,7 +216,6 @@ class TestJointDrive(unittest.TestCase):
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_envs):
-
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
 
@@ -265,7 +262,6 @@ class TestJointDrive(unittest.TestCase):
         ################################
 
         # Now run again with no control (zero stiffness/damping) and reset back to the start state.
-
 
         joint_drive_stiffnesses = [0.0, 0.0]
         joint_drive_dampings = [0.0, 0.0]

@@ -228,6 +228,10 @@ class Model:
         """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
         """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
+        self.joint_gear_ratio = None
+        """Generalized joint gear ratio, shape [joint_dof_count], float."""
+        self.joint_actuator_type = None
+        """Generalized joint actuator type, shape [joint_dof_count], int."""
         self.joint_pos_target = None
         """Generalized joint position targets, shape [joint_dof_count], float."""
         self.joint_vel_target = None
@@ -406,6 +410,8 @@ class Model:
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = "joint_dof"
         self.attribute_frequency["joint_f"] = "joint_dof"
+        self.attribute_frequency["joint_gear_ratio"] = "joint_dof"
+        self.attribute_frequency["joint_actuator_type"] = "joint_dof"
         self.attribute_frequency["joint_armature"] = "joint_dof"
         self.attribute_frequency["joint_axis"] = "joint_dof"
         self.attribute_frequency["joint_target_ke"] = "joint_dof"
@@ -508,9 +514,31 @@ class Model:
             c.muscle_activations = self.muscle_activations
 
         if self.joint_count > 0:
-            from .control import Actuator
+            from .control import PDActuator
+            from .joints import ActuatorType
+            import numpy as np
 
-            c.actuators.append(Actuator())
+            joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
+
+            actuator_type_to_dofs = {}
+            for dof_idx in range(self.joint_dof_count):
+                actuator_type = int(self.joint_actuator_type.numpy()[dof_idx])
+                if actuator_type not in actuator_type_to_dofs:
+                    actuator_type_to_dofs[actuator_type] = []
+                actuator_type_to_dofs[actuator_type].append(dof_idx)
+
+            for actuator_type, dof_indices in actuator_type_to_dofs.items():
+                if actuator_type == ActuatorType.PD:
+                    actuator = PDActuator()
+
+                    gear_array = np.zeros(self.joint_dof_count, dtype=np.float32)
+                    for dof_idx in dof_indices:
+                        gear_array[dof_idx] = joint_gear_ratio_numpy[dof_idx]
+
+                    actuator.gear_ratio = wp.array(
+                        gear_array, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+                    )
+                    c.actuators.append(actuator)
 
         return c
 

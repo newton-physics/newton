@@ -78,6 +78,15 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     return dof_count, coord_count
 
 
+class ActuatorType(IntEnum):
+    """
+    Specifies the type of actuator for a joint's actuation.
+    """
+
+    PD = 0
+    """PD actuator: applies a PD law to the joint."""
+
+
 # (temporary) equality constraint types
 class EqType(IntEnum):
     """

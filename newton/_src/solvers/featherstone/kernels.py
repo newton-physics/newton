@@ -401,7 +401,9 @@ def jcalc_tau(
             pos_target = joint_pos_target[j]
             vel_target = joint_vel_target[j]
 
-            drive_f = eval_joint_force(q, qd, pos_target, vel_target, target_ke, target_kd, lower, upper, limit_ke, limit_kd)
+            drive_f = eval_joint_force(
+                q, qd, pos_target, vel_target, target_ke, target_kd, lower, upper, limit_ke, limit_kd
+            )
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]

@@ -992,6 +992,7 @@ def apply_joint_forces(
         wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total + wp.cross(r_p, f_total)))
     wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total)))
 
+
 @wp.func
 def update_joint_axis_limits(axis: wp.vec3, limit_lower: float, limit_upper: float, input_limits: wp.spatial_vector):
     # update the 3D linear/angular limits (spatial_vector [lower, upper]) given the axis vector and limits
@@ -1669,7 +1670,6 @@ def solve_body_joints(
         for dim in range(3):
             e = rel_p[dim]
 
-
             # compute gradients
             linear_c = wp.vec3(frame_p[0, dim], frame_p[1, dim], frame_p[2, dim])
             linear_p = -linear_c
@@ -1694,15 +1694,13 @@ def solve_body_joints(
             elif e > upper:
                 err = e - upper
             else:
-
-                pos_target = axis_target[dim] 
+                pos_target = axis_target[dim]
                 pos_target = wp.clamp(pos_target, lower, upper)
-                
 
                 vel_target = 0.0
                 if dim < 3:
                     vel_target = joint_vel_target[axis_start + dim]
-                
+
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
                     vel_err = derr - vel_target
@@ -1867,7 +1865,6 @@ def solve_body_joints(
         for dim in range(3):
             e = errs[dim]
 
-
             # analytic gradients of swing-twist decomposition
             grad = wp.quat(grad_x[dim], grad_y[dim], grad_z[dim], grad_w[dim])
 
@@ -1889,15 +1886,13 @@ def solve_body_joints(
             elif e > upper:
                 err = e - upper
             else:
-
-                pos_target = axis_target[dim] 
+                pos_target = axis_target[dim]
                 pos_target = wp.clamp(pos_target, lower, upper)
-                
 
                 vel_target = 0.0
                 if dim < 3:
                     vel_target = joint_vel_target[axis_start + dim]
-                
+
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
                     vel_err = derr - vel_target

@@ -23,7 +23,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from typing import Any, Literal
-
+from .joints import ActuatorType
 import numpy as np
 import warp as wp
 
@@ -256,7 +256,7 @@ class ModelBuilder:
                 target_kd=0.0,
                 armature=0.0,
                 limit_ke=0.0,
-                limit_kd=0.0
+                limit_kd=0.0,
             )
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -414,7 +414,8 @@ class ModelBuilder:
         self.joint_q = []
         self.joint_qd = []
         self.joint_f = []
-
+        self.joint_gear_ratio = []
+        self.joint_actuator_type = []
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
@@ -1096,10 +1097,11 @@ class ModelBuilder:
             "joint_armature",
             "joint_axis",
             "joint_dof_dim",
-
             "joint_key",
             "joint_qd",
             "joint_f",
+            "joint_gear_ratio",
+            "joint_actuator_type",
             "joint_pos_target",
             "joint_vel_target",
             "joint_limit_lower",
@@ -1336,6 +1338,8 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+            self.joint_gear_ratio.append(1.0)
+            self.joint_actuator_type.append(ActuatorType.PD)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -2096,7 +2100,6 @@ class ModelBuilder:
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
@@ -4287,7 +4290,6 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
-
                     # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
@@ -4335,6 +4337,8 @@ class ModelBuilder:
             m.joint_pos_target = wp.array(self.joint_pos_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_vel_target = wp.array(self.joint_vel_target, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_gear_ratio = wp.array(self.joint_gear_ratio, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_actuator_type = wp.array(self.joint_actuator_type, dtype=wp.int32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)

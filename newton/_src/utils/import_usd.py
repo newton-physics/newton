@@ -647,9 +647,9 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return pos_target, vel_target, target_ke, target_kd, effort_limit # todo
+                    return pos_target, vel_target, target_ke, target_kd, effort_limit  # todo
 
-                pos_target, vel_target,  target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
+                pos_target, vel_target, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -690,7 +690,7 @@ def parse_usd(
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
                             limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            pos_target=pos_target  * DegreesToRadian,
+                            pos_target=pos_target * DegreesToRadian,
                             vel_target=vel_target * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
