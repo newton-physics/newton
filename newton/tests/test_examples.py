@@ -516,7 +516,7 @@ class TestSensorExamples(unittest.TestCase):
 
 add_example_test(
     TestSensorExamples,
-    name="sensors.example_sensors_contact",
+    name="sensors.example_sensor_contact",
     devices=test_devices,
     test_options={"num_frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num_frames": 2 * 36},
