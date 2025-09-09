@@ -789,6 +789,7 @@ def CreateSimRenderer(renderer):
                         self.model.shape_transform,
                         self.model.shape_type,
                         self.model.shape_scale,
+                        self.model.shape_source_ptr,
                         p,
                         d,
                         self.lock,
