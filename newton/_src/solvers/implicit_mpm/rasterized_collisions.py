@@ -8,10 +8,10 @@ from .solve_rheology import solve_coulomb_isotropic
 
 __all__ = [
     "Collider",
+    "allot_collider_mass",
+    "build_rigidity_matrix",
     "project_outside_collider",
     "rasterize_collider",
-    "compute_collider_volumes",
-    "build_rigidity_matrix",
 ]
 
 _COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.25)

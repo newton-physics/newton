@@ -143,7 +143,6 @@ class Example:
         builder.particle_radius = np.full(points.shape[0], radius)
 
         builder.particle_flags = np.ones(points.shape[0], dtype=int)
-        # builder.particle_flags = np.where(np.logical_and(points[:, 2] > 3.0, points[:, 1] < 0.0), 0, 1)
 
 
 def _create_collider_mesh(collider: str):
@@ -168,7 +167,7 @@ def _create_collider_mesh(collider: str):
         )
 
         return wp.Mesh(
-            wp.array(cube_points + [0.0, 0, 0.25], dtype=wp.vec3),
+            wp.array(cube_points + np.array([0.0, 0, 0.25]), dtype=wp.vec3),
             wp.array(cube_indices, dtype=int),
         )
     else:
@@ -194,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--air-drag", type=float, default=1.0)
     parser.add_argument("--critical-fraction", "-cf", type=float, default=0.0)
 
-    parser.add_argument("--young-modulus", "-ym", type=float, default=1.e15)
+    parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
     parser.add_argument("--friction-coeff", "-mu", type=float, default=0.68)
     parser.add_argument("--damping", type=float, default=0.0)
