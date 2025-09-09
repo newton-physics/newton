@@ -112,7 +112,7 @@ def integrate_mass(
     particle_flags: wp.array(dtype=wp.int32),
 ):
     density = wp.where(
-        particle_flags[s.qp_index] == newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY
+        particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY
     )
     return phi(s) * density * inv_cell_volume
 
@@ -132,7 +132,7 @@ def integrate_velocity(
     vel_adv = velocities[s.qp_index]
 
     vel_adv = wp.where(
-        particle_flags[s.qp_index] == newton.ParticleFlags.ACTIVE,
+        particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE,
         particle_density[s.qp_index] * (vel_adv + dt * gravity),
         _INFINITY * vel_adv,
     )
@@ -815,7 +815,7 @@ class _ImplicitMPMScratchpad:
             self.vel_node_volume = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
 
         if coloring:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2 + 1, dtype=int)
 
     def release_temporaries(self):
         self.inv_mass_matrix.release()
@@ -897,27 +897,31 @@ class ImplicitMPMModel:
         model = self.model
 
         num_particles = model.particle_q.shape[0]
-        # Assume that particles represent a cuboid volume of space
-        # (they are typically laid out on a grid)
-        self.particle_volume = wp.array(8.0 * _particle_parameter(num_particles, model.particle_radius).numpy() ** 3)
-        self.particle_density = model.particle_mass / self.particle_volume
 
-        # Elastic stress-strain matrix from Poisson's ratio and compliance
-        self.material_parameters.young_modulus = _particle_parameter(
-            num_particles, model.particle_ke, options.young_modulus
-        )
-        self.material_parameters.damping = _particle_parameter(num_particles, model.particle_kd, options.damping)
-        self.material_parameters.poisson_ratio = wp.full(num_particles, options.poisson_ratio, dtype=float)
-        self.material_parameters.hardening = wp.full(num_particles, options.hardening, dtype=float)
+        with wp.ScopedDevice(model.device):
+            # Assume that particles represent a cuboid volume of space
+            # (they are typically laid out on a grid)
+            self.particle_volume = wp.array(
+                8.0 * _particle_parameter(num_particles, model.particle_radius).numpy() ** 3
+            )
+            self.particle_density = model.particle_mass / self.particle_volume
 
-        self.material_parameters.friction = _particle_parameter(num_particles, model.particle_mu)
-        self.material_parameters.yield_pressure = wp.full(num_particles, options.yield_pressure, dtype=float)
-        self.material_parameters.tensile_yield_ratio = _particle_parameter(
-            num_particles, model.particle_adhesion, options.tensile_yield_ratio
-        )
-        self.material_parameters.yield_stress = _particle_parameter(
-            num_particles, model.particle_cohesion, options.yield_stress
-        )
+            # Elastic stress-strain matrix from Poisson's ratio and compliance
+            self.material_parameters.young_modulus = _particle_parameter(
+                num_particles, model.particle_ke, options.young_modulus
+            )
+            self.material_parameters.damping = _particle_parameter(num_particles, model.particle_kd, options.damping)
+            self.material_parameters.poisson_ratio = wp.full(num_particles, options.poisson_ratio, dtype=float)
+            self.material_parameters.hardening = wp.full(num_particles, options.hardening, dtype=float)
+
+            self.material_parameters.friction = _particle_parameter(num_particles, model.particle_mu)
+            self.material_parameters.yield_pressure = wp.full(num_particles, options.yield_pressure, dtype=float)
+            self.material_parameters.tensile_yield_ratio = _particle_parameter(
+                num_particles, model.particle_adhesion, options.tensile_yield_ratio
+            )
+            self.material_parameters.yield_stress = _particle_parameter(
+                num_particles, model.particle_cohesion, options.yield_stress
+            )
 
         self.notify_particle_material_changed()
 
@@ -1266,31 +1270,34 @@ class SolverImplicitMPM(SolverBase):
             else:
                 # Compute bounds and transfer to host
                 device = positions.device
-                min_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
-                max_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
-                min_host = fem.borrow_temporary(
-                    temporary_store, shape=1, dtype=wp.vec3, device="cpu", pinned=device.is_cuda
-                )
-                max_host = fem.borrow_temporary(
-                    temporary_store, shape=1, dtype=wp.vec3, device="cpu", pinned=device.is_cuda
-                )
+                if device.is_cuda:
+                    min_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
+                    max_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
 
-                min_dev.array.fill_(wp.vec3(_INFINITY))
-                max_dev.array.fill_(wp.vec3(-_INFINITY))
+                    min_dev.array.fill_(wp.vec3(_INFINITY))
+                    max_dev.array.fill_(wp.vec3(-_INFINITY))
 
-                tile_size = 256
-                wp.launch(
-                    compute_bounds,
-                    dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
-                    block_dim=tile_size,
-                    inputs=[positions, min_dev.array, max_dev.array],
-                    device=device,
-                )
+                    tile_size = 256
+                    wp.launch(
+                        compute_bounds,
+                        dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
+                        block_dim=tile_size,
+                        inputs=[positions, min_dev.array, max_dev.array],
+                        device=device,
+                    )
 
-                wp.copy(src=min_dev.array, dest=min_host.array)
-                wp.copy(src=max_dev.array, dest=max_host.array)
-                wp.synchronize_stream()
-                bbox_min, bbox_max = min_host.array.numpy(), max_host.array.numpy()
+                    min_host = fem.borrow_temporary(
+                        temporary_store, shape=1, dtype=wp.vec3, device="cpu", pinned=device.is_cuda
+                    )
+                    max_host = fem.borrow_temporary(
+                        temporary_store, shape=1, dtype=wp.vec3, device="cpu", pinned=device.is_cuda
+                    )
+                    wp.copy(src=min_dev.array, dest=min_host.array)
+                    wp.copy(src=max_dev.array, dest=max_host.array)
+                    wp.synchronize_stream()
+                    bbox_min, bbox_max = min_host.array.numpy(), max_host.array.numpy()
+                else:
+                    bbox_min, bbox_max = np.min(positions.numpy(), axis=0), np.max(positions.numpy(), axis=0)
 
                 # Round to nearest voxel
                 grid_min = np.floor(bbox_min / voxel_size) - padding_voxels
@@ -1933,6 +1940,8 @@ class SolverImplicitMPM(SolverBase):
             max_color_count = 27
         else:
             raise RuntimeError("Unsupported strain basis for coloring")
+
+        max_color_count = min(max_color_count, colored_element_count)
 
         color_counts_host = fem.borrow_temporary(
             self.temporary_store, shape=max_color_count + 1, dtype=int, device="cpu", pinned=True

@@ -137,7 +137,7 @@ def update_render_grains(
     particle_radius: float,
     dt: float,
 ):
-    """Advect the render grains at the current time step"""
+    """Passively advect the render grains in the velocity field"""
 
     if state.velocity_field is None:
         return

@@ -200,10 +200,10 @@ class Example:
         snow_particles = np.logical_and(
             self.model.particle_q.numpy()[:, 1] > 0.5, self.model.particle_q.numpy()[:, 1] < 1.5
         )
-        snow_particles = wp.array(np.flatnonzero(snow_particles), dtype=int)
+        snow_particles = wp.array(np.flatnonzero(snow_particles), dtype=int, device=self.model.device)
 
         mud_particles = self.model.particle_q.numpy()[:, 1] > 1.5
-        mud_particles = wp.array(np.flatnonzero(mud_particles), dtype=int)
+        mud_particles = wp.array(np.flatnonzero(mud_particles), dtype=int, device=self.model.device)
 
         mpm_model.particle_density[snow_particles].fill_(500.0)
         mpm_model.material_parameters.yield_pressure[snow_particles].fill_(2.0e4)

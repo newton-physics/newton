@@ -38,6 +38,18 @@ mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
 wp.set_module_options({"enable_backward": False})
 
 
+class YieldParamVec(wp.vec4):
+    @wp.func
+    def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
+        tangential_scale = wp.sqrt(3.0 / 2.0)
+        return YieldParamVec(
+            yield_pressure,
+            tensile_yield_ratio * yield_pressure,
+            yield_stress * tangential_scale,
+            friction_coeff * yield_pressure * tangential_scale,
+        )
+
+
 @wp.kernel
 def compute_delassus_diagonal(
     split_mass: wp.bool,
@@ -133,8 +145,7 @@ def compute_delassus_diagonal(
 @wp.kernel
 def project_initial_stress(
     stress: wp.array(dtype=vec6),
-    node_volume: wp.array(dtype=float),
-    yield_stress: wp.array(dtype=wp.vec4),
+    yield_stress: wp.array(dtype=YieldParamVec),
 ):
     tau_i = wp.tid()
 
@@ -306,18 +317,6 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
     u_T = wp.cw_div(b_T * alpha_cur, Dmu_rn + vec6(alpha_cur))
 
     return u_T
-
-
-class YieldParamVec(wp.vec4):
-    @wp.func
-    def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
-        tangential_scale = wp.sqrt(3.0 / 2.0)
-        return YieldParamVec(
-            yield_pressure,
-            tensile_yield_ratio * yield_pressure,
-            yield_stress * tangential_scale,
-            friction_coeff * yield_pressure * tangential_scale,
-        )
 
 
 @wp.func
@@ -899,7 +898,6 @@ def solve_rheology(
         dim=stress.shape[0],
         inputs=[
             stress,
-            node_volume,
             yield_params,
         ],
     )
@@ -1160,6 +1158,7 @@ def solve_rheology(
                 f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after {iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
             )
     else:
+        solve_graph = None
         solve_granularity = 25 if gs else 50
 
         for batch in range(max_iterations // solve_granularity):

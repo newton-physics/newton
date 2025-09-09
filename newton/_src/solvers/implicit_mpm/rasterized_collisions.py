@@ -146,7 +146,7 @@ def collider_projection_threshold(collider_id: int, collider: Collider):
 
 @wp.func
 def collider_is_dynamic(collider_id: int, collider: Collider):
-    if collider_id == _GROUND_COLLIDER_ID:
+    if collider_id < 0:
         return False
     return collider.masses[collider_id] < _INFINITY
 
@@ -166,12 +166,15 @@ def project_outside_collider(
 ):
     i = wp.tid()
 
-    if particle_flags[i] != newton.ParticleFlags.ACTIVE:
-        positions_out[i] = positions[i]
-        return
-
     pos_adv = positions[i]
     p_vel = velocities[i]
+    vel_grad = velocity_gradients[i]
+
+    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+        positions_out[i] = positions[i]
+        velocities_out[i] = p_vel
+        velocity_gradients_out[i] = vel_grad
+        return
 
     # project outside of collider
     sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(pos_adv, collider)
@@ -190,12 +193,12 @@ def project_outside_collider(
         # project out
         pos_adv -= wp.min(0.0, sdf_end + dt * wp.dot(delta_vel, sdf_gradient)) * sdf_gradient  # delta_vel * dt
 
-        positions_out[i] = pos_adv
-        velocities_out[i] = p_vel
-
         # make velocity gradient rigid
-        vel_grad = velocity_gradients[i]
-        velocity_gradients_out[i] = 0.5 * (vel_grad - wp.transpose(vel_grad))
+        vel_grad = 0.5 * (vel_grad - wp.transpose(vel_grad))
+
+    positions_out[i] = pos_adv
+    velocities_out[i] = p_vel
+    velocity_gradients_out[i] = vel_grad
 
 
 @wp.kernel
