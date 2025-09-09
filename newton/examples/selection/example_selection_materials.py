@@ -265,8 +265,6 @@ if __name__ == "__main__":
         help="Total number of simulated environments.",
     )
 
-    args = parser.parse_known_args()[0]
-
     viewer, args = newton.examples.init(parser)
 
     if USE_TORCH:

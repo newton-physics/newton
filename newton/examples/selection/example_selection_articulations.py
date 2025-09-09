@@ -289,8 +289,6 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
 
-    args = parser.parse_known_args()[0]
-
     viewer, args = newton.examples.init(parser)
 
     if USE_TORCH:
