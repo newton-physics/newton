@@ -1710,11 +1710,11 @@ def solve_body_joints(
                 pos_target = wp.clamp(pos_target, lower, upper)
 
                 vel_target = axis_vel_target[dim]
+                derr_rel = derr - vel_target
 
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
-                    vel_err = derr - vel_target
-                    err = pos_err + vel_err * dt
+                    err = pos_err + derr_rel * dt
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
 
@@ -1722,7 +1722,7 @@ def solve_body_joints(
                 lambda_in = 0.0
                 d_lambda = compute_positional_correction(
                     err,
-                    derr,
+                    derr_rel,
                     pose_p,
                     pose_c,
                     m_inv_p,
@@ -1914,17 +1914,17 @@ def solve_body_joints(
                 pos_target = wp.clamp(pos_target, lower, upper)
 
                 vel_target = axis_vel_target[dim]
+                derr_rel = derr - vel_target
 
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - pos_target
-                    vel_err = derr - vel_target
-                    err = pos_err + vel_err * dt
+                    err = pos_err + derr_rel * dt
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
 
             d_lambda = (
                 compute_angular_correction(
-                    err, derr, pose_p, pose_c, I_inv_p, I_inv_c, angular_p, angular_c, 0.0, compliance, damping, dt
+                    err, derr_rel, pose_p, pose_c, I_inv_p, I_inv_c, angular_p, angular_c, 0.0, compliance, damping, dt
                 )
                 * angular_relaxation
             )
