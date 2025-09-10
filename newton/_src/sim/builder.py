@@ -4416,6 +4416,8 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
+            m.initialize_actuators(requires_grad=requires_grad)
+
             return m
 
     def find_shape_contact_pairs(self, model: Model):

@@ -22,7 +22,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .contacts import Contacts
-from .control import Control, PDActuator
+from .control import Control, PDActuator, Actuator
 from .joints import ActuatorType
 from .state import State
 
@@ -383,6 +383,9 @@ class Model:
         self.attribute_frequency = {}
         """Classifies each attribute as per body, per joint, per DOF, etc."""
 
+        self.actuators: list[Actuator] = []
+        """List of actuators that apply forces to joint DOFs."""
+
         # attributes per body
         self.attribute_frequency["body_q"] = "body"
         self.attribute_frequency["body_qd"] = "body"
@@ -516,6 +519,15 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
 
+        return c
+
+    def initialize_actuators(self, requires_grad: bool | None = None) -> None:
+        """Initialize actuators based on joint configuration."""
+        if requires_grad is None:
+            requires_grad = self.requires_grad
+
+        self.actuators.clear()
+
         if self.joint_count > 0:
             joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
 
@@ -537,9 +549,7 @@ class Model:
                     actuator.gear_ratio = wp.array(
                         gear_array, dtype=wp.float32, device=self.device, requires_grad=requires_grad
                     )
-                    c.actuators.append(actuator)
-
-        return c
+                    self.actuators.append(actuator)
 
     def collide(
         self: Model,

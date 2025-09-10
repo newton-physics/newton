@@ -78,8 +78,6 @@ class Control:
             Support for muscle dynamics is not yet implemented.
         """
 
-        self.actuators: list[Actuator] = []
-
     def clear(self) -> None:
         """Reset the control inputs to zero."""
 
@@ -98,11 +96,10 @@ class Control:
             self.joint_target_vel.zero_()
 
     def compute_actuator_forces(self, model: Model, state: State) -> None:
-        """Compute and accumulate forces from all actuators into ``joint_f``."""
+        """Compute and accumulate forces from all actuators into joint_f_total."""
         if self.joint_f_total is None:
             self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
         else:
-            # Use efficient kernel to zero existing array instead of reallocating
             wp.launch(
                 zero_array_kernel,
                 dim=model.joint_dof_count,
@@ -110,7 +107,7 @@ class Control:
                 device=model.device,
             )
 
-        for actuator in self.actuators:
+        for actuator in model.actuators:
             actuator.compute_force(model, state, self)
 
 
