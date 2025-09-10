@@ -358,7 +358,7 @@ class ViewerGL(ViewerBase):
 
     def _render_picking_line(self, state):
         """
-        Render a line from the mouse cursor to the center of mass of the picked body.
+        Render a line from the mouse cursor to the actual picked point on the geometry.
 
         Args:
             state: The current simulation state.
@@ -374,20 +374,13 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the pick target
+        # Get the pick target and current picked point on geometry
         pick_state = self.picking.pick_state.numpy()
-        pick_target = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
-
-        # Get the body's COM position
-        body_transforms = state.body_q.numpy()
-        if pick_body_idx >= len(body_transforms):
-            self.log_lines("picking_line", None, None, None)
-            return
-        body_transform = body_transforms[pick_body_idx]
-        com_position = wp.vec3(body_transform[0], body_transform[1], body_transform[2])
+        pick_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
+        picked_point = wp.vec3(pick_state[11], pick_state[12], pick_state[13])
 
         # Create line data
-        starts = wp.array([com_position], dtype=wp.vec3, device=self.device)
+        starts = wp.array([picked_point], dtype=wp.vec3, device=self.device)
         ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
         colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
 
