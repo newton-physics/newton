@@ -132,10 +132,10 @@ class FastInitializeModel:
         for robot, num_envs in itertools.product(self.params[0], self.params[1]):
             builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
             # finalize model
-            _model = builder.finalize()
+            model = builder.finalize()
 
             # Load the model to cache the kernels
-            solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
+            solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
             del solver
             del model
             del builder
