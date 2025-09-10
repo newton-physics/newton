@@ -1281,6 +1281,9 @@ class SolverMuJoCo(SolverBase):
         self.selected_bodies: wp.array(dtype=int) | None = None
         """Indices of Newton bodies that are used in the MuJoCo model for the first environment as a basis for replicating the nworlds environments in MuJoCo Warp."""
 
+        self._viewer = None
+        """Instance of the MuJoCo viewer for debugging."""
+
         disableflags = 0
         if disable_contacts:
             disableflags |= self.mujoco.mjtDisableBit.mjDSBL_CONTACT
@@ -1316,9 +1319,6 @@ class SolverMuJoCo(SolverBase):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
-
-        self._viewer = None
-        """Instance of the MuJoCo viewer for debugging."""
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
@@ -2565,7 +2565,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        """Update all joint dof properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
@@ -2722,7 +2722,7 @@ class SolverMuJoCo(SolverBase):
 
     def close_mujoco_viewer(self):
         """Close the MuJoCo viewer if it exists."""
-        if self._viewer is not None:
+        if hasattr(self, "_viewer") and self._viewer is not None:
             try:
                 self._viewer.__exit__(None, None, None)
             except Exception:
