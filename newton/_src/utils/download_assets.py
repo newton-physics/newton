@@ -117,7 +117,7 @@ def download_git_folder(
         # Re-read the index to apply sparse checkout
         repo.git.read_tree("-m", "-u", "HEAD")
 
-        # Verify the folder exists
+        # Verify the folder exists 
         target_folder = cache_folder / folder_path
         if not target_folder.exists():
             raise RuntimeError(f"Folder '{folder_path}' not found in repository {git_url}")
