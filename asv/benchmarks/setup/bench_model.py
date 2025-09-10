@@ -53,7 +53,7 @@ class KpiInitializeModel:
             raise NotImplementedError("CUDA is not available")
 
         timings = {}
-        timings["modelBuilder"] = {}
+        timings["model_builder"] = {}
         timings["solver"] = {}
 
         for robot, num_envs in itertools.product(self.params[0], self.params[1]):
@@ -70,31 +70,31 @@ class KpiInitializeModel:
 
             wp.synchronize_device()
 
-            timings_modelBuilder = []
+            timings_model_builder = []
             timings_solver = []
 
             for _ in range(self.repeat):
-                modelBuilder_beg = time.perf_counter()
+                model_builder_begin = time.perf_counter()
                 builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
                 # finalize model
                 model = builder.finalize()
                 wp.synchronize_device()
-                modelBuilder_end = time.perf_counter()
-                timings_modelBuilder.append(modelBuilder_end - modelBuilder_beg)
+                model_builder_end = time.perf_counter()
+                timings_model_builder.append(model_builder_end - model_builder_begin)
 
-                solver_beg = time.perf_counter()
+                solver_begin = time.perf_counter()
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
                 solver_end = time.perf_counter()
-                timings_solver.append(solver_end - solver_beg)
+                timings_solver.append(solver_end - solver_begin)
 
                 del solver
                 del model
                 del builder
                 gc.collect()
 
-            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
+            timings["model_builder"][(robot, num_envs)] = np.median(timings_model_builder) * 1000
             timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
 
         return timings
@@ -105,7 +105,7 @@ class KpiInitializeModel:
     track_time_initialize_solverMuJoCo.unit = "ms"
 
     def track_time_initialize_model(self, timings, robot, num_envs):
-        return timings["modelBuilder"][(robot, num_envs)]
+        return timings["model_builder"][(robot, num_envs)]
 
     track_time_initialize_model.unit = "ms"
 
@@ -126,7 +126,7 @@ class FastInitializeModel:
             raise NotImplementedError("CUDA is not available")
 
         timings = {}
-        timings["modelBuilder"] = {}
+        timings["model_builder"] = {}
         timings["solver"] = {}
 
         for robot, num_envs in itertools.product(self.params[0], self.params[1]):
@@ -137,6 +137,9 @@ class FastInitializeModel:
             # Load the model to cache the kernels
             solver = SolverMuJoCo(_model, ncon_per_env=nconmax[robot])
             del solver
+            del model
+            del builder
+            gc.collect()
 
             wp.synchronize_device()
 
@@ -161,8 +164,10 @@ class FastInitializeModel:
 
                 del solver
                 del model
+                del builder
+                gc.collect()
 
-            timings["modelBuilder"][(robot, num_envs)] = np.median(timings_modelBuilder) * 1000
+            timings["model_builder"][(robot, num_envs)] = np.median(timings_model_builder) * 1000
             timings["solver"][(robot, num_envs)] = np.median(timings_solver) * 1000
 
         return timings
@@ -173,7 +178,7 @@ class FastInitializeModel:
     track_time_initialize_solverMuJoCo.unit = "ms"
 
     def track_time_initialize_model(self, timings, robot, num_envs):
-        return timings["modelBuilder"][(robot, num_envs)]
+        return timings["model_builder"][(robot, num_envs)]
 
     track_time_initialize_model.unit = "ms"
 
