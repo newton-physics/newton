@@ -808,7 +808,7 @@ class ViewerGL(ViewerBase):
 
     def _render_ui(self):
         """
-        Render the complete ImGui interface (left panel and stats overlay).
+        Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
         if not self.ui.is_available:
             return

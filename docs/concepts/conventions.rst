@@ -25,16 +25,16 @@ used:
 
 * **Spatial twist** (:math:`V_s`):
   uses the fixed *space frame* (world/inertial frame).
-  :math:`\omega_s` is the angular velocity expressed in world coordinates, and
   :math:`v_s` represents the linear velocity of a hypothetical point on the
-  moving body that is instantaneously at the world origin.  Equivalently,
+  moving body that is instantaneously at the world origin, and
+  :math:`\omega_s` is the angular velocity expressed in world coordinates.  Equivalently,
 
   .. math::
 
      v_s \;=\; \dot p \;-\; \omega_s \times p,
 
   where :math:`p` is the vector from the world origin to the body origin.
-  Hence :math:`V_s = (\omega_s,\;v_s)` is called the **spatial twist**.
+  Hence :math:`V_s = (v_s,\;\omega_s)` is called the **spatial twist**.
   *Note:* :math:`v_s` is **not** simply the COM velocity
   (that would be :math:`\dot p`); it is the velocity of the *world origin* as
   if rigidly attached to the body.
@@ -91,7 +91,7 @@ aligning with Isaac Lab's approach, but with one important exception:
 * **Featherstone solver**  
   Newton's Featherstone implementation uses the **spatial twist** convention 
   from *Modern Robotics*. Here :attr:`State.body_qd` represents a spatial 
-  twist :math:`V_s = (\omega_s, v_s)` where :math:`v_s` is the linear 
+  twist :math:`V_s = (v_s, \omega_s)` where :math:`v_s` is the linear 
   velocity of a hypothetical point on the moving body that is instantaneously 
   at the world origin, **not** the COM velocity.
 
@@ -156,7 +156,7 @@ Given engine values :math:`(v_{\text{com}}^{W},\;\omega^{W})`
 
 1. Spatial twist at COM  
 
-   :math:`V_{WB}^{W} = (\omega^{W},\;v_{\text{com}}^{W})`
+   :math:`V_{WB}^{W} = (v_{\text{com}}^{W},\;\omega^{W})`
 
 2. Body-frame twist  
 

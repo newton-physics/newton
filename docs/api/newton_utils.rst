@@ -9,8 +9,8 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
-   BasicRecorder
-   ModelAndStateRecorder
+   RecorderBasic
+   RecorderModelAndState
 
 .. rubric:: Functions
 

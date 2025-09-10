@@ -192,7 +192,8 @@ jobs:
 
           # Prepare script to be passed as SSM parameters
           jq -n --arg script_body "$(cat remote_script.sh)" \
-          '{ "commands": [$script_body] }' > ssm_params.json
+          --arg timeout "$AWS_ROLE_DURATION" \
+          '{ "commands": [$script_body], "executionTimeout": [$timeout] }' > ssm_params.json
 
           # Echo script for debugging
           cat remote_script.sh
