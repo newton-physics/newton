@@ -84,7 +84,10 @@ class ActuatorType(IntEnum):
     """
 
     PD = 0
-    """PD actuator: applies a PD law to the joint."""
+    """PD actuator: Proportional-Derivative controller that computes joint forces/torques based on position and velocity errors.
+    
+    Uses the control law: tau = kp * (target_pos - pos) + kd * (target_vel - vel)
+    where kp is the proportional gain and kd is the derivative gain."""
 
 
 # (temporary) equality constraint types
