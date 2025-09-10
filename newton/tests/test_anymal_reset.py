@@ -86,9 +86,6 @@ class TestAnymalReset(unittest.TestCase):
             -0.8,
         ]
 
-        for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 0
             builder.joint_target_kd[i] = 0

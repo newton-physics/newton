@@ -15,7 +15,21 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
 import warp as wp
+
+if TYPE_CHECKING:
+    from .model import Model
+from .joints import JointType
+from .state import State
+
+
+@wp.kernel
+def zero_array_kernel(arr: wp.array(dtype=wp.float32)):
+    i = wp.tid()
+    arr[i] = 0.0
 
 
 class Control:
@@ -41,14 +55,14 @@ class Control:
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
 
-        self.joint_target: wp.array | None = None
-        """
-        Array of joint targets with shape ``(joint_dof_count,)`` and type ``float``.
-        Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
-        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_dof_mode`.
+        self.joint_f_total: wp.array | None = None
+        """Total joint forces, shape ``(joint_dof_count,)``, type ``float``."""
 
-        The joint targets are defined for any joint type, except for free joints.
-        """
+        self.joint_target_pos: wp.array | None = None
+        """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+
+        self.joint_target_vel: wp.array | None = None
+        """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
@@ -75,3 +89,124 @@ class Control:
             self.tet_activations.zero_()
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
+
+        if self.joint_target_pos is not None:
+            self.joint_target_pos.zero_()
+        if self.joint_target_vel is not None:
+            self.joint_target_vel.zero_()
+
+    def compute_actuator_forces(self, model: Model, state: State) -> None:
+        """Compute and accumulate forces from all actuators into joint_f_total."""
+        if self.joint_f_total is None:
+            self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        else:
+            wp.launch(
+                zero_array_kernel,
+                dim=model.joint_dof_count,
+                inputs=[self.joint_f_total],
+                device=model.device,
+            )
+
+        for actuator in model.actuators:
+            actuator.compute_force(model, state, self)
+
+
+@wp.kernel
+def pd_actuator_kernel(
+    kp_dof: wp.array(dtype=wp.float32),
+    kd_dof: wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
+    joint_qd: wp.array(dtype=wp.float32),
+    q_target: wp.array(dtype=wp.float32),
+    qd_target: wp.array(dtype=wp.float32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_type: wp.array(dtype=wp.int32),
+    joint_f: wp.array(dtype=wp.float32),
+    gear_ratio: wp.array(dtype=wp.float32),
+    # outputs
+    joint_f_total: wp.array(dtype=wp.float32),
+):
+    joint_id = wp.tid()
+    qi = joint_q_start[joint_id]
+    qdi = joint_qd_start[joint_id]
+    dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
+
+    if joint_type[joint_id] == JointType.FREE:
+        for j in range(dim):
+            qdj = qdi + j
+            joint_f_total[qdj] = joint_f[qdj]
+    else:
+        for j in range(dim):
+            qj = qi + j
+            qdj = qdi + j
+            q = joint_q[qj]
+            qd = joint_qd[qdj]
+
+            tq = q_target[qdj]
+            tqd = qd_target[qdj]
+            Kp = kp_dof[qdj]
+            Kd = kd_dof[qdj]
+            tq = Kp * (tq - q) + Kd * (tqd - qd)
+            joint_f_total[qdj] += gear_ratio[qdj] * (tq + joint_f[qdj])
+
+
+class Actuator(ABC):
+    """Abstract base class for actuators that apply forces/torques to joint DOFs."""
+
+    def __init__(self):
+        self.gear_ratio: wp.array | None = None
+
+    @abstractmethod
+    def compute_force(self, model: Model, state: State, control: Control) -> None:
+        """Compute and apply actuator forces to the control.joint_f_total array.
+
+        Args:
+            model: The physics model containing joint parameters
+            state: Current state of joints (positions, velocities)
+            control: Control targets and force output
+        """
+        pass
+
+
+class PDActuator(Actuator):
+    """PD actuator acting on a set of joint DOFs.
+
+    This actuator computes torques/forces for the specified DOF indices using a PD law:
+
+        tau = kp * (q_target - q) + kd * (qd_target - qd)
+
+    Attributes:
+        gear_ratio: Array of gear ratios per DOF. Contains the actual gear ratio when this
+                   actuator type is applied to a DOF, otherwise 0.0. This allows multiple
+                   actuators to control different subsets of DOFs.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def compute_force(self, model: Model, state: State, control: Control) -> None:
+        """Compute PD control forces for all DOFs controlled by this actuator."""
+        wp.launch(
+            pd_actuator_kernel,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_target_ke,
+                model.joint_target_kd,
+                state.joint_q,
+                state.joint_qd,
+                control.joint_target_pos,
+                control.joint_target_vel,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_type,
+                control.joint_f,
+                self.gear_ratio,
+            ],
+            outputs=[
+                control.joint_f_total,
+            ],
+            device=model.device,
+        )

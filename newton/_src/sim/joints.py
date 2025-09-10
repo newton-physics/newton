@@ -78,21 +78,16 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     return dof_count, coord_count
 
 
-class JointMode(IntEnum):
+class ActuatorType(IntEnum):
     """
-    Specifies the control mode for a joint's actuation.
-
-    Joint modes determine how a joint is actuated or controlled during simulation.
+    Specifies the type of actuator for a joint's actuation.
     """
 
-    NONE = 0
-    """No implicit control is applied to the joint, but the joint can be controlled by applying forces."""
-
-    TARGET_POSITION = 1
-    """The joint is controlled to reach a target position."""
-
-    TARGET_VELOCITY = 2
-    """The joint is controlled to reach a target velocity."""
+    PD = 0
+    """PD actuator: Proportional-Derivative controller that computes joint forces/torques based on position and velocity errors.
+    
+    Uses the control law: tau = kp * (target_pos - pos) + kd * (target_vel - vel)
+    where kp is the proportional gain and kd is the derivative gain."""
 
 
 # (temporary) equality constraint types
@@ -115,8 +110,8 @@ class EqType(IntEnum):
 
 
 __all__ = [
+    "ActuatorType",
     "EqType",
-    "JointMode",
     "JointType",
     "get_joint_dof_count",
 ]

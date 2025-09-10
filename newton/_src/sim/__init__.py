@@ -22,7 +22,6 @@ from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
     EqType,
-    JointMode,
     JointType,
     get_joint_dof_count,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "Contacts",
     "Control",
     "EqType",
-    "JointMode",
     "JointType",
     "Model",
     "ModelBuilder",

@@ -159,11 +159,14 @@ class Example:
             0.4,
             -0.8,
         ]
-        for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+
         for i in range(len(builder.joint_target_ke)):
-            builder.joint_target_ke[i] = 150
-            builder.joint_target_kd[i] = 5
+            if i < 6:
+                builder.joint_target_ke[i] = 0
+                builder.joint_target_kd[i] = 0
+            else:
+                builder.joint_target_ke[i] = 150
+                builder.joint_target_kd[i] = 5
 
         # add sand particles
         max_fraction = 1.0
@@ -276,7 +279,7 @@ class Example:
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
             # copy action targets to control buffer
-            wp.copy(self.control.joint_target, a_wp)
+            wp.copy(self.control.joint_target_pos, a_wp)
 
     def simulate_robot(self):
         # robot substeps
