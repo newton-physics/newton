@@ -155,7 +155,7 @@ Renderers
 +-----------------------------------------------+----------------------------------------------+
 | **warp.sim**                                  | **Newton**                                   |
 +-----------------------------------------------+----------------------------------------------+
-|:class:`warp.sim.render.UsdRenderer`           |:class:`newton.viewer.RendererUsd`            |
+|:class:`warp.sim.render.UsdRenderer`           |:class:`newton.viewer.ViewerUSD`              |
 +-----------------------------------------------+----------------------------------------------+
-|:class:`warp.sim.render.OpenGLRenderer`        |:class:`newton.viewer.RendererOpenGL`         |
+|:class:`warp.sim.render.OpenGLRenderer`        |:class:`newton.viewer.ViewerGL`               |
 +-----------------------------------------------+----------------------------------------------+
