@@ -397,6 +397,16 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.body_count, 1)
         self.assertEqual(builder.shape_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
+        self.assertEqual(builder.body_key[0], "/World/Box")
+        self.assertEqual(builder.shape_key[0], "/World/Box")
+
+        # Ensure the body has a free joint assigned and is in an articulation
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+        self.assertEqual(builder.joint_parent[0], -1)
+        self.assertEqual(builder.joint_child[0], 0)
+        self.assertEqual(builder.articulation_count, 1)
+        self.assertEqual(builder.articulation_key[0], "/World/Box")
 
         # Get parsed inertia tensor
         inertia_parsed = np.array(builder.body_inertia[0])
