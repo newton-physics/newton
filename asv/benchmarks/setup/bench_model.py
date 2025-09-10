@@ -160,7 +160,7 @@ class FastInitializeModel:
                 solver = SolverMuJoCo(model, ncon_per_env=nconmax[robot])
                 wp.synchronize_device()
                 solver_end = time.perf_counter()
-                timings_solver.append(solver_end - solver_beg)
+                timings_solver.append(solver_end - solver_begin)
 
                 del solver
                 del model
