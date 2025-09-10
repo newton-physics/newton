@@ -1027,11 +1027,16 @@ def parse_usd(
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
-        parse_body(
+        key = str(path)
+        body_id = parse_body(
             rigid_body_desc,
             stage.GetPrimAtPath(path),
             incoming_xform=incoming_world_xform,
+            add_body_to_builder=True,
         )
+        # add articulation and free joint for this body
+        builder.add_articulation(key)
+        builder.add_joint_free(child=body_id)
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
