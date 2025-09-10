@@ -72,8 +72,8 @@ def reset_kernel(
         rng = wp.rand_init(seed, tid)
         spin_vel = 4.0 * wp.pi * (0.5 - wp.randf(rng))
         jump_vel = 3.0 * wp.randf(rng)
-        ant_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, spin_vel, 0.0, 0.0, jump_vel)
-        hum_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, -spin_vel, 0.0, 0.0, jump_vel)
+        ant_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, spin_vel)
+        hum_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, -spin_vel)
 
 
 @wp.kernel
@@ -288,8 +288,6 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
-
-    args = parser.parse_known_args()[0]
 
     viewer, args = newton.examples.init(parser)
 

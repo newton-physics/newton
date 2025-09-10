@@ -1,7 +1,7 @@
-﻿newton.utils.BasicRecorder
+﻿newton.utils.RecorderBasic
 ==========================
 
-.. autoclass:: newton.utils.BasicRecorder
+.. autoclass:: newton.utils.RecorderBasic
    :members:
    :undoc-members:
    :show-inheritance:

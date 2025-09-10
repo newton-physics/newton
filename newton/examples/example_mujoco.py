@@ -41,36 +41,42 @@ ROBOT_CONFIGS = {
         "integrator": "euler",
         "njmax": 100,
         "nconmax": 50,
+        "ls_parallel": False,
     },
     "g1": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 400,
         "nconmax": 150,
+        "ls_parallel": True,
     },
     "h1": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 400,
         "nconmax": 150,
+        "ls_parallel": True,
     },
     "cartpole": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 50,
         "nconmax": 50,
+        "ls_parallel": True,
     },
     "ant": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 50,
         "nconmax": 50,
+        "ls_parallel": True,
     },
     "quadruped": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 75,
         "nconmax": 50,
+        "ls_parallel": True,
     },
 }
 
@@ -200,6 +206,7 @@ class Example:
         njmax=None,
         nconmax=None,
         builder=None,
+        ls_parallel=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -231,6 +238,7 @@ class Example:
         integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
+        ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=use_mujoco_cpu,
@@ -240,6 +248,7 @@ class Example:
             ls_iterations=ls_iteration,
             njmax=njmax,
             ncon_per_env=nconmax,
+            ls_parallel=ls_parallel,
         )
 
         if stage_path and not headless:
@@ -372,6 +381,9 @@ if __name__ == "__main__":
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
+    parser.add_argument(
+        "--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search."
+    )
 
     args = parser.parse_known_args()[0]
 
@@ -395,6 +407,7 @@ if __name__ == "__main__":
             ls_iteration=args.ls_iteration,
             njmax=args.njmax,
             nconmax=args.nconmax,
+            ls_parallel=args.ls_parallel,
         )
 
         # Print simulation configuration summary
@@ -428,6 +441,7 @@ if __name__ == "__main__":
         )
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
+        print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
         print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
         print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
         print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")

@@ -1,7 +1,7 @@
-﻿newton.utils.ModelAndStateRecorder
+﻿newton.utils.RecorderModelAndState
 ==================================
 
-.. autoclass:: newton.utils.ModelAndStateRecorder
+.. autoclass:: newton.utils.RecorderModelAndState
    :members:
    :undoc-members:
    :show-inheritance:

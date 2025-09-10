@@ -217,9 +217,9 @@ def eval_single_articulation_fk(
             r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
 
             v_wp = body_qd[parent]
-            w_p = wp.spatial_top(v_wp)
-            v_p = wp.spatial_bottom(v_wp) + wp.cross(w_p, r_p)
-            v_wpj = wp.spatial_vector(w_p, v_p)
+            w_p = wp.spatial_bottom(v_wp)
+            v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
+            v_wpj = wp.spatial_vector(v_p, w_p)
 
         q_start = joint_q_start[i]
         qd_start = joint_qd_start[i]
@@ -236,7 +236,7 @@ def eval_single_articulation_fk(
             qd = joint_qd[qd_start]
 
             X_j = wp.transform(axis * q, wp.quat_identity())
-            v_j = wp.spatial_vector(wp.vec3(), axis * qd)
+            v_j = wp.spatial_vector(axis * qd, wp.vec3())
 
         if type == JointType.REVOLUTE:
             axis = joint_axis[qd_start]
@@ -245,7 +245,7 @@ def eval_single_articulation_fk(
             qd = joint_qd[qd_start]
 
             X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
-            v_j = wp.spatial_vector(axis * qd, wp.vec3())
+            v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
         if type == JointType.BALL:
             r = wp.quat(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3])
@@ -253,7 +253,7 @@ def eval_single_articulation_fk(
             w = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
 
             X_j = wp.transform(wp.vec3(), r)
-            v_j = wp.spatial_vector(w, wp.vec3())
+            v_j = wp.spatial_vector(wp.vec3(), w)
 
         if type == JointType.FREE or type == JointType.DISTANCE:
             t = wp.transform(
@@ -320,7 +320,7 @@ def eval_single_articulation_fk(
                 )
 
             X_j = wp.transform(pos, rot)
-            v_j = wp.spatial_vector(vel_w, vel_v)
+            v_j = wp.spatial_vector(vel_v, vel_w)
 
         # transform from world to joint anchor frame at child body
         X_wcj = X_wpj * X_j
@@ -328,10 +328,10 @@ def eval_single_articulation_fk(
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
         # transform velocity across the joint to world space
-        angular_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        linear_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+        linear_vel = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        angular_vel = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
 
-        v_wc = v_wpj + wp.spatial_vector(angular_vel, linear_vel)
+        v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
 
         body_q[child] = X_wc
         body_qd[child] = v_wc
@@ -592,8 +592,8 @@ def eval_articulation_ik(
         r_p = wp.transform_get_translation(X_wpj) - wp.transform_point(X_wp, body_com[parent])
 
         v_wp = body_qd[parent]
-        w_p = wp.spatial_top(v_wp)
-        v_p = wp.spatial_bottom(v_wp) + wp.cross(w_p, r_p)
+        w_p = wp.spatial_bottom(v_wp)
+        v_p = wp.spatial_top(v_wp) + wp.cross(w_p, r_p)
 
     # child transform and moment arm
     X_wc = body_q[child]
@@ -601,8 +601,8 @@ def eval_articulation_ik(
 
     v_wc = body_qd[child]
 
-    w_c = wp.spatial_top(v_wc)
-    v_c = wp.spatial_bottom(v_wc)
+    w_c = wp.spatial_bottom(v_wc)
+    v_c = wp.spatial_top(v_wc)
 
     # joint properties
     type = joint_type[joint_idx]
@@ -683,13 +683,13 @@ def eval_articulation_ik(
         joint_q[q_start + 5] = q_pc[2]
         joint_q[q_start + 6] = q_pc[3]
 
-        joint_qd[qd_start + 0] = w_err_c[0]
-        joint_qd[qd_start + 1] = w_err_c[1]
-        joint_qd[qd_start + 2] = w_err_c[2]
+        joint_qd[qd_start + 0] = v_err_c[0]
+        joint_qd[qd_start + 1] = v_err_c[1]
+        joint_qd[qd_start + 2] = v_err_c[2]
 
-        joint_qd[qd_start + 3] = v_err_c[0]
-        joint_qd[qd_start + 4] = v_err_c[1]
-        joint_qd[qd_start + 5] = v_err_c[2]
+        joint_qd[qd_start + 3] = w_err_c[0]
+        joint_qd[qd_start + 4] = w_err_c[1]
+        joint_qd[qd_start + 5] = w_err_c[2]
 
         return
 

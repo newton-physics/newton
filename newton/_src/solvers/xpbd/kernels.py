@@ -183,8 +183,8 @@ def solve_particle_shape_contacts(
     if body_index >= 0:
         body_v_s = body_qd[body_index]
 
-    body_w = wp.spatial_top(body_v_s)
-    body_v = wp.spatial_bottom(body_v_s)
+    body_w = wp.spatial_bottom(body_v_s)
+    body_v = wp.spatial_top(body_v_s)
 
     # compute the body velocity at the particle position
     bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[tid])
@@ -221,7 +221,7 @@ def solve_particle_shape_contacts(
 
     if body_index >= 0:
         delta_t = wp.cross(r, delta_total)
-        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_t, delta_total))
+        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_total, delta_t))
 
 
 @wp.kernel
@@ -843,8 +843,8 @@ def apply_body_deltas(
         if inv_weight > 0.0:
             weight = 1.0 / inv_weight
 
-    dp = wp.spatial_bottom(delta) * (inv_m * weight)
-    dq = wp.spatial_top(delta) * weight
+    dp = wp.spatial_top(delta) * (inv_m * weight)
+    dq = wp.spatial_bottom(delta) * weight
     dq = wp.quat_rotate(q0, inv_I * wp.quat_rotate_inv(q0, dq))
 
     # update orientation
@@ -859,8 +859,8 @@ def apply_body_deltas(
 
     q_out[tid] = wp.transform(p1, q1)
 
-    v0 = wp.spatial_bottom(qd_in[tid])
-    w0 = wp.spatial_top(qd_in[tid])
+    v0 = wp.spatial_top(qd_in[tid])
+    w0 = wp.spatial_bottom(qd_in[tid])
 
     # update linear and angular velocity
     v1 = v0 + dp
@@ -875,7 +875,7 @@ def apply_body_deltas(
     if wp.length(w1) < 1e-4:
         w1 = wp.vec3(0.0)
 
-    qd_out[tid] = wp.spatial_vector(w1, v1)
+    qd_out[tid] = wp.spatial_vector(v1, w1)
 
 
 @wp.kernel
@@ -943,8 +943,8 @@ def apply_joint_forces(
     f_total = wp.vec3()
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
-        f_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+        f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
+        t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
     elif type == JointType.BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 
@@ -989,8 +989,8 @@ def apply_joint_forces(
 
     # write forces
     if id_p >= 0:
-        wp.atomic_sub(body_f, id_p, wp.spatial_vector(t_total + wp.cross(r_p, f_total), f_total))
-    wp.atomic_add(body_f, id_c, wp.spatial_vector(t_total + wp.cross(r_c, f_total), f_total))
+        wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total + wp.cross(r_p, f_total)))
+    wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total)))
 
 
 @wp.func
@@ -1444,9 +1444,9 @@ def solve_simple_body_joints(
     ang_delta_c += wp.cross(r_c, n) * lambda_n
 
     if id_p >= 0:
-        wp.atomic_add(deltas, id_p, wp.spatial_vector(ang_delta_p, lin_delta_p))
+        wp.atomic_add(deltas, id_p, wp.spatial_vector(lin_delta_p, ang_delta_p))
     if id_c >= 0:
-        wp.atomic_add(deltas, id_c, wp.spatial_vector(ang_delta_c, lin_delta_c))
+        wp.atomic_add(deltas, id_c, wp.spatial_vector(lin_delta_c, ang_delta_c))
 
 
 @wp.kernel
@@ -1515,8 +1515,8 @@ def solve_body_joints(
         com_p = body_com[id_p]
         m_inv_p = body_inv_m[id_p]
         I_inv_p = body_inv_I[id_p]
-        vel_p = wp.spatial_bottom(body_qd[id_p])
-        omega_p = wp.spatial_top(body_qd[id_p])
+        vel_p = wp.spatial_top(body_qd[id_p])
+        omega_p = wp.spatial_bottom(body_qd[id_p])
 
     # child transform and moment arm
     pose_c = body_q[id_c]
@@ -1524,8 +1524,8 @@ def solve_body_joints(
     com_c = body_com[id_c]
     m_inv_c = body_inv_m[id_c]
     I_inv_c = body_inv_I[id_c]
-    vel_c = wp.spatial_bottom(body_qd[id_c])
-    omega_c = wp.spatial_top(body_qd[id_c])
+    vel_c = wp.spatial_top(body_qd[id_c])
+    omega_c = wp.spatial_bottom(body_qd[id_c])
 
     if m_inv_p == 0.0 and m_inv_c == 0.0:
         # connection between two immovable bodies
@@ -1930,9 +1930,9 @@ def solve_body_joints(
             ang_delta_c += angular_c * d_lambda
 
     if id_p >= 0:
-        wp.atomic_add(deltas, id_p, wp.spatial_vector(ang_delta_p, lin_delta_p))
+        wp.atomic_add(deltas, id_p, wp.spatial_vector(lin_delta_p, ang_delta_p))
     if id_c >= 0:
-        wp.atomic_add(deltas, id_c, wp.spatial_vector(ang_delta_c, lin_delta_c))
+        wp.atomic_add(deltas, id_c, wp.spatial_vector(lin_delta_c, ang_delta_c))
 
 
 @wp.func
@@ -2139,14 +2139,14 @@ def solve_body_contact_positions(
         com_a = body_com[body_a]
         m_inv_a = body_m_inv[body_a]
         I_inv_a = body_I_inv[body_a]
-        omega_a = wp.spatial_top(body_qd[body_a])
+        omega_a = wp.spatial_bottom(body_qd[body_a])
 
     if body_b >= 0:
         X_wb_b = body_q[body_b]
         com_b = body_com[body_b]
         m_inv_b = body_m_inv[body_b]
         I_inv_b = body_I_inv[body_b]
-        omega_b = wp.spatial_top(body_qd[body_b])
+        omega_b = wp.spatial_bottom(body_qd[body_b])
 
     # use average contact material properties
     mat_nonzero = 0
@@ -2251,9 +2251,9 @@ def solve_body_contact_positions(
             ang_delta_b += roll_n * lambda_roll
 
     if body_a >= 0:
-        wp.atomic_add(deltas, body_a, wp.spatial_vector(ang_delta_a, lin_delta_a))
+        wp.atomic_add(deltas, body_a, wp.spatial_vector(lin_delta_a, ang_delta_a))
     if body_b >= 0:
-        wp.atomic_add(deltas, body_b, wp.spatial_vector(ang_delta_b, lin_delta_b))
+        wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
 
 
 @wp.kernel
@@ -2288,7 +2288,7 @@ def update_body_velocities(
     if dq[3] < 0.0:
         omega = -omega
 
-    qd_out[tid] = wp.spatial_vector(omega, v)
+    qd_out[tid] = wp.spatial_vector(v, omega)
 
 
 @wp.kernel
@@ -2438,7 +2438,7 @@ def apply_rigid_restitution(
         #         dv_a *= contact_inv_weight[body_a]
         q_a = wp.transform_get_rotation(X_wb_a_prev)
         dq = wp.quat_rotate(q_a, I_inv_a * rxn_a * dv_a)
-        wp.atomic_add(deltas, body_a, wp.spatial_vector(dq, n * m_inv_a * dv_a))
+        wp.atomic_add(deltas, body_a, wp.spatial_vector(n * m_inv_a * dv_a, dq))
 
     if body_b >= 0:
         dv_b = -dv
@@ -2447,4 +2447,4 @@ def apply_rigid_restitution(
         #         dv_b *= contact_inv_weight[body_b]
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         dq = wp.quat_rotate(q_b, I_inv_b * rxn_b * dv_b)
-        wp.atomic_add(deltas, body_b, wp.spatial_vector(dq, n * m_inv_b * dv_b))
+        wp.atomic_add(deltas, body_b, wp.spatial_vector(n * m_inv_b * dv_b, dq))

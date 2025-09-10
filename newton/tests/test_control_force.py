@@ -51,11 +51,11 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
 
     control = model.control()
     if test_angular:
-        control.joint_f.assign(np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0], dtype=np.float32))
-        test_index = 2
+        control.joint_f.assign(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 100.0], dtype=np.float32))
+        test_index = 5
     else:
-        control.joint_f.assign(np.array([0.0, 0.0, 0.0, 0.0, 100.0, 0.0], dtype=np.float32))
-        test_index = 4
+        control.joint_f.assign(np.array([0.0, 100.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        test_index = 1
 
     sim_dt = 1.0 / 10.0
 

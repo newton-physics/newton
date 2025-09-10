@@ -747,8 +747,8 @@ def eval_particle_contacts(
     kf = 0.5 * (particle_kf + shape_material_kf[shape_index])
     mu = 0.5 * (particle_mu + shape_material_mu[shape_index])
 
-    body_w = wp.spatial_top(body_v_s)
-    body_v = wp.spatial_bottom(body_v_s)
+    body_w = wp.spatial_bottom(body_v_s)
+    body_v = wp.spatial_top(body_v_s)
 
     # compute the body velocity at the particle position
     bv = body_v + wp.transform_vector(X_wb, contact_body_vel[tid])
@@ -791,9 +791,9 @@ def eval_particle_contacts(
 
     if body_index >= 0:
         if body_f_in_world_frame:
-            wp.atomic_sub(body_f, body_index, wp.spatial_vector(wp.cross(bx, f_total), f_total))
+            wp.atomic_sub(body_f, body_index, wp.spatial_vector(f_total, wp.cross(bx, f_total)))
         else:
-            wp.atomic_add(body_f, body_index, wp.spatial_vector(wp.cross(r, f_total), f_total))
+            wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
 
 
 @wp.kernel
@@ -892,8 +892,8 @@ def eval_rigid_contacts(
     bv_b = wp.vec3(0.0)
     if body_a >= 0:
         body_v_s_a = body_qd[body_a]
-        body_w_a = wp.spatial_top(body_v_s_a)
-        body_v_a = wp.spatial_bottom(body_v_s_a)
+        body_w_a = wp.spatial_bottom(body_v_s_a)
+        body_v_a = wp.spatial_top(body_v_s_a)
         if force_in_world_frame:
             bv_a = body_v_a + wp.cross(body_w_a, bx_a)
         else:
@@ -901,8 +901,8 @@ def eval_rigid_contacts(
 
     if body_b >= 0:
         body_v_s_b = body_qd[body_b]
-        body_w_b = wp.spatial_top(body_v_s_b)
-        body_v_b = wp.spatial_bottom(body_v_s_b)
+        body_w_b = wp.spatial_bottom(body_v_s_b)
+        body_v_b = wp.spatial_top(body_v_s_b)
         if force_in_world_frame:
             bv_b = body_v_b + wp.cross(body_w_b, bx_b)
         else:
@@ -950,15 +950,15 @@ def eval_rigid_contacts(
 
     if body_a >= 0:
         if force_in_world_frame:
-            wp.atomic_add(body_f, body_a, wp.spatial_vector(wp.cross(bx_a, f_total), f_total))
+            wp.atomic_add(body_f, body_a, wp.spatial_vector(f_total, wp.cross(bx_a, f_total)))
         else:
-            wp.atomic_sub(body_f, body_a, wp.spatial_vector(wp.cross(r_a, f_total), f_total))
+            wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
 
     if body_b >= 0:
         if force_in_world_frame:
-            wp.atomic_sub(body_f, body_b, wp.spatial_vector(wp.cross(bx_b, f_total), f_total))
+            wp.atomic_sub(body_f, body_b, wp.spatial_vector(f_total, wp.cross(bx_b, f_total)))
         else:
-            wp.atomic_add(body_f, body_b, wp.spatial_vector(wp.cross(r_b, f_total), f_total))
+            wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
 
 
 @wp.func
@@ -1065,8 +1065,8 @@ def eval_body_joints(
 
         twist_p = body_qd[c_parent]
 
-        w_p = wp.spatial_top(twist_p)
-        v_p = wp.spatial_bottom(twist_p) + wp.cross(w_p, r_p)
+        w_p = wp.spatial_bottom(twist_p)
+        v_p = wp.spatial_top(twist_p) + wp.cross(w_p, r_p)
 
     # child transform and moment arm
     X_wc = body_q[c_child] * X_cj
@@ -1074,8 +1074,8 @@ def eval_body_joints(
 
     twist_c = body_qd[c_child]
 
-    w_c = wp.spatial_top(twist_c)
-    v_c = wp.spatial_bottom(twist_c) + wp.cross(w_c, r_c)
+    w_c = wp.spatial_bottom(twist_c)
+    v_c = wp.spatial_top(twist_c) + wp.cross(w_c, r_c)
 
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
@@ -1449,9 +1449,9 @@ def eval_body_joints(
 
     # write forces
     if c_parent >= 0:
-        wp.atomic_add(body_f, c_parent, wp.spatial_vector(t_total + wp.cross(r_p, f_total), f_total))
+        wp.atomic_add(body_f, c_parent, wp.spatial_vector(f_total, t_total + wp.cross(r_p, f_total)))
 
-    wp.atomic_sub(body_f, c_child, wp.spatial_vector(t_total + wp.cross(r_c, f_total), f_total))
+    wp.atomic_sub(body_f, c_child, wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total)))
 
 
 @wp.func

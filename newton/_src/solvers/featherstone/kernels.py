@@ -36,12 +36,12 @@ def compute_spatial_inertia(
     m = body_mass[tid]
     # fmt: off
     body_I_m[tid] = wp.spatial_matrix(
-        I[0, 0], I[0, 1], I[0, 2], 0.0, 0.0, 0.0,
-        I[1, 0], I[1, 1], I[1, 2], 0.0, 0.0, 0.0,
-        I[2, 0], I[2, 1], I[2, 2], 0.0, 0.0, 0.0,
-        0.0,     0.0,     0.0,     m,   0.0, 0.0,
-        0.0,     0.0,     0.0,     0.0, m,   0.0,
-        0.0,     0.0,     0.0,     0.0, 0.0, m,
+        m,   0.0, 0.0, 0.0,     0.0,     0.0,
+        0.0, m,   0.0, 0.0,     0.0,     0.0,
+        0.0, 0.0, m,   0.0,     0.0,     0.0,
+        0.0, 0.0, 0.0, I[0, 0], I[0, 1], I[0, 2],
+        0.0, 0.0, 0.0, I[1, 0], I[1, 1], I[1, 2],
+        0.0, 0.0, 0.0, I[2, 0], I[2, 1], I[2, 2],
     )
     # fmt: on
 
@@ -90,7 +90,44 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
     R = wp.matrix_from_cols(r1, r2, r3)
     S = wp.skew(p) @ R
 
-    T = wp.spatial_adjoint(R, S)
+    T = wp.spatial_matrix(
+        R[0, 0],
+        R[0, 1],
+        R[0, 2],
+        S[0, 0],
+        S[0, 1],
+        S[0, 2],
+        R[1, 0],
+        R[1, 1],
+        R[1, 2],
+        S[1, 0],
+        S[1, 1],
+        S[1, 2],
+        R[2, 0],
+        R[2, 1],
+        R[2, 2],
+        S[2, 0],
+        S[2, 1],
+        S[2, 2],
+        0.0,
+        0.0,
+        0.0,
+        R[0, 0],
+        R[0, 1],
+        R[0, 2],
+        0.0,
+        0.0,
+        0.0,
+        R[1, 0],
+        R[1, 1],
+        R[1, 2],
+        0.0,
+        0.0,
+        0.0,
+        R[2, 0],
+        R[2, 1],
+        R[2, 2],
+    )
 
     return wp.mul(wp.mul(wp.transpose(T), I), T)
 
@@ -210,14 +247,14 @@ def jcalc_motion(
 ):
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
 
     if type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
@@ -226,41 +263,41 @@ def jcalc_motion(
         v_j_s = wp.spatial_vector()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 0]
             joint_S_s[qd_start + 0] = S_s
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 1]
             joint_S_s[qd_start + 1] = S_s
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
         if ang_axis_count > 0:
             axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 0]
             joint_S_s[qd_start + lin_axis_count + 0] = S_s
         if ang_axis_count > 1:
             axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 1]
             joint_S_s[qd_start + lin_axis_count + 1] = S_s
         if ang_axis_count > 2:
             axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 2]
             joint_S_s[qd_start + lin_axis_count + 2] = S_s
 
         return v_j_s
 
     if type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
 
         joint_S_s[qd_start + 0] = S_0
         joint_S_s[qd_start + 1] = S_1
@@ -436,31 +473,20 @@ def jcalc_integrate(
 
         return
 
-    # free joint
     if type == JointType.FREE or type == JointType.DISTANCE:
-        # dofs: qd = (omega_x, omega_y, omega_z, vel_x, vel_y, vel_z)
-        # coords: q = (trans_x, trans_y, trans_z, quat_x, quat_y, quat_z, quat_w)
+        a_s = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
+        m_s = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
 
-        # angular and linear acceleration
-        m_s = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
-        a_s = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
-
-        # angular and linear velocity
-        w_s = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
-        v_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
+        v_s = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
+        w_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
 
         # symplectic Euler
         w_s = w_s + m_s * dt
         v_s = v_s + a_s * dt
 
-        # translation of origin
         p_s = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
 
-        # linear vel of origin (note q/qd switch order of linear angular elements)
-        # note we are converting the body twist in the space frame (w_s, v_s) to compute center of mass velocity
         dpdt_s = v_s + wp.cross(w_s, p_s)
-
-        # quat and quat derivative
         r_s = wp.quat(
             joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
         )
@@ -481,13 +507,12 @@ def jcalc_integrate(
         joint_q_new[coord_start + 5] = r_s_new[2]
         joint_q_new[coord_start + 6] = r_s_new[3]
 
-        # update joint_twist
-        joint_qd_new[dof_start + 0] = w_s[0]
-        joint_qd_new[dof_start + 1] = w_s[1]
-        joint_qd_new[dof_start + 2] = w_s[2]
-        joint_qd_new[dof_start + 3] = v_s[0]
-        joint_qd_new[dof_start + 4] = v_s[1]
-        joint_qd_new[dof_start + 5] = v_s[2]
+        joint_qd_new[dof_start + 0] = v_s[0]
+        joint_qd_new[dof_start + 1] = v_s[1]
+        joint_qd_new[dof_start + 2] = v_s[2]
+        joint_qd_new[dof_start + 3] = w_s[0]
+        joint_qd_new[dof_start + 4] = w_s[1]
+        joint_qd_new[dof_start + 5] = w_s[2]
 
         return
 
@@ -608,30 +633,30 @@ def eval_rigid_fk(
 
 @wp.func
 def spatial_cross(a: wp.spatial_vector, b: wp.spatial_vector):
-    w_a = wp.spatial_top(a)
-    v_a = wp.spatial_bottom(a)
+    w_a = wp.spatial_bottom(a)
+    v_a = wp.spatial_top(a)
 
-    w_b = wp.spatial_top(b)
-    v_b = wp.spatial_bottom(b)
+    w_b = wp.spatial_bottom(b)
+    v_b = wp.spatial_top(b)
 
     w = wp.cross(w_a, w_b)
     v = wp.cross(w_a, v_b) + wp.cross(v_a, w_b)
 
-    return wp.spatial_vector(w, v)
+    return wp.spatial_vector(v, w)
 
 
 @wp.func
 def spatial_cross_dual(a: wp.spatial_vector, b: wp.spatial_vector):
-    w_a = wp.spatial_top(a)
-    v_a = wp.spatial_bottom(a)
+    w_a = wp.spatial_bottom(a)
+    v_a = wp.spatial_top(a)
 
-    w_b = wp.spatial_top(b)
-    v_b = wp.spatial_bottom(b)
+    w_b = wp.spatial_bottom(b)
+    v_b = wp.spatial_top(b)
 
     w = wp.cross(w_a, w_b) + wp.cross(v_a, v_b)
     v = wp.cross(w_a, v_b)
 
-    return wp.spatial_vector(w, v)
+    return wp.spatial_vector(v, w)
 
 
 @wp.func
@@ -706,11 +731,11 @@ def compute_link_velocity(
     I_m = body_I_m[child]
 
     # gravity and external forces (expressed in frame aligned with s but centered at body mass)
-    m = I_m[3, 3]
+    m = I_m[0, 0]
 
     f_g = m * gravity
     r_com = wp.transform_get_translation(X_sm)
-    f_g_s = wp.spatial_vector(wp.cross(r_com, f_g), f_g)
+    f_g_s = wp.spatial_vector(f_g, wp.cross(r_com, f_g))
 
     # body forces
     I_s = transform_spatial_inertia(X_sm, I_m)

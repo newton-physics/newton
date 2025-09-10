@@ -84,8 +84,8 @@ def apply_picking_force_kernel(
     com = wp.transform_point(X_wb, body_com[pick_body])
 
     # get velocity of attachment point
-    omega = wp.spatial_top(body_qd[pick_body])
-    vel_com = wp.spatial_bottom(body_qd[pick_body])
+    omega = wp.spatial_bottom(body_qd[pick_body])
+    vel_com = wp.spatial_top(body_qd[pick_body])
     vel_world = vel_com + wp.cross(omega, pick_pos_world - com)
 
     # compute spring force
@@ -95,7 +95,7 @@ def apply_picking_force_kernel(
     t = wp.cross(pick_pos_world - com, f) - angular_damping * omega
 
     # apply force and torque
-    wp.atomic_add(body_f, pick_body, wp.spatial_vector(t, f))
+    wp.atomic_add(body_f, pick_body, wp.spatial_vector(f, t))
 
 
 @wp.kernel
@@ -789,6 +789,7 @@ def CreateSimRenderer(renderer):
                         self.model.shape_transform,
                         self.model.shape_type,
                         self.model.shape_scale,
+                        self.model.shape_source_ptr,
                         p,
                         d,
                         self.lock,
