@@ -417,9 +417,13 @@ class ArticulationView:
             self._frequency_slices["joint_coord"] = slice(0, 0)
         else:
             if self.joint_coords_contiguous:
-                self._frequency_slices["joint_coord"] = slice(selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1)
+                self._frequency_slices["joint_coord"] = slice(
+                    selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1
+                )
             else:
-                self._frequency_indices["joint_coord"] = wp.array(selected_joint_coord_ids, dtype=int, device=self.device)
+                self._frequency_indices["joint_coord"] = wp.array(
+                    selected_joint_coord_ids, dtype=int, device=self.device
+                )
 
         if len(selected_link_ids) == 0:
             self._frequency_slices["body"] = slice(0, 0)
