@@ -2204,7 +2204,19 @@ def solve_body_contact_positions(
 
         if err > 0.0:
             lambda_fr = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -perp, perp, angular_a, angular_b, relaxation, dt
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                -perp,
+                perp,
+                angular_a,
+                angular_b,
+                relaxation,
+                dt,
             )
 
             # limit friction based on incremental normal force, good approximation to limiting on total force
