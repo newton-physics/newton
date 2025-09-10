@@ -1297,11 +1297,10 @@ class SolverMuJoCo(SolverBase):
             qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
-        axes_per_env = model.joint_dof_count // nworld
         joints_per_env = model.joint_count // nworld
         bodies_per_env = model.body_count // nworld
         if control is not None:
-            control.compute_actuator_forces(model, state, nworld, axes_per_env)
+            control.compute_actuator_forces(model, state)
 
             if control.joint_f_total is not None:
                 wp.launch(

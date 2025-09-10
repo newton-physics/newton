@@ -97,7 +97,7 @@ class Control:
         if self.joint_target_vel is not None:
             self.joint_target_vel.zero_()
 
-    def compute_actuator_forces(self, model: Model, state: State, nworld: int, axes_per_env: int) -> None:
+    def compute_actuator_forces(self, model: Model, state: State) -> None:
         """Compute and accumulate forces from all actuators into ``joint_f``."""
         if self.joint_f_total is None:
             self.joint_f_total = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
@@ -111,7 +111,7 @@ class Control:
             )
 
         for actuator in self.actuators:
-            actuator.compute_force(model, state, self, nworld, axes_per_env)
+            actuator.compute_force(model, state, self)
 
 
 @wp.kernel
@@ -162,15 +162,13 @@ class Actuator(ABC):
         self.gear_ratio: wp.array | None = None
 
     @abstractmethod
-    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+    def compute_force(self, model: Model, state: State, control: Control) -> None:
         """Compute and apply actuator forces to the control.joint_f_total array.
 
         Args:
             model: The physics model containing joint parameters
             state: Current state of joints (positions, velocities)
             control: Control targets and force output
-            nworld: Number of worlds/environments
-            axes_per_env: Number of axes per environment
         """
         pass
 
@@ -191,7 +189,7 @@ class PDActuator(Actuator):
     def __init__(self):
         super().__init__()
 
-    def compute_force(self, model: Model, state: State, control: Control, nworld: int, axes_per_env: int) -> None:
+    def compute_force(self, model: Model, state: State, control: Control) -> None:
         """Compute PD control forces for all DOFs controlled by this actuator."""
         wp.launch(
             pd_actuator_kernel,
