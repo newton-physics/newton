@@ -148,7 +148,7 @@ class Example:
         self.control = self.model.control()
 
         self.next_reset = 0.0
-        self.step_count = 0
+        self.seed = 0
 
         # ===========================================================
         # create articulation views
@@ -257,7 +257,7 @@ class Example:
             dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_envs])
+            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_envs])
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
@@ -295,7 +295,7 @@ class Example:
             wp.launch(
                 reset_kernel,
                 dim=self.num_envs,
-                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
+                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.seed],
             )
 
         self.ants.set_root_transforms(self.state_0, self.default_ant_root_transforms, mask=mask)
