@@ -104,8 +104,10 @@ class TestAnymalReset(unittest.TestCase):
             self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
         )
 
-        self.viewer = None if self.headless else newton.viewer.ViewerGL()
-        if self.viewer:
+        if self.headless:
+            self.viewer = None
+        else:
+            self.viewer = newton.viewer.ViewerGL()
             self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()

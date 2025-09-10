@@ -253,10 +253,9 @@ class Example:
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
+            self.renderer.set_model(self.model)
         else:
             self.renderer = None
-
-        self.renderer.set_model(self.model)
 
         self.control = self.model.control()
         self.state_0, self.state_1 = self.model.state(), self.model.state()
