@@ -279,7 +279,7 @@ class Example:
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
             # copy action targets to control buffer
-            wp.copy(self.control.joint_pos_target, a_wp)
+            wp.copy(self.control.joint_target_pos, a_wp)
 
     def simulate_robot(self):
         # robot substeps

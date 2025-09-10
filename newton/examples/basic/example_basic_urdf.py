@@ -67,7 +67,7 @@ class Example:
 
         # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_pos_target[-12:] = quadruped.joint_q[-12:]
+        quadruped.joint_target_pos[-12:] = quadruped.joint_q[-12:]
 
         # use "scene" for the entire set of environments
         scene = newton.ModelBuilder()

@@ -36,7 +36,7 @@ def test_revolute_controller(
     device,
     solver_fn,
     pos_target_val,
-    vel_target_val,
+    target_vel_val,
     expected_pos,
     expected_vel,
     target_ke,
@@ -57,7 +57,7 @@ def test_revolute_controller(
         child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         axis=wp.vec3(0.0, 0.0, 1.0),
         pos_target=pos_target_val,
-        vel_target=vel_target_val,
+        target_vel=target_vel_val,
         armature=0.0,
         # limit_lower=-wp.pi,
         # limit_upper=wp.pi,
@@ -77,8 +77,8 @@ def test_revolute_controller(
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
-    control.joint_pos_target = wp.array([pos_target_val], dtype=wp.float32, device=device)
-    control.joint_vel_target = wp.array([vel_target_val], dtype=wp.float32, device=device)
+    control.joint_target_pos = wp.array([pos_target_val], dtype=wp.float32, device=device)
+    control.joint_target_vel = wp.array([target_vel_val], dtype=wp.float32, device=device)
 
     sim_dt = 1.0 / 60.0
     sim_time = 0.0
@@ -124,7 +124,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             pos_target_val=wp.pi / 2.0,
-            vel_target_val=0.0,
+            target_vel_val=0.0,
             expected_pos=wp.pi / 2.0,
             expected_vel=0.0,
             target_ke=2000.0,
@@ -139,7 +139,7 @@ for device in devices:
                 devices=[device],
                 solver_fn=solver_fn,
                 pos_target_val=0.0,
-                vel_target_val=wp.pi / 2.0,
+                target_vel_val=wp.pi / 2.0,
                 expected_pos=None,
                 expected_vel=wp.pi / 2.0,
                 target_ke=0.0,

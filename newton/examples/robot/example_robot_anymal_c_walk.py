@@ -181,7 +181,7 @@ class Example:
     def capture(self):
         if self.device.is_cuda:
             torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_pos_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+            self.control.joint_target_pos = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -218,7 +218,7 @@ class Example:
                 a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
                 a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
                 wp.copy(
-                    self.control.joint_pos_target, a_wp
+                    self.control.joint_target_pos, a_wp
                 )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
             if self.graph:
                 wp.capture_launch(self.graph)

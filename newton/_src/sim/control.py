@@ -58,10 +58,10 @@ class Control:
         self.joint_f_total: wp.array | None = None
         """Total joint forces, shape ``(joint_dof_count,)``, type ``float``."""
 
-        self.joint_pos_target: wp.array | None = None
+        self.joint_target_pos: wp.array | None = None
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
-        self.joint_vel_target: wp.array | None = None
+        self.joint_target_vel: wp.array | None = None
         """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.tri_activations: wp.array | None = None
@@ -92,10 +92,10 @@ class Control:
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
 
-        if self.joint_pos_target is not None:
-            self.joint_pos_target.zero_()
-        if self.joint_vel_target is not None:
-            self.joint_vel_target.zero_()
+        if self.joint_target_pos is not None:
+            self.joint_target_pos.zero_()
+        if self.joint_target_vel is not None:
+            self.joint_target_vel.zero_()
 
     def compute_actuator_forces(self, model: Model, state: State, nworld: int, axes_per_env: int) -> None:
         """Compute and accumulate forces from all actuators into ``joint_f``."""
@@ -136,7 +136,7 @@ def pd_actuator_kernel(
     qdi = joint_qd_start[joint_id]
     dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
-    if joint_type[joint_id] == int(JointType.FREE):
+    if joint_type[joint_id] == JointType.FREE:
         for j in range(dim):
             qdj = qdi + j
             joint_f_total[qdj] = joint_f[qdj]
@@ -201,8 +201,8 @@ class PDActuator(Actuator):
                 model.joint_target_kd,
                 state.joint_q,
                 state.joint_qd,
-                control.joint_pos_target,
-                control.joint_vel_target,
+                control.joint_target_pos,
+                control.joint_target_vel,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,

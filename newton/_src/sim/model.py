@@ -233,9 +233,9 @@ class Model:
         """Generalized joint gear ratio, shape [joint_dof_count], float."""
         self.joint_actuator_type = None
         """Generalized joint actuator type, shape [joint_dof_count], int."""
-        self.joint_pos_target = None
+        self.joint_target_pos = None
         """Generalized joint position targets, shape [joint_dof_count], float."""
-        self.joint_vel_target = None
+        self.joint_target_vel = None
         """Generalized joint velocity targets, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
@@ -417,8 +417,8 @@ class Model:
         self.attribute_frequency["joint_axis"] = "joint_dof"
         self.attribute_frequency["joint_target_ke"] = "joint_dof"
         self.attribute_frequency["joint_target_kd"] = "joint_dof"
-        self.attribute_frequency["joint_pos_target"] = "joint_dof"
-        self.attribute_frequency["joint_vel_target"] = "joint_dof"
+        self.attribute_frequency["joint_target_pos"] = "joint_dof"
+        self.attribute_frequency["joint_target_vel"] = "joint_dof"
         self.attribute_frequency["joint_limit_lower"] = "joint_dof"
         self.attribute_frequency["joint_limit_upper"] = "joint_dof"
         self.attribute_frequency["joint_limit_ke"] = "joint_dof"
@@ -499,8 +499,8 @@ class Model:
             requires_grad = self.requires_grad
         if clone_variables:
             if self.joint_count:
-                c.joint_pos_target = wp.clone(self.joint_pos_target, requires_grad=requires_grad)
-                c.joint_vel_target = wp.clone(self.joint_vel_target, requires_grad=requires_grad)
+                c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
+                c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
@@ -509,8 +509,8 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
         else:
-            c.joint_pos_target = self.joint_pos_target
-            c.joint_vel_target = self.joint_vel_target
+            c.joint_target_pos = self.joint_target_pos
+            c.joint_target_vel = self.joint_target_vel
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations

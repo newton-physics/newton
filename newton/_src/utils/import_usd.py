@@ -577,8 +577,8 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             if joint_desc.drive.enabled:
-                joint_params["vel_target"] = joint_desc.drive.targetVelocity
-                joint_params["pos_target"] = joint_desc.drive.targetPosition
+                joint_params["target_vel"] = joint_desc.drive.targetVelocity
+                joint_params["target_pos"] = joint_desc.drive.targetPosition
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness
                 joint_params["target_kd"] = joint_desc.drive.damping
@@ -593,8 +593,8 @@ def parse_usd(
                 builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
-                    joint_params["pos_target"] *= DegreesToRadian
-                    joint_params["vel_target"] *= DegreesToRadian
+                    joint_params["target_pos"] *= DegreesToRadian
+                    joint_params["target_vel"] *= DegreesToRadian
                     joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
                     joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
@@ -633,8 +633,8 @@ def parse_usd(
                 free_axis = limit_lower < limit_upper
 
                 def define_joint_mode(dof, joint_desc):
-                    pos_target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
-                    vel_target = 0.0
+                    target_pos = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
+                    target_vel = 0.0
                     target_ke = 0.0
                     target_kd = 0.0
                     effort_limit = np.inf
@@ -642,14 +642,14 @@ def parse_usd(
                         if drive.first != dof:
                             continue
                         if drive.second.enabled:
-                            vel_target = drive.second.targetVelocity
-                            pos_target = drive.second.targetPosition
+                            target_vel = drive.second.targetVelocity
+                            target_pos = drive.second.targetPosition
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return pos_target, vel_target, target_ke, target_kd, effort_limit
+                    return target_pos, target_vel, target_ke, target_kd, effort_limit
 
-                pos_target, vel_target, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -674,8 +674,8 @@ def parse_usd(
                             limit_upper=limit_upper,
                             limit_ke=current_joint_limit_ke,
                             limit_kd=current_joint_limit_kd,
-                            pos_target=pos_target,
-                            vel_target=vel_target,
+                            target_pos=target_pos,
+                            target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
@@ -690,8 +690,8 @@ def parse_usd(
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
                             limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            pos_target=pos_target * DegreesToRadian,
-                            vel_target=vel_target * DegreesToRadian,
+                            target_pos=target_pos * DegreesToRadian,
+                            target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
