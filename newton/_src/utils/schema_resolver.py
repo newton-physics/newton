@@ -144,6 +144,7 @@ class NewtonPlugin(EngineSchemaPlugin):
         },
         "joint": {
             "armature": [AttrSpec("newton:armature")],
+            "friction": [AttrSpec("newton:friction")],
             "limit_linear_ke": [AttrSpec("newton:linear:limitStiffness")],
             "limit_angular_ke": [AttrSpec("newton:angular:limitStiffness")],
             "limit_rotX_ke": [AttrSpec("newton:rotX:limitStiffness")],
@@ -154,7 +155,6 @@ class NewtonPlugin(EngineSchemaPlugin):
             "limit_rotX_kd": [AttrSpec("newton:rotX:limitDamping")],
             "limit_rotY_kd": [AttrSpec("newton:rotY:limitDamping")],
             "limit_rotZ_kd": [AttrSpec("newton:rotZ:limitDamping")],
-            "friction": [AttrSpec("newton:friction")],
             "angular_position": [AttrSpec("newton:angular:position")],
             "linear_position": [AttrSpec("newton:linear:position")],
             "rotX_position": [AttrSpec("newton:rotX:position")],
@@ -168,7 +168,7 @@ class NewtonPlugin(EngineSchemaPlugin):
         },
         "shape": {
             "mesh_hull_vertex_limit": [AttrSpec("newton:hullVertexLimit")],
-            "collision_contact_offset": [AttrSpec("newton:collision:contactOffset")],
+            "collision_contact_margin": [AttrSpec("newton:contactMargin")],
         },
         "body": {
             "rigid_body_damping": [AttrSpec("newton:damping")],
@@ -414,7 +414,7 @@ class Resolver:
         # where assignment in {model, state, control, contact}
         # and frequency in {joint, joint_dof, joint_coord, body, shape}
         # we store per-variable specs and occurrences by prim path.
-        self._custom_properties: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._custom_attributes: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def _collect_on_first_use(self, plugin: EngineSchemaPlugin, prim) -> None:
         """Collect and store engine-specific attributes for this plugin/prim on first use."""
@@ -431,7 +431,7 @@ class Resolver:
         # "newton" engine-specific attributes we just collected
         newton_attrs = self.engine_specific_attrs.get("newton", {}).get(prim_path)
         if newton_attrs:
-            self._accumulate_custom_properties(prim_path, newton_attrs)
+            self._accumulate_custom_attributes(prim_path, newton_attrs)
 
     def _parse_custom_attr_name(self, name: str) -> tuple[str, str, str] | None:
         """Parse names like 'newton:assignment:frequency:variable_name'."""
@@ -449,8 +449,8 @@ class Resolver:
             return None
         return assignment, frequency, variable
 
-    def _accumulate_custom_properties(self, prim_path: str, attrs: dict[str, Any]) -> None:
-        """collect custom properties from a pre-fetched attribute map (name->value)."""
+    def _accumulate_custom_attributes(self, prim_path: str, attrs: dict[str, Any]) -> None:
+        """collect custom attributes from a pre-fetched attribute map (name->value)."""
 
         def _infer_wp_dtype(v: Any):
             # Heuristic mapping from USD value to Warp dtype
@@ -473,7 +473,7 @@ class Resolver:
                 continue
             assignment, frequency, variable = parsed
             key = (assignment, frequency, variable)
-            spec = self._custom_properties.get(key)
+            spec = self._custom_attributes.get(key)
             if spec is None:
                 dtype = _infer_wp_dtype(value)
                 spec = {
@@ -483,7 +483,7 @@ class Resolver:
                     "dtype": dtype,
                     "occurrences": {},
                 }
-                self._custom_properties[key] = spec
+                self._custom_attributes[key] = spec
             spec["occurrences"][prim_path] = value
 
     def get_value(self, prim, prim_type: str, key: str, default: Any = None) -> Any:
@@ -526,9 +526,9 @@ class Resolver:
                 attrs = plugin.collect_prim_engine_attrs(prim)
                 if attrs:
                     self.engine_specific_attrs[plugin.name][prim_path] = attrs
-                    # accumulate custom properties from newton attrs if available
+                    # accumulate custom attributes from newton attrs if available
                     if plugin.name == "newton":
-                        self._accumulate_custom_properties(prim_path, attrs)
+                        self._accumulate_custom_attributes(prim_path, attrs)
 
     def get_engine_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """
@@ -540,7 +540,7 @@ class Resolver:
         """
         return self.engine_specific_attrs.copy()
 
-    def get_custom_properties(self) -> dict[tuple[str, str, str], dict[str, Any]]:
+    def get_custom_attributes(self) -> dict[tuple[str, str, str], dict[str, Any]]:
         """
         get accumulated custom property specifications and occurrences.
 
@@ -549,4 +549,4 @@ class Resolver:
                 {"assignment","frequency","name","dtype","default","occurrences"}
         """
         # return a shallow copy; nested dicts are fine to share for our usage
-        return self._custom_properties.copy()
+        return self._custom_attributes.copy()

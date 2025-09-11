@@ -312,8 +312,8 @@ class TestSchemaResolver(unittest.TestCase):
         for physx_kd, mjc_kd in zip(builder_newton.joint_limit_kd, builder_mjc.joint_limit_kd, strict=False):
             self.assertAlmostEqual(mjc_kd, 2.0 * physx_kd, places=6)
 
-    def test_newton_custom_properties(self):
-        """Read pre-authored newton custom properties in ant_mixed.usda and validate import/modelBuilder."""
+    def test_newton_custom_attributes(self):
+        """Read pre-authored newton custom attributes in ant_mixed.usda and validate import/modelBuilder."""
         # Use ant_mixed.usda which contains authored custom attributes
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -363,7 +363,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         body_map = result["path_body_map"]
         idx = body_map[body_path]
-        # Custom properties are currently materialized on Model (not State)
+        # Custom attributes are currently materialized on Model (not State)
         body_scalar = model.testBodyScalar.numpy()
         self.assertAlmostEqual(float(body_scalar[idx]), 1.5, places=6)
 
@@ -453,7 +453,7 @@ class TestSchemaResolver(unittest.TestCase):
         physx_attrs = engine_attrs["physx"]
         self.assertIsInstance(physx_attrs, dict)
 
-        # Accumulate authored PhysX properties of interest
+        # Accumulate authored PhysX attributes of interest
         articulation_found = []
         joint_armature_found = []
         limit_damping_found = []

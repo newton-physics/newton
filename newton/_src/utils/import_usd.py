@@ -84,6 +84,8 @@ def parse_usd(
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        schema_priority (list[str]): The priority of the schema to use. Default is ["newton"].
+        collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -114,7 +116,7 @@ def parse_usd(
     """
     # default schema priority (avoid mutable default argument)
     if schema_priority is None:
-        schema_priority = ["newton", "mjc", "physx"]
+        schema_priority = ["newton"]
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -1430,11 +1432,11 @@ def parse_usd(
             builder = multi_env_builder
 
     engine_specific_attrs = R.get_engine_specific_attrs()
-    custom_props = R.get_custom_properties() or {}
+    custom_props = R.get_custom_attributes() or {}
 
     def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
         v = value
-        spec = builder.custom_properties.get(cp_name)
+        spec = builder.custom_attributes.get(cp_name)
         if spec is None:
             return
         overrides = spec.get("values")
@@ -1474,7 +1476,7 @@ def parse_usd(
     for (assignment, frequency, variable), spec in custom_props.items():
         default_val = spec.get("default", None)
         dtype = spec.get("dtype", None)
-        builder.add_custom_property(variable, frequency, default=default_val, dtype=dtype, assignment=assignment)
+        builder.add_custom_attribute(variable, frequency, default=default_val, dtype=dtype, assignment=assignment)
         for pth, val in spec.get("occurrences", {}).items():
             _assign_value(variable, frequency, pth, val)
     return {
