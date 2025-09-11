@@ -308,9 +308,6 @@ def test_capsule_box_kernel(
 
 
 class TestCollisionPrimitives(unittest.TestCase):
-    def setUp(self):
-        wp.clear_kernel_cache()
-
     def test_plane_sphere(self):
         """Test plane-sphere collision."""
         test_cases = [
