@@ -378,6 +378,9 @@ class Model:
         self.attribute_frequency = {}
         """Classifies each attribute as per body, per joint, per DOF, etc."""
 
+        self.attribute_assignment = {}
+        """Assignment for custom attributes: one of {"model", "state", "control", "contact"}."""
+
         # attributes per body
         self.attribute_frequency["body_q"] = "body"
         self.attribute_frequency["body_qd"] = "body"
@@ -471,6 +474,16 @@ class Model:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
+        # attach custom attributes with assignment=="state"
+        for name, _freq in list(self.attribute_frequency.items()):
+            if self.get_attribute_assignment(name) != "state":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            # clone onto state with same dtype
+            setattr(s, name, wp.clone(src, requires_grad=requires_grad))
+
         return s
 
     def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
@@ -506,6 +519,17 @@ class Model:
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
+        # attach custom attributes with assignment=="control"
+        for name, _freq in list(self.attribute_frequency.items()):
+            if self.get_attribute_assignment(name) != "control":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            if clone_variables:
+                setattr(c, name, wp.clone(src, requires_grad=requires_grad))
+            else:
+                setattr(c, name, src)
         return c
 
     def collide(
@@ -568,9 +592,21 @@ class Model:
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
         self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
-        return self._collision_pipeline.collide(self, state)
+        contacts = self._collision_pipeline.collide(self, state)
+        # attach custom attributes with assignment=="contact"
+        for name, _freq in list(self.attribute_frequency.items()):
+            if self.get_attribute_assignment(name) != "contact":
+                continue
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            try:
+                setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
+            except Exception:
+                setattr(contacts, name, src)
+        return contacts
 
-    def add_attribute(self, name: str, attrib: wp.array, frequency: str):
+    def add_attribute(self, name: str, attrib: wp.array, frequency: str, assignment: str = "model"):
         """
         Add a custom attribute to the model.
 
@@ -600,6 +636,7 @@ class Model:
         setattr(self, name, attrib)
 
         self.attribute_frequency[name] = frequency
+        self.attribute_assignment[name] = assignment
 
     def get_attribute_frequency(self, name):
         """
@@ -625,3 +662,15 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_attribute_assignment(self, name):
+        """
+        Get the assignment of an attribute.
+
+        Returns:
+            str: The assignment of the attribute.
+        """
+        assignment = self.attribute_assignment.get(name)
+        if assignment is None:
+            return "model"
+        return assignment
