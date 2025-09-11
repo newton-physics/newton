@@ -483,31 +483,31 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
-        # Custom properties (user-defined per-frequency arrays)
+        # Custom attributes (user-defined per-frequency arrays)
         # name -> {"assignment": str, "frequency": str, "dtype": wp.dtype, "default": Any, "values": dict[int, Any]}
-        self.custom_properties: dict[str, dict[str, object]] = {}
+        self.custom_attributes: dict[str, dict[str, object]] = {}
 
-    def add_custom_property(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
-        """Define a custom per-entity property to be added to the Model.
+    def add_custom_attribute(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
+        """Define a custom per-entity attribute to be added to the Model.
 
         Args:
             name: Variable name to expose on the Model
             frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
             dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
         """
-        if name in self.custom_properties:
+        if name in self.custom_attributes:
             # validate that specification matches exactly
-            existing_freq = self.custom_properties[name].get("frequency")
-            existing_dtype = self.custom_properties[name].get("dtype")
-            existing_assign = self.custom_properties[name].get("assignment")
+            existing_freq = self.custom_attributes[name].get("frequency")
+            existing_dtype = self.custom_attributes[name].get("dtype")
+            existing_assign = self.custom_attributes[name].get("assignment")
             # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
             target_dtype = dtype if dtype is not None else existing_dtype
             if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
                 raise ValueError(
-                    f"Custom property '{name}' already exists with frequency='{existing_freq}', dtype='{existing_dtype}', assignment='{existing_assign}'. "
+                    f"Custom attribute '{name}' already exists with frequency='{existing_freq}', dtype='{existing_dtype}', assignment='{existing_assign}'. "
                 )
             return
-        self.custom_properties[name] = {
+        self.custom_attributes[name] = {
             "assignment": assignment,
             "frequency": frequency,
             "dtype": dtype,
@@ -787,6 +787,8 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            schema_priority (list[str]): The priority of the schema to use. Default is ["newton"].
+            collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -838,6 +840,8 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
+            schema_priority,
+            collect_engine_specific_attrs,
         )
 
     def add_mjcf(
@@ -4436,8 +4440,8 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
-            # Add custom properties onto the model
-            if hasattr(self, "custom_properties") and self.custom_properties:
+            # Add custom attributes onto the model
+            if hasattr(self, "custom_attributes") and self.custom_attributes:
                 # need to contruct wp arrays from the underlying data
                 # some of the elements of may have been overridden before finalize which need to be reflected in the wp arrays
                 # default value for dtype when not specified
@@ -4499,7 +4503,7 @@ class ModelBuilder:
                                 pass
                     return wp.array(arr, dtype=d, requires_grad=requires_grad)
 
-                for var_name, spec in self.custom_properties.items():
+                for var_name, spec in self.custom_attributes.items():
                     frequency = spec.get("frequency")
                     if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
                         continue
@@ -4523,9 +4527,9 @@ class ModelBuilder:
                     overrides = spec.get("values", {})
 
                     wp_arr = _build_wp_array(count, dtype, default_val, overrides)
-                    m.attribute_assignment[var_name] = spec.get("assignment", "model")
+                    assignment = spec.get("assignment", "model")
                     if not hasattr(m, var_name):
-                        m.add_attribute(var_name, wp_arr, frequency)
+                        m.add_attribute(var_name, wp_arr, frequency, assignment)
 
             return m
 

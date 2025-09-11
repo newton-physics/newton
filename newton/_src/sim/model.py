@@ -379,7 +379,7 @@ class Model:
         """Classifies each attribute as per body, per joint, per DOF, etc."""
 
         self.attribute_assignment = {}
-        """Assignment for custom attributes: one of {"model","state","control","contact"}."""
+        """Assignment for custom attributes: one of {"model", "state", "control", "contact"}."""
 
         # attributes per body
         self.attribute_frequency["body_q"] = "body"
@@ -474,9 +474,9 @@ class Model:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
-        # attach custom properties with assignment=="state"
+        # attach custom attributes with assignment=="state"
         for name, _freq in list(self.attribute_frequency.items()):
-            if self.attribute_assignment.get(name) != "state":
+            if self.get_attribute_assignment(name) != "state":
                 continue
             src = getattr(self, name, None)
             if src is None:
@@ -519,9 +519,9 @@ class Model:
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
-        # attach custom properties with assignment=="control"
+        # attach custom attributes with assignment=="control"
         for name, _freq in list(self.attribute_frequency.items()):
-            if self.attribute_assignment.get(name) != "control":
+            if self.get_attribute_assignment(name) != "control":
                 continue
             src = getattr(self, name, None)
             if src is None:
@@ -593,9 +593,9 @@ class Model:
         self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
         contacts = self._collision_pipeline.collide(self, state)
-        # attach custom properties with assignment=="contact"
+        # attach custom attributes with assignment=="contact"
         for name, _freq in list(self.attribute_frequency.items()):
-            if self.attribute_assignment.get(name) != "contact":
+            if self.get_attribute_assignment(name) != "contact":
                 continue
             src = getattr(self, name, None)
             if src is None:
@@ -606,7 +606,7 @@ class Model:
                 setattr(contacts, name, src)
         return contacts
 
-    def add_attribute(self, name: str, attrib: wp.array, frequency: str):
+    def add_attribute(self, name: str, attrib: wp.array, frequency: str, assignment: str = "model"):
         """
         Add a custom attribute to the model.
 
@@ -636,6 +636,7 @@ class Model:
         setattr(self, name, attrib)
 
         self.attribute_frequency[name] = frequency
+        self.attribute_assignment[name] = assignment
 
     def get_attribute_frequency(self, name):
         """
@@ -661,3 +662,15 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_attribute_assignment(self, name):
+        """
+        Get the assignment of an attribute.
+
+        Returns:
+            str: The assignment of the attribute.
+        """
+        assignment = self.attribute_assignment.get(name)
+        if assignment is None:
+            return "model"
+        return assignment
