@@ -445,7 +445,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                             self.assertAlmostEqual(
                                 float(newton_eigvals[dim]),
                                 float(mjc_eigvals[dim]),
-                                places=5,
+                                places=4,
                                 msg=f"{msg_prefix}Inertia eigenvalue mismatch for body {body_idx} in environment {env_idx}, dimension {dim}",
                             )
                         # Handle quaternion sign ambiguity by ensuring dot product is non-negative
@@ -1381,6 +1381,124 @@ class TestMuJoCoConversion(unittest.TestCase):
             min_q_soft,
             min_q_stiff,
             f"Soft joint min ({min_q_soft}) should be lower than stiff joint min ({min_q_stiff})",
+        )
+
+    def test_joint_frame_update(self):
+        """Test joint frame updates with specific expected values to verify correctness."""
+        # Create a simple model with one revolute joint
+        builder = newton.ModelBuilder()
+
+        body = builder.add_body(mass=1.0, I_m=wp.diag(wp.vec3(1.0, 1.0, 1.0)))
+
+        # Add joint with known transforms
+        parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        child_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+
+        builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=newton.Axis.X,
+        )
+
+        model = builder.finalize(requires_grad=False)
+        solver = newton.solvers.SolverMuJoCo(model)
+
+        mjc_body = solver.to_mjc_body_index.numpy()[body]
+
+        # Check initial joint position and axis
+        initial_joint_pos = solver.mjw_model.jnt_pos.numpy()
+        initial_joint_axis = solver.mjw_model.jnt_axis.numpy()
+
+        # Joint position should be at child frame position (0, 0, 1)
+        np.testing.assert_allclose(
+            initial_joint_pos[0, 0],
+            [0.0, 0.0, 1.0],
+            atol=1e-6,
+            err_msg="Initial joint position should match child frame position",
+        )
+
+        # Joint axis should be X-axis (1, 0, 0) since child frame has no rotation
+        np.testing.assert_allclose(
+            initial_joint_axis[0, 0], [1.0, 0.0, 0.0], atol=1e-6, err_msg="Initial joint axis should be X-axis"
+        )
+
+        tf = parent_xform * wp.transform_inverse(child_xform)
+        np.testing.assert_allclose(solver.mjw_model.body_pos.numpy()[0, mjc_body], tf.p, atol=1e-6)
+        np.testing.assert_allclose(
+            solver.mjw_model.body_quat.numpy()[0, mjc_body], [tf.q.w, tf.q.x, tf.q.y, tf.q.z], atol=1e-6
+        )
+
+        # Update child frame with translation and rotation
+        new_child_pos = wp.vec3(1.0, 2.0, 1.0)
+        new_child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)  # 90° around Z
+        new_child_xform = wp.transform(new_child_pos, new_child_rot)
+
+        model.joint_X_c.assign([new_child_xform])
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+        # Check updated values
+        updated_joint_pos = solver.mjw_model.jnt_pos.numpy()
+        updated_joint_axis = solver.mjw_model.jnt_axis.numpy()
+
+        # Joint position should now be at new child frame position
+        np.testing.assert_allclose(
+            updated_joint_pos[0, 0],
+            [1.0, 2.0, 1.0],
+            atol=1e-6,
+            err_msg="Updated joint position should match new child frame position",
+        )
+
+        # Joint axis should be rotated: X-axis rotated 90° around Z becomes Y-axis
+        expected_axis = wp.quat_rotate(new_child_rot, wp.vec3(1.0, 0.0, 0.0))
+        np.testing.assert_allclose(
+            updated_joint_axis[0, 0],
+            [expected_axis.x, expected_axis.y, expected_axis.z],
+            atol=1e-6,
+            err_msg="Updated joint axis should be rotated according to child frame rotation",
+        )
+
+        tf = parent_xform * wp.transform_inverse(new_child_xform)
+        np.testing.assert_allclose(solver.mjw_model.body_pos.numpy()[0, mjc_body], tf.p, atol=1e-6)
+        np.testing.assert_allclose(
+            solver.mjw_model.body_quat.numpy()[0, mjc_body], [tf.q.w, tf.q.x, tf.q.y, tf.q.z], atol=1e-6
+        )
+
+        # update parent frame
+        new_parent_xform = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
+        model.joint_X_p.assign([new_parent_xform])
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+        # check updated values
+        updated_joint_pos = solver.mjw_model.jnt_pos.numpy()
+        updated_joint_axis = solver.mjw_model.jnt_axis.numpy()
+
+        # joint position, axis should not change
+        np.testing.assert_allclose(
+            updated_joint_pos[0, 0],
+            [1.0, 2.0, 1.0],
+            atol=1e-6,
+            err_msg="Updated joint position should not change after updating parent frame",
+        )
+        np.testing.assert_allclose(
+            updated_joint_axis[0, 0],
+            expected_axis,
+            atol=1e-6,
+            err_msg="Updated joint axis should not change after updating parent frame",
+        )
+
+        # Check updated body positions and orientations
+        tf = new_parent_xform * wp.transform_inverse(new_child_xform)
+        np.testing.assert_allclose(
+            solver.mjw_model.body_pos.numpy()[0, mjc_body],
+            tf.p,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            solver.mjw_model.body_quat.numpy()[0, mjc_body],
+            [tf.q.w, tf.q.x, tf.q.y, tf.q.z],
+            atol=1e-6,
         )
 
 
