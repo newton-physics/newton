@@ -50,7 +50,7 @@ def Xform "Articulation" (
         point3f physics:localPos0 = (0, 0, 0)
         point3f physics:localPos1 = (0, 0, 0)
         quatf physics:localRot0 = (1, 0, 0, 0)
-        quatf physics:localRot1 = (0.6324555, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
     }
 
     def Cube "Body1" (
