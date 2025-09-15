@@ -2204,7 +2204,19 @@ def solve_body_contact_positions(
 
         if err > 0.0:
             lambda_fr = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -perp, perp, angular_a, angular_b, 1.0, dt
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                -perp,
+                perp,
+                angular_a,
+                angular_b,
+                relaxation,
+                dt,
             )
 
             # limit friction based on incremental normal force, good approximation to limiting on total force
@@ -2226,7 +2238,7 @@ def solve_body_contact_positions(
         if wp.abs(err) > 0.0:
             lin = wp.vec3(0.0)
             lambda_torsion = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, 1.0, dt
+                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, relaxation, dt
             )
 
             lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * torsional_friction, lambda_n * torsional_friction)
@@ -2242,7 +2254,7 @@ def solve_body_contact_positions(
             lin = wp.vec3(0.0)
             roll_n = wp.normalize(delta_omega)
             lambda_roll = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, 1.0, dt
+                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, relaxation, dt
             )
 
             lambda_roll = wp.max(lambda_roll, -lambda_n * rolling_friction)
