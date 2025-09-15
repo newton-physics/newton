@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os  # For path manipulation
 import time  # Added for the interactive loop
 import unittest
 
@@ -23,9 +22,6 @@ import warp as wp
 import newton
 from newton import Mesh
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
-
-# Import the kernels for coordinate conversion
-from newton.viewer import RendererOpenGL
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -42,7 +38,7 @@ class TestMuJoCoSolver(unittest.TestCase):
     def test_setup_completes(self):
         """
         Tests if the setUp method completes successfully.
-        This implicitly tests model creation, finalization, solver, and renderer initialization.
+        This implicitly tests model creation, finalization, solver, and viewer initialization.
         """
         self.assertTrue(True, "setUp method completed.")
 
@@ -64,11 +60,11 @@ class TestMuJoCoSolver(unittest.TestCase):
 
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
-        """Simulates and renders a trajectory if solver and renderer are available."""
+        """Simulates and renders a trajectory if solver and viewer are available."""
         print("\nDebug: Starting test_render_trajectory...")
 
         solver = None
-        renderer = None
+        viewer = None
         substep_graph = None
         use_cuda_graph = wp.get_device().is_cuda
 
@@ -85,18 +81,15 @@ class TestMuJoCoSolver(unittest.TestCase):
 
         if self.debug_stage_path:
             try:
-                print(f"Debug: Attempting to initialize RendererOpenGL (stage: {self.debug_stage_path})...")
-                stage_dir = os.path.dirname(self.debug_stage_path)
-                if stage_dir and not os.path.exists(stage_dir):
-                    os.makedirs(stage_dir)
-                    print(f"Debug: Created directory for stage: {stage_dir}")
-                renderer = RendererOpenGL(path=self.debug_stage_path, model=self.model, scaling=1.0, show_joints=True)
-                print("Debug: RendererOpenGL initialized successfully for trajectory test.")
+                print("Debug: Attempting to initialize ViewerGL...")
+                viewer = newton.viewer.ViewerGL()
+                viewer.set_model(self.model)
+                print("Debug: ViewerGL initialized successfully for trajectory test.")
             except ImportError as e:
-                self.skipTest(f"RendererOpenGL dependencies not met. Skipping trajectory rendering: {e}")
+                self.skipTest(f"ViewerGL dependencies not met. Skipping trajectory rendering: {e}")
                 return
             except Exception as e:
-                self.skipTest(f"Error initializing RendererOpenGL for trajectory test: {e}")
+                self.skipTest(f"Error initializing ViewerGL for trajectory test: {e}")
                 return
         else:
             self.skipTest("No debug_stage_path set. Skipping trajectory rendering.")
@@ -136,9 +129,9 @@ class TestMuJoCoSolver(unittest.TestCase):
                 if frame_num % 20 == 0:
                     print(f"Debug: Frame {frame_num}/{num_frames}, Sim time: {sim_time:.2f}s")
 
-                renderer.begin_frame(sim_time)
-                renderer.render(self.state_in)
-                renderer.end_frame()
+                viewer.begin_frame(sim_time)
+                viewer.log_state(self.state_in)
+                viewer.end_frame()
 
                 if use_cuda_graph and substep_graph:
                     wp.capture_launch(substep_graph)
