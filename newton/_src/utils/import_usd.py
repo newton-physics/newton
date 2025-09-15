@@ -882,6 +882,7 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             body_ids = {}
+            body_keys = []
             current_body_id = 0
             art_bodies = []
             if verbose:
@@ -894,9 +895,9 @@ def parse_usd(
                     continue
 
                 if p == Sdf.Path.emptyPath:
-                    current_body_id = -1
+                    continue
                 else:
-                    usd_prim = stage.GetPrimAtPath(Sdf.Path(key))
+                    usd_prim = stage.GetPrimAtPath(p)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -924,17 +925,22 @@ def parse_usd(
                     del body_specs[key]
 
                 body_ids[key] = current_body_id
+                body_keys.append(key)
                 current_body_id += 1
 
             if len(body_ids) == 0:
                 # no bodies under the articulation or we ignored all of them
                 continue
 
+            # determine the joint graph for this articulation
             joint_names = []
             joint_edges: list[tuple[int, int]] = []
             for p in desc.articulatedJoints:
                 joint_key = str(p)
                 joint_desc = joint_descriptions[joint_key]
+                #! it may be possible that a joint is filtered out in the middle of
+                #! a chain of joints, which results in a disconnected graph
+                #! we should raise an error in this case
                 if any(re.match(p, joint_key) for p in ignore_paths):
                     continue
                 if str(joint_desc.body0) in ignored_body_paths:
@@ -947,20 +953,29 @@ def parse_usd(
 
             articulation_xform = wp.mul(incoming_world_xform, parse_xform(articulation_prim))
 
-            builder.add_articulation(articulation_path)
             if len(joint_edges) == 0:
-                assert len(body_ids) == 1, "An articulation without joints must have exactly one body"
-                # We have an articulation without joints, i.e. a free rigid body.
+                # We have an articulation without joints, i.e. only free rigid bodies
                 if bodies_follow_joint_ordering:
-                    body_data_index = next(iter(body_ids.values()))
-                    child_body_id = add_body(**body_data[body_data_index])
+                    for i in body_ids.values():
+                        builder.add_articulation(body_data[i]["key"])
+                        child_body_id = add_body(**body_data[i])
+                        # apply the articulation transform to the body
+                        builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
+                        builder.add_joint_free(child=child_body_id)
+                        # note the free joint's coordinates will be initialized by the body_q of the
+                        # child body
                 else:
-                    child_body_id = art_bodies[0]
-                builder.add_joint_free(child=child_body_id)
-                builder.joint_q[-7:] = articulation_xform
+                    for i, child_body_id in enumerate(art_bodies):
+                        builder.add_articulation(body_keys[i])
+                        # apply the articulation transform to the body
+                        builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
+                        builder.add_joint_free(child=child_body_id)
+                        # note the free joint's coordinates will be initialized by the body_q of the
+                        # child body
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
+                builder.add_articulation(articulation_path)
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
@@ -997,6 +1012,9 @@ def parse_usd(
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
+                    # apply the articulation transform to the body
+                    #! investigate why assigning body_q (joint_q) by art_xform * body_q is breaking the tests
+                    # builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
                     builder.add_joint_free(child=child_body_id)
                     builder.joint_q[-7:] = articulation_xform
 
