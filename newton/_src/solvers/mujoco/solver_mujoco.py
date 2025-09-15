@@ -1258,7 +1258,7 @@ class SolverMuJoCo(SolverBase):
         self.shape_incoming_xform: wp.array(dtype=wp.transform) | None = None
         """The transform applied to Newton's shape frame to match MuJoCo's geom frame. This only affects mesh shapes (MuJoCo aligns them with their inertial frames). Shape [shape_count], dtype transform."""
         self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
-        """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Shape [joint_count], dtype int32."""
+        """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first environment in Newton. Shape [joint_count], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
@@ -2030,7 +2030,7 @@ class SolverMuJoCo(SolverBase):
                     assert stype == GeoType.PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
                     geom_params["size"] = [5.0, 5.0, 5.0]
-                    # make ground plane blue in the MuJoCo viewer
+                    # make ground plane blue in the MuJoCo viewer (only used for debugging)
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
@@ -2310,12 +2310,6 @@ class SolverMuJoCo(SolverBase):
         self.mj_model.opt.solver = solver
         self.mj_model.opt.impratio = impratio
         self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
-
-        # make the headlights brighter to improve visibility
-        # in the MuJoCo viewer
-        self.mj_model.vis.headlight.ambient[:] = [0.3, 0.3, 0.3]
-        self.mj_model.vis.headlight.diffuse[:] = [0.7, 0.7, 0.7]
-        self.mj_model.vis.headlight.specular[:] = [0.9, 0.9, 0.9]
 
         self.update_mjc_data(self.mj_data, model, state)
 
@@ -2697,6 +2691,12 @@ class SolverMuJoCo(SolverBase):
         if self._viewer is None:
             import mujoco  # noqa: PLC0415
             import mujoco.viewer  # noqa: PLC0415
+
+            # make the headlights brighter to improve visibility
+            # in the MuJoCo viewer
+            self.mj_model.vis.headlight.ambient[:] = [0.3, 0.3, 0.3]
+            self.mj_model.vis.headlight.diffuse[:] = [0.7, 0.7, 0.7]
+            self.mj_model.vis.headlight.specular[:] = [0.9, 0.9, 0.9]
 
             self._viewer = mujoco.viewer.launch_passive(
                 self.mj_model, self.mj_data, show_left_ui=show_left_ui, show_right_ui=show_right_ui
