@@ -355,10 +355,10 @@ def solve_flow_rule_aniso(
     u = D r + b
 
     r_N = r_N- + r_N+
-    u_n           \in NC(p_min <= r_N- <= 0)
-    u_n + off nor \in NC(0 <= r_N+ <= p_max)
+    u_n           in NC(p_min <= r_N- <= 0)
+    u_n + off nor in NC(0 <= r_N+ <= p_max)
 
-    u_T \in NC(|r_T| <= alpha s(r_N))
+    u_T in NC(|r_T| <= alpha s(r_N))
     """
 
     # Note: this assumes that D.nor = lambda nor

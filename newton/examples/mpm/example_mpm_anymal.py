@@ -286,8 +286,6 @@ class Example:
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self.command[0, 0] = 1
 
-        self._reset_key_prev = False
-
         # set model on viewer and setup capture
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
@@ -341,11 +339,6 @@ class Example:
             self.command[0, 0] = float(fwd)
             self.command[0, 1] = float(lat)
             self.command[0, 2] = float(rot)
-            # Reset when 'P' is pressed (edge-triggered)
-            reset_down = bool(self.viewer.is_key_down("p"))
-            if reset_down and not self._reset_key_prev:
-                self.reset()
-            self._reset_key_prev = reset_down
 
         # compute control before graph/step
         self.apply_control()
