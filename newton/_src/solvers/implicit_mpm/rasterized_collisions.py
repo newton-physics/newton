@@ -87,14 +87,16 @@ def collision_sdf(x: wp.vec3, collider: Collider):
     for m in range(collider.meshes.shape[0]):
         mesh = collider.meshes[m]
 
-        query = wp.mesh_query_point_sign_normal(mesh, x, collider.query_max_dist)
+        thickness = collider.thicknesses[m]
+        max_dist = collider.query_max_dist + thickness
+        query = wp.mesh_query_point_sign_normal(mesh, x, max_dist)
 
         if query.result:
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
 
             offset = x - cp
             d = wp.length(offset) * query.sign
-            sdf = d - collider.thicknesses[m]
+            sdf = d - thickness
 
             if sdf < min_sdf:
                 min_sdf = sdf

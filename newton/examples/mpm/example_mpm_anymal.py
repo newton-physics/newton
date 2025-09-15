@@ -245,7 +245,7 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
-        mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0e6])
+        mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0])
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(self.model)

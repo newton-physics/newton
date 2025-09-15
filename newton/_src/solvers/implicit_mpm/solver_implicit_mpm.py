@@ -15,6 +15,7 @@
 
 """Implicit MPM solver."""
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -911,6 +912,7 @@ class ImplicitMPMModel:
         colliders are present and to enable/disable related computations.
         """
         self.min_collider_mass = np.min(self.collider.masses.numpy()) if len(self.collider.masses) > 0 else _INFINITY
+        self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
 
     def setup_particle_material(self, options: ImplicitMPMOptions):
         """Initialize per-particle material and derived fields from the model.
@@ -963,6 +965,8 @@ class ImplicitMPMModel:
         collider_masses: list[float] | None = None,
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
+        ground_height: float = 0.0,
+        ground_normal: wp.vec3 | None = None,
     ):
         """Initialize collider parameters and defaults from inputs.
 
@@ -979,6 +983,8 @@ class ImplicitMPMModel:
             collider_masses: Per-mesh masses; very large values mark kinematic colliders.
             collider_friction: Per-mesh Coulomb friction coefficients.
             collider_adhesion: Per-mesh adhesion (Pa).
+            ground_height: Height of the ground plane.
+            ground_normal: Normal of the ground plane (default to model.up_axis).
         """
 
         self._collider_meshes = colliders  # Keep a ref so that meshes are not garbage collected
@@ -1019,10 +1025,12 @@ class ImplicitMPMModel:
             self.collider_coms = wp.zeros(len(collider.meshes), dtype=wp.vec3)
             self.collider_inv_inertia = wp.zeros(len(collider.meshes), dtype=wp.mat33)
 
-        collider.query_max_dist = self.voxel_size
-        collider.ground_height = 0.0
-        collider.ground_normal = wp.vec3(0.0)
-        collider.ground_normal[self.model.up_axis] = 1.0
+        collider.ground_height = ground_height
+        if ground_normal is None:
+            collider.ground_normal = wp.vec3(0.0)
+            collider.ground_normal[self.model.up_axis] = 1.0
+        else:
+            collider.ground_normal = wp.vec3(ground_normal)
 
         self.notify_collider_changed()
 
@@ -1228,13 +1236,22 @@ class SolverImplicitMPM(SolverBase):
         if flags & newton.SolverNotifyFlags.PARTICLE_PROPERTIES:
             self.mpm_model.notify_particle_material_changed()
 
-    def project_outside(self, state_in: newton.State, state_out: newton.State, dt: float):
-        """Project particles outside colliders prior to the main solve.
+    def project_outside(
+        self, state_in: newton.State, state_out: newton.State, dt: float, max_dist: float | None = None
+    ):
+        """Project particles outside of colliders, and adjust their velocity and velocity gradients
 
-        Uses a signed-distance query and local Coulomb response to remove
-        inadmissible penetration and adjust particle velocities/gradients for a
-        stable start of the implicit step.
+        Args:
+            state_in: The input state.
+            state_out: The output state. Only particle_q, particle_qd, and particle_qd_grad are written.
+            dt: The time step, for extrapolating the collider end-of-step positions from its current position and velocity.
+            max_dist: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
         """
+
+        if max_dist is not None:
+            # Update max query dist if provided
+            prev_max_dist, self.mpm_model.collider.query_max_dist = self.mpm_model.collider.query_max_dist, max_dist
+
         wp.launch(
             project_outside_collider,
             dim=state_in.particle_count,
@@ -1254,6 +1271,10 @@ class SolverImplicitMPM(SolverBase):
             ],
             device=state_in.particle_q.device,
         )
+
+        if max_dist is not None:
+            # Restore previous max query dist
+            self.mpm_model.collider.query_max_dist = prev_max_dist
 
     def collect_collider_impulses(self, state: newton.State):
         """Collect current collider impulses and their application positions.
