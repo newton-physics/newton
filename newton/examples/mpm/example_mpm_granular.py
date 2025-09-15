@@ -51,23 +51,31 @@ class Example:
 
         builder.gravity = wp.vec3(options.gravity)
 
-        options.grid_padding = 5 if options.grid_type == "fixed" else 0
-
         self.model = builder.finalize()
-
         self.model.particle_mu = options.friction_coeff
+
+        # Disable model's particle material parameters,
+        # we want to read directly from MPM options instead
         self.model.particle_ke = None
         self.model.particle_kd = None
         self.model.particle_cohesion = None
         self.model.particle_adhesion = None
 
-        mpm_model = SolverImplicitMPM.Model(self.model, options)
-        mpm_model.setup_collider(colliders)
+        # Copy all remaining CLI arguments to MPM options
+        mpm_options = SolverImplicitMPM.Options()
+        for key in vars(options):
+            if hasattr(mpm_options, key):
+                setattr(mpm_options, key, getattr(options, key))
+
+        # Create MPM model from Newton model
+        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
+        mpm_model.setup_collider(colliders, collider_friction=[0.2] * len(colliders))
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.solver = SolverImplicitMPM(mpm_model, options)
+        # Initialize MPM solver and add supplemental state variables
+        self.solver = SolverImplicitMPM(mpm_model, mpm_options)
 
         self.solver.enrich_state(self.state_0)
         self.solver.enrich_state(self.state_1)
@@ -175,20 +183,18 @@ def _create_collider_mesh(collider: str):
 
 
 if __name__ == "__main__":
-    import argparse
-
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
 
-    # Add MPM-specific arguments
-    parser.add_argument("--collider", default="wedge", type=str)
-
+    # Scene configuration
+    parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "none"], type=str)
     parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
     parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])
     parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
 
+    # Add MPM-specific arguments
     parser.add_argument("--density", type=float, default=1000.0)
     parser.add_argument("--air-drag", type=float, default=1.0)
     parser.add_argument("--critical-fraction", "-cf", type=float, default=0.0)
@@ -201,13 +207,12 @@ if __name__ == "__main__":
     parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)
     parser.add_argument("--yield-stress", "-ys", type=float, default=0.0)
     parser.add_argument("--hardening", type=float, default=0.0)
-    parser.add_argument("--unilateral", action=argparse.BooleanOptionalAction, default=True)
 
-    parser.add_argument("--grid-type", "-gt", type=str, default="sparse")
-    parser.add_argument("--solver", "-s", type=str, default="gauss-seidel")
-    parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic")
+    parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
+    parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
+    parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
+    parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "P1"])
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)

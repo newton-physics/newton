@@ -462,6 +462,7 @@ def strain_rhs(
     elastic_parameters: fem.Field,
     elastic_strains: wp.array(dtype=wp.mat33),
     inv_cell_volume: float,
+    dt: float,
 ):
     F_prev = elastic_strains[s.qp_index]
 
@@ -469,7 +470,7 @@ def strain_rhs(
 
     _compliance, _poisson, damping = extract_elastic_parameters(elastic_parameters(s))
 
-    alpha = 1.0 / (1.0 + damping)
+    alpha = 1.0 / (1.0 + damping * dt)
 
     RSinvRt_prev = U_prev @ wp.diag(1.0 / xi_prev) @ wp.transpose(U_prev)
     Id = wp.identity(n=3, dtype=float)
@@ -488,6 +489,7 @@ def compliance_form(
     elastic_parameters: fem.Field,
     elastic_strains: wp.array(dtype=wp.mat33),
     inv_cell_volume: float,
+    dt: float,
 ):
     F = elastic_strains[s.qp_index]
 
@@ -500,7 +502,7 @@ def compliance_form(
     return (
         wp.ddot(
             Rt @ tau(s) @ FinvT,
-            stress_strain_relationship(Rt @ sig(s) @ FinvT, compliance / (1.0 + damping), poisson),
+            stress_strain_relationship(Rt @ sig(s) @ FinvT, compliance / (1.0 + damping * dt), poisson),
         )
         * inv_cell_volume
     )
@@ -844,7 +846,9 @@ class _ImplicitMPMScratchpad:
             self.color_indices.release()
 
 
-def _particle_parameter(num_particles, model_value: float | wp.array | None = None, default_value=None):
+def _particle_parameter(
+    num_particles, model_value: float | wp.array | None = None, default_value=None, model_scale: wp.array | None = None
+):
     """Helper function to create a particle-wise parameter array, taking defaults either from the model
     or the global options."""
 
@@ -854,9 +858,9 @@ def _particle_parameter(num_particles, model_value: float | wp.array | None = No
         if model_value.shape[0] != num_particles:
             raise ValueError(f"Model value array must have {num_particles} elements")
 
-        return model_value
+        return model_value if model_scale is None else model_value * model_scale
     else:
-        return wp.full(num_particles, model_value, dtype=float)
+        return wp.full(num_particles, model_value, dtype=float) if model_scale is None else model_value * model_scale
 
 
 class ImplicitMPMModel:
@@ -937,21 +941,37 @@ class ImplicitMPMModel:
             self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
             self.particle_density = model.particle_mass / self.particle_volume
 
-            # Elastic stress-strain matrix from Poisson's ratio and compliance
+            # Map newton.Model parameters to MPM material parameters
+            # young_modulus = particle_ke / particle_volume
             self.material_parameters.young_modulus = _particle_parameter(
-                num_particles, model.particle_ke, options.young_modulus
+                num_particles, model.particle_ke, options.young_modulus, model_scale=1.0 / self.particle_volume
             )
-            self.material_parameters.damping = _particle_parameter(num_particles, model.particle_kd, options.damping)
+            # damping = particle_kd / particle_ke = particle_kd / (young modulus * particle_volume)
+            self.material_parameters.damping = _particle_parameter(
+                num_particles,
+                model.particle_kd,
+                options.damping,
+                model_scale=1.0 / (self.particle_volume * self.material_parameters.young_modulus),
+            )
             self.material_parameters.poisson_ratio = wp.full(num_particles, options.poisson_ratio, dtype=float)
-            self.material_parameters.hardening = wp.full(num_particles, options.hardening, dtype=float)
 
+            self.material_parameters.hardening = wp.full(num_particles, options.hardening, dtype=float)
             self.material_parameters.friction = _particle_parameter(num_particles, model.particle_mu)
             self.material_parameters.yield_pressure = wp.full(num_particles, options.yield_pressure, dtype=float)
+
+            # tensile yield ratio = adhesion * young modulus / yield pressure
             self.material_parameters.tensile_yield_ratio = _particle_parameter(
-                num_particles, model.particle_adhesion, options.tensile_yield_ratio
+                num_particles,
+                model.particle_adhesion,
+                options.tensile_yield_ratio,
+                model_scale=self.material_parameters.young_modulus / self.material_parameters.yield_pressure,
             )
+            # deviatoric yield stress = cohesion * young modulus
             self.material_parameters.yield_stress = _particle_parameter(
-                num_particles, model.particle_cohesion, options.yield_stress
+                num_particles,
+                model.particle_cohesion,
+                options.yield_stress,
+                model_scale=self.material_parameters.young_modulus,
             )
 
         self.notify_particle_material_changed()
@@ -1685,6 +1705,7 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "elastic_strains": state_in.particle_elastic_strain,
                         "inv_cell_volume": inv_cell_volume,
+                        "dt": dt,
                     },
                     output=scratch.int_symmetric_strain.array,
                 )
@@ -1700,6 +1721,7 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "elastic_strains": state_in.particle_elastic_strain,
                         "inv_cell_volume": inv_cell_volume,
+                        "dt": dt,
                     },
                     output_dtype=float,
                 )
