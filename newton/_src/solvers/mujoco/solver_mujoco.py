@@ -1015,6 +1015,10 @@ def update_joint_transforms_kernel(
     ang_axis_count = joint_dof_dim[tid, 1]
     newton_dof_start = joint_dof_start[tid]
     mjc_dof_start = joint_mjc_dof_start[joint_in_env]
+    if mjc_dof_start == -1:
+        # this should not happen
+        wp.printf("Joint %i has no MuJoCo DOF start index\n", joint_in_env)
+        return
 
     # update linear dofs
     for i in range(lin_axis_count):
@@ -1258,7 +1262,7 @@ class SolverMuJoCo(SolverBase):
         self.shape_incoming_xform: wp.array(dtype=wp.transform) | None = None
         """The transform applied to Newton's shape frame to match MuJoCo's geom frame. This only affects mesh shapes (MuJoCo aligns them with their inertial frames). Shape [shape_count], dtype transform."""
         self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
-        """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first environment in Newton. Shape [joint_count], dtype int32."""
+        """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first environment in Newton, defaults to -1 otherwise. Shape [joint_count], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
@@ -2067,7 +2071,7 @@ class SolverMuJoCo(SolverBase):
 
         # maps from Newton joint index to the start index of its joint axes in MuJoCo
         # (only defined for the joints of the first environment)
-        joint_mjc_dof_start = np.zeros((model.joint_count,), dtype=np.int32)
+        joint_mjc_dof_start = np.full(model.joint_count, -1, dtype=np.int32)
 
         # add joints, bodies and geoms
         for ji in joint_order:
