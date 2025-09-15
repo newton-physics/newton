@@ -960,7 +960,7 @@ def parse_usd(
                         builder.add_articulation(body_data[i]["key"])
                         child_body_id = add_body(**body_data[i])
                         # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
+                        builder.body_q[child_body_id] = articulation_xform
                         builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -968,7 +968,7 @@ def parse_usd(
                     for i, child_body_id in enumerate(art_bodies):
                         builder.add_articulation(body_keys[i])
                         # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
+                        builder.body_q[child_body_id] = articulation_xform
                         builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
