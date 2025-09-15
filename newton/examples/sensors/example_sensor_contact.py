@@ -13,15 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
+###########################################################################
+# Example Contact Sensor
+#
+# Shows how to use the ContactSensor class to evaluate contact forces and torques.
+# The example spawns ant and humanoid robots across multiple environments,
+# applies random forces to their joints, and performs selective resets on subsets of environments.
+#
+# Command: python -m newton.examples sensor_contact
+#
+###########################################################################
 
 import warp as wp
 
-wp.config.enable_backward = False
-
 import newton
 import newton.examples
-import newton.utils
 from newton import Contacts
 from newton.examples import compute_env_offsets
 from newton.selection import ArticulationView
@@ -78,8 +84,16 @@ def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_env
 
 
 class Example:
-    def __init__(self, stage_path: str | None = "example_contact_sensor.usd", num_envs=16, use_cuda_graph=True):
+    def __init__(self, viewer, num_envs=16, use_cuda_graph=True):
+        # setup simulation parameters first
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+        self.sim_time = 0.0
+        self.sim_substeps = 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
         self.num_envs = num_envs
+        self.viewer = viewer
 
         up_axis = newton.Axis.Z
 
@@ -127,31 +141,14 @@ class Example:
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.renderer = None
-        if stage_path:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path=stage_path,
-                model=self.model,
-                scaling=2.0,
-                up_axis=str(up_axis),
-                screen_width=1280,
-                screen_height=720,
-                camera_pos=(0, 4, 30),
-            )
+        self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.sim_time = 0.0
-        fps = 60
-        self.frame_dt = 1.0 / fps
-
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
-
         self.next_reset = 0.0
-        self.step_count = 0
+        self.seed = 0
 
         # ===========================================================
         # create articulation views
@@ -223,17 +220,26 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                contacts = self.model.collide(self.state_0)
-            else:
-                contacts = None
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -251,12 +257,12 @@ class Example:
             dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_envs])
+            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_envs])
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
         with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
+            if self.graph:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
@@ -268,7 +274,6 @@ class Example:
         self.foot_arm_contact_sensor.eval(self.contacts)
 
         self.sim_time += self.frame_dt
-        self.step_count += 1
 
     def reset(self, mask=None):
         # ================================
@@ -290,7 +295,7 @@ class Example:
             wp.launch(
                 reset_kernel,
                 dim=self.num_envs,
-                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
+                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.seed],
             )
 
         self.ants.set_root_transforms(self.state_0, self.default_ant_root_transforms, mask=mask)
@@ -306,17 +311,16 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
 
+    def test(self):
+        pass
+
     def render(self):
-        if self.renderer is None:
-            return
-
         with wp.ScopedTimer("render", active=False):
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
-            self.renderer.end_frame()
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_state(self.state_0)
+            self.viewer.end_frame()
 
 
-# scoped device manager for both Warp and Torch
 class ScopedDevice:
     def __init__(self, device):
         self.warp_scoped_device = wp.ScopedDevice(device)
@@ -337,31 +341,14 @@ class ScopedDevice:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
-    parser.add_argument(
-        "--stage-path",
-        type=lambda x: None if x == "None" else str(x),
-        default="example_contact_sensor.usd",
-        help="Path to the output USD file.",
-    )
-    parser.add_argument("--num-frames", type=int, default=1200, help="Total number of frames.")
+    # Parse arguments and initialize viewer
+    parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
-    parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
 
-    args = parser.parse_known_args()[0]
+    viewer, args = newton.examples.init(parser)
 
     with ScopedDevice(args.device):
-        example = Example(stage_path=args.stage_path, num_envs=args.num_envs, use_cuda_graph=args.use_cuda_graph)
+        # Create viewer and run
+        example = Example(viewer, num_envs=args.num_envs)
 
-        for frame_idx in range(args.num_frames):
-            example.step()
-            example.render()
-
-            if not example.renderer:
-                print(f"[{frame_idx:4d}/{args.num_frames}]")
-
-        if example.renderer:
-            example.renderer.save()
+        newton.examples.run(example)

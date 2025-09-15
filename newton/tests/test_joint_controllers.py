@@ -60,7 +60,6 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
     model.ground = False
 
     solver = solver_fn(model)
-    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
 
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -74,12 +73,8 @@ def test_revolute_controller(test: TestJointController, device, solver_fn, joint
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # renderer.begin_frame(sim_time)
-        # renderer.render(state_1)
-        # renderer.end_frame()
-        sim_time += sim_dt
 
-    # renderer.save()
+        sim_time += sim_dt
 
     if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
         newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
