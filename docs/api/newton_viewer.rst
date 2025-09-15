@@ -12,6 +12,7 @@ newton.viewer
    RecorderImGuiManager
    RendererOpenGL
    RendererUsd
+   ViewerFile
    ViewerGL
    ViewerNull
    ViewerRerun
