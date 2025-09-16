@@ -578,7 +578,7 @@ class ModelBuilder:
 
     def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
         # compute positional offsets per environment
-        spacing = np.array(spacing)
+        spacing = np.array(spacing, dtype=np.float32)
         nonzeros = np.nonzero(spacing)[0]
         num_dim = nonzeros.shape[0]
         if num_dim > 0:
@@ -605,9 +605,9 @@ class ModelBuilder:
                     offset[1] = d1 * spacing[1]
                     offset[2] = d2 * spacing[2]
                     spacings.append(offset)
-            spacings = np.array(spacings)
+            spacings = np.array(spacings, dtype=np.float32)
         else:
-            spacings = np.zeros((num_copies, 3))
+            spacings = np.zeros((num_copies, 3), dtype=np.float32)
         min_offsets = np.min(spacings, axis=0)
         correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
         # ensure the envs are not shifted below the ground plane
@@ -745,7 +745,7 @@ class ModelBuilder:
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+            enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path (str): The USD path to import, defaults to "/".
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
