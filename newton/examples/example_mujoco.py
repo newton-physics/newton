@@ -26,6 +26,9 @@
 # - Fix the use-mujoco-cpu option (currently crashes)
 ###########################################################################
 
+
+import time
+
 import numpy as np
 import warp as wp
 
@@ -210,6 +213,7 @@ class Example:
     ):
         fps = 600
         self.sim_time = 0.0
+        self.benchmark_time = 0.0
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 10
         self.contacts = None
@@ -283,10 +287,16 @@ class Example:
             joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
             wp.copy(self.control.joint_target, joint_target)
 
+        wp.synchronize_device()
+        start_time = time.time()
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
+        wp.synchronize_device()
+        end_time = time.time()
+
+        self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
 
     def render(self):
