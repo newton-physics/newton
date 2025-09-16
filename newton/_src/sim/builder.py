@@ -405,7 +405,7 @@ class ModelBuilder:
         self.body_q = []
         self.body_qd = []
         self.body_key = []
-        self.body_shapes = {}  # mapping from body to shapes
+        self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_group = []  # environment group index for each body
 
         # rigid joints
@@ -638,7 +638,10 @@ class ModelBuilder:
         offsets = self._compute_replicate_offsets(num_copies, spacing)
         xform = wp.transform_identity()
         for i in range(num_copies):
-            xform.p = offsets[i]
+            offset = offsets[i]
+            # assign translation
+            for j in range(3):
+                xform[j] = offset[j]
             self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
@@ -1015,8 +1018,6 @@ class ModelBuilder:
 
         for b, shapes in builder.body_shapes.items():
             if b == -1:
-                if -1 not in self.body_shapes:
-                    self.body_shapes[-1] = []
                 self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
             else:
                 self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
@@ -2161,8 +2162,6 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
-                        if -1 not in self.body_shapes:
-                            self.body_shapes[-1] = []
                         self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
@@ -2215,11 +2214,10 @@ class ModelBuilder:
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_group.clear()  # Clear body groups
-        static_shapes = self.body_shapes.get(-1)
+        static_shapes = self.body_shapes[-1]
         self.body_shapes.clear()
-        if static_shapes is not None:
-            # restore static shapes
-            self.body_shapes[-1] = static_shapes
+        # restore static shapes
+        self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
             new_id = len(self.body_key)
