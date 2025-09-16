@@ -1247,8 +1247,8 @@ def handle_contact_pairs(
         elif geo_type_b == GeoType.CAPSULE:
             half_height_b = geo_scale_b[1]
             # capsule B
-            A_b = wp.transform_point(X_ws_b, wp.vec3(0.0, half_height_b, 0.0))
-            B_b = wp.transform_point(X_ws_b, wp.vec3(0.0, -half_height_b, 0.0))
+            A_b = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, half_height_b))
+            B_b = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, -half_height_b))
             p_b_world = closest_point_line_segment(A_b, B_b, p_a_world)
         elif geo_type_b == GeoType.MESH:
             mesh_b = shape_source_ptr[shape_b]
@@ -1305,8 +1305,8 @@ def handle_contact_pairs(
         half_height_b = geo_scale_b[1]
         # capsule B
         # depending on point id, we query an edge from 0 to 0.5 or 0.5 to 1
-        e0 = wp.vec3(0.0, -half_height_b * float(point_id % 2), 0.0)
-        e1 = wp.vec3(0.0, half_height_b * float((point_id + 1) % 2), 0.0)
+        e0 = wp.vec3(0.0, 0.0, -half_height_b * float(point_id % 2))
+        e1 = wp.vec3(0.0, 0.0, half_height_b * float((point_id + 1) % 2))
         edge0_world = wp.transform_point(X_ws_b, e0)
         edge1_world = wp.transform_point(X_ws_b, e1)
         edge0_a = wp.transform_point(X_sw_a, edge0_world)
@@ -1381,8 +1381,8 @@ def handle_contact_pairs(
         half_height_b = geo_scale_b[1]
         # edge from capsule A
         # depending on point id, we query an edge from 0 to 0.5 or 0.5 to 1
-        e0 = wp.vec3(0.0, half_height_a * float(point_id % 2), 0.0)
-        e1 = wp.vec3(0.0, -half_height_a * float((point_id + 1) % 2), 0.0)
+        e0 = wp.vec3(0.0, 0.0, half_height_a * float(point_id % 2))
+        e1 = wp.vec3(0.0, 0.0, -half_height_a * float((point_id + 1) % 2))
         edge0_world = wp.transform_point(X_ws_a, e0)
         edge1_world = wp.transform_point(X_ws_a, e1)
         edge0_b = wp.transform_point(X_sw_b, edge0_world)
@@ -1390,8 +1390,8 @@ def handle_contact_pairs(
         max_iter = edge_sdf_iter
         u = closest_edge_coordinate_capsule(geo_scale_b[0], geo_scale_b[1], edge0_b, edge1_b, max_iter)
         p_a_world = (1.0 - u) * edge0_world + u * edge1_world
-        p0_b_world = wp.transform_point(X_ws_b, wp.vec3(0.0, half_height_b, 0.0))
-        p1_b_world = wp.transform_point(X_ws_b, wp.vec3(0.0, -half_height_b, 0.0))
+        p0_b_world = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, half_height_b))
+        p1_b_world = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, -half_height_b))
         p_b_world = closest_point_line_segment(p0_b_world, p1_b_world, p_a_world)
         diff = p_a_world - p_b_world
         normal = wp.normalize(diff)
@@ -1402,8 +1402,8 @@ def handle_contact_pairs(
         half_height_a = geo_scale_a[1]
         # edge from capsule A
         # depending on point id, we query an edge from -h to 0 or 0 to h
-        e0 = wp.vec3(0.0, -half_height_a * float(point_id % 2), 0.0)
-        e1 = wp.vec3(0.0, half_height_a * float((point_id + 1) % 2), 0.0)
+        e0 = wp.vec3(0.0, 0.0, -half_height_a * float(point_id % 2))
+        e1 = wp.vec3(0.0, 0.0, half_height_a * float((point_id + 1) % 2))
         edge0_world = wp.transform_point(X_ws_a, e0)
         edge1_world = wp.transform_point(X_ws_a, e1)
         edge0_b = wp.transform_point(X_sw_b, edge0_world)
@@ -1444,8 +1444,8 @@ def handle_contact_pairs(
         p_a_world = wp.transform_point(X_ws_a, body_a_pos)
         # find closest point + contact normal on capsule B
         half_height_b = geo_scale_b[1]
-        A_b = wp.transform_point(X_ws_b, wp.vec3(0.0, half_height_b, 0.0))
-        B_b = wp.transform_point(X_ws_b, wp.vec3(0.0, -half_height_b, 0.0))
+        A_b = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, half_height_b))
+        B_b = wp.transform_point(X_ws_b, wp.vec3(0.0, 0.0, -half_height_b))
         p_b_world = closest_point_line_segment(A_b, B_b, p_a_world)
         diff = p_a_world - p_b_world
         # this is more reliable in practice than using the SDF gradient

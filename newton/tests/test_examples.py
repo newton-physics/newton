@@ -226,6 +226,15 @@ add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=t
 add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
 
 
+class TestCableExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(TestCableExamples, name="cable.example_cable_bend", devices=test_devices, use_viewer=True)
+add_example_test(TestCableExamples, name="cable.example_cable_twist", devices=test_devices, use_viewer=True)
+add_example_test(TestCableExamples, name="cable.example_cable_helix", devices=test_devices, use_viewer=True)
+
+
 class TestClothExamples(unittest.TestCase):
     pass
 
