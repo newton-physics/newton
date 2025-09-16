@@ -47,7 +47,6 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # print("model.body_inv_inertia\n", model.body_inv_inertia)
 
     solver = solver_fn(model)
-    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
 
     state_0, state_1 = model.state(), model.state()
 
@@ -58,10 +57,10 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # print("body_mass: ", model.body_mass)
     input = np.zeros(model.body_count * 6, dtype=np.float32)
     if test_angular:
-        test_index = 2
+        test_index = 5
         test_value = 0.96
     else:
-        test_index = 4
+        test_index = 1
         test_value = 0.1
 
     input[test_index] = 1000.0
@@ -80,9 +79,6 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     for _ in range(1):
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # renderer.begin_frame(sim_time)
-        # renderer.render(state_1)
-        # renderer.end_frame()
 
     body_qd = state_0.body_qd.numpy()[0]
     # print("body_qd" , body_qd)
@@ -133,17 +129,17 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
     model = builder.finalize(device=device)
     # print("model.body_inertia_inv\n", model.body_inv_inertia)
     test.assertEqual(model.joint_dof_count, 6)
-    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
+
     angular_values = [0.24, 0.282353, 0.96]
     for control_dim in range(3):
         solver = solver_fn(model)
         state_0, state_1 = model.state(), model.state()
 
         if test_angular:
-            control_idx = control_dim
+            control_idx = control_dim + 3
             test_value = angular_values[control_dim]
         else:
-            control_idx = control_dim + 3
+            control_idx = control_dim
             test_value = 0.1
 
         input = np.zeros(model.body_count * 6, dtype=np.float32)
@@ -157,9 +153,6 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
         for _ in range(1):
             solver.step(state_0, state_1, None, None, sim_dt)
             state_0, state_1 = state_1, state_0
-            # renderer.begin_frame(sim_time)
-            # renderer.render(state_1)
-            # renderer.end_frame()
 
         if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
             # need to compute joint_qd from body_qd

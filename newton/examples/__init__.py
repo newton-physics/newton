@@ -112,8 +112,7 @@ def create_parser():
     """
     import argparse  # noqa: PLC0415
 
-    # add_help=False since this is a parent parser
-    parser = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--viewer",
@@ -156,8 +155,10 @@ def init(parser=None):
     # parse args
     if parser is None:
         parser = create_parser()
-
-    args = parser.parse_known_args()[0]
+        args = parser.parse_known_args()[0]
+    else:
+        # When parser is provided, use parse_args() to properly handle --help
+        args = parser.parse_args()
 
     # Set device if specified
     if args.device:
@@ -219,6 +220,7 @@ def main():
         "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
         "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
         "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
+        "sensor_contact": "newton.examples.sensors.example_sensor_contact",
     }
 
     if len(sys.argv) < 2:

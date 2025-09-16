@@ -10,8 +10,7 @@ newton.viewer
    :nosignatures:
 
    RecorderImGuiManager
-   RendererOpenGL
-   RendererUsd
+   ViewerFile
    ViewerGL
    ViewerNull
    ViewerRerun

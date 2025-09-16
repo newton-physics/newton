@@ -59,8 +59,8 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 
 def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
     root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
     joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
     joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
     vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
@@ -230,6 +230,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
 
     example = Example(viewer)
