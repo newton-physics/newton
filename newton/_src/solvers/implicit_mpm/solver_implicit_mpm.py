@@ -664,6 +664,9 @@ class _ImplicitMPMScratchpad:
         domain = self.domain
         grid = domain.geometry
 
+        if strain_basis_str not in ("P0", "Q1"):
+            raise ValueError(f"Unsupported strain basis: {strain_basis_str}")
+
         strain_degree = 0 if strain_basis_str == "P0" else 1
         discontinuous = strain_basis_str != "Q1"
 

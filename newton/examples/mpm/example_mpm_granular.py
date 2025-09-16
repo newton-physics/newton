@@ -69,7 +69,7 @@ class Example:
 
         # Create MPM model from Newton model
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
-        mpm_model.setup_collider(colliders, collider_friction=[0.2] * len(colliders))
+        mpm_model.setup_collider(colliders, collider_friction=[0.1] * len(colliders))
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "P1"])
+    parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "Q1"])
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
