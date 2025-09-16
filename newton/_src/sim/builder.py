@@ -1030,11 +1030,11 @@ class ModelBuilder:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(builder.joint_q[qi : qi + 3], builder.joint_q[qi + 3 : qi + 7])
+                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
                         tf = transform_mul(xform, xform_prev)
                         qi += start_q
-                        self.joint_q[qi : qi + 3] = tf.p
-                        self.joint_q[qi + 3 : qi + 7] = tf.q
+                        for j in range(7):
+                            self.joint_q[qi + j] = tf[j]
                     elif builder.joint_parent[i] == -1:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
