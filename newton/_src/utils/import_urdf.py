@@ -158,7 +158,7 @@ def parse_urdf(
             for cylinder in geo.findall("cylinder"):
                 # Apply axis rotation to transform
                 xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
-                s = builder.add_shape_capsule(
+                s = builder.add_shape_cylinder(
                     body=link,
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
