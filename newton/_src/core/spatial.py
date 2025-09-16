@@ -31,7 +31,7 @@ def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     Returns:
         vec3: The velocity of the point.
     """
-    return wp.cross(wp.spatial_top(qd), r) + wp.spatial_bottom(qd)
+    return wp.spatial_top(qd) + wp.cross(wp.spatial_bottom(qd), r)
 
 
 @wp.func
@@ -231,14 +231,14 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
     This routine applies the rigid-body twist transformation defined in
     *Frank & Park, Modern Robotics* (Definition 3.20, p. 100).
 
-    Given a spatial twist ``x = (ω, v)`` expressed in the *source* frame and a
+    Given a spatial twist ``x = (v, ω)`` expressed in the *source* frame and a
     homogeneous transform ``t`` (source → destination), the returned twist
-    ``x' = (ω', v')`` represents the same motion expressed in the destination
+    ``x' = (v', ω')`` represents the same motion expressed in the destination
     frame:
 
     .. math::
 
-       x' = \\begin{bmatrix} R & 0 \\\\ [p]_{\\times} R & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & [p]_{\\times} R \\\\ 0 & R \\end{bmatrix} x
 
     where *R* and *p* are the rotation and translation components of ``t`` and
     ``[p]_x`` is the skew-symmetric matrix of *p*.
@@ -255,13 +255,13 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
     q = wp.transform_get_rotation(t)
     p = wp.transform_get_translation(t)
 
-    w = wp.spatial_top(x)
-    v = wp.spatial_bottom(x)
+    v = wp.spatial_top(x)
+    w = wp.spatial_bottom(x)
 
     w = wp.quat_rotate(q, w)
     v = wp.quat_rotate(q, v) + wp.cross(p, w)
 
-    return wp.spatial_vector(w, v)
+    return wp.spatial_vector(v, w)
 
 
 @wp.func
@@ -269,7 +269,7 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
     """Transform a spatial wrench between coordinate frames.
 
     A spatial wrench is the dual vector to a spatial twist and consists of a
-    torque-force pair ``x = (τ, f)``.
+    force-torque pair ``x = (f, τ)``.
 
     Given a wrench expressed in the *source* frame and a transform ``t``
     (source → destination), this function returns the equivalent wrench in the
@@ -277,7 +277,7 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
 
     .. math::
 
-       x' = \\begin{bmatrix} R & [p]_{\\times} R \\\\ 0 & R \\end{bmatrix} x
+       x' = \\begin{bmatrix} R & 0 \\\\ [p]_{\\times} R & R \\end{bmatrix} x
 
     Args:
         t (transform): The transform from the **source** frame to the
@@ -291,13 +291,13 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
     q = wp.transform_get_rotation(t)
     p = wp.transform_get_translation(t)
 
-    w = wp.spatial_top(x)
-    v = wp.spatial_bottom(x)
+    f = wp.spatial_top(x)
+    tau = wp.spatial_bottom(x)
 
-    v = wp.quat_rotate(q, v)
-    w = wp.quat_rotate(q, w) + wp.cross(p, v)
+    f = wp.quat_rotate(q, f)
+    tau = wp.quat_rotate(q, tau) + wp.cross(p, f)
 
-    return wp.spatial_vector(w, v)
+    return wp.spatial_vector(f, tau)
 
 
 __axis_rotations = {}

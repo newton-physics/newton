@@ -104,7 +104,11 @@ class TestAnymalReset(unittest.TestCase):
             self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
         )
 
-        self.renderer = None if self.headless else newton.viewer.RendererOpenGL(self.model, stage_path)
+        if self.headless:
+            self.viewer = None
+        else:
+            self.viewer = newton.viewer.ViewerGL()
+            self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -152,11 +156,11 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_time += self.frame_dt
 
     def render(self):
-        if self.renderer is None:
+        if self.viewer is None:
             return
-        self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
-        self.renderer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
 
     def save_initial_mjw_data(self):
         self.initial_mjw_data = {}
@@ -322,8 +326,6 @@ class TestAnymalReset(unittest.TestCase):
             mjw_data_matches,
             f"mjw_data after reset does not match initial state with {self._cone_type_name(cone_type)} cone",
         )
-        if self.renderer:
-            self.renderer.save()
 
 
 def test_reset_functionality(test: TestAnymalReset, device, cone_type):

@@ -14,24 +14,24 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Selection Articulations
+# Example Contact Sensor
 #
-# Demonstrates batch control of multiple articulated robots using
-# ArticulationView. This example spawns ant and humanoid robots across
-# multiple environments, applies random forces to their joints, and
-# performs selective resets on subsets of environments.
+# Shows how to use the ContactSensor class to evaluate contact forces and torques.
+# The example spawns ant and humanoid robots across multiple environments,
+# applies random forces to their joints, and performs selective resets on subsets of environments.
 #
-# Command: python -m newton.examples selection_articulations
+# Command: python -m newton.examples sensor_contact
 #
 ###########################################################################
-
-from __future__ import annotations
 
 import warp as wp
 
 import newton
 import newton.examples
+from newton import Contacts
+from newton.examples import compute_env_offsets
 from newton.selection import ArticulationView
+from newton.sensors import ContactSensor, populate_contacts
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -84,48 +84,71 @@ def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_env
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16):
+    def __init__(self, viewer, num_envs=16, use_cuda_graph=True):
+        # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_envs = num_envs
+        self.viewer = viewer
 
-        env = newton.ModelBuilder()
-        env.add_mjcf(
+        up_axis = newton.Axis.Z
+
+        env_builder = newton.ModelBuilder(up_axis=up_axis)
+        env_builder.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
+            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
-        env.add_mjcf(
+        env_builder.add_mjcf(
             newton.examples.get_asset("nv_humanoid.xml"),
             ignore_names=["floor", "ground"],
+            up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
 
-        scene = newton.ModelBuilder()
+        env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
 
-        scene.add_ground_plane()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        builder = newton.ModelBuilder()
+        for i in range(self.num_envs):
+            builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
+
+        builder.add_ground_plane()
+        # stores contact info required by contact sensors
+        self.contacts = Contacts(0, 0)
 
         # finalize model
-        self.model = scene.finalize()
+        self.model = builder.finalize()
+
+        self.torso_all_contact_sensor = ContactSensor(self.model, sensing_obj_shapes="torso_geom", verbose=True)
+        self.arm_ground_contact_sensor = ContactSensor(
+            self.model, sensing_obj_bodies="*arm", counterpart_shapes="ground_plane", verbose=True
+        )
+        self.foot_arm_contact_sensor = ContactSensor(
+            self.model,
+            sensing_obj_bodies="*foot",
+            counterpart_shapes="*arm",
+            include_total=False,
+            verbose=True,
+            prune_noncolliding=True,
+        )
 
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
-        self.viewer = viewer
+        self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
         self.next_reset = 0.0
-        self.step_count = 0
+        self.seed = 0
 
         # ===========================================================
         # create articulation views
@@ -187,32 +210,36 @@ class Example:
             self.mask_1 = wp.empty(num_envs, dtype=bool)
             wp.launch(init_masks, dim=num_envs, inputs=[self.mask_0, self.mask_1])
 
-        self.viewer.set_model(self.model)
-
         # reset all
         self.reset()
-        self.capture()
-
         self.next_reset = self.sim_time + 2.0
 
+        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
+        if self.use_cuda_graph:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+
+        self.capture()
+
     def capture(self):
-        self.graph = None
         if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                contacts = self.model.collide(self.state_0)
-            else:
-                contacts = None
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -230,17 +257,23 @@ class Example:
             dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_envs])
+            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_envs])
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
+        with wp.ScopedTimer("step", active=False):
+            if self.graph:
+                wp.capture_launch(self.graph)
+            else:
+                self.simulate()
+
+        populate_contacts(self.contacts, self.solver)
+        self.torso_all_contact_sensor.eval(self.contacts)
+        print(f"Torso net forces: {self.torso_all_contact_sensor.net_force}")
+        self.arm_ground_contact_sensor.eval(self.contacts)
+        self.foot_arm_contact_sensor.eval(self.contacts)
 
         self.sim_time += self.frame_dt
-        self.step_count += 1
 
     def reset(self, mask=None):
         # ================================
@@ -262,7 +295,7 @@ class Example:
             wp.launch(
                 reset_kernel,
                 dim=self.num_envs,
-                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
+                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.seed],
             )
 
         self.ants.set_root_transforms(self.state_0, self.default_ant_root_transforms, mask=mask)
@@ -277,25 +310,45 @@ class Example:
 
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
-            self.hums.eval_fk(self.state_0, mask=mask)
+
+    def test(self):
+        pass
 
     def render(self):
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.end_frame()
+        with wp.ScopedTimer("render", active=False):
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_state(self.state_0)
+            self.viewer.end_frame()
+
+
+class ScopedDevice:
+    def __init__(self, device):
+        self.warp_scoped_device = wp.ScopedDevice(device)
+        if USE_TORCH:
+            import torch  # noqa: PLC0415
+
+            self.torch_scoped_device = torch.device(wp.device_to_torch(device))
+
+    def __enter__(self):
+        self.warp_scoped_device.__enter__()
+        if USE_TORCH:
+            self.torch_scoped_device.__enter__()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.warp_scoped_device.__exit__(exc_type, exc_val, exc_tb)
+        if USE_TORCH:
+            self.torch_scoped_device.__exit__(exc_type, exc_val, exc_tb)
 
 
 if __name__ == "__main__":
+    # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
     parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
 
     viewer, args = newton.examples.init(parser)
 
-    if USE_TORCH:
-        import torch
+    with ScopedDevice(args.device):
+        # Create viewer and run
+        example = Example(viewer, num_envs=args.num_envs)
 
-        torch.set_device(args.device)
-
-    example = Example(viewer, num_envs=args.num_envs)
-
-    newton.examples.run(example)
+        newton.examples.run(example)
