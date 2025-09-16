@@ -411,7 +411,7 @@ def parse_mjcf(
                 tf = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, geom_up_axis))
 
                 if geom_type == "cylinder":
-                    s = builder.add_shape_capsule(
+                    s = builder.add_shape_cylinder(
                         xform=tf,
                         radius=geom_radius,
                         half_height=geom_height,
