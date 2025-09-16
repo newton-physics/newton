@@ -637,7 +637,8 @@ class ModelBuilder:
         """
         offsets = self._compute_replicate_offsets(num_copies, spacing)
         for i in range(num_copies):
-            self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+            with wp.ScopedTimer("add_builder"):
+                self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
 
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
@@ -1019,20 +1020,21 @@ class ModelBuilder:
                 self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
-            joint_X_p = copy.deepcopy(builder.joint_X_p)
-            joint_q = copy.deepcopy(builder.joint_q)
+            start_q = len(self.joint_q)
+            start_X_p = len(self.joint_X_p)
+            self.joint_X_p.extend(builder.joint_X_p)
+            self.joint_q.extend(builder.joint_q)
             if xform is not None:
-                for i in range(len(joint_X_p)):
+                for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
+                        xform_prev = wp.transform(builder.joint_q[qi : qi + 3], builder.joint_q[qi + 3 : qi + 7])
                         tf = transform_mul(xform, xform_prev)
-                        joint_q[qi : qi + 3] = tf.p
-                        joint_q[qi + 3 : qi + 7] = tf.q
+                        qi += start_q
+                        self.joint_q[qi : qi + 3] = tf.p
+                        self.joint_q[qi + 3 : qi + 7] = tf.q
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = transform_mul(xform, wp.transform(*joint_X_p[i]))
-            self.joint_X_p.extend(joint_X_p)
-            self.joint_q.extend(joint_q)
+                        self.joint_X_p[start_X_p + i] = transform_mul(xform, wp.transform(*builder.joint_X_p[i]))
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])

@@ -531,6 +531,37 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_groups[2], 1)  # world->b1_0 from env 1
         self.assertEqual(joint_groups[3], 1)  # b1_0->b1_1 from env 1
 
+    def test_add_builder(self):
+        body_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))
+        offset_xform = wp.transform(wp.vec3(4.0, 5.0, 6.0), wp.quat_rpy(-0.7, 0.8, -0.9))
+
+        fixed_base = ModelBuilder()
+        fixed_base.add_body(xform=body_xform)
+        fixed_base.add_joint_revolute(parent=-1, child=0, parent_xform=body_xform)
+
+        floating_base = ModelBuilder()
+        floating_base.add_body(xform=body_xform)
+        floating_base.add_joint_free(parent=-1, child=0)
+
+        builder = ModelBuilder()
+        builder.add_builder(fixed_base, xform=offset_xform)
+        builder.add_builder(floating_base, xform=offset_xform)
+
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertEqual(builder.articulation_count, 2)
+        self.assertEqual(builder.body_group, [0, 1])
+        self.assertEqual(builder.joint_group, [0, 1])
+        self.assertEqual(builder.joint_type, [newton.JointType.REVOLUTE, newton.JointType.FREE])
+        self.assertEqual(builder.joint_parent, [-1, -1])
+        self.assertEqual(builder.joint_child, [0, 1])
+        self.assertEqual(builder.joint_q_start, [0, 1])
+        self.assertEqual(builder.joint_qd_start, [0, 1])
+        self.assertEqual(builder.body_q[0], offset_xform * body_xform)
+        self.assertEqual(builder.body_q[1], offset_xform * body_xform)
+        assert_np_equal(np.array(builder.joint_X_p[0]), np.array(offset_xform * body_xform), tol=1.0e-6)
+        assert_np_equal(np.array(builder.joint_q[1:]), np.array(offset_xform * body_xform), tol=1.0e-6)
+
 
 if __name__ == "__main__":
     unittest.main()
