@@ -38,3 +38,7 @@ docs/_build/
 asv/env
 asv/results
 asv/html
+
+# Log files, settings
+MUJOCO_LOG.TXT
+imgui.ini
