@@ -4452,10 +4452,12 @@ class ModelBuilder:
 
                 # Ensure canonical order (smaller_element, larger_element)
                 if s1 > s2:
-                    s1, s2 = s2, s1
+                    shape_a, shape_b = s2, s1
+                else:
+                    shape_a, shape_b = s1, s2
 
-                if (s1, s2) not in filters:
-                    contact_pairs.append((s1, s2))
+                if (shape_a, shape_b) not in filters:
+                    contact_pairs.append((shape_a, shape_b))
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
