@@ -60,9 +60,9 @@ ROBOT_CONFIGS = {
     "cartpole": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 50,
-        "nconmax": 50,
-        "ls_parallel": True,
+        "njmax": 5,
+        "nconmax": 24,
+        "ls_parallel": False,
     },
     "ant": {
         "solver": "newton",
