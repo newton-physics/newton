@@ -24,14 +24,14 @@ __all__ = ["sample_render_grains", "update_render_grains"]
 @wp.kernel
 def sample_grains(
     particles: wp.array(dtype=wp.vec3),
-    radius: float,
+    radius: wp.array(dtype=float),
     positions: wp.array2d(dtype=wp.vec3),
 ):
     pid, k = wp.tid()
 
     rng = wp.rand_init(pid * positions.shape[1] + k)
 
-    pos_loc = 2.0 * wp.vec3(wp.randf(rng) - 0.5, wp.randf(rng) - 0.5, wp.randf(rng) - 0.5) * radius
+    pos_loc = 2.0 * wp.vec3(wp.randf(rng) - 0.5, wp.randf(rng) - 0.5, wp.randf(rng) - 0.5) * radius[pid]
     positions[pid, k] = particles[pid] + pos_loc
 
 
@@ -95,7 +95,7 @@ def advect_grains_from_particles(
 
 @wp.kernel
 def project_grains(
-    radius: float,
+    radius: wp.array(dtype=float),
     particle_pos: wp.array(dtype=wp.vec3),
     particle_frames: wp.array(dtype=wp.mat33),
     positions: wp.array2d(dtype=wp.vec3),
@@ -114,7 +114,7 @@ def project_grains(
     #     pos_loc = pos_loc / dist * radius
     # p_pos_adv = p_frame @ pos_loc + p_pos
 
-    p_frame = (radius * radius) * p_frame * wp.transpose(p_frame)
+    p_frame = (radius[pid] * radius[pid]) * p_frame * wp.transpose(p_frame)
     pos_loc = pos_adv - p_pos
     vn = wp.max(1.0, wp.dot(pos_loc, wp.inverse(p_frame) * pos_loc))
     p_pos_adv = pos_loc / wp.sqrt(vn) + p_pos

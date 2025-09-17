@@ -1057,6 +1057,19 @@ class ImplicitMPMModel:
 
         self.notify_collider_changed()
 
+    def state(self):
+        """
+        Create and return a new :class:`State` object for this model.
+
+        The returned state is initialized with the initial configuration from the model description.
+
+        Returns:
+            State: The state object, enriched with MPM-specific attributes
+        """
+        state = self.model.state()
+        SolverImplicitMPM.enrich_state(state)
+        return state
+
 
 @wp.kernel
 def compute_bounds(
@@ -1348,7 +1361,7 @@ class SolverImplicitMPM(SolverBase):
             device=state.particle_qd_grad.device,
         )
 
-    def sample_render_grains(state: newton.State, grains_per_particle: int):
+    def sample_render_grains(self, state: newton.State, grains_per_particle: int):
         """Generate per-particle point samples used for high-resolution rendering.
 
         Args:
@@ -1363,6 +1376,7 @@ class SolverImplicitMPM(SolverBase):
         return sample_render_grains(state, self.mpm_model.particle_radius, grains_per_particle)
 
     def update_render_grains(
+        self,
         state_prev: newton.State,
         state: newton.State,
         grains: wp.array,
