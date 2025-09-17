@@ -361,7 +361,7 @@ class ModelBuilder:
         self.shape_group = []
 
         # filtering to ignore certain collision pairs
-        self.shape_collision_filter_pairs = set()
+        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
         # springs
         self.spring_indices = []
@@ -405,7 +405,7 @@ class ModelBuilder:
         self.body_q = []
         self.body_qd = []
         self.body_key = []
-        self.body_shapes = {}  # mapping from body to shapes
+        self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_group = []  # environment group index for each body
 
         # rigid joints
@@ -636,8 +636,10 @@ class ModelBuilder:
                 Defaults to (5.0, 5.0, 0.0).
         """
         offsets = self._compute_replicate_offsets(num_copies, spacing)
+        xform = wp.transform_identity()
         for i in range(num_copies):
-            self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+            xform[:3] = offsets[i]
+            self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
@@ -963,7 +965,7 @@ class ModelBuilder:
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
-            out = wp.transformf()
+            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
@@ -971,7 +973,7 @@ class ModelBuilder:
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
             if xform is not None:
-                pos_offset = wp.transform_get_translation(xform)
+                pos_offset = xform.p
             else:
                 pos_offset = np.zeros(3)
             self.particle_q.extend((np.array(builder.particle_q) + pos_offset).tolist())
@@ -1006,33 +1008,31 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, wp.transform(*builder.shape_transform[s])))
+                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
             if b == -1:
-                if -1 not in self.body_shapes:
-                    self.body_shapes[-1] = []
                 self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
             else:
                 self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
-            joint_X_p = copy.deepcopy(builder.joint_X_p)
-            joint_q = copy.deepcopy(builder.joint_q)
+            start_q = len(self.joint_q)
+            start_X_p = len(self.joint_X_p)
+            self.joint_X_p.extend(builder.joint_X_p)
+            self.joint_q.extend(builder.joint_q)
             if xform is not None:
-                for i in range(len(joint_X_p)):
+                for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
+                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
                         tf = transform_mul(xform, xform_prev)
-                        joint_q[qi : qi + 3] = tf.p
-                        joint_q[qi + 3 : qi + 7] = tf.q
+                        qi += start_q
+                        self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = transform_mul(xform, wp.transform(*joint_X_p[i]))
-            self.joint_X_p.extend(joint_X_p)
-            self.joint_q.extend(joint_q)
+                        self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
@@ -1042,19 +1042,19 @@ class ModelBuilder:
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
 
-        for i in range(builder.body_count):
-            if xform is not None:
-                self.body_q.append(transform_mul(xform, wp.transform(*builder.body_q[i])))
-            else:
-                self.body_q.append(builder.body_q[i])
+        if xform is not None:
+            for i in range(builder.body_count):
+                self.body_q.append(transform_mul(xform, builder.body_q[i]))
+        else:
+            self.body_q.extend(builder.body_q)
 
         # Copy collision groups without modification
         self.shape_collision_group.extend(builder.shape_collision_group)
 
         # Copy collision filter pairs with offset
-        shape_count_offset = self.shape_count
-        for i, j in builder.shape_collision_filter_pairs:
-            self.shape_collision_filter_pairs.add((i + shape_count_offset, j + shape_count_offset))
+        self.shape_collision_filter_pairs.extend(
+            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
+        )
 
         # Handle environment group assignments
         # For particles
@@ -1355,7 +1355,7 @@ class ModelBuilder:
                     a, b = parent_shape, child_shape
                     if a > b:
                         a, b = b, a
-                    self.shape_collision_filter_pairs.add((a, b))
+                    self.shape_collision_filter_pairs.append((a, b))
 
         return self.joint_count - 1
 
@@ -2156,8 +2156,6 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
-                        if -1 not in self.body_shapes:
-                            self.body_shapes[-1] = []
                         self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
@@ -2210,18 +2208,17 @@ class ModelBuilder:
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_group.clear()  # Clear body groups
-        static_shapes = self.body_shapes.get(-1)
+        static_shapes = self.body_shapes[-1]
         self.body_shapes.clear()
-        if static_shapes is not None:
-            # restore static shapes
-            self.body_shapes[-1] = static_shapes
+        # restore static shapes
+        self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
             new_id = len(self.body_key)
             body_remap[body["original_id"]] = new_id
             self.body_key.append(body["key"])
-            self.body_q.append(list(body["q"]))
-            self.body_qd.append(list(body["qd"]))
+            self.body_q.append(body["q"])
+            self.body_qd.append(body["qd"])
             m = body["mass"]
             inertia = body["inertia"]
             self.body_mass.append(m)
@@ -2301,8 +2298,8 @@ class ModelBuilder:
             self.joint_qd.extend(joint["qd"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
-            self.joint_X_p.append(list(joint["parent_xform"]))
-            self.joint_X_c.append(list(joint["child_xform"]))
+            self.joint_X_p.append(joint["parent_xform"])
+            self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
             # Rebuild joint group - use original group if it exists
             if original_joint_group and joint["original_id"] < len(original_joint_group):
@@ -2408,7 +2405,7 @@ class ModelBuilder:
         if body in self.body_shapes:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
-                self.shape_collision_filter_pairs.add((same_body_shape, shape))
+                self.shape_collision_filter_pairs.append((same_body_shape, shape))
             self.body_shapes[body].append(shape)
         else:
             self.body_shapes[body] = [shape]
@@ -2433,7 +2430,7 @@ class ModelBuilder:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
-                        self.shape_collision_filter_pairs.add((parent_shape, shape))
+                        self.shape_collision_filter_pairs.append((parent_shape, shape))
 
         if not is_static and cfg.density > 0.0:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
@@ -4158,7 +4155,7 @@ class ModelBuilder:
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
+            m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = self.shape_collision_group
 
             # ---------------------
@@ -4423,7 +4420,7 @@ class ModelBuilder:
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
         # Copy the set of filtered-out shape pairs to avoid modifying the original
-        filters = copy.copy(self.shape_collision_filter_pairs)
+        filters = model.shape_collision_filter_pairs
         contact_pairs = []
 
         # Sort shapes by env group in case they are not sorted, keep only colliding shapes
@@ -4449,11 +4446,13 @@ class ModelBuilder:
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
-                shape_a, shape_b = min(s1, s2), max(s1, s2)
+                if s1 > s2:
+                    shape_a, shape_b = s2, s1
+                else:
+                    shape_a, shape_b = s1, s2
 
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
-                    filters.add((shape_a, shape_b))
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)

@@ -108,7 +108,7 @@ class Example:
         for body1, body2 in itertools.combinations(bodies, 2):
             for shape1 in allegro_hand.body_shapes[body1]:
                 for shape2 in allegro_hand.body_shapes[body2]:
-                    allegro_hand.shape_collision_filter_pairs.add((shape1, shape2))
+                    allegro_hand.shape_collision_filter_pairs.append((shape1, shape2))
 
         # hide collision shapes for the hand links
         for i, key in enumerate(allegro_hand.shape_key):
