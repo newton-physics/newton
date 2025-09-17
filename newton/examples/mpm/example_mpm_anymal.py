@@ -196,38 +196,6 @@ class Example:
 
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
-        # multi-material setup
-        snow_particles = np.logical_and(
-            self.model.particle_q.numpy()[:, 1] > 0.5, self.model.particle_q.numpy()[:, 1] < 1.5
-        )
-        snow_particles = wp.array(np.flatnonzero(snow_particles), dtype=int, device=self.model.device)
-
-        mud_particles = self.model.particle_q.numpy()[:, 1] > 1.5
-        mud_particles = wp.array(np.flatnonzero(mud_particles), dtype=int, device=self.model.device)
-
-        mpm_model.particle_density[snow_particles].fill_(500.0)
-        mpm_model.material_parameters.yield_pressure[snow_particles].fill_(2.0e4)
-        mpm_model.material_parameters.yield_stress[snow_particles].fill_(1.0e3)
-        mpm_model.material_parameters.tensile_yield_ratio[snow_particles].fill_(0.05)
-        mpm_model.material_parameters.friction[snow_particles].fill_(0.1)
-        mpm_model.material_parameters.hardening[snow_particles].fill_(10.0)
-
-        mpm_model.particle_density[mud_particles].fill_(1500.0)
-        mpm_model.material_parameters.yield_pressure[mud_particles].fill_(1.0e10)
-        mpm_model.material_parameters.yield_stress[mud_particles].fill_(3.0e2)
-        mpm_model.material_parameters.tensile_yield_ratio[mud_particles].fill_(1.0)
-        mpm_model.material_parameters.hardening[mud_particles].fill_(2.0)
-        mpm_model.material_parameters.friction[mud_particles].fill_(0.0)
-
-        mpm_model.notify_particle_material_changed()
-
-        # Colors (for visualization purposes)
-        self.model.particle_colors = wp.full(
-            shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device
-        )
-        self.model.particle_colors[snow_particles].fill_(wp.vec3(0.75, 0.75, 0.8))
-        self.model.particle_colors[mud_particles].fill_(wp.vec3(0.4, 0.25, 0.25))
-
         # Select and merge meshes for robot/sand collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
         collider_shape_ids = np.concatenate(
@@ -284,7 +252,8 @@ class Example:
         )
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
-        self.command[0, 0] = 1
+
+        self._auto_forward = True
 
         # set model on viewer and setup capture
         self.viewer.set_model(self.model)
@@ -328,7 +297,6 @@ class Example:
         # sand step (in-place on frame dt)
         self._update_collider_mesh(self.state_0)
         self.mpm_solver.step(self.state_0, self.state_0, contacts=None, control=None, dt=self.frame_dt)
-        # self.mpm_solver.project_outside(self.state_0, self.state_0, dt=self.frame_dt)
 
     def step(self):
         # Build command from viewer keyboard
@@ -336,9 +304,17 @@ class Example:
             fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
             lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
             rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+
+            if fwd or lat or rot:
+                # disable forward motion
+                self._auto_forward = False
+
             self.command[0, 0] = float(fwd)
             self.command[0, 1] = float(lat)
             self.command[0, 2] = float(rot)
+
+        if self._auto_forward:
+            self.command[0, 0] = 1
 
         # compute control before graph/step
         self.apply_control()
