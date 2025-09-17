@@ -871,7 +871,7 @@ def solve_rheology(
     max_iterations: int,
     tolerance: float,
     strain_mat: sp.BsrMatrix,
-    transposed_strain_mat: sp.BsrMatrix | None,
+    transposed_strain_mat: sp.BsrMatrix,
     compliance_mat: sp.BsrMatrix | None,
     inv_volume,
     node_volume,
@@ -917,8 +917,7 @@ def solve_rheology(
         max_iterations: Maximum number of nonlinear iterations.
         tolerance: Solver tolerance for the stress residual (L2 norm).
         strain_mat: Strain-to-velocity block-sparse matrix (B).
-        transposed_strain_mat: Preallocated B^T container (required for Jacobi),
-            ignored for Gauss-Seidel.
+        transposed_strain_mat: BSR matrix container for assembling B^T. Used for Jacobi only.
         compliance_mat: Optional compliance matrix for elastic materials.
         inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
             the solver updates.
