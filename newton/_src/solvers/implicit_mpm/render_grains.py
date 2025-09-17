@@ -122,7 +122,7 @@ def project_grains(
     positions[pid, k] = p_pos_adv
 
 
-def sample_render_grains(state: newton.State, particle_radius: float, grains_per_particle: int):
+def sample_render_grains(state: newton.State, particle_radius: wp.array, grains_per_particle: int):
     """Generate per-particle point samples used for high-resolution rendering.
 
     For each simulation particle, this creates ``grains_per_particle`` random
@@ -161,7 +161,7 @@ def update_render_grains(
     state_prev: newton.State,
     state: newton.State,
     grains: wp.array,
-    particle_radius: float,
+    particle_radius: wp.array,
     dt: float,
 ):
     """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -180,7 +180,7 @@ def update_render_grains(
          state_prev: Previous state (t_n) with particle positions and frames.
          state: Current state (t_{n+1}) providing velocity field and particles.
          grains: 2D array of grain positions per particle to be updated in place.
-         particle_radius: Particle rendering radius used for projection.
+         particle_radius: Per-particle radius used for projection.
          dt: Time step duration.
     """
 
