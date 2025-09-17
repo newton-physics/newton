@@ -65,11 +65,12 @@ class FastInitializeModel:
     repeat = 3
     min_run_count = 1
 
-    def setup_cache(self):
-        # Load a small model to cache the kernels
-        builder = Example.create_model_builder("cartpole", 1, randomize=False, seed=123)
-        model = builder.finalize(device="cpu")
-        del model
+    def setup_cache(self, robot, num_envs):
+        wp.init()
+        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_model(self, robot, num_envs):
@@ -89,6 +90,11 @@ class FastInitializeModel:
             model = builder.finalize()
 
         del model
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_solver(self, robot, num_envs):
+        Example.create_solver(self._model, robot, use_mujoco_cpu=False)
+        wp.synchronize_device()
 
 
 if __name__ == "__main__":
