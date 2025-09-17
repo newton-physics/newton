@@ -52,9 +52,9 @@ ROBOT_CONFIGS = {
     },
     "h1": {
         "solver": "newton",
-        "integrator": "euler",
-        "njmax": 400,
-        "nconmax": 150,
+        "integrator": "implicit",
+        "njmax": 75,
+        "nconmax": 192,
         "ls_parallel": True,
     },
     "cartpole": {
