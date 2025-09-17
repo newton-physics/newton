@@ -968,7 +968,6 @@ class ModelBuilder:
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
-            # out = wp.transformf()
             out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
