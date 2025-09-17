@@ -155,6 +155,7 @@ class KpiCartpole:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=3,
             )
 
             wp.synchronize_device()
