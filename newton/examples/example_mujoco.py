@@ -45,9 +45,9 @@ ROBOT_CONFIGS = {
     },
     "g1": {
         "solver": "newton",
-        "integrator": "euler",
-        "njmax": 400,
-        "nconmax": 150,
+        "integrator": "implicit",
+        "njmax": 150,
+        "nconmax": 1304,
         "ls_parallel": True,
     },
     "h1": {
@@ -267,6 +267,7 @@ class Example:
             ncon_per_env=nconmax,
             ls_parallel=ls_parallel,
         )
+        self.solver.mjw_model.opt.graph_conditional = False
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
