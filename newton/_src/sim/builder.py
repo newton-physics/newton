@@ -638,10 +638,7 @@ class ModelBuilder:
         offsets = self._compute_replicate_offsets(num_copies, spacing)
         xform = wp.transform_identity()
         for i in range(num_copies):
-            offset = offsets[i]
-            # assign translation
-            for j in range(3):
-                xform[j] = offset[j]
+            xform[:3] = offsets[i]
             self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
@@ -1033,8 +1030,7 @@ class ModelBuilder:
                         xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
                         tf = transform_mul(xform, xform_prev)
                         qi += start_q
-                        for j in range(7):
-                            self.joint_q[qi + j] = tf[j]
+                        self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
