@@ -171,8 +171,8 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable parameters
-        self.num_elements = 16  # More segments for smooth zigzag
-        self.segment_length = 0.4
+        self.num_elements = 64  # More segments for smooth zigzag
+        self.segment_length = 0.1
         self.cable_length = self.num_elements * self.segment_length  # Total length = 6.4
 
         self.cable_radius = 0.02
@@ -338,9 +338,9 @@ class Example:
         if self.state_0.body_q is not None:
             final_positions = self.state_0.body_q.numpy()
 
-            # Test both cables
-            for _cable_idx, cable_bodies in enumerate([self.cable_bodies_list]):
-                cable_name = "cable"
+            # Test all cables
+            for cable_idx, cable_bodies in enumerate(self.cable_bodies_list):
+                cable_name = f"cable_{cable_idx}"
 
                 for segment in range(len(cable_bodies) - 1):
                     body1_idx = cable_bodies[segment]

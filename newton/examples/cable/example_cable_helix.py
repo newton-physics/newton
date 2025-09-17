@@ -115,14 +115,14 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 10
+        self.sim_iterations = 20
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable parameters
-        self.num_elements = 40
+        self.num_elements = 50
         self.helix_radius = 1.5
         self.helix_height = 3.0
-        self.helix_turns = 2.0
+        self.helix_turns = 3.0
         self.cable_radius = 0.015
         self.total_twist = 2.0 * np.pi  # one full rotation of twist
 
@@ -132,15 +132,15 @@ class Example:
 
         y_separation = 5.0
         num_cables = 6
-        initial_stiffness = 1.0e2
-        stiffness_scale = 20.0
+        initial_stiffness = 5.0e2
+        stiffness_scale = 10.0
 
         # Build 6 helix cables side-by-side along Y
         for i in range(num_cables):
             if i < 3:
                 # Left group: untwisted with increasing stiffness
                 twist_angle = 0.0
-                stiffness = initial_stiffness * (stiffness_scale**i)
+                stiffness = initial_stiffness * (stiffness_scale ** (i))
             else:
                 # Right group: same total twist for all three, applied gradually per segment
                 twist_angle = float(self.total_twist)
@@ -179,7 +179,7 @@ class Example:
         # Contact parameters tuned for cables
         self.model.soft_contact_ke = 1.0e3
         self.model.soft_contact_kd = 1.0e3
-        self.model.soft_contact_mu = 0.2
+        self.model.soft_contact_mu = 0.0
         self.model.soft_contact_restitution = 0.0
 
         # Solver
