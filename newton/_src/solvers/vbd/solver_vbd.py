@@ -1569,7 +1569,6 @@ def solve_chol33(L: wp.mat33, b: wp.vec3) -> wp.vec3:
 def solve_rigid_body(
     dt: float,
     body_ids_in_color: wp.array(dtype=wp.int32),
-    body_q_prev: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_mass: wp.array(dtype=float),
@@ -1585,13 +1584,7 @@ def solve_rigid_body(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
     joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_axis: wp.array(dtype=wp.vec3),
     joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    joint_target: wp.array(dtype=float),
     external_forces: wp.array(dtype=wp.vec3),
     external_torques: wp.array(dtype=wp.vec3),
     external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear from collision
@@ -1606,7 +1599,6 @@ def solve_rigid_body(
     Args:
         dt: Time step
         body_ids_in_color: Array of body indices in current color group
-        body_q_prev: Previous body transforms
         body_q: Current body transforms
         body_mass: Body masses
         body_inv_mass: Inverse body masses (for kinematic body detection)
@@ -1724,8 +1716,6 @@ def solve_rigid_body(
         h_ll = h_ll + joint_H_ll
         h_al = h_al + joint_H_al
         h_aa = h_aa + joint_H_aa
-
-    # VBD solve
 
     # Regularization for numerical stability (trace-scaled)
     trM = (h_ll[0, 0] + h_ll[1, 1] + h_ll[2, 2]) / 3.0
@@ -2534,20 +2524,16 @@ def evaluate_joint_force_hessian(
 
     # Compute stiffness parameters for cable constraints
     dof_start_index = joint_qd_start[joint_index]
-    bend_stiffness = joint_target_ke[dof_start_index] if dof_start_index < joint_target_ke.shape[0] else 1000.0
-    stretch_stiffness = wp.max(
-        STRETCH_STIFFNESS_MIN, 100.0 * bend_stiffness
-    )  # Stretch stiffness >> bend for cable rigidity
-
-    # Compute stretch constraint forces and Hessians (position-based)
-    stretch_force, stretch_torque, stretch_H_ll, stretch_H_al, stretch_H_aa = evaluate_cable_stretch_force_hessian(
-        X_wp, X_wc, parent_com, child_com, parent_pose, child_pose, is_parent_body, stretch_stiffness
-    )
+    bend_stiffness = joint_target_ke[dof_start_index]
+    # Rest segment length for this element (must be > 0)
+    # Convention: capsule local axis is +Z and body_com is the COM offset (half-length)
+    # So the element rest length is 2 * ||body_com[parent_index]||
+    rest_length = 2.0 * parent_com[2]
 
     # Compute bend constraint forces and Hessians (rotation-based, only angular components)
     bend_torque = wp.vec3(0.0)
     bend_H_aa = wp.mat33(0.0)
-    if bend_stiffness > 0.0:
+    if bend_stiffness > 0.0 and rest_length > 0.0:
         # Rest poses and rotations only needed if bend is active
         parent_pose_rest = body_q_rest[parent_index]
         child_pose_rest = body_q_rest[child_index]
@@ -2560,9 +2546,20 @@ def evaluate_joint_force_hessian(
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)  # rest
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
+        bend_stiffness = bend_stiffness / rest_length
+
         bend_torque, bend_H_aa = evaluate_cable_bend_force_hessian(
             q_wp, q_wc, q_wp_rest, q_wc_rest, is_parent_body, bend_stiffness
         )
+
+    stretch_stiffness = wp.max(
+        STRETCH_STIFFNESS_MIN, 100.0 * bend_stiffness
+    )  # Stretch stiffness >> bend for cable rigidity
+
+    # Compute stretch constraint forces and Hessians (position-based)
+    stretch_force, stretch_torque, stretch_H_ll, stretch_H_al, stretch_H_aa = evaluate_cable_stretch_force_hessian(
+        X_wp, X_wc, parent_com, child_com, parent_pose, child_pose, is_parent_body, stretch_stiffness
+    )
 
     # Combine constraint contributions
     total_torque = stretch_torque + bend_torque  # Both constraints contribute torque
@@ -3761,7 +3758,6 @@ class SolverVBD(SolverBase):
                     inputs=[
                         dt,
                         self.model.body_color_groups[color],
-                        self.body_q_prev,
                         state_in.body_q,
                         self.model.body_q,
                         self.model.body_mass,
@@ -3776,13 +3772,7 @@ class SolverVBD(SolverBase):
                         self.model.joint_X_p,
                         self.model.joint_X_c,
                         self.model.joint_qd_start,
-                        self.model.joint_dof_dim,
-                        self.model.joint_axis,
                         self.model.joint_target_ke,
-                        self.model.joint_target_kd,
-                        state_in.joint_q,
-                        state_in.joint_qd,
-                        self.model.joint_target,
                         self.body_forces,
                         self.body_torques,
                         self.body_hessian_ll,
@@ -4067,7 +4057,6 @@ class SolverVBD(SolverBase):
                     inputs=[
                         dt,
                         self.model.body_color_groups[color],
-                        self.body_q_prev,
                         state_in.body_q,
                         self.model.body_q,
                         self.model.body_mass,
@@ -4082,13 +4071,7 @@ class SolverVBD(SolverBase):
                         self.model.joint_X_p,
                         self.model.joint_X_c,
                         self.model.joint_qd_start,
-                        self.model.joint_dof_dim,
-                        self.model.joint_axis,
                         self.model.joint_target_ke,
-                        self.model.joint_target_kd,
-                        state_in.joint_q,
-                        state_in.joint_qd,
-                        self.model.joint_target,
                         self.body_forces,
                         self.body_torques,
                         self.body_hessian_ll,

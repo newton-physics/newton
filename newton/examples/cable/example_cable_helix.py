@@ -133,7 +133,7 @@ class Example:
         y_separation = 5.0
         num_cables = 6
         initial_stiffness = 1.0e2
-        stiffness_scale = 50.0
+        stiffness_scale = 20.0
 
         # Build 6 helix cables side-by-side along Y
         for i in range(num_cables):
@@ -232,5 +232,6 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
+
     example = Example(viewer)
     newton.examples.run(example)
