@@ -1056,9 +1056,8 @@ class ModelBuilder:
         self.shape_collision_group.extend(builder.shape_collision_group)
 
         # Copy collision filter pairs with offset
-        shape_count_offset = self.shape_count
         self.shape_collision_filter_pairs.extend(
-            [(i + shape_count_offset, j + shape_count_offset) for i, j in builder.shape_collision_filter_pairs]
+            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
         )
 
         # Handle environment group assignments
