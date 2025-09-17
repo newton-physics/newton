@@ -32,7 +32,7 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
-from .schema_resolver import Resolver
+from .schema_resolver import MjcPlugin, NewtonPlugin, PhysxPlugin, Resolver, schemaPlugin
 
 
 def parse_usd(
@@ -56,7 +56,7 @@ def parse_usd(
     load_non_physics_prims: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
-    schema_priority: list[str] | None = None,
+    schema_priority: list[schemaPlugin] | None = None,
     collect_engine_specific_attrs: bool = True,
 ) -> dict[str, Any]:
     """
@@ -85,7 +85,8 @@ def parse_usd(
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_priority (list[str]): The priority of the schema to use. Default is ["newton"].
+        schema_priority (list[schemaPlugin]): Plugin instances in priority order. Default is
+            [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
         collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
 
     Returns:
@@ -115,9 +116,9 @@ def parse_usd(
             * - "collapse_results"
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
     """
-    # default schema priority (avoid mutable default argument)
+    # default schema plugins (avoid mutable default argument)
     if schema_priority is None:
-        schema_priority = ["newton"]
+        schema_priority = [MjcPlugin(), PhysxPlugin(), NewtonPlugin()]
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -287,7 +288,6 @@ def parse_usd(
 
     # Initialize schema resolver according to precedence
     R = Resolver(schema_priority)
-    engine_specific_attrs = {}
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -311,6 +311,7 @@ def parse_usd(
 
     physics_scene_prim = None
     physics_dt = None
+    max_solver_iters = None
 
     visual_shape_cfg = ModelBuilder.ShapeConfig(
         density=0.0,
@@ -462,7 +463,11 @@ def parse_usd(
                     else:
                         continue
                     face_id += count
-                m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                # Resolve mesh hull vertex limit from schema with fallback to parameter
+                resolved_maxhullvert = R.get_value(
+                    prim, prim_type="shape", key="mesh_hull_vertex_limit", default=mesh_maxhullvert
+                )
+                m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -572,6 +577,7 @@ def parse_usd(
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
         joint_armature = R.get_value(joint_prim, prim_type="joint", key="armature", default=default_joint_armature)
+        joint_friction = R.get_value(joint_prim, prim_type="joint", key="friction", default=0.0)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -606,6 +612,7 @@ def parse_usd(
             joint_params["limit_ke"] = current_joint_limit_ke
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
+            joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
@@ -619,7 +626,19 @@ def parse_usd(
                 joint_params["target_kd"] = joint_desc.drive.damping
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
+            # Read initial joint state BEFORE creating/overwriting USD attributes
+            initial_position = None
+            initial_velocity = None
             dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
+
+            # Resolve initial joint state from schema resolver
+            if dof_type == "angular":
+                initial_position = R.get_value(joint_prim, "joint", "angular_position", default=None)
+                initial_velocity = R.get_value(joint_prim, "joint", "angular_velocity", default=None)
+            else:  # linear
+                initial_position = R.get_value(joint_prim, "joint", "linear_position", default=None)
+                initial_velocity = R.get_value(joint_prim, "joint", "linear_velocity", default=None)
+
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
             joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
             joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
@@ -644,6 +663,9 @@ def parse_usd(
             linear_axes = []
             angular_axes = []
             num_dofs = 0
+            # Store initial state for D6 joints
+            d6_initial_positions = {}
+            d6_initial_velocities = {}
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -711,6 +733,13 @@ def parse_usd(
                         UsdPhysics.JointDOF.TransY: "transY",
                         UsdPhysics.JointDOF.TransZ: "transZ",
                     }[dof]
+                    # Store initial state for this axis
+                    d6_initial_positions[trans_name] = R.get_value(
+                        joint_prim, "joint", f"{trans_name}_position", default=None
+                    )
+                    d6_initial_velocities[trans_name] = R.get_value(
+                        joint_prim, "joint", f"{trans_name}_velocity", default=None
+                    )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type="joint",
@@ -736,11 +765,19 @@ def parse_usd(
                             target_kd=target_kd,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            friction=joint_friction,
                         )
                     )
                 elif free_axis and dof in _rot_axes:
                     # Resolve per-axis rotational gains
                     rot_name = _rot_names[dof]
+                    # Store initial state for this axis
+                    d6_initial_positions[rot_name] = R.get_value(
+                        joint_prim, "joint", f"{rot_name}_position", default=None
+                    )
+                    d6_initial_velocities[rot_name] = R.get_value(
+                        joint_prim, "joint", f"{rot_name}_velocity", default=None
+                    )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type="joint",
@@ -766,6 +803,7 @@ def parse_usd(
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
                             effort_limit=effort_limit,
+                            friction=joint_friction,
                         )
                     )
                     joint_prim.CreateAttribute(
@@ -796,6 +834,68 @@ def parse_usd(
         # map the joint path to the index at insertion time
         path_joint_map[str(joint_path)] = joint_index
 
+        # Apply saved initial joint state after joint creation
+        if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
+            # Use the initial values we saved before CreateAttribute overwrote them
+            if initial_position is not None:
+                q_start = builder.joint_q_start[joint_index]
+                if key == UsdPhysics.ObjectType.RevoluteJoint:
+                    builder.joint_q[q_start] = initial_position * DegreesToRadian
+                else:
+                    builder.joint_q[q_start] = initial_position
+                if verbose:
+                    joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
+                    print(
+                        f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({'rad' if key == UsdPhysics.ObjectType.RevoluteJoint else 'm'})"
+                    )
+            if initial_velocity is not None:
+                qd_start = builder.joint_qd_start[joint_index]
+                if key == UsdPhysics.ObjectType.RevoluteJoint:
+                    builder.joint_qd[qd_start] = initial_velocity  # velocity is already in rad/s
+                else:
+                    builder.joint_qd[qd_start] = initial_velocity
+                if verbose:
+                    joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
+                    print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} rad/s")
+        elif key == UsdPhysics.ObjectType.D6Joint:
+            # Apply D6 joint initial state
+            q_start = builder.joint_q_start[joint_index]
+            qd_start = builder.joint_qd_start[joint_index]
+
+            # Get joint coordinate and DOF ranges
+            if joint_index + 1 < len(builder.joint_q_start):
+                q_end = builder.joint_q_start[joint_index + 1]
+                qd_end = builder.joint_qd_start[joint_index + 1]
+            else:
+                q_end = len(builder.joint_q)
+                qd_end = len(builder.joint_qd)
+
+            # Apply initial values for each axis that was added as a DOF
+            dof_idx = 0
+            for axis_name in ["transX", "transY", "transZ", "rotX", "rotY", "rotZ"]:
+                if dof_idx >= (qd_end - qd_start):
+                    break
+
+                is_rot = axis_name.startswith("rot")
+                pos = d6_initial_positions.get(axis_name)
+                vel = d6_initial_velocities.get(axis_name)
+
+                if pos is not None and q_start + dof_idx < q_end:
+                    coord_val = pos * DegreesToRadian if is_rot else pos
+                    builder.joint_q[q_start + dof_idx] = coord_val
+                    if verbose:
+                        print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
+
+                if vel is not None and qd_start + dof_idx < qd_end:
+                    vel_val = vel  # D6 velocities are already in correct units
+                    builder.joint_qd[qd_start + dof_idx] = vel_val
+                    if verbose:
+                        print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+
+                # Only increment if this axis actually has a DOF (simplified heuristic)
+                if axis_name in d6_initial_positions or axis_name in d6_initial_velocities:
+                    dof_idx += 1
+
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     if UsdPhysics.ObjectType.Scene in ret_dict:
@@ -819,8 +919,15 @@ def parse_usd(
         joint_drive_gains_scaling = parse_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
-        # Resolve scene time step and stash engine-specific attrs
+        # Resolve scene time step, gravity settings, and contact margin
         physics_dt = R.get_value(physics_scene_prim, prim_type="scene", key="time_step", default=None)
+        gravity_enabled = R.get_value(physics_scene_prim, prim_type="scene", key="enable_gravity", default=True)
+        if not gravity_enabled:
+            builder.gravity = 0.0
+        contact_margin = R.get_value(physics_scene_prim, prim_type="scene", key="contact_margin", default=None)
+        if contact_margin is not None:
+            builder.rigid_contact_margin = contact_margin
+        max_solver_iters = R.get_value(physics_scene_prim, prim_type="scene", key="max_solver_iterations", default=None)
     else:
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
         axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
@@ -1276,7 +1383,11 @@ def parse_usd(
                             )
                             continue
                         face_id += count
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=mesh_maxhullvert)
+                    # Resolve mesh hull vertex limit from schema with fallback to parameter
+                    resolved_maxhullvert = R.get_value(
+                        prim, prim_type="shape", key="mesh_hull_vertex_limit", default=mesh_maxhullvert
+                    )
+                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
@@ -1499,7 +1610,7 @@ def parse_usd(
 
             builder = multi_env_builder
 
-    engine_specific_attrs = R.get_engine_specific_attrs()
+    engine_specific_attrs = R.get_engine_specific_attrs() if collect_engine_specific_attrs else {}
     custom_props = R.get_custom_attributes() or {}
 
     def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
@@ -1563,6 +1674,7 @@ def parse_usd(
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
+        "max_solver_iterations": max_solver_iters,
     }
 
 

@@ -54,6 +54,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
+from ..utils import schemaPlugin
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -533,18 +534,28 @@ class ModelBuilder:
                             pass
             return wp.array(arr, dtype=d, requires_grad=requires_grad)
 
-        # Scalar path
-        scalar_np = wp.types.warp_type_to_np_dtype.get(d, np.float32)
-        fill_val = default_val if default_val is not None else ModelBuilder._default_for_dtype(d)
-        arr = np.full(count, fill_val, dtype=scalar_np)
-        for idx, val in overrides.items():
-            i = int(idx)
-            if 0 <= i < count:
-                try:
+        if d is wp.quat:
+            # Special handling for quat arrays
+            fill_val = default_val if default_val is not None else wp.quat_identity()
+            arr = [fill_val] * count
+            for idx, val in overrides.items():
+                i = int(idx)
+                if 0 <= i < count:
                     arr[i] = val
-                except Exception:
-                    pass
-        return wp.array(arr, dtype=d, requires_grad=requires_grad)
+            return wp.array(arr, dtype=wp.quat, requires_grad=requires_grad)
+        else:
+            # Regular scalar types
+            scalar_np = wp.types.warp_type_to_np_dtype.get(d, np.float32)
+            fill_val = default_val if default_val is not None else ModelBuilder._default_for_dtype(d)
+            arr = np.full(count, fill_val, dtype=scalar_np)
+            for idx, val in overrides.items():
+                i = int(idx)
+                if 0 <= i < count:
+                    try:
+                        arr[i] = val
+                    except Exception:
+                        pass
+            return wp.array(arr, dtype=d, requires_grad=requires_grad)
 
     def add_custom_attribute(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
         """Define a custom per-entity attribute to be added to the Model.
@@ -818,7 +829,7 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
-        schema_priority: list[str] | None = None,
+        schema_priority: list[schemaPlugin] | None = None,
         collect_engine_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
@@ -846,7 +857,8 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_priority (list[str]): The priority of the schema to use. Default is ["newton"].
+            schema_priority (list[schemaPlugin]): Plugin instances in priority order. Default is
+                [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
             collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
 
         Returns:

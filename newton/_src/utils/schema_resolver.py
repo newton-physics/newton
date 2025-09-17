@@ -9,24 +9,26 @@ from pxr import Usd
 
 
 @dataclass
-class AttrSpec:
+class Attribute:
     """
     Specifies a USD attribute and its transformation function.
 
     Args:
         usd_name (str): The name of the USD attribute.
+        default (Any | None): Default USD-authored value from schema, if any.
         transform (Callable[[Any], Any] | None): A function to transform the attribute value.
     """
 
     usd_name: str
+    default: Any | None = None
     transform: Callable[[Any], Any] | None = None
 
 
-class EngineSchemaPlugin:
+class schemaPlugin:
     name: str
     # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to exisiting Newton data.
-    # prim_type -> variable -> list[AttrSpec]
-    mapping: dict[str, dict[str, list[AttrSpec]]]
+    # prim_type -> variable -> list[Attribute]
+    mapping: dict[str, dict[str, list[Attribute]]]
 
     # extra_attr_namespaces is a list of namespaces for extra attributes that are not in the mapping.
     extra_attr_namespaces: ClassVar[list[str]] = []
@@ -47,11 +49,6 @@ class EngineSchemaPlugin:
                 for spec in specs:
                     names.add(spec.usd_name)
         self._engine_attributes: list[str] = list(names)
-
-    @property
-    def engine_attr_prefix(self) -> str:
-        """Return the main engine attribute prefix (e.g., 'newton:', 'physx', 'mjc:')"""
-        return f"{self.name}:"
 
     def get_value(self, prim, prim_type: str, key: str) -> tuple[Any, str] | None:
         """
@@ -87,7 +84,9 @@ class EngineSchemaPlugin:
         )
 
         # Collect attributes by known engine-specific prefixes
-        all_prefixes = [self.engine_attr_prefix]
+        # PhysX uses multiple prefixes, others use {name}:
+        main_prefix = self.name if self.name == "physx" else f"{self.name}:"
+        all_prefixes = [main_prefix]
         if self.extra_attr_namespaces:
             all_prefixes.extend(self.extra_attr_namespaces)
         prefixed_attrs = _collect_engine_specific_attrs(prim, all_prefixes)
@@ -133,76 +132,79 @@ def _collect_engine_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any
     return out
 
 
-class NewtonPlugin(EngineSchemaPlugin):
+class NewtonPlugin(schemaPlugin):
     name: ClassVar[str] = "newton"
-    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
+    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
         "scene": {
-            "time_step": [AttrSpec("newton:timeStep")],
-            "max_solver_iterations": [AttrSpec("newton:maxSolverIterations")],
-            "enable_gravity": [AttrSpec("newton:enableGravity")],
-            "contact_offset": [AttrSpec("newton:contactOffset")],
+            "time_step": [Attribute("newton:timeStep", 0.002)],
+            "max_solver_iterations": [Attribute("newton:maxSolverIterations", 5)],
+            "enable_gravity": [Attribute("newton:enableGravity", True)],
+            "contact_margin": [Attribute("newton:contactMargin", 0.0)],
         },
         "joint": {
-            "armature": [AttrSpec("newton:armature")],
-            "friction": [AttrSpec("newton:friction")],
-            "limit_linear_ke": [AttrSpec("newton:linear:limitStiffness")],
-            "limit_angular_ke": [AttrSpec("newton:angular:limitStiffness")],
-            "limit_rotX_ke": [AttrSpec("newton:rotX:limitStiffness")],
-            "limit_rotY_ke": [AttrSpec("newton:rotY:limitStiffness")],
-            "limit_rotZ_ke": [AttrSpec("newton:rotZ:limitStiffness")],
-            "limit_linear_kd": [AttrSpec("newton:linear:limitDamping")],
-            "limit_angular_kd": [AttrSpec("newton:angular:limitDamping")],
-            "limit_rotX_kd": [AttrSpec("newton:rotX:limitDamping")],
-            "limit_rotY_kd": [AttrSpec("newton:rotY:limitDamping")],
-            "limit_rotZ_kd": [AttrSpec("newton:rotZ:limitDamping")],
-            "angular_position": [AttrSpec("newton:angular:position")],
-            "linear_position": [AttrSpec("newton:linear:position")],
-            "rotX_position": [AttrSpec("newton:rotX:position")],
-            "rotY_position": [AttrSpec("newton:rotY:position")],
-            "rotZ_position": [AttrSpec("newton:rotZ:position")],
-            "angular_velocity": [AttrSpec("newton:angular:velocity")],
-            "linear_velocity": [AttrSpec("newton:linear:velocity")],
-            "rotX_velocity": [AttrSpec("newton:rotX:velocity")],
-            "rotY_velocity": [AttrSpec("newton:rotY:velocity")],
-            "rotZ_velocity": [AttrSpec("newton:rotZ:velocity")],
+            "armature": [Attribute("newton:armature", 1.0e-2)],
+            "friction": [Attribute("newton:friction", 0.0)],
+            "limit_linear_ke": [Attribute("newton:linear:limitStiffness", 1.0e4)],
+            "limit_angular_ke": [Attribute("newton:angular:limitStiffness", 1.0e4)],
+            "limit_rotX_ke": [Attribute("newton:rotX:limitStiffness", 1.0e4)],
+            "limit_rotY_ke": [Attribute("newton:rotY:limitStiffness", 1.0e4)],
+            "limit_rotZ_ke": [Attribute("newton:rotZ:limitStiffness", 1.0e4)],
+            "limit_linear_kd": [Attribute("newton:linear:limitDamping", 1.0e1)],
+            "limit_angular_kd": [Attribute("newton:angular:limitDamping", 1.0e1)],
+            "limit_rotX_kd": [Attribute("newton:rotX:limitDamping", 1.0e1)],
+            "limit_rotY_kd": [Attribute("newton:rotY:limitDamping", 1.0e1)],
+            "limit_rotZ_kd": [Attribute("newton:rotZ:limitDamping", 1.0e1)],
+            "angular_position": [Attribute("newton:angular:position", 0.0)],
+            "linear_position": [Attribute("newton:linear:position", 0.0)],
+            "rotX_position": [Attribute("newton:rotX:position", 0.0)],
+            "rotY_position": [Attribute("newton:rotY:position", 0.0)],
+            "rotZ_position": [Attribute("newton:rotZ:position", 0.0)],
+            "angular_velocity": [Attribute("newton:angular:velocity", 0.0)],
+            "linear_velocity": [Attribute("newton:linear:velocity", 0.0)],
+            "rotX_velocity": [Attribute("newton:rotX:velocity", 0.0)],
+            "rotY_velocity": [Attribute("newton:rotY:velocity", 0.0)],
+            "rotZ_velocity": [Attribute("newton:rotZ:velocity", 0.0)],
         },
         "shape": {
-            "mesh_hull_vertex_limit": [AttrSpec("newton:hullVertexLimit")],
-            "collision_contact_margin": [AttrSpec("newton:contactMargin")],
+            "mesh_hull_vertex_limit": [Attribute("newton:hullVertexLimit", -1)],
+            # Use ShapeConfig.thickness default for contact margin
+            "contact_margin": [Attribute("newton:contactMargin", 1.0e-5)],
         },
         "body": {
-            "rigid_body_damping": [AttrSpec("newton:damping")],
+            "rigid_body_linear_damping": [Attribute("newton:damping", 0.0)],
         },
         "material": {
-            "priority": [AttrSpec("newton:priority")],
-            "weight": [AttrSpec("newton:weight")],
-            "stiffness": [AttrSpec("newton:stiffness")],
-            "damping": [AttrSpec("newton:damping")],
+            "priority": [Attribute("newton:priority", 0)],
+            "weight": [Attribute("newton:weight", 1.0)],
+            "stiffness": [Attribute("newton:stiffness", 1.0e5)],
+            "damping": [Attribute("newton:damping", 1000.0)],
         },
         "actuator": {
-            "ctrl_low": [AttrSpec("newton:ctrlRange:low")],
-            "ctrl_high": [AttrSpec("newton:ctrlRange:high")],
-            "force_low": [AttrSpec("newton:forceRange:low")],
-            "force_high": [AttrSpec("newton:forceRange:high")],
-            "act_low": [AttrSpec("newton:actRange:low")],
-            "act_high": [AttrSpec("newton:actRange:high")],
-            "length_low": [AttrSpec("newton:lengthRange:low")],
-            "length_high": [AttrSpec("newton:lengthRange:high")],
-            "gainPrm": [AttrSpec("newton:gainPrm")],
-            "gainType": [AttrSpec("newton:gainType")],
-            "biasPrm": [AttrSpec("newton:biasPrm")],
-            "biasType": [AttrSpec("newton:biasType")],
-            "dynPrm": [AttrSpec("newton:dynPrm")],
-            "dynType": [AttrSpec("newton:dynType")],
-            "speedTorqueGradient": [AttrSpec("newton:speedTorqueGradient")],
-            "torqueSpeedGradient": [AttrSpec("newton:torqueSpeedGradient")],
-            "maxVelocity": [AttrSpec("newton:maxVelocity")],
-            "gear": [AttrSpec("newton:gear")],
+            # Mirror MuJoCo actuator defaults when applicable
+            "ctrl_low": [Attribute("newton:ctrlRange:low", 0.0)],
+            "ctrl_high": [Attribute("newton:ctrlRange:high", 0.0)],
+            "force_low": [Attribute("newton:forceRange:low", 0.0)],
+            "force_high": [Attribute("newton:forceRange:high", 0.0)],
+            "act_low": [Attribute("newton:actRange:low", 0.0)],
+            "act_high": [Attribute("newton:actRange:high", 0.0)],
+            "length_low": [Attribute("newton:lengthRange:low", 0.0)],
+            "length_high": [Attribute("newton:lengthRange:high", 0.0)],
+            "gainPrm": [Attribute("newton:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "gainType": [Attribute("newton:gainType", "fixed")],
+            "biasPrm": [Attribute("newton:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "biasType": [Attribute("newton:biasType", "none")],
+            "dynPrm": [Attribute("newton:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "dynType": [Attribute("newton:dynType", "none")],
+            # The following have no MuJoCo counterpart; keep unspecified defaults
+            "speedTorqueGradient": [Attribute("newton:speedTorqueGradient", None)],
+            "torqueSpeedGradient": [Attribute("newton:torqueSpeedGradient", None)],
+            "maxVelocity": [Attribute("newton:maxVelocity", None)],
+            "gear": [Attribute("newton:gear", [1, 0, 0, 0, 0, 0])],
         },
     }
 
 
-class PhysxPlugin(EngineSchemaPlugin):
+class PhysxPlugin(schemaPlugin):
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
@@ -224,62 +226,59 @@ class PhysxPlugin(EngineSchemaPlugin):
         "physxArticulation",
     ]
 
-    @property
-    def engine_attr_prefix(self) -> str:
-        """PhysX uses multiple prefixes, so we return the main one"""
-        return "physx"
-
-    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
+    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
         "scene": {
             "time_step": [
-                AttrSpec("physxScene:timeStepsPerSecond", lambda hz: (1.0 / hz) if (hz and hz > 0) else None)
+                Attribute("physxScene:timeStepsPerSecond", 60, lambda hz: (1.0 / hz) if (hz and hz > 0) else None)
             ],
-            "max_solver_iterations": [AttrSpec("physxScene:maxVelocityIterationCount")],
-            "enable_gravity": [AttrSpec("physxRigidBody:disableGravity", lambda value: not value)],
+            "max_solver_iterations": [Attribute("physxScene:maxVelocityIterationCount", 255)],
+            "enable_gravity": [Attribute("physxRigidBody:disableGravity", False, lambda value: not value)],
+            "contact_margin": [Attribute("physxScene:contactOffset", 0.0)],
         },
         "joint": {
-            "armature": [AttrSpec("physxJoint:armature")],
+            "armature": [Attribute("physxJoint:armature", 0.0)],
             # Per-axis linear limit aliases
-            "limit_transX_ke": [AttrSpec("physxLimit:linear:stiffness")],
-            "limit_transY_ke": [AttrSpec("physxLimit:linear:stiffness")],
-            "limit_transZ_ke": [AttrSpec("physxLimit:linear:stiffness")],
-            "limit_transX_kd": [AttrSpec("physxLimit:linear:damping")],
-            "limit_transY_kd": [AttrSpec("physxLimit:linear:damping")],
-            "limit_transZ_kd": [AttrSpec("physxLimit:linear:damping")],
-            "limit_linear_ke": [AttrSpec("physxLimit:linear:stiffness")],
-            "limit_angular_ke": [AttrSpec("physxLimit:angular:stiffness")],
-            "limit_rotX_ke": [AttrSpec("physxLimit:rotX:stiffness")],
-            "limit_rotY_ke": [AttrSpec("physxLimit:rotY:stiffness")],
-            "limit_rotZ_ke": [AttrSpec("physxLimit:rotZ:stiffness")],
-            "limit_linear_kd": [AttrSpec("physxLimit:linear:damping")],
-            "limit_angular_kd": [AttrSpec("physxLimit:angular:damping")],
-            "limit_rotX_kd": [AttrSpec("physxLimit:rotX:damping")],
-            "limit_rotY_kd": [AttrSpec("physxLimit:rotY:damping")],
-            "limit_rotZ_kd": [AttrSpec("physxLimit:rotZ:damping")],
-            "angular_position": [AttrSpec("state:angular:physics:position")],
-            "linear_position": [AttrSpec("state:linear:physics:position")],
-            "rotX_position": [AttrSpec("state:rotX:physics:position")],
-            "rotY_position": [AttrSpec("state:rotY:physics:position")],
-            "rotZ_position": [AttrSpec("state:rotZ:physics:position")],
-            "angular_velocity": [AttrSpec("state:angular:physics:velocity")],
-            "linear_velocity": [AttrSpec("state:linear:physics:velocity")],
-            "rotX_velocity": [AttrSpec("state:rotX:physics:velocity")],
-            "rotY_velocity": [AttrSpec("state:rotY:physics:velocity")],
-            "rotZ_velocity": [AttrSpec("state:rotZ:physics:velocity")],
+            "limit_transX_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
+            "limit_transY_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
+            "limit_transZ_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
+            "limit_transX_kd": [Attribute("physxLimit:linear:damping", 0.0)],
+            "limit_transY_kd": [Attribute("physxLimit:linear:damping", 0.0)],
+            "limit_transZ_kd": [Attribute("physxLimit:linear:damping", 0.0)],
+            "limit_linear_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
+            "limit_angular_ke": [Attribute("physxLimit:angular:stiffness", 0.0)],
+            "limit_rotX_ke": [Attribute("physxLimit:rotX:stiffness", 0.0)],
+            "limit_rotY_ke": [Attribute("physxLimit:rotY:stiffness", 0.0)],
+            "limit_rotZ_ke": [Attribute("physxLimit:rotZ:stiffness", 0.0)],
+            "limit_linear_kd": [Attribute("physxLimit:linear:damping", 0.0)],
+            "limit_angular_kd": [Attribute("physxLimit:angular:damping", 0.0)],
+            "limit_rotX_kd": [Attribute("physxLimit:rotX:damping", 0.0)],
+            "limit_rotY_kd": [Attribute("physxLimit:rotY:damping", 0.0)],
+            "limit_rotZ_kd": [Attribute("physxLimit:rotZ:damping", 0.0)],
+            "angular_position": [Attribute("state:angular:physics:position", 0.0)],
+            "linear_position": [Attribute("state:linear:physics:position", 0.0)],
+            "rotX_position": [Attribute("state:rotX:physics:position", 0.0)],
+            "rotY_position": [Attribute("state:rotY:physics:position", 0.0)],
+            "rotZ_position": [Attribute("state:rotZ:physics:position", 0.0)],
+            "angular_velocity": [Attribute("state:angular:physics:velocity", 0.0)],
+            "linear_velocity": [Attribute("state:linear:physics:velocity", 0.0)],
+            "rotX_velocity": [Attribute("state:rotX:physics:velocity", 0.0)],
+            "rotY_velocity": [Attribute("state:rotY:physics:velocity", 0.0)],
+            "rotZ_velocity": [Attribute("state:rotZ:physics:velocity", 0.0)],
         },
         "shape": {
             # Mesh hull vertex limit
-            "mesh_hull_vertex_limit": [AttrSpec("physxConvexHullCollision:hullVertexLimit")],
+            "mesh_hull_vertex_limit": [Attribute("physxConvexHullCollision:hullVertexLimit", 64)],
             # Collision contact offset
-            "collision_contact_offset": [AttrSpec("physxCollision:contactOffset")],
+            "contact_margin": [Attribute("physxCollision:contactOffset", float("-inf"))],
         },
         "material": {
-            "stiffness": [AttrSpec("physxMaterial:compliantContactStiffness")],
-            "damping": [AttrSpec("physxMaterial:compliantContactDamping")],
+            "stiffness": [Attribute("physxMaterial:compliantContactStiffness", 0.0)],
+            "damping": [Attribute("physxMaterial:compliantContactDamping", 0.0)],
         },
         "body": {
             # Rigid body damping
-            "rigid_body_damping": [AttrSpec("physxRigidBody:linearDamping"), AttrSpec("physxRigidBody:angularDamping")],
+            "rigid_body_linear_damping": [Attribute("physxRigidBody:linearDamping", 0.0)],
+            "rigid_body_angular_damping": [Attribute("physxRigidBody:angularDamping", 0.05)],
         },
     }
 
@@ -315,95 +314,86 @@ def _solref_to_damping(solref):
     return (2.0 * dampratio) / timeconst
 
 
-class MjcPlugin(EngineSchemaPlugin):
+class MjcPlugin(schemaPlugin):
     name: ClassVar[str] = "mjc"
 
-    mapping: ClassVar[dict[str, dict[str, list[AttrSpec]]]] = {
+    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
         "scene": {
-            "time_step": [AttrSpec("mjc:option:timestep")],
-            "max_solver_iterations": [AttrSpec("mjc:option:iterations")],
-            "enable_gravity": [AttrSpec("mjc:flag:gravity")],
-            "contact_offset": [AttrSpec("mjc:option:o_margin")],
+            "time_step": [Attribute("mjc:option:timestep", 0.002)],
+            "max_solver_iterations": [Attribute("mjc:option:iterations", 100)],
+            "enable_gravity": [Attribute("mjc:flag:gravity", True)],
+            "contact_margin": [Attribute("mjc:option:o_margin", 0.0)],
         },
         "joint": {
-            "armature": [AttrSpec("mjc:armature")],
-            "friction": [AttrSpec("mjc:frictionloss")],
+            "armature": [Attribute("mjc:armature", 0.0)],
+            "friction": [Attribute("mjc:frictionloss", 0.0)],
             # Per-axis linear aliases mapped to solref
-            "limit_transX_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_transY_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_transZ_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_transX_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_transY_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_transZ_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_linear_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_angular_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_rotX_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_rotY_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_rotZ_ke": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "limit_linear_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_angular_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_rotX_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_rotY_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
-            "limit_rotZ_kd": [AttrSpec("mjc:solref", _solref_to_damping)],
+            "limit_transX_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_transY_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_transZ_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_transX_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_transY_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_transZ_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_linear_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_angular_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_rotX_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_rotY_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_rotZ_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "limit_linear_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_angular_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_rotX_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_rotY_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_rotZ_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
         },
         "shape": {
             # Mesh
-            "mesh_hull_vertex_limit": [AttrSpec("mjc:maxhullvert")],
+            "mesh_hull_vertex_limit": [Attribute("mjc:maxhullvert", -1)],
             # Collisions
-            "collision_contact_offset": [AttrSpec("mjc:margin")],
+            "rigid_contact_margin": [Attribute("mjc:margin", 0.0)],
         },
         "material": {
             # Materials and contact models
-            "priority": [AttrSpec("mjc:priority")],
-            "weight": [AttrSpec("mjc:solmix")],
-            "stiffness": [AttrSpec("mjc:solref", _solref_to_stiffness)],
-            "damping": [AttrSpec("mjc:solref", _solref_to_damping)],
+            "priority": [Attribute("mjc:priority", 0)],
+            "weight": [Attribute("mjc:solmix", 1.0)],
+            "stiffness": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
+            "damping": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
         },
         "body": {
             # Rigid body / joint domain
-            "rigid_body_damping": [AttrSpec("mjc:damping")],
+            "rigid_body_linear_damping": [Attribute("mjc:damping", 0.0)],
         },
         "actuator": {
             # Actuators
-            "ctrl_low": [AttrSpec("mjc:ctrlRange:min")],
-            "ctrl_high": [AttrSpec("mjc:ctrlRange:max")],
-            "force_low": [AttrSpec("mjc:forceRange:min")],
-            "force_high": [AttrSpec("mjc:forceRange:max")],
-            "act_low": [AttrSpec("mjc:actRange:min")],
-            "act_high": [AttrSpec("mjc:actRange:max")],
-            "length_low": [AttrSpec("mjc:lengthRange:min")],
-            "length_high": [AttrSpec("mjc:lengthRange:max")],
-            "gainPrm": [AttrSpec("mjc:gainPrm")],
-            "gainType": [AttrSpec("mjc:gainType")],
-            "biasPrm": [AttrSpec("mjc:biasPrm")],
-            "biasType": [AttrSpec("mjc:biasType")],
-            "dynPrm": [AttrSpec("mjc:dynPrm")],
-            "dynType": [AttrSpec("mjc:dynType")],
-            "gear": [AttrSpec("mjc:gear")],
+            "ctrl_low": [Attribute("mjc:ctrlRange:min", 0.0)],
+            "ctrl_high": [Attribute("mjc:ctrlRange:max", 0.0)],
+            "force_low": [Attribute("mjc:forceRange:min", 0.0)],
+            "force_high": [Attribute("mjc:forceRange:max", 0.0)],
+            "act_low": [Attribute("mjc:actRange:min", 0.0)],
+            "act_high": [Attribute("mjc:actRange:max", 0.0)],
+            "length_low": [Attribute("mjc:lengthRange:min", 0.0)],
+            "length_high": [Attribute("mjc:lengthRange:max", 0.0)],
+            "gainPrm": [Attribute("mjc:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "gainType": [Attribute("mjc:gainType", "fixed")],
+            "biasPrm": [Attribute("mjc:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "biasType": [Attribute("mjc:biasType", "none")],
+            "dynPrm": [Attribute("mjc:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
+            "dynType": [Attribute("mjc:dynType", "none")],
+            "gear": [Attribute("mjc:gear", [1, 0, 0, 0, 0, 0])],
         },
     }
 
 
 class Resolver:
-    def __init__(self, engine_priority: list[str]):
+    def __init__(self, plugins: list[schemaPlugin], collect_engine_attrs: bool = True):
         """
-        Initialize resolver with engine priority list.
+        Initialize resolver with plugin instances in priority order.
 
         Args:
-            engine_priority: List of engine names in priority order (e.g., ["newton", "physx", "mjc"])
+            plugins: List of instantiated plugins in priority order
         """
-        # Available plugin classes
-        available_plugins = {
-            "newton": NewtonPlugin,
-            "physx": PhysxPlugin,
-            "mjc": MjcPlugin,
-        }
-
-        # Construct plugins based on priority order
-        self.plugins = []
-        for name in engine_priority:
-            if name in available_plugins:
-                self.plugins.append(available_plugins[name]())
+        # Use provided plugin instances directly
+        self.plugins = list(plugins) if plugins is not None else []
+        self._collect_engine_attrs = bool(collect_engine_attrs)
 
         # Dictionary to accumulate engine-specific attributes as prims are encountered
         # Pre-initialize maps for each configured plugin
@@ -416,9 +406,11 @@ class Resolver:
         # we store per-variable specs and occurrences by prim path.
         self._custom_attributes: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-    def _collect_on_first_use(self, plugin: EngineSchemaPlugin, prim) -> None:
+    def _collect_on_first_use(self, plugin: schemaPlugin, prim) -> None:
         """Collect and store engine-specific attributes for this plugin/prim on first use."""
         if prim is None:
+            return
+        if not self._collect_engine_attrs:
             return
         prim_path = str(prim.GetPath())
         if prim_path in self.engine_specific_attrs[plugin.name]:
@@ -452,12 +444,37 @@ class Resolver:
     def _accumulate_custom_attributes(self, prim_path: str, attrs: dict[str, Any]) -> None:
         """collect custom attributes from a pre-fetched attribute map (name->value)."""
 
+        def _usd_to_wp(v: Any):
+            # Convert USD types to Warp-friendly representations
+            try:
+                # Handle Gf.Quat[f/d] → wp.quat(x, y, z, w) normalized
+                if hasattr(v, "real") and hasattr(v, "imaginary"):
+                    try:
+                        return wp.normalize(wp.quat(*v.imaginary, v.real))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return v
+
         def _infer_wp_dtype(v: Any):
             # Heuristic mapping from USD value to Warp dtype
             try:
+                # Check for quat first (before generic length checks)
+                if hasattr(v, "real") and hasattr(v, "imaginary"):
+                    return wp.quat
+                # wp.quat-like (object with x,y,z,w after conversion)
+                if all(hasattr(v, c) for c in ("x", "y", "z", "w")):
+                    return wp.quat
                 # Vector3-like
                 if hasattr(v, "__len__") and len(v) == 3:
                     return wp.vec3
+                # Vector2-like
+                if hasattr(v, "__len__") and len(v) == 2:
+                    return wp.vec2
+                # Vector4-like (but not quat)
+                if hasattr(v, "__len__") and len(v) == 4:
+                    return wp.vec4
             except Exception:
                 pass
             if isinstance(v, bool):
@@ -471,11 +488,13 @@ class Resolver:
             parsed = self._parse_custom_attr_name(name)
             if not parsed:
                 continue
+            # Convert USD typed values (e.g., quatf) to Warp-friendly values
+            converted_value = _usd_to_wp(value)
             assignment, frequency, variable = parsed
             key = (assignment, frequency, variable)
             spec = self._custom_attributes.get(key)
             if spec is None:
-                dtype = _infer_wp_dtype(value)
+                dtype = _infer_wp_dtype(converted_value)
                 spec = {
                     "assignment": assignment,
                     "frequency": frequency,
@@ -484,11 +503,15 @@ class Resolver:
                     "occurrences": {},
                 }
                 self._custom_attributes[key] = spec
-            spec["occurrences"][prim_path] = value
+            spec["occurrences"][prim_path] = converted_value
 
     def get_value(self, prim, prim_type: str, key: str, default: Any = None) -> Any:
         """
-        Get attribute value for a given prim type and key with plugin precedence.
+        Resolve value using engine priority, with layered fallbacks:
+
+        1) First authored value found in plugin order (highest priority first)
+        2) If none authored, use the provided 'default' argument if not None
+        3) If still None, use the first non-None mapping default from plugins in priority order
 
         Args:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
@@ -497,16 +520,40 @@ class Resolver:
             default: Default value if not found
 
         Returns:
-            Attribute value if found, default otherwise
+            Resolved value according to the precedence above.
         """
+        # 1) Authored value by engine priority
         for p in self.plugins:
             got = p.get_value(prim, prim_type, key)
             if got is not None:
                 val, _usd_attr = got
                 if val is not None:
-                    self._collect_on_first_use(p, prim)
+                    if self._collect_engine_attrs:
+                        self._collect_on_first_use(p, prim)
                     return val
-        return default
+
+        # 2) Caller-provided default, if any
+        if default is not None:
+            return default
+
+        # 3) Engine mapping defaults in priority order
+        for plugin in self.plugins:
+            specs = plugin.mapping.get(prim_type, {}).get(key, []) if hasattr(plugin, "mapping") else []
+            for spec in specs:
+                d = getattr(spec, "default", None)
+                if d is not None:
+                    return d
+
+        # Nothing found
+        try:
+            prim_path = str(prim.GetPath()) if prim is not None else "<None>"
+        except Exception:
+            prim_path = "<invalid>"
+        print(
+            f"Error: Cannot resolve value for '{prim_type}:{key}' on prim '{prim_path}'; "
+            f"no authored value, no explicit default, and no engine mapping default."
+        )
+        return None
 
     def collect_prim_engine_attrs(self, prim) -> None:
         """
@@ -520,6 +567,8 @@ class Resolver:
 
         prim_path = str(prim.GetPath())
 
+        if not self._collect_engine_attrs:
+            return
         for plugin in self.plugins:
             # only collect if we haven't seen this prim for this plugin
             if prim_path not in self.engine_specific_attrs[plugin.name]:

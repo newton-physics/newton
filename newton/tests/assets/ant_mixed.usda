@@ -283,8 +283,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 10
+            float state:angular:physics:velocity = 0.1
             float physxJoint:armature = 0.01
             
             # custom newton property (joint frequency)
@@ -295,6 +295,9 @@ def Xform "ant" (
             bool newton:state:joint:testStateJointBool = 1
             int newton:control:joint:testControlJointInt = 3
             vector3f newton:model:joint:testJointVec = (0.5, 0.6, 0.7)
+            # new types for testing
+            float2 newton:control:joint:testControlJointVec2 = (0.25, -0.75)
+            quatf newton:model:joint:testJointQuat = (0.70710677, 0, 0, 0.70710677)
         }
 
         def PhysicsRevoluteJoint "front_left_foot" (
@@ -325,8 +328,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 20
+            float state:angular:physics:velocity = 0.2
             float physxJoint:armature = 0.01
         }
 
@@ -358,8 +361,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 30
+            float state:angular:physics:velocity = 0.3
             float physxJoint:armature = 0.01
         }
 
@@ -391,8 +394,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 30
+            float state:angular:physics:velocity = 0.3
             float physxJoint:armature = 0.01
         }
 
@@ -424,8 +427,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 40
+            float state:angular:physics:velocity = 0.4
             float physxJoint:armature = 0.01
         }
 
@@ -457,8 +460,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 60
+            float state:angular:physics:velocity = 0.6
             float physxJoint:armature = 0.01
         }
 
@@ -490,8 +493,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 70
+            float state:angular:physics:velocity = 0.7
             float physxJoint:armature = 0.01
         }
 
@@ -523,8 +526,8 @@ def Xform "ant" (
             )
             float2 mjc:solref = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
-            float state:angular:physics:position = 0
-            float state:angular:physics:velocity = 0
+            float state:angular:physics:position = 80
+            float state:angular:physics:velocity = 0.8
             float physxJoint:armature = 0.01
         }
     }
@@ -580,6 +583,7 @@ def Xform "ant" (
         bool newton:model:body:testBodyBool = 1
         int newton:model:body:testBodyInt = 7
         vector3f newton:state:body:testBodyVec3B = (1.1, 2.2, 3.3)
+        quatf newton:state:body:localmarkerRot = (0.9238795, 0, 0, 0.3826834)
     }
 
     def Xform "front_left_foot" (
