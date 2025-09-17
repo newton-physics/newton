@@ -1195,6 +1195,7 @@ class SolverMuJoCo(SolverBase):
             try:
                 import mujoco  # noqa: PLC0415
                 import mujoco_warp  # noqa: PLC0415
+
                 cls._mujoco = mujoco
                 cls._mujoco_warp = mujoco_warp
             except ImportError as e:

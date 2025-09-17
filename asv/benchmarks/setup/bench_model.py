@@ -37,6 +37,10 @@ class KpiInitializeModel:
 
     def setup(self, robot, num_envs):
         wp.init()
+        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_model(self, robot, num_envs):
@@ -44,6 +48,11 @@ class KpiInitializeModel:
 
         # finalize model
         _model = builder.finalize()
+        wp.synchronize_device()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_solver(self, robot, num_envs):
+        Example.create_solver(self._model, robot, use_mujoco_cpu=False)
         wp.synchronize_device()
 
 

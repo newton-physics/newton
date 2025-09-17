@@ -80,6 +80,7 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
         param_dict = _convert_params_to_dict(params, param_names)
 
         # Ensure params is always a tuple for consistent handling
+        params_tuple = params
         if not isinstance(params, (list | tuple)):
             params_tuple = (params,)
 
