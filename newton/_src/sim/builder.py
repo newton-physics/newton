@@ -4159,7 +4159,7 @@ class ModelBuilder:
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
+            m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = self.shape_collision_group
 
             # ---------------------
@@ -4424,7 +4424,7 @@ class ModelBuilder:
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
         # Copy the set of filtered-out shape pairs to avoid modifying the original
-        filters = set(self.shape_collision_filter_pairs)
+        filters = model.shape_collision_filter_pairs
         contact_pairs = []
 
         # Sort shapes by env group in case they are not sorted, keep only colliding shapes
