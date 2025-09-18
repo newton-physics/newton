@@ -30,8 +30,8 @@ class KpiInitializeModel:
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
-    repeat = 3
+    repeat = 1
+    number = 3
     min_run_count = 1
     timeout = 3600
 
@@ -52,15 +52,15 @@ class KpiInitializeSolver:
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
-    repeat = 3
+    repeat = 1
+    number = 3
     min_run_count = 1
     timeout = 3600
 
     def setup(self, robot, num_envs):
         if robot == "h1":
             # use more samples for H1 to reduce variance
-            self.repeat = 6
+            self.number = 30
 
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
@@ -83,8 +83,8 @@ class FastInitializeModel:
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
-    repeat = 3
+    repeat = 1
+    number = 3
     min_run_count = 1
 
     def setup_cache(self):
@@ -118,14 +118,14 @@ class FastInitializeSolver:
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
-    repeat = 3
+    repeat = 1
+    number = 3
     min_run_count = 1
 
     def setup(self, robot, num_envs):
         if robot == "h1":
             # use more samples for H1 to reduce variance
-            self.repeat = 6
+            self.number = 30
 
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
