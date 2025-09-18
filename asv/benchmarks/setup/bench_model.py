@@ -115,7 +115,7 @@ class FastInitializeSolver:
 
     rounds = 1
     number = 1
-    repeat = 3
+    repeat = 5
     min_run_count = 1
 
     def setup(self, robot, num_envs):
