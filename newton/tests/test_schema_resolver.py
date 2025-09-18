@@ -36,8 +36,9 @@ from typing import Any
 import warp as wp
 
 from newton import ModelBuilder
+from newton._src.sim.model import AttributeFrequency
 from newton._src.utils.import_usd import parse_usd
-from newton._src.utils.schema_resolver import MjcPlugin, NewtonPlugin, PhysxPlugin, Resolver
+from newton._src.utils.schema_resolver import MjcPlugin, NewtonPlugin, PhysxPlugin, PrimType, Resolver
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 if USD_AVAILABLE:
@@ -261,7 +262,7 @@ class TestSchemaResolver(unittest.TestCase):
         # Test resolver on real prims
         for _i, prim in enumerate(joint_prims):
             # Test armature resolution
-            armature = resolver.get_value(prim, "joint", "armature", default=0.0)
+            armature = resolver.get_value(prim, PrimType.JOINT, "armature", default=0.0)
             phsyx_armature = prim.GetAttribute("physxJoint:armature").Get()
 
             self.assertAlmostEqual(armature, phsyx_armature, places=6)  # Expected value from ant.usda
@@ -306,7 +307,7 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = Resolver([NewtonPlugin(), PhysxPlugin()])
 
         # Test time step resolution
-        time_step = resolver.get_value(physics_scene_prim, "scene", "time_step", default=0.01)
+        time_step = resolver.get_value(physics_scene_prim, PrimType.SCENE, "time_step", default=0.01)
 
         # If authored, PhysX TimeStepsPerSecond=120 should yield dt=1/120
         expected_time_step = 1.0 / 120.0
@@ -414,7 +415,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
-        self.assertEqual(model.get_attribute_frequency("testBodyVec"), "body")
+        self.assertEqual(model.get_attribute_frequency("testBodyVec"), AttributeFrequency.BODY)
 
         body_map = result["path_body_map"]
         idx = body_map[body_path]
@@ -460,7 +461,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(float(body_vec[other_idx, 2]), 0.0, places=6)
 
         # Joint custom property materialization and defaults
-        self.assertEqual(model.get_attribute_frequency("testJointScalar"), "joint")
+        self.assertEqual(model.get_attribute_frequency("testJointScalar"), AttributeFrequency.JOINT)
         # Authored joint value
         self.assertIn(joint_name, builder.joint_key)
         joint_idx = builder.joint_key.index(joint_name)
@@ -616,35 +617,35 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Test 1: Authored PhysX value takes precedence over explicit default
         # physxJoint:armature = 0.02 should be returned even with explicit default
-        val1 = resolver.get_value(joint_with_physx_armature, "joint", "armature", default=0.99)
+        val1 = resolver.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=0.99)
         self.assertAlmostEqual(val1, 0.02, places=6)
 
         # Test 2: No Newton authored value, explicit default used
         resolver_newton_only = Resolver([NewtonPlugin()])
-        val2 = resolver_newton_only.get_value(joint_with_physx_armature, "joint", "armature", default=0.99)
+        val2 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=0.99)
         self.assertAlmostEqual(val2, 0.99, places=6)
 
         # Test 3: No authored value, no explicit default, use Newton mapping default
-        val3 = resolver_newton_only.get_value(joint_with_physx_armature, "joint", "armature", default=None)
+        val3 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
         self.assertAlmostEqual(val3, 1.0e-2, places=6)
 
         # Test 3b: Use MjcPlugin only - should return MjcPlugin armature default (0.0)
         resolver_mjc_only = Resolver([MjcPlugin()])
-        val3b = resolver_mjc_only.get_value(joint_with_physx_armature, "joint", "armature", default=None)
+        val3b = resolver_mjc_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
         self.assertAlmostEqual(val3b, 0.0, places=6)
 
         # Test 4: Test priority order - PhysX first should use PhysX mapping default when no authored value
         resolver_physx_first = Resolver([PhysxPlugin(), NewtonPlugin()])
-        val4 = resolver_physx_first.get_value(scene_prim, "scene", "max_solver_iterations", default=None)
+        val4 = resolver_physx_first.get_value(scene_prim, PrimType.SCENE, "max_solver_iterations", default=None)
         self.assertAlmostEqual(val4, 255, places=6)
 
         # Test same attribute with Newton first priority
         resolver_newton_first = Resolver([NewtonPlugin(), PhysxPlugin()])
-        val5 = resolver_newton_first.get_value(scene_prim, "scene", "max_solver_iterations", default=None)
+        val5 = resolver_newton_first.get_value(scene_prim, PrimType.SCENE, "max_solver_iterations", default=None)
         self.assertAlmostEqual(val5, 5, places=6)
 
         # Test 6: Test with attribute that has no mapping default anywhere
-        val6 = resolver.get_value(joint_without_armature, "joint", "nonexistent_attribute", default=None)
+        val6 = resolver.get_value(joint_without_armature, PrimType.JOINT, "nonexistent_attribute", default=None)
         self.assertIsNone(val6)
 
     def test_joint_state_initialization(self):

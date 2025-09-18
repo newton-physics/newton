@@ -63,7 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model
+from .model import AttributeAssignment, AttributeFrequency, Model
 
 
 @dataclass
@@ -72,16 +72,16 @@ class CustomAttribute:
     Represents a custom attribute definition for the ModelBuilder.
 
     Attributes:
-        assignment: Assignment category ("model", "state", "control", "contact")
-        frequency: Frequency category ("joint", "joint_dof", "joint_coord", "body", "shape")
+        assignment: Assignment category (see AttributeAssignment enum)
+        frequency: Frequency category (see AttributeFrequency enum)
         name: Variable name to expose on the Model
         dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
     """
 
-    assignment: str
-    frequency: str
+    assignment: AttributeAssignment
+    frequency: AttributeFrequency
     name: str
     dtype: object
     default: Any = None
@@ -539,20 +539,23 @@ class ModelBuilder:
             return 0
         return 0.0
 
-    def add_custom_attribute(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
+    def add_custom_attribute(
+        self,
+        name: str,
+        frequency: AttributeFrequency,
+        default=None,
+        dtype=None,
+        assignment: AttributeAssignment = AttributeAssignment.MODEL,
+    ):
         """Define a custom per-entity attribute to be added to the Model.
 
         Args:
             name: Variable name to expose on the Model
-            frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
+            frequency: AttributeFrequency enum value
             default: Default value for the attribute. If None, will use dtype-specific default
                 (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
             dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
-            assignment: Assignment category determining where the attribute appears. One of:
-                - "model": Time-invariant attribute on the Model object (default)
-                - "state": time-varying attribute on State objects created by model.state()
-                - "control": Control input attribute on Control objects created by model.control()
-                - "contact": Contact-related attribute on Contacts objects created by model.collide()
+            assignment: AttributeAssignment enum value determining where the attribute appears
         """
         if name in self.custom_attributes:
             # validate that specification matches exactly
@@ -4508,19 +4511,17 @@ class ModelBuilder:
             # Process custom attributes
             for var_name, custom_attr in self.custom_attributes.items():
                 frequency = custom_attr.frequency
-                if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
-                    continue
 
                 # determine count by frequency
-                if frequency == "body":
+                if frequency == AttributeFrequency.BODY:
                     count = m.body_count
-                elif frequency == "shape":
+                elif frequency == AttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif frequency == "joint":
+                elif frequency == AttributeFrequency.JOINT:
                     count = m.joint_count
-                elif frequency == "joint_dof":
+                elif frequency == AttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif frequency == "joint_coord":
+                elif frequency == AttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
                 else:
                     continue

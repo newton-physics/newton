@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, ClassVar
 
 import warp as wp
+
+from ..sim.model import AttributeAssignment, AttributeFrequency
 
 try:
     from pxr import Usd
@@ -42,10 +44,32 @@ class Attribute:
     transformer: Callable[[Any], Any] | None = None
 
 
+@dataclass
+class CustomAttributeSpec:
+    """
+    Specification for a custom attribute discovered in USD.
+
+    Attributes:
+        assignment: Assignment category (model, state, control, contact)
+        frequency: Frequency category (joint, joint_dof, joint_coord, body, shape)
+        name: Variable name
+        dtype: Inferred Warp dtype
+        default: Default value for the attribute
+        occurrences: Dictionary mapping prim paths to authored values
+    """
+
+    assignment: AttributeAssignment
+    frequency: AttributeFrequency
+    name: str
+    dtype: object
+    default: Any = None
+    occurrences: dict[str, Any] = field(default_factory=dict)
+
+
 class SchemaPlugin:
     # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to exisiting Newton data.
-    # prim_type -> variable -> list[Attribute]
-    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {}
+    # PrimType -> variable -> list[Attribute]
+    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {}
 
     # Name of the schema plugin
     name: ClassVar[str] = ""
@@ -70,13 +94,13 @@ class SchemaPlugin:
                     names.add(spec.usd_name)
         self._solver_attributes: list[str] = list(names)
 
-    def get_value(self, prim, prim_type: str, key: str) -> tuple[Any, str] | None:
+    def get_value(self, prim, prim_type: PrimType, key: str) -> tuple[Any, str] | None:
         """
         Get attribute value for a given prim type and key.
 
         Args:
             prim: USD prim to query
-            prim_type: Prim type (see PrimType enum: "scene", "joint", "shape", "body", "material", "actuator")
+            prim_type: Prim type (PrimType enum)
             key: Attribute key within the prim type
 
         Returns:
@@ -154,14 +178,14 @@ def _collect_solver_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any
 
 class NewtonPlugin(SchemaPlugin):
     name: ClassVar[str] = "newton"
-    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
-        "scene": {
+    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+        PrimType.SCENE: {
             "time_step": [Attribute("newton:timeStep", 0.002)],
             "max_solver_iterations": [Attribute("newton:maxSolverIterations", 5)],
             "enable_gravity": [Attribute("newton:enableGravity", True)],
             "contact_margin": [Attribute("newton:contactMargin", 0.0)],
         },
-        "joint": {
+        PrimType.JOINT: {
             "armature": [Attribute("newton:armature", 1.0e-2)],
             "friction": [Attribute("newton:friction", 0.0)],
             "limit_linear_ke": [Attribute("newton:linear:limitStiffness", 1.0e4)],
@@ -185,21 +209,21 @@ class NewtonPlugin(SchemaPlugin):
             "rotY_velocity": [Attribute("newton:rotY:velocity", 0.0)],
             "rotZ_velocity": [Attribute("newton:rotZ:velocity", 0.0)],
         },
-        "shape": {
+        PrimType.SHAPE: {
             "mesh_hull_vertex_limit": [Attribute("newton:hullVertexLimit", -1)],
             # Use ShapeConfig.thickness default for contact margin
             "contact_margin": [Attribute("newton:contactMargin", 1.0e-5)],
         },
-        "body": {
+        PrimType.BODY: {
             "rigid_body_linear_damping": [Attribute("newton:damping", 0.0)],
         },
-        "material": {
+        PrimType.MATERIAL: {
             "priority": [Attribute("newton:priority", 0)],
             "weight": [Attribute("newton:weight", 1.0)],
             "stiffness": [Attribute("newton:stiffness", 1.0e5)],
             "damping": [Attribute("newton:damping", 1000.0)],
         },
-        "actuator": {
+        PrimType.ACTUATOR: {
             # Mirror MuJoCo actuator defaults when applicable
             "ctrl_low": [Attribute("newton:ctrlRange:low", 0.0)],
             "ctrl_high": [Attribute("newton:ctrlRange:high", 0.0)],
@@ -246,8 +270,8 @@ class PhysxPlugin(SchemaPlugin):
         "physxArticulation",
     ]
 
-    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
-        "scene": {
+    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+        PrimType.SCENE: {
             "time_step": [
                 Attribute("physxScene:timeStepsPerSecond", 60, lambda hz: (1.0 / hz) if (hz and hz > 0) else None)
             ],
@@ -255,7 +279,7 @@ class PhysxPlugin(SchemaPlugin):
             "enable_gravity": [Attribute("physxRigidBody:disableGravity", False, lambda value: not value)],
             "contact_margin": [Attribute("physxScene:contactOffset", 0.0)],
         },
-        "joint": {
+        PrimType.JOINT: {
             "armature": [Attribute("physxJoint:armature", 0.0)],
             # Per-axis linear limit aliases
             "limit_transX_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
@@ -285,17 +309,17 @@ class PhysxPlugin(SchemaPlugin):
             "rotY_velocity": [Attribute("state:rotY:physics:velocity", 0.0)],
             "rotZ_velocity": [Attribute("state:rotZ:physics:velocity", 0.0)],
         },
-        "shape": {
+        PrimType.SHAPE: {
             # Mesh hull vertex limit
             "mesh_hull_vertex_limit": [Attribute("physxConvexHullCollision:hullVertexLimit", 64)],
             # Collision contact offset
             "contact_margin": [Attribute("physxCollision:contactOffset", float("-inf"))],
         },
-        "material": {
+        PrimType.MATERIAL: {
             "stiffness": [Attribute("physxMaterial:compliantContactStiffness", 0.0)],
             "damping": [Attribute("physxMaterial:compliantContactDamping", 0.0)],
         },
-        "body": {
+        PrimType.BODY: {
             # Rigid body damping
             "rigid_body_linear_damping": [Attribute("physxRigidBody:linearDamping", 0.0)],
             "rigid_body_angular_damping": [Attribute("physxRigidBody:angularDamping", 0.05)],
@@ -337,14 +361,14 @@ def _solref_to_damping(solref):
 class MjcPlugin(SchemaPlugin):
     name: ClassVar[str] = "mjc"
 
-    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
-        "scene": {
+    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+        PrimType.SCENE: {
             "time_step": [Attribute("mjc:option:timestep", 0.002)],
             "max_solver_iterations": [Attribute("mjc:option:iterations", 100)],
             "enable_gravity": [Attribute("mjc:flag:gravity", True)],
             "contact_margin": [Attribute("mjc:option:o_margin", 0.0)],
         },
-        "joint": {
+        PrimType.JOINT: {
             "armature": [Attribute("mjc:armature", 0.0)],
             "friction": [Attribute("mjc:frictionloss", 0.0)],
             # Per-axis linear aliases mapped to solref
@@ -365,24 +389,24 @@ class MjcPlugin(SchemaPlugin):
             "limit_rotY_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
             "limit_rotZ_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
         },
-        "shape": {
+        PrimType.SHAPE: {
             # Mesh
             "mesh_hull_vertex_limit": [Attribute("mjc:maxhullvert", -1)],
             # Collisions
             "rigid_contact_margin": [Attribute("mjc:margin", 0.0)],
         },
-        "material": {
+        PrimType.MATERIAL: {
             # Materials and contact models
             "priority": [Attribute("mjc:priority", 0)],
             "weight": [Attribute("mjc:solmix", 1.0)],
             "stiffness": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
             "damping": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
         },
-        "body": {
+        PrimType.BODY: {
             # Rigid body / joint domain
             "rigid_body_linear_damping": [Attribute("mjc:damping", 0.0)],
         },
-        "actuator": {
+        PrimType.ACTUATOR: {
             # Actuators
             "ctrl_low": [Attribute("mjc:ctrlRange:min", 0.0)],
             "ctrl_high": [Attribute("mjc:ctrlRange:max", 0.0)],
@@ -421,10 +445,8 @@ class Resolver:
 
         # accumulator for special custom assignment attributes following the pattern:
         #   newton:assignment:frequency:variable_name
-        # where assignment in {model, state, control, contact}
-        # and frequency in {joint, joint_dof, joint_coord, body, shape}
         # we store per-variable specs and occurrences by prim path.
-        self._custom_attributes: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._custom_attributes: dict[str, CustomAttributeSpec] = {}
 
     def _collect_on_first_use(self, plugin: SchemaPlugin, prim) -> None:
         """Collect and store solver-specific attributes for this plugin/prim on first use."""
@@ -445,7 +467,7 @@ class Resolver:
         if newton_attrs:
             self._accumulate_custom_attributes(prim_path, newton_attrs)
 
-    def _parse_custom_attr_name(self, name: str) -> tuple[str, str, str] | None:
+    def _parse_custom_attr_name(self, name: str) -> tuple[AttributeAssignment, AttributeFrequency, str] | None:
         """Parse names like 'newton:assignment:frequency:variable_name'."""
         try:
             head, assignment, frequency, variable = name.split(":", 3)
@@ -453,13 +475,16 @@ class Resolver:
             return None
         if head != "newton":
             return None
-        if assignment not in {"model", "state", "control", "contact"}:
+
+        try:
+            assignment_enum = AttributeAssignment[assignment.upper()]
+            frequency_enum = AttributeFrequency[frequency.upper()]
+        except KeyError:
             return None
-        if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
-            return None
+
         if not variable:
             return None
-        return assignment, frequency, variable
+        return assignment_enum, frequency_enum, variable
 
     def _accumulate_custom_attributes(self, prim_path: str, attrs: dict[str, Any]) -> None:
         """collect custom attributes from a pre-fetched attribute map (name->value)."""
@@ -511,21 +536,19 @@ class Resolver:
             # Convert USD typed values (e.g., quatf) to Warp-friendly values
             converted_value = _usd_to_wp(value)
             assignment, frequency, variable = parsed
-            key = (assignment, frequency, variable)
-            spec = self._custom_attributes.get(key)
+            spec = self._custom_attributes.get(variable)
             if spec is None:
                 dtype = _infer_wp_dtype(converted_value)
-                spec = {
-                    "assignment": assignment,
-                    "frequency": frequency,
-                    "name": variable,
-                    "dtype": dtype,
-                    "occurrences": {},
-                }
-                self._custom_attributes[key] = spec
-            spec["occurrences"][prim_path] = converted_value
+                spec = CustomAttributeSpec(
+                    assignment=assignment,
+                    frequency=frequency,
+                    name=variable,
+                    dtype=dtype,
+                )
+                self._custom_attributes[variable] = spec
+            spec.occurrences[prim_path] = converted_value
 
-    def get_value(self, prim, prim_type: str, key: str, default: Any = None) -> Any:
+    def get_value(self, prim, prim_type: PrimType, key: str, default: Any = None) -> Any:
         """
         Resolve value using engine priority, with layered fallbacks:
 
@@ -535,7 +558,7 @@ class Resolver:
 
         Args:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
-            prim_type: Prim type (see PrimType enum: "scene", "joint", "shape", "body", "material", "actuator")
+            prim_type: Prim type (PrimType enum)
             key: Attribute key within the prim type
             default: Default value if not found
 
@@ -570,7 +593,7 @@ class Resolver:
         except Exception:
             prim_path = "<invalid>"
         print(
-            f"Error: Cannot resolve value for '{prim_type}:{key}' on prim '{prim_path}'; "
+            f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
             f"no authored value, no explicit default, and no solver mapping default."
         )
         return None
@@ -609,13 +632,11 @@ class Resolver:
         """
         return self.solver_specific_attrs.copy()
 
-    def get_custom_attributes(self) -> dict[tuple[str, str, str], dict[str, Any]]:
+    def get_custom_attributes(self) -> dict[str, CustomAttributeSpec]:
         """
-        get accumulated custom property specifications and occurrences.
+        Get accumulated custom property specifications and occurrences.
 
-        returns:
-            dict keyed by (assignment, frequency, variable_name) with entries:
-                {"assignment","frequency","name","dtype","default","occurrences"}
+        Returns:
+            Dictionary keyed by variable name with CustomAttributeSpec values.
         """
-        # return a shallow copy; nested dicts are fine to share for our usage
         return self._custom_attributes.copy()

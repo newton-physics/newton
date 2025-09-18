@@ -32,7 +32,8 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
-from .schema_resolver import NewtonPlugin, Resolver, SchemaPlugin
+from ..sim.model import AttributeFrequency
+from .schema_resolver import NewtonPlugin, PrimType, Resolver, SchemaPlugin
 
 
 def parse_usd(
@@ -572,8 +573,10 @@ def parse_usd(
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
-        joint_armature = R.get_value(joint_prim, prim_type="joint", key="armature", default=default_joint_armature)
-        joint_friction = R.get_value(joint_prim, prim_type="joint", key="friction", default=0.0)
+        joint_armature = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
+        )
+        joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=0.0)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -592,13 +595,13 @@ def parse_usd(
             # Resolve limit gains with precedence, fallback to builder defaults when missing
             current_joint_limit_ke = R.get_value(
                 joint_prim,
-                prim_type="joint",
+                prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
                 default=default_joint_limit_ke,
             )
             current_joint_limit_kd = R.get_value(
                 joint_prim,
-                prim_type="joint",
+                prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
                 default=default_joint_limit_kd,
             )
@@ -629,11 +632,11 @@ def parse_usd(
 
             # Resolve initial joint state from schema resolver
             if dof_type == "angular":
-                initial_position = R.get_value(joint_prim, "joint", "angular_position", default=None)
-                initial_velocity = R.get_value(joint_prim, "joint", "angular_velocity", default=None)
+                initial_position = R.get_value(joint_prim, PrimType.JOINT, "angular_position", default=None)
+                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "angular_velocity", default=None)
             else:  # linear
-                initial_position = R.get_value(joint_prim, "joint", "linear_position", default=None)
-                initial_velocity = R.get_value(joint_prim, "joint", "linear_velocity", default=None)
+                initial_position = R.get_value(joint_prim, PrimType.JOINT, "linear_position", default=None)
+                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "linear_velocity", default=None)
 
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
             joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
@@ -731,20 +734,20 @@ def parse_usd(
                     }[dof]
                     # Store initial state for this axis
                     d6_initial_positions[trans_name] = R.get_value(
-                        joint_prim, "joint", f"{trans_name}_position", default=None
+                        joint_prim, PrimType.JOINT, f"{trans_name}_position", default=None
                     )
                     d6_initial_velocities[trans_name] = R.get_value(
-                        joint_prim, "joint", f"{trans_name}_velocity", default=None
+                        joint_prim, PrimType.JOINT, f"{trans_name}_velocity", default=None
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
-                        prim_type="joint",
+                        prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_ke",
                         default=default_joint_limit_ke,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
-                        prim_type="joint",
+                        prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_kd",
                         default=default_joint_limit_kd,
                     )
@@ -769,20 +772,20 @@ def parse_usd(
                     rot_name = _rot_names[dof]
                     # Store initial state for this axis
                     d6_initial_positions[rot_name] = R.get_value(
-                        joint_prim, "joint", f"{rot_name}_position", default=None
+                        joint_prim, PrimType.JOINT, f"{rot_name}_position", default=None
                     )
                     d6_initial_velocities[rot_name] = R.get_value(
-                        joint_prim, "joint", f"{rot_name}_velocity", default=None
+                        joint_prim, PrimType.JOINT, f"{rot_name}_velocity", default=None
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
-                        prim_type="joint",
+                        prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_ke",
                         default=default_joint_limit_ke,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
-                        prim_type="joint",
+                        prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_kd",
                         default=default_joint_limit_kd,
                     )
@@ -916,14 +919,16 @@ def parse_usd(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
         # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(physics_scene_prim, prim_type="scene", key="time_step", default=None)
-        gravity_enabled = R.get_value(physics_scene_prim, prim_type="scene", key="enable_gravity", default=True)
+        physics_dt = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None)
+        gravity_enabled = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True)
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(physics_scene_prim, prim_type="scene", key="contact_margin", default=None)
+        contact_margin = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="contact_margin", default=None)
         if contact_margin is not None:
             builder.rigid_contact_margin = contact_margin
-        max_solver_iters = R.get_value(physics_scene_prim, prim_type="scene", key="max_solver_iterations", default=None)
+        max_solver_iters = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
+        )
     else:
         # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
         axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
@@ -1381,7 +1386,7 @@ def parse_usd(
                         face_id += count
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
-                        prim, prim_type="shape", key="mesh_hull_vertex_limit", default=mesh_maxhullvert
+                        prim, prim_type=PrimType.SHAPE, key="mesh_hull_vertex_limit", default=mesh_maxhullvert
                     )
                     m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
@@ -1609,7 +1614,7 @@ def parse_usd(
     solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
     custom_props = R.get_custom_attributes() or {}
 
-    def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
+    def _assign_value(cp_name: str, frequency: AttributeFrequency, prim_path: str, value) -> None:
         v = value
         spec = builder.custom_attributes.get(cp_name)
         if spec is None:
@@ -1617,19 +1622,19 @@ def parse_usd(
         overrides = spec.values
         if overrides is None:
             return
-        if frequency == "body":
+        if frequency == AttributeFrequency.BODY:
             idx = path_body_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == "shape":
+        elif frequency == AttributeFrequency.SHAPE:
             idx = path_shape_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == "joint":
+        elif frequency == AttributeFrequency.JOINT:
             idx = path_joint_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == "joint_dof":
+        elif frequency == AttributeFrequency.JOINT_DOF:
             j = path_joint_map.get(prim_path, -1)
             if j >= 0:
                 dof_begin = builder.joint_qd_start[j]
@@ -1638,7 +1643,7 @@ def parse_usd(
                 )
                 for k in range(int(dof_begin), int(dof_end)):
                     overrides[k] = v
-        elif frequency == "joint_coord":
+        elif frequency == AttributeFrequency.JOINT_COORD:
             j = path_joint_map.get(prim_path, -1)
             if j >= 0:
                 coord_begin = builder.joint_q_start[j]
@@ -1648,12 +1653,12 @@ def parse_usd(
                 for k in range(int(coord_begin), int(coord_end)):
                     overrides[k] = v
 
-    for (assignment, frequency, variable), spec in custom_props.items():
-        default_val = spec.get("default", None)
-        dtype = spec.get("dtype", None)
-        builder.add_custom_attribute(variable, frequency, default=default_val, dtype=dtype, assignment=assignment)
-        for pth, val in spec.get("occurrences", {}).items():
-            _assign_value(variable, frequency, pth, val)
+    for variable, spec in custom_props.items():
+        builder.add_custom_attribute(
+            variable, spec.frequency, default=spec.default, dtype=spec.dtype, assignment=spec.assignment
+        )
+        for pth, val in spec.occurrences.items():
+            _assign_value(variable, spec.frequency, pth, val)
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
