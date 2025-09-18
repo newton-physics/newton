@@ -2,10 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any, ClassVar
 
 import warp as wp
-from pxr import Usd
+
+try:
+    from pxr import Usd
+except ImportError:
+    Usd = None
+
+
+class PrimType(IntEnum):
+    """Enumeration of USD prim types that can be resolved by schema plugins."""
+
+    SCENE = 0
+    JOINT = 1
+    SHAPE = 2
+    BODY = 3
+    MATERIAL = 4
+    ACTUATOR = 5
 
 
 @dataclass
@@ -16,19 +32,23 @@ class Attribute:
     Args:
         usd_name (str): The name of the USD attribute.
         default (Any | None): Default USD-authored value from schema, if any.
-        transform (Callable[[Any], Any] | None): A function to transform the attribute value.
+        transformer (Callable[[Any], Any] | None): A function to transform the raw USD attribute value
+            into the format expected by Newton. Takes the USD value as input and returns the transformed
+            value. For example, converting PhysX timeStepsPerSecond to Newton's timestep by computing 1/hz.
     """
 
     usd_name: str
     default: Any | None = None
-    transform: Callable[[Any], Any] | None = None
+    transformer: Callable[[Any], Any] | None = None
 
 
-class schemaPlugin:
-    name: str
+class SchemaPlugin:
     # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to exisiting Newton data.
     # prim_type -> variable -> list[Attribute]
-    mapping: dict[str, dict[str, list[Attribute]]]
+    mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {}
+
+    # Name of the schema plugin
+    name: ClassVar[str] = ""
 
     # extra_attr_namespaces is a list of namespaces for extra attributes that are not in the mapping.
     extra_attr_namespaces: ClassVar[list[str]] = []
@@ -48,7 +68,7 @@ class schemaPlugin:
             for _var, specs in var_items:
                 for spec in specs:
                     names.add(spec.usd_name)
-        self._engine_attributes: list[str] = list(names)
+        self._solver_attributes: list[str] = list(names)
 
     def get_value(self, prim, prim_type: str, key: str) -> tuple[Any, str] | None:
         """
@@ -56,7 +76,7 @@ class schemaPlugin:
 
         Args:
             prim: USD prim to query
-            prim_type: Prim type ("scene", "joint", "shape", "body", "material", "actuator")
+            prim_type: Prim type (see PrimType enum: "scene", "joint", "shape", "body", "material", "actuator")
             key: Attribute key within the prim type
 
         Returns:
@@ -67,34 +87,34 @@ class schemaPlugin:
         for spec in self.mapping.get(prim_type, {}).get(key, []):
             v = _get_attr(prim, spec.usd_name)
             if v is not None:
-                return (spec.transform(v) if spec.transform is not None else v), spec.usd_name
+                return (spec.transformer(v) if spec.transformer is not None else v), spec.usd_name
         return None
 
-    def collect_prim_engine_attrs(self, prim) -> dict[str, Any]:
+    def collect_prim_solver_attrs(self, prim) -> dict[str, Any]:
         """
-        Collect engine-specific attributes for a single prim.
-        Returns dictionary of engine-specific attributes for this prim.
+        Collect solver-specific attributes for a single prim.
+        Returns dictionary of solver-specific attributes for this prim.
         """
         if prim is None:
             return {}
 
         # Collect explicit attribute names defined in the plugin mapping (precomputed)
-        prim_engine_attrs = (
-            _collect_engine_mapped_attrs(prim, self._engine_attributes) if self._engine_attributes else {}
+        prim_solver_attrs = (
+            _collect_solver_mapped_attrs(prim, self._solver_attributes) if self._solver_attributes else {}
         )
 
-        # Collect attributes by known engine-specific prefixes
+        # Collect attributes by known solver-specific prefixes
         # PhysX uses multiple prefixes, others use {name}:
         main_prefix = self.name if self.name == "physx" else f"{self.name}:"
         all_prefixes = [main_prefix]
         if self.extra_attr_namespaces:
             all_prefixes.extend(self.extra_attr_namespaces)
-        prefixed_attrs = _collect_engine_specific_attrs(prim, all_prefixes)
+        prefixed_attrs = _collect_solver_specific_attrs(prim, all_prefixes)
 
         # Merge and return (explicit names take precedence)
         merged: dict[str, Any] = {}
         merged.update(prefixed_attrs)
-        merged.update(prim_engine_attrs)
+        merged.update(prim_solver_attrs)
         return merged
 
 
@@ -107,8 +127,8 @@ def _get_attr(prim, name: str):
     return attr.Get()
 
 
-def _collect_engine_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
-    """Collect engine-specific attributes authored on the prim that have direct mappings in the plugin mapping"""
+def _collect_solver_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
+    """Collect solver-specific attributes authored on the prim that have direct mappings in the plugin mapping"""
     out = {}
     for n in names:
         v = _get_attr(prim, n)
@@ -117,22 +137,22 @@ def _collect_engine_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _collect_engine_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any]:
-    """Collect engine-specific authored attributes using USD namespace queries."""
+def _collect_solver_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any]:
+    """Collect solver-specific authored attributes using USD namespace queries."""
 
     out: dict[str, Any] = {}
-    if prim is None:
+    if prim is None or Usd is None:
         return out
 
     for ns in namespaces:
         for prop in prim.GetAuthoredPropertiesInNamespace(ns):
-            if isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
+            if Usd is not None and isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
                 out[prop.GetName()] = prop.Get()
 
     return out
 
 
-class NewtonPlugin(schemaPlugin):
+class NewtonPlugin(SchemaPlugin):
     name: ClassVar[str] = "newton"
     mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
         "scene": {
@@ -204,7 +224,7 @@ class NewtonPlugin(schemaPlugin):
     }
 
 
-class PhysxPlugin(schemaPlugin):
+class PhysxPlugin(SchemaPlugin):
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
@@ -314,7 +334,7 @@ def _solref_to_damping(solref):
     return (2.0 * dampratio) / timeconst
 
 
-class MjcPlugin(schemaPlugin):
+class MjcPlugin(SchemaPlugin):
     name: ClassVar[str] = "mjc"
 
     mapping: ClassVar[dict[str, dict[str, list[Attribute]]]] = {
@@ -384,7 +404,7 @@ class MjcPlugin(schemaPlugin):
 
 
 class Resolver:
-    def __init__(self, plugins: list[schemaPlugin], collect_engine_attrs: bool = True):
+    def __init__(self, plugins: list[SchemaPlugin], collect_solver_attrs: bool = True):
         """
         Initialize resolver with plugin instances in priority order.
 
@@ -393,11 +413,11 @@ class Resolver:
         """
         # Use provided plugin instances directly
         self.plugins = list(plugins) if plugins is not None else []
-        self._collect_engine_attrs = bool(collect_engine_attrs)
+        self._collect_solver_attrs = bool(collect_solver_attrs)
 
-        # Dictionary to accumulate engine-specific attributes as prims are encountered
+        # Dictionary to accumulate solver-specific attributes as prims are encountered
         # Pre-initialize maps for each configured plugin
-        self.engine_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {p.name: {} for p in self.plugins}
+        self.solver_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {p.name: {} for p in self.plugins}
 
         # accumulator for special custom assignment attributes following the pattern:
         #   newton:assignment:frequency:variable_name
@@ -406,22 +426,22 @@ class Resolver:
         # we store per-variable specs and occurrences by prim path.
         self._custom_attributes: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-    def _collect_on_first_use(self, plugin: schemaPlugin, prim) -> None:
-        """Collect and store engine-specific attributes for this plugin/prim on first use."""
+    def _collect_on_first_use(self, plugin: SchemaPlugin, prim) -> None:
+        """Collect and store solver-specific attributes for this plugin/prim on first use."""
         if prim is None:
             return
-        if not self._collect_engine_attrs:
+        if not self._collect_solver_attrs:
             return
         prim_path = str(prim.GetPath())
-        if prim_path in self.engine_specific_attrs[plugin.name]:
+        if prim_path in self.solver_specific_attrs[plugin.name]:
             return
-        attrs = plugin.collect_prim_engine_attrs(prim)
+        attrs = plugin.collect_prim_solver_attrs(prim)
         if attrs:
-            self.engine_specific_attrs[plugin.name][prim_path] = attrs
+            self.solver_specific_attrs[plugin.name][prim_path] = attrs
 
         # also scan and accumulate custom assignment attributes from the
-        # "newton" engine-specific attributes we just collected
-        newton_attrs = self.engine_specific_attrs.get("newton", {}).get(prim_path)
+        # "newton" solver-specific attributes we just collected
+        newton_attrs = self.solver_specific_attrs.get("newton", {}).get(prim_path)
         if newton_attrs:
             self._accumulate_custom_attributes(prim_path, newton_attrs)
 
@@ -515,7 +535,7 @@ class Resolver:
 
         Args:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
-            prim_type: Prim type ("scene", "joint", "shape", "body", "material", "actuator")
+            prim_type: Prim type (see PrimType enum: "scene", "joint", "shape", "body", "material", "actuator")
             key: Attribute key within the prim type
             default: Default value if not found
 
@@ -528,7 +548,7 @@ class Resolver:
             if got is not None:
                 val, _usd_attr = got
                 if val is not None:
-                    if self._collect_engine_attrs:
+                    if self._collect_solver_attrs:
                         self._collect_on_first_use(p, prim)
                     return val
 
@@ -536,7 +556,7 @@ class Resolver:
         if default is not None:
             return default
 
-        # 3) Engine mapping defaults in priority order
+        # 3) Solver mapping defaults in priority order
         for plugin in self.plugins:
             specs = plugin.mapping.get(prim_type, {}).get(key, []) if hasattr(plugin, "mapping") else []
             for spec in specs:
@@ -551,43 +571,43 @@ class Resolver:
             prim_path = "<invalid>"
         print(
             f"Error: Cannot resolve value for '{prim_type}:{key}' on prim '{prim_path}'; "
-            f"no authored value, no explicit default, and no engine mapping default."
+            f"no authored value, no explicit default, and no solver mapping default."
         )
         return None
 
-    def collect_prim_engine_attrs(self, prim) -> None:
+    def collect_prim_solver_attrs(self, prim) -> None:
         """
-        Collect and accumulate engine-specific attributes for a single prim.
+        Collect and accumulate solver-specific attributes for a single prim.
 
         Args:
-            prim: USD prim to collect engine attributes from
+            prim: USD prim to collect solver attributes from
         """
         if prim is None:
             return
 
         prim_path = str(prim.GetPath())
 
-        if not self._collect_engine_attrs:
+        if not self._collect_solver_attrs:
             return
         for plugin in self.plugins:
             # only collect if we haven't seen this prim for this plugin
-            if prim_path not in self.engine_specific_attrs[plugin.name]:
-                attrs = plugin.collect_prim_engine_attrs(prim)
+            if prim_path not in self.solver_specific_attrs[plugin.name]:
+                attrs = plugin.collect_prim_solver_attrs(prim)
                 if attrs:
-                    self.engine_specific_attrs[plugin.name][prim_path] = attrs
+                    self.solver_specific_attrs[plugin.name][prim_path] = attrs
                     # accumulate custom attributes from newton attrs if available
                     if plugin.name == "newton":
                         self._accumulate_custom_attributes(prim_path, attrs)
 
-    def get_engine_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
+    def get_solver_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """
-        Get the accumulated engine-specific attributes.
+        Get the accumulated solver-specific attributes.
 
         Returns:
-            Dictionary with structure: engine_name -> prim_path -> {attr_name: attr_value}
+            Dictionary with structure: solver_name -> prim_path -> {attr_name: attr_value}
             e.g., {"mjc": {"/World/Cube": {"mjc:option:timestep": 0.01}}}
         """
-        return self.engine_specific_attrs.copy()
+        return self.solver_specific_attrs.copy()
 
     def get_custom_attributes(self) -> dict[tuple[str, str, str], dict[str, Any]]:
         """

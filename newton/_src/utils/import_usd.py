@@ -32,7 +32,7 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
-from .schema_resolver import MjcPlugin, NewtonPlugin, PhysxPlugin, Resolver, schemaPlugin
+from .schema_resolver import NewtonPlugin, Resolver, SchemaPlugin
 
 
 def parse_usd(
@@ -56,8 +56,8 @@ def parse_usd(
     load_non_physics_prims: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
-    schema_priority: list[schemaPlugin] | None = None,
-    collect_engine_specific_attrs: bool = True,
+    schema_priority: list[SchemaPlugin] | None = None,
+    collect_solver_specific_attrs: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -85,9 +85,9 @@ def parse_usd(
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_priority (list[schemaPlugin]): Plugin instances in priority order. Default is
+        schema_priority (list[SchemaPlugin]): Plugin instances in priority order. Default is
             [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
-        collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
+        collect_solver_specific_attrs (bool): If True, solver-specific attributes are collected. Default is True.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -118,7 +118,7 @@ def parse_usd(
     """
     # default schema plugins (avoid mutable default argument)
     if schema_priority is None:
-        schema_priority = [MjcPlugin(), PhysxPlugin(), NewtonPlugin()]
+        schema_priority = [NewtonPlugin()]
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -564,8 +564,8 @@ def parse_usd(
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
-        if collect_engine_specific_attrs:
-            R.collect_prim_engine_attrs(joint_prim)
+        if collect_solver_specific_attrs:
+            R.collect_prim_solver_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
             joint_desc, path_body_map, get_transforms=True
         )
@@ -1051,15 +1051,15 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             # Collect engine-specific attributes for the articulation root on first encounter
-            if collect_engine_specific_attrs:
-                R.collect_prim_engine_attrs(articulation_prim)
+            if collect_solver_specific_attrs:
+                R.collect_prim_solver_attrs(articulation_prim)
                 # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
                 try:
                     parent_prim = articulation_prim.GetParent()
                 except Exception:
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_engine_attrs(parent_prim)
+                    R.collect_prim_solver_attrs(parent_prim)
             body_ids = {}
             body_keys = []
             current_body_id = 0
@@ -1077,9 +1077,9 @@ def parse_usd(
                     continue
                 else:
                     usd_prim = stage.GetPrimAtPath(p)
-                    if collect_engine_specific_attrs:
+                    if collect_solver_specific_attrs:
                         # Collect on each articulated body prim encountered
-                        R.collect_prim_engine_attrs(usd_prim)
+                        R.collect_prim_solver_attrs(usd_prim)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -1606,7 +1606,7 @@ def parse_usd(
 
             builder = multi_env_builder
 
-    engine_specific_attrs = R.get_engine_specific_attrs() if collect_engine_specific_attrs else {}
+    solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
     custom_props = R.get_custom_attributes() or {}
 
     def _assign_value(cp_name: str, frequency: str, prim_path: str, value) -> None:
@@ -1614,7 +1614,7 @@ def parse_usd(
         spec = builder.custom_attributes.get(cp_name)
         if spec is None:
             return
-        overrides = spec.get("values")
+        overrides = spec.values
         if overrides is None:
             return
         if frequency == "body":
@@ -1666,7 +1666,7 @@ def parse_usd(
         "scene_attributes": scene_attributes,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "engine_specific_attrs": engine_specific_attrs,
+        "solver_specific_attrs": solver_specific_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,

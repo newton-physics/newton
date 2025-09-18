@@ -3,29 +3,29 @@
 Schema resolver tests for USD imports using ant.usda.
 
 Validation tests for the schema resolution system for Newton, PhysX,
-and MuJoCo physics engines when importing USD files. Tests cover:
+and MuJoCo physics solvers when importing USD files. Tests cover:
 
 ## Core Schema Resolution:
 1. **Basic USD Import** - Validates successful import with Newton-PhysX priority
 2. **Schema Priority Handling** - Tests that plugin priority order affects attribute resolution
-3. **Engine-Specific Attribute Collection** - Verifies collection and storage of engine attributes
+3. **Solver-Specific Attribute Collection** - Verifies collection and storage of solver attributes
 4. **Direct Resolver Testing** - Tests Resolver class directly with USD stage manipulation
 
 ## Attribute Resolution & Transformation Mapping:
 5. **PhysX Joint Armature** - Tests PhysX joint armature values are correctly resolved
 6. **Time Step Resolution** - Validates PhysX timeStepsPerSecond conversion to time_step
 7. **MuJoCo Solref Conversion** - Tests MuJoCo solref parameter conversion to stiffness/damping
-8. **Layered Fallback Behavior** - Tests 3-layer fallback: authored → explicit default → engine mapping default
+8. **Layered Fallback Behavior** - Tests 3-layer fallback: authored → explicit default → solver mapping default
 
 ## Custom Attributes & State Initialization:
 9. **Newton Custom Attributes** - Tests custom Newton attributes (model/state/control assignments)
-10. **PhysX Engine Attributes** - Validates PhysX-specific attribute collection from ant_mixed.usda
+10. **PhysX Solver Attributes** - Validates PhysX-specific attribute collection from ant_mixed.usda
 11. **Joint State Initialization** - Tests joint position/velocity initialization from USD attributes
 12. **D6 Joint State Initialization** - Tests complex D6 joint state initialization from humanoid.usda
 
 ## Test Assets:
 - `ant.usda`: Basic ant robot with PhysX attributes
-- `ant_mixed.usda`: Extended ant with Newton custom attributes and mixed engine attributes
+- `ant_mixed.usda`: Extended ant with Newton custom attributes and mixed solver attributes
 - `humanoid.usda`: mujoco humanoid with D6 joints and Newton state attributes
 """
 
@@ -36,8 +36,8 @@ from typing import Any
 import warp as wp
 
 from newton import ModelBuilder
-from newton._src.utils import MjcPlugin, NewtonPlugin, PhysxPlugin, Resolver
 from newton._src.utils.import_usd import parse_usd
+from newton._src.utils.schema_resolver import MjcPlugin, NewtonPlugin, PhysxPlugin, Resolver
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 if USD_AVAILABLE:
@@ -77,7 +77,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(self.ant_usda_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -89,9 +89,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertGreater(len(result["path_body_map"]), 0)
         self.assertGreater(len(result["path_shape_map"]), 0)
 
-        # Validate engine attributes were collected
-        engine_specific_attrs = result.get("engine_specific_attrs", {})
-        self.assertIsInstance(engine_specific_attrs, dict)
+        # Validate solver attributes were collected
+        solver_specific_attrs = result.get("solver_specific_attrs", {})
+        self.assertIsInstance(solver_specific_attrs, dict)
 
         return result, builder
 
@@ -114,7 +114,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(ant_mixed_path),
             schema_priority=[PhysxPlugin()],  # PhysX first
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
         armature_values_found = []
@@ -130,7 +130,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(ant_mixed_path),
             schema_priority=[NewtonPlugin(), MjcPlugin()],  # nothing should be found
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
         armature_values_found = []
@@ -141,31 +141,31 @@ class TestSchemaResolver(unittest.TestCase):
         for _i, armature in enumerate(armature_values_found):
             self.assertAlmostEqual(armature, 0.01, places=3)
 
-    def test_engine_specific_attrs_collection(self):
+    def test_solver_specific_attrs_collection(self):
         """
-        Test engine-specific attribute collection from USD files.
+        Test solver-specific attribute collection from USD files.
 
-        Validates that engine-specific attributes (PhysX joint armature, limit damping,
+        Validates that solver-specific attributes (PhysX joint armature, limit damping,
         articulation settings) are properly collected and stored during USD import.
         Confirms expected attribute counts and values match the authored USD content,
         ensuring the collection mechanism works correctly across different attribute types.
         """
         builder = ModelBuilder()
 
-        # Import with engine attribute collection enabled
+        # Import with solver attribute collection enabled
         result = parse_usd(
             builder=builder,
             source=str(self.ant_usda_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        engine_specific_attrs = result.get("engine_specific_attrs", {})
+        solver_specific_attrs = result.get("solver_specific_attrs", {})
 
         # We should have collected PhysX attributes
-        if "physx" in engine_specific_attrs:
-            physx_attrs = engine_specific_attrs["physx"]
+        if "physx" in solver_specific_attrs:
+            physx_attrs = solver_specific_attrs["physx"]
 
             # Look for specific attributes we expect from ant.usda
             joint_armature_prims = []
@@ -213,7 +213,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder1,
             source=str(self.ant_usda_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -222,7 +222,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder2,
             source=str(self.ant_usda_path),
             schema_priority=[PhysxPlugin(), NewtonPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -266,13 +266,13 @@ class TestSchemaResolver(unittest.TestCase):
 
             self.assertAlmostEqual(armature, phsyx_armature, places=6)  # Expected value from ant.usda
 
-            # Collect engine attributes for this prim
-            resolver.collect_prim_engine_attrs(prim)
+            # Collect solver attributes for this prim
+            resolver.collect_prim_solver_attrs(prim)
 
-        # Check accumulated engine attributes
-        engine_specific_attrs = resolver.get_engine_specific_attrs()
-        if "physx" in engine_specific_attrs:
-            physx_attrs = engine_specific_attrs["physx"]
+        # Check accumulated solver attributes
+        solver_specific_attrs = resolver.get_solver_specific_attrs()
+        if "physx" in solver_specific_attrs:
+            physx_attrs = solver_specific_attrs["physx"]
 
             # Verify we collected the expected attributes
             for _prim_path, attrs in list(physx_attrs.items())[:2]:  # Check first 2
@@ -335,7 +335,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder_newton,
             source=str(dst),
             schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -344,7 +344,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder_mjc,
             source=str(dst),
             schema_priority=[MjcPlugin(), NewtonPlugin(), PhysxPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
         # With mjc priority and solref chosen as (0.5, 0.05), the resolved gains should be 2x physx/newton
@@ -376,41 +376,41 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(dst),
             schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        engine_attrs = result.get("engine_specific_attrs", {})
-        self.assertIn("newton", engine_attrs)
+        solver_attrs = result.get("solver_specific_attrs", {})
+        self.assertIn("newton", solver_attrs)
 
         # Body property checks
         body_path = "/ant/front_left_leg"
-        self.assertIn(body_path, engine_attrs["newton"])
-        self.assertIn("newton:model:body:testBodyScalar", engine_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyVec", engine_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyBool", engine_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyInt", engine_attrs["newton"][body_path])
-        self.assertIn("newton:state:body:testBodyVec3B", engine_attrs["newton"][body_path])
-        self.assertIn("newton:state:body:localmarkerRot", engine_attrs["newton"][body_path])
-        self.assertAlmostEqual(engine_attrs["newton"][body_path]["newton:model:body:testBodyScalar"], 1.5, places=6)
-        # also validate vector value in engine attrs
-        vec_val = engine_attrs["newton"][body_path]["newton:model:body:testBodyVec"]
+        self.assertIn(body_path, solver_attrs["newton"])
+        self.assertIn("newton:model:body:testBodyScalar", solver_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyVec", solver_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyBool", solver_attrs["newton"][body_path])
+        self.assertIn("newton:model:body:testBodyInt", solver_attrs["newton"][body_path])
+        self.assertIn("newton:state:body:testBodyVec3B", solver_attrs["newton"][body_path])
+        self.assertIn("newton:state:body:localmarkerRot", solver_attrs["newton"][body_path])
+        self.assertAlmostEqual(solver_attrs["newton"][body_path]["newton:model:body:testBodyScalar"], 1.5, places=6)
+        # also validate vector value in solver attrs
+        vec_val = solver_attrs["newton"][body_path]["newton:model:body:testBodyVec"]
         self.assertAlmostEqual(float(vec_val[0]), 0.1, places=6)
         self.assertAlmostEqual(float(vec_val[1]), 0.2, places=6)
         self.assertAlmostEqual(float(vec_val[2]), 0.3, places=6)
         # Joint property checks (authored on front_left_leg joint)
         joint_name = "/ant/joints/front_left_leg"
-        self.assertIn(joint_name, engine_attrs["newton"])  # engine attrs recorded
-        self.assertIn("newton:state:joint:testJointScalar", engine_attrs["newton"][joint_name])
-        # also validate state/control joint custom attrs in engine attrs
-        self.assertIn("newton:state:joint:testStateJointScalar", engine_attrs["newton"][joint_name])
-        self.assertIn("newton:control:joint:testControlJointScalar", engine_attrs["newton"][joint_name])
-        self.assertIn("newton:state:joint:testStateJointBool", engine_attrs["newton"][joint_name])
-        self.assertIn("newton:control:joint:testControlJointInt", engine_attrs["newton"][joint_name])
-        self.assertIn("newton:model:joint:testJointVec", engine_attrs["newton"][joint_name])
+        self.assertIn(joint_name, solver_attrs["newton"])  # solver attrs recorded
+        self.assertIn("newton:state:joint:testJointScalar", solver_attrs["newton"][joint_name])
+        # also validate state/control joint custom attrs in solver attrs
+        self.assertIn("newton:state:joint:testStateJointScalar", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:control:joint:testControlJointScalar", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:state:joint:testStateJointBool", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:control:joint:testControlJointInt", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:model:joint:testJointVec", solver_attrs["newton"][joint_name])
         # new data type assertions
-        self.assertIn("newton:control:joint:testControlJointVec2", engine_attrs["newton"][joint_name])
-        self.assertIn("newton:model:joint:testJointQuat", engine_attrs["newton"][joint_name])
+        self.assertIn("newton:control:joint:testControlJointVec2", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:model:joint:testJointQuat", solver_attrs["newton"][joint_name])
 
         model = builder.finalize()
         state = model.state()
@@ -496,8 +496,8 @@ class TestSchemaResolver(unittest.TestCase):
         # Check that vec2 was inferred as wp.vec2 and quat as wp.quat
         v2_spec = custom_attrs["testControlJointVec2"]
         q_spec = custom_attrs["testJointQuat"]
-        self.assertEqual(v2_spec["dtype"], wp.vec2)
-        self.assertEqual(q_spec["dtype"], wp.quat)
+        self.assertEqual(v2_spec.dtype, wp.vec2)
+        self.assertEqual(q_spec.dtype, wp.quat)
 
         # Validate state-assigned custom property mirrors initial values
         # testStateJointScalar is authored on a joint with assignment="state"
@@ -523,9 +523,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(int(control_joint_int[joint_idx]), 3)
         self.assertEqual(int(control_joint_int[other_joint_idx]), 0)
 
-    def test_physx_engine_specific_attrs(self):
+    def test_physx_solver_specific_attrs(self):
         """
-        Test PhysX engine-specific attribute collection and validation.
+        Test PhysX solver-specific attribute collection and validation.
 
         Uses ant_mixed.usda to validate that PhysX-specific attributes (articulation settings,
         joint armature, limit damping) are properly collected during import. Confirms that
@@ -542,13 +542,13 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(usd_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        engine_attrs = result.get("engine_specific_attrs", {})
-        self.assertIn("physx", engine_attrs, "PhysX engine attributes should be collected")
-        physx_attrs = engine_attrs["physx"]
+        solver_attrs = result.get("solver_specific_attrs", {})
+        self.assertIn("physx", solver_attrs, "PhysX solver attributes should be collected")
+        physx_attrs = solver_attrs["physx"]
         self.assertIsInstance(physx_attrs, dict)
 
         # Accumulate authored PhysX attributes of interest
@@ -589,9 +589,9 @@ class TestSchemaResolver(unittest.TestCase):
         Test three-layer attribute resolution fallback mechanism.
 
         Uses ant_mixed.usda to test the complete fallback hierarchy: authored USD values →
-        explicit default parameters → engine mapping defaults. Validates each layer works
+        explicit default parameters → solver mapping defaults. Validates each layer works
         correctly by testing scenarios with authored PhysX values, explicit defaults,
-        and engine-specific mapping defaults across different plugin priority orders.
+        and solver-specific mapping defaults across different plugin priority orders.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -666,7 +666,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(usd_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -741,7 +741,7 @@ class TestSchemaResolver(unittest.TestCase):
             builder=builder,
             source=str(humanoid_path),
             schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
-            collect_engine_specific_attrs=True,
+            collect_solver_specific_attrs=True,
             verbose=False,
         )
 

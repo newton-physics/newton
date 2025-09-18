@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from enum import IntEnum
+
 import numpy as np
 import warp as wp
 
@@ -24,6 +26,15 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+
+class AttributeAssignment(IntEnum):
+    """Enumeration of attribute assignment categories."""
+
+    MODEL = 0
+    STATE = 1
+    CONTROL = 2
+    CONTACT = 3
 
 
 class Model:
@@ -379,7 +390,8 @@ class Model:
         """Classifies each attribute as per body, per joint, per DOF, etc."""
 
         self.attribute_assignment = {}
-        """Assignment for custom attributes: one of {"model", "state", "control", "contact"}."""
+        """Assignment for custom attributes: one of {"model", "state", "control", "contact"}.
+        If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment="model")."""
 
         # attributes per body
         self.attribute_frequency["body_q"] = "body"

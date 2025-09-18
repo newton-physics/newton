@@ -22,7 +22,7 @@ from .schema_resolver import (
     NewtonPlugin,
     PhysxPlugin,
     Resolver,
-    schemaPlugin,
+    SchemaPlugin,
 )
 from .topology import topological_sort
 
@@ -220,13 +220,13 @@ __all__ = [
     "NewtonPlugin",
     "PhysxPlugin",
     "Resolver",
+    "SchemaPlugin",
     "boltzmann",
     "check_conditional_graph_support",
     "clear_git_cache",
     "download_asset",
     "leaky_max",
     "leaky_min",
-    "schemaPlugin",
     "smooth_max",
     "smooth_min",
     "topological_sort",

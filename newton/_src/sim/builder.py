@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -54,7 +55,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
-from ..utils import schemaPlugin
+from ..utils.schema_resolver import SchemaPlugin
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -63,6 +64,37 @@ from .joints import (
     get_joint_dof_count,
 )
 from .model import Model
+
+
+@dataclass
+class CustomAttribute:
+    """
+    Represents a custom attribute definition for the ModelBuilder.
+
+    Attributes:
+        assignment: Assignment category ("model", "state", "control", "contact")
+        frequency: Frequency category ("joint", "joint_dof", "joint_coord", "body", "shape")
+        name: Variable name to expose on the Model
+        dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        default: Default value for the attribute
+        values: Dictionary mapping indices to specific values (overrides)
+    """
+
+    assignment: str
+    frequency: str
+    name: str
+    dtype: object
+    default: Any = None
+    values: dict[int, Any] | None = None
+
+    def __post_init__(self):
+        if self.values is None:
+            self.values = {}
+
+    def build_wp_array(self, count: int, requires_grad: bool = False) -> wp.array:
+        """Build wp.array from count, dtype, default and overrides."""
+        arr = [self.values.get(i, self.default) for i in range(count)]
+        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad)
 
 
 class ModelBuilder:
@@ -485,12 +517,14 @@ class ModelBuilder:
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
         # Custom attributes (user-defined per-frequency arrays)
-        # name -> {"assignment": str, "frequency": str, "dtype": wp.dtype, "default": Any, "values": dict[int, Any]}
-        self.custom_attributes: dict[str, dict[str, object]] = {}
+        self.custom_attributes: dict[str, CustomAttribute] = {}
 
     @staticmethod
     def _default_for_dtype(d: object) -> Any:
         """Get default value for dtype when not specified."""
+        # quaternions get identity quaternion
+        if d is wp.quat:
+            return wp.quat_identity()
         # vectors default to zeros of their length
         if wp.types.type_is_vector(d):
             length = getattr(d, "_shape_", (1,))[0] or 1
@@ -505,85 +539,43 @@ class ModelBuilder:
             return 0
         return 0.0
 
-    @staticmethod
-    def _build_wp_array(count: int, d: object, default_val, overrides: dict[int, Any], requires_grad: bool) -> wp.array:
-        """Build wp.array from count, dtype, default and overrides."""
-        # Vector path
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            scalar_wp = getattr(d, "_wp_scalar_type_", wp.float32)
-            scalar_np = wp.types.warp_type_to_np_dtype.get(scalar_wp, np.float32)
-            try:
-                base = np.array(
-                    default_val if default_val is not None else np.zeros(length, dtype=scalar_np),
-                    dtype=scalar_np,
-                ).reshape(length)
-            except Exception:
-                base = np.zeros(length, dtype=scalar_np)
-            arr = np.tile(base, (count, 1))
-            # override values
-            for idx, val in overrides.items():
-                i = int(idx)
-                if 0 <= i < count:
-                    try:
-                        arr[i] = np.array(val, dtype=scalar_np).reshape(length)
-                    except Exception:
-                        try:
-                            arr[i] = np.array(list(val)[:length], dtype=scalar_np)
-                        except Exception:
-                            pass
-            return wp.array(arr, dtype=d, requires_grad=requires_grad)
-
-        if d is wp.quat:
-            # Special handling for quat arrays
-            fill_val = default_val if default_val is not None else wp.quat_identity()
-            arr = [fill_val] * count
-            for idx, val in overrides.items():
-                i = int(idx)
-                if 0 <= i < count:
-                    arr[i] = val
-            return wp.array(arr, dtype=wp.quat, requires_grad=requires_grad)
-        else:
-            # Regular scalar types
-            scalar_np = wp.types.warp_type_to_np_dtype.get(d, np.float32)
-            fill_val = default_val if default_val is not None else ModelBuilder._default_for_dtype(d)
-            arr = np.full(count, fill_val, dtype=scalar_np)
-            for idx, val in overrides.items():
-                i = int(idx)
-                if 0 <= i < count:
-                    try:
-                        arr[i] = val
-                    except Exception:
-                        pass
-            return wp.array(arr, dtype=d, requires_grad=requires_grad)
-
     def add_custom_attribute(self, name: str, frequency: str, default=None, dtype=None, assignment: str = "model"):
         """Define a custom per-entity attribute to be added to the Model.
 
         Args:
             name: Variable name to expose on the Model
             frequency: One of {"joint", "joint_dof", "joint_coord", "body", "shape"}
-            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+            default: Default value for the attribute. If None, will use dtype-specific default
+                (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
+            assignment: Assignment category determining where the attribute appears. One of:
+                - "model": Time-invariant attribute on the Model object (default)
+                - "state": time-varying attribute on State objects created by model.state()
+                - "control": Control input attribute on Control objects created by model.control()
+                - "contact": Contact-related attribute on Contacts objects created by model.collide()
         """
         if name in self.custom_attributes:
             # validate that specification matches exactly
-            existing_freq = self.custom_attributes[name].get("frequency")
-            existing_dtype = self.custom_attributes[name].get("dtype")
-            existing_assign = self.custom_attributes[name].get("assignment")
+            existing = self.custom_attributes[name]
             # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
-            target_dtype = dtype if dtype is not None else existing_dtype
-            if existing_freq != frequency or existing_dtype != target_dtype or existing_assign != assignment:
+            target_dtype = dtype if dtype is not None else existing.dtype
+            if existing.frequency != frequency or existing.dtype != target_dtype or existing.assignment != assignment:
                 raise ValueError(
-                    f"Custom attribute '{name}' already exists with frequency='{existing_freq}', dtype='{existing_dtype}', assignment='{existing_assign}'. "
+                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
                 )
             return
-        self.custom_attributes[name] = {
-            "assignment": assignment,
-            "frequency": frequency,
-            "dtype": dtype,
-            "default": default,
-            "values": {},  # index -> value overrides
-        }
+
+        # Use dtype-specific default if none provided
+        if default is None:
+            default = self._default_for_dtype(dtype if dtype is not None else wp.float32)
+
+        self.custom_attributes[name] = CustomAttribute(
+            assignment=assignment,
+            frequency=frequency,
+            name=name,
+            dtype=dtype if dtype is not None else wp.float32,
+            default=default,
+        )
 
     @property
     def up_vector(self) -> Vec3:
@@ -831,8 +823,8 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
-        schema_priority: list[schemaPlugin] | None = None,
-        collect_engine_specific_attrs: bool = True,
+        schema_priority: list[SchemaPlugin] | None = None,
+        collect_solver_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -859,9 +851,9 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_priority (list[schemaPlugin]): Plugin instances in priority order. Default is
+            schema_priority (list[SchemaPlugin]): Plugin instances in priority order. Default is
                 [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
-            collect_engine_specific_attrs (bool): If True, engine-specific attributes are collected. Default is True.
+            collect_solver_specific_attrs (bool): If True, solver-specific attributes are collected. Default is True.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -914,7 +906,7 @@ class ModelBuilder:
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_priority,
-            collect_engine_specific_attrs,
+            collect_solver_specific_attrs,
         )
 
     def add_mjcf(
@@ -4510,12 +4502,12 @@ class ModelBuilder:
 
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
-            if not (hasattr(self, "custom_attributes") and self.custom_attributes):
+            if not self.custom_attributes:
                 return m
 
             # Process custom attributes
-            for var_name, spec in self.custom_attributes.items():
-                frequency = spec.get("frequency")
+            for var_name, custom_attr in self.custom_attributes.items():
+                frequency = custom_attr.frequency
                 if frequency not in {"joint", "joint_dof", "joint_coord", "body", "shape"}:
                     continue
 
@@ -4533,14 +4525,9 @@ class ModelBuilder:
                 else:
                     continue
 
-                dtype = spec.get("dtype", wp.float32)
-                default_val = spec.get("default", self._default_for_dtype(dtype))
-                overrides = spec.get("values", {})
-
-                wp_arr = self._build_wp_array(count, dtype, default_val, overrides, requires_grad)
-                assignment = spec.get("assignment", "model")
+                wp_arr = custom_attr.build_wp_array(count, requires_grad)
                 if not hasattr(m, var_name):
-                    m.add_attribute(var_name, wp_arr, frequency, assignment)
+                    m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 
             return m
 
