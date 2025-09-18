@@ -515,7 +515,9 @@ class ArticulationView:
             _slice = self._frequency_slices.get(frequency)
         elif isinstance(_slice, Slice):
             _slice = _slice.get()
-        elif not isinstance(_slice, int):
+        elif isinstance(_slice, int):
+            _slice = slice(_slice, _slice + 1)
+        else:
             raise TypeError(f"Invalid slice type: expected Slice or int, got {type(_slice)}")
 
         if _slice is not None:
