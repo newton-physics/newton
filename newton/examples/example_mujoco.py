@@ -67,8 +67,8 @@ ROBOT_CONFIGS = {
     "ant": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 50,
-        "nconmax": 50,
+        "njmax": 112,
+        "nconmax": 109,
         "ls_parallel": True,
     },
     "quadruped": {
