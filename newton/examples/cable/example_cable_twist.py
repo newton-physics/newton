@@ -248,9 +248,9 @@ class Example:
         self.model = builder.finalize()
 
         # Set collision contact parameters (softer for cable flexibility)
-        self.model.soft_contact_ke = 1.0e3
-        self.model.soft_contact_kd = 1.0e1
-        self.model.soft_contact_mu = 0.0
+        self.model.soft_contact_ke = 1.0e2
+        self.model.soft_contact_kd = 1.0e2
+        self.model.soft_contact_mu = 1.0
         self.model.soft_contact_restitution = 0.0
 
         self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
@@ -263,8 +263,8 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Per-step kinematic twist rates (radians per second) for each first capsule
-        twist_rates = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5], dtype=np.float32)
-        self.first_twist_rates = wp.array(twist_rates, dtype=float)
+        twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
+        self.first_twist_rates = wp.array(twist_rates, dtype=wp.float32)
 
         self.capture()
 

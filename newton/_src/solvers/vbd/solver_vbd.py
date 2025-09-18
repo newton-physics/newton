@@ -678,43 +678,20 @@ def evaluate_rigid_contact_from_collision(
     r_a = x_c_a_now - x_com_a_now  # Moment arm from A's COM to contact point
     r_b = x_c_b_now - x_com_b_now  # Moment arm from B's COM to contact point
 
-    # Small lever arm guards: prevent numerical issues when contact is near COM
-    r_a_mag_sq = wp.dot(r_a, r_a)
-    r_b_mag_sq = wp.dot(r_b, r_b)
-    lever_arm_threshold = 1e-10  # Threshold for tiny lever arms
-
-    # VBD Hessian blocks for body A using contact Jacobian approach
-    # For contact force at point r_a from COM, the generalized force Jacobian is:
-    # J_a = [-[r_a]x, I] where [r_a]x is the skew-symmetric matrix of r_a
-    # VBD Hessian: H_a = J_a^T * K_total * J_a
-    if r_a_mag_sq > lever_arm_threshold:
-        # Normal case: compute torque and angular Hessian blocks
-        torque_a = wp.cross(r_a, force_a)
-        r_a_skew = wp.mat33(0.0, -r_a[2], r_a[1], r_a[2], 0.0, -r_a[0], -r_a[1], r_a[0], 0.0)
-        r_a_skew_T_K = wp.transpose(r_a_skew) * K_total  # Common operation
-        h_aa_a = r_a_skew_T_K * r_a_skew  # Angular-angular
-        h_al_a = -r_a_skew_T_K  # Angular-linear
-    else:
-        # Tiny lever arm: zero out angular components (contact near COM)
-        torque_a = zero_vec
-        h_aa_a = zero_mat
-        h_al_a = zero_mat
+    # Angular/linear coupling using contact Jacobian J = [-[r]x, I]:
+    r_a_skew = wp.mat33(0.0, -r_a[2], r_a[1], r_a[2], 0.0, -r_a[0], -r_a[1], r_a[0], 0.0)
+    r_a_skew_T_K = wp.transpose(r_a_skew) * K_total
+    torque_a = wp.cross(r_a, force_a)
+    h_aa_a = r_a_skew_T_K * r_a_skew
+    h_al_a = -r_a_skew_T_K
 
     h_ll_a = K_total  # Linear-linear (always computed)
 
-    # VBD Hessian blocks for body B (same structure as body A)
-    if r_b_mag_sq > lever_arm_threshold:
-        # Normal case: compute torque and angular Hessian blocks
-        torque_b = wp.cross(r_b, force_b)
-        r_b_skew = wp.mat33(0.0, -r_b[2], r_b[1], r_b[2], 0.0, -r_b[0], -r_b[1], r_b[0], 0.0)
-        r_b_skew_T_K = wp.transpose(r_b_skew) * K_total  # Common operation
-        h_aa_b = r_b_skew_T_K * r_b_skew  # Angular-angular
-        h_al_b = -r_b_skew_T_K  # Angular-linear
-    else:
-        # Tiny lever arm: zero out angular components (contact near COM)
-        torque_b = zero_vec
-        h_aa_b = zero_mat
-        h_al_b = zero_mat
+    r_b_skew = wp.mat33(0.0, -r_b[2], r_b[1], r_b[2], 0.0, -r_b[0], -r_b[1], r_b[0], 0.0)
+    r_b_skew_T_K = wp.transpose(r_b_skew) * K_total
+    torque_b = wp.cross(r_b, force_b)
+    h_aa_b = r_b_skew_T_K * r_b_skew
+    h_al_b = -r_b_skew_T_K
 
     h_ll_b = K_total  # Linear-linear (always computed)
 
@@ -1510,22 +1487,6 @@ def forward_step_rigid_bodies(
 
 
 @wp.func
-def sym33(a: wp.mat33) -> wp.mat33:
-    # Force exact symmetry (guards tiny numeric asymmetries)
-    return wp.mat33(
-        0.5 * (a[0, 0] + a[0, 0]),
-        0.5 * (a[0, 1] + a[1, 0]),
-        0.5 * (a[0, 2] + a[2, 0]),
-        0.5 * (a[1, 0] + a[0, 1]),
-        0.5 * (a[1, 1] + a[1, 1]),
-        0.5 * (a[1, 2] + a[2, 1]),
-        0.5 * (a[2, 0] + a[0, 2]),
-        0.5 * (a[2, 1] + a[1, 2]),
-        0.5 * (a[2, 2] + a[2, 2]),
-    )
-
-
-@wp.func
 def chol33_lower(A: wp.mat33) -> wp.mat33:
     # Cholesky factorization A = L * L^T, where L is lower-triangular (SPD assumed)
     a00 = A[0, 0]
@@ -1718,8 +1679,8 @@ def solve_rigid_body(
         h_aa = h_aa + joint_H_aa
 
     # Regularization for numerical stability (trace-scaled)
-    trM = (h_ll[0, 0] + h_ll[1, 1] + h_ll[2, 2]) / 3.0
-    trA = (h_aa[0, 0] + h_aa[1, 1] + h_aa[2, 2]) / 3.0
+    trM = wp.trace(h_ll) / 3.0
+    trA = wp.trace(h_aa) / 3.0
     epsM = 1.0e-6 * (trM + 1.0)
     epsA = 1.0e-6 * (trA + 1.0)
 
@@ -2297,33 +2258,19 @@ def evaluate_cable_stretch_force_hessian(
 @wp.func
 def compute_right_jacobian_inverse(kappa: wp.vec3) -> wp.mat33:
     """
-    Compute the right Jacobian inverse of SO(3) for rotation vector kappa.
+    Right Jacobian inverse Jr^{-1}(kappa) for SO(3).
 
-    The right Jacobian relates rotation vector variations to angular velocity
-    in the tangent space of SO(3). For rotational dynamics with energy
-    E = 0.5 * kappa^T * K * kappa, the force is tau = Jr_inv^T * (K * kappa).
-
-    Mathematical formulation:
-    - Small angles: Jr_inv = I + 0.5*[kappa]_x + (1/12)*[kappa]_x^2 + O(theta^4)
-    - General case: Jr_inv = I + 0.5*[kappa]_x + b*[kappa]_x^2
-      where b = (1/theta^2) - (1+cos(theta))/(2*theta*sin(theta))
-      and theta = ||kappa|| is the rotation angle
-
-    Args:
-        kappa: Rotation vector (axis * angle) [3x1]
-
-    Returns:
-        3x3 right Jacobian inverse matrix
     """
     theta = wp.length(kappa)
     I3 = wp.identity(3, float)
 
-    if theta < 1.0e-7:
-        # Small angle series expansion for numerical stability
+    # Use first-order small-angle form whenever either:
+    # - the rotation is tiny (theta < eps), or
+    # - the exact rotational dynamics flag is disabled.
+    if (theta < 1.0e-7) or (not USE_EXACT_ROTATIONAL_DYNAMICS):
+        # Jr^{-1}(kappa) ≈ I + 0.5 [kappa]_x
         kappa_skew = wp.skew(kappa)
-        kappa_skew2 = kappa_skew * kappa_skew
-        # Taylor series: I + (1/2)*[kappa]_x + (1/12)*[kappa]_x^2 + O(theta^4)
-        return I3 + 0.5 * kappa_skew + (1.0 / 12.0) * kappa_skew2
+        return I3 + 0.5 * kappa_skew
 
     # Full formula for general rotations
     kappa_skew = wp.skew(kappa)
@@ -2413,10 +2360,7 @@ def evaluate_cable_bend_force_hessian(
             kappa_local = axis_local * theta
 
     # Compute right Jacobian inverse for accurate rotational dynamics
-    if USE_EXACT_ROTATIONAL_DYNAMICS:
-        Jr_inv = compute_right_jacobian_inverse(kappa_local)
-    else:
-        Jr_inv = wp.identity(3, float)  # Small-angle approximation
+    Jr_inv = compute_right_jacobian_inverse(kappa_local)
 
     # Compute torque in local coordinates using VBD formulation
     # Energy: U = 0.5 * kappa^T * K * kappa with K = ke * I (isotropic stiffness)
