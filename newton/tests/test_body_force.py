@@ -263,7 +263,7 @@ for device in devices:
         )
         add_function_test(
             TestBodyForce,
-            f"test_3d_articulation_up_axis_Z_{solver_name}",
+            f"test_3d_articulation_linear_up_axis_Z_{solver_name}",
             test_3d_articulation,
             devices=[device],
             solver_fn=solver_fn,
