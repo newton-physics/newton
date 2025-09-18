@@ -39,9 +39,9 @@ ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 100,
-        "nconmax": 50,
-        "ls_parallel": False,
+        "njmax": 133,
+        "nconmax": 286,
+        "ls_parallel": True,
     },
     "g1": {
         "solver": "newton",
@@ -401,7 +401,7 @@ if __name__ == "__main__":
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
     parser.add_argument(
-        "--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search."
+        "--ls-parallel", default=None, action=argparse.BooleanOptionalAction, help="Use parallel line search."
     )
 
     args = parser.parse_known_args()[0]
