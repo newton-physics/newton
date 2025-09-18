@@ -56,18 +56,6 @@ else:
     MjWarpData = object
 
 
-def import_mujoco():
-    """Import the MuJoCo Warp dependencies."""
-    try:
-        import mujoco  # noqa: PLC0415
-        import mujoco_warp  # noqa: PLC0415
-    except ImportError as e:
-        raise ImportError(
-            "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
-        ) from e
-    return mujoco, mujoco_warp
-
-
 @wp.func
 def orthogonals(a: wp.vec3):
     y = wp.vec3(0.0, 1.0, 0.0)
@@ -1196,6 +1184,26 @@ class SolverMuJoCo(SolverBase):
             solver.render_mujoco_viewer()
     """
 
+    # Class variables to cache the imported modules
+    _mujoco = None
+    _mujoco_warp = None
+
+    @classmethod
+    def import_mujoco(cls):
+        """Import the MuJoCo Warp dependencies and cache them as class variables."""
+        if cls._mujoco is None or cls._mujoco_warp is None:
+            try:
+                import mujoco  # noqa: PLC0415
+                import mujoco_warp  # noqa: PLC0415
+
+                cls._mujoco = mujoco
+                cls._mujoco_warp = mujoco_warp
+            except ImportError as e:
+                raise ImportError(
+                    "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
+                ) from e
+        return cls._mujoco, cls._mujoco_warp
+
     def __init__(
         self,
         model: Model,
@@ -1251,7 +1259,8 @@ class SolverMuJoCo(SolverBase):
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
         """
         super().__init__(model)
-        self.mujoco, self.mujoco_warp = import_mujoco()
+        # Import and cache MuJoCo modules (only happens once per class)
+        mujoco, _ = self.import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
         self.joint_solref_limit = joint_solref_limit
         self.joint_solimp_limit = joint_solimp_limit
@@ -1284,7 +1293,7 @@ class SolverMuJoCo(SolverBase):
 
         disableflags = 0
         if disable_contacts:
-            disableflags |= self.mujoco.mjtDisableBit.mjDSBL_CONTACT
+            disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         if mjw_model is not None and mjw_data is not None:
             self.mjw_model = mjw_model
             self.mjw_data = mjw_data
@@ -1326,7 +1335,7 @@ class SolverMuJoCo(SolverBase):
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self.update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
-            self.mujoco.mj_step(self.mj_model, self.mj_data)
+            self._mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -1335,10 +1344,10 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 if self.mjw_model.opt.run_collision_detection:
-                    self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
                 else:
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                    self.mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
 
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
@@ -1613,11 +1622,17 @@ class SolverMuJoCo(SolverBase):
         Shapes within the same color cannot collide with each other.
         Shapes can only collide with shapes of different colors.
         """
+        # we first create a mapping from selected shape to local color shape index
+        # to reduce the number of nodes in the graph to only the number of selected shapes
+        # without any gaps between the indices (otherwise we have to allocate max(selected_shapes) + 1 nodes)
+        to_color_shape_index = {}
+        for i, shape in enumerate(selected_shapes):
+            to_color_shape_index[shape] = i
         # find graph coloring of collision filter pairs
         collision_group = model.shape_collision_group
         # edges representing colliding shape pairs
         graph_edges = [
-            (i, j)
+            (to_color_shape_index[i], to_color_shape_index[j])
             for i, j in product(selected_shapes, selected_shapes)
             if i != j
             and (
@@ -1629,7 +1644,7 @@ class SolverMuJoCo(SolverBase):
             if visualize_graph:
                 plot_graph(selected_shapes, graph_edges)
             color_groups = color_graph(
-                num_nodes=int(selected_shapes.max() + 1),
+                num_nodes=int(len(to_color_shape_index)),
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
                 balance_colors=False,
             )
@@ -1637,7 +1652,7 @@ class SolverMuJoCo(SolverBase):
             num_colors = 0
             for group in color_groups:
                 num_colors += 1
-                shape_color[group] = num_colors
+                shape_color[selected_shapes[group]] = num_colors
         else:
             # no edges in the graph, all shapes can collide with each other
             shape_color = np.zeros(model.shape_count, dtype=np.int32)
@@ -1670,7 +1685,7 @@ class SolverMuJoCo(SolverBase):
             dim=mj_data.nconmax,
             inputs=[
                 self.to_newton_shape_index,
-                self.mjw_model.opt.cone == int(self.mujoco.mjtCone.mjCONE_PYRAMIDAL),
+                self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
                 mj_data.ncon,
                 mj_contact.frame,
                 mj_contact.dim,
@@ -1737,7 +1752,7 @@ class SolverMuJoCo(SolverBase):
         if not model.joint_count:
             raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
 
-        mujoco, mujoco_warp = import_mujoco()
+        mujoco, mujoco_warp = self.import_mujoco()
 
         actuator_args = {
             # "ctrllimited": True,
@@ -2714,7 +2729,7 @@ class SolverMuJoCo(SolverBase):
 
         if self._viewer.is_running():
             if not self.use_mujoco_cpu:
-                self.mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
+                self._mujoco_warp.get_data_into(self.mj_data, self.mj_model, self.mjw_data)
 
             self._viewer.sync()
 
