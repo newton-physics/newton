@@ -557,32 +557,6 @@ class ImplicitMPMOptions:
     """Numerical drag for the background air."""
 
 
-def _refit_test_field(test, space, space_restriction):
-    """Rebind an existing test field to a new space and restriction."""
-    test._space = space
-    test._space_partition = space_restriction.space_partition
-    test.space_restriction = space_restriction
-    test.domain = space_restriction.domain
-
-
-def _refit_trial_field(trial, space, space_restriction):
-    """Rebind an existing trial field to a new space and restriction."""
-    trial._space = space
-    trial._space_partition = space_restriction.space_partition
-    trial.domain = space_restriction.domain
-
-
-def _refit_discrete_field(field, space, space_partition):
-    """Rebind a discrete field to a new space and resize its storage if needed."""
-    field._space = space
-    field._space_partition = space_partition
-    node_count = space_partition.node_count()
-    if node_count < field.dof_values.shape[0]:
-        field.dof_values = field.dof_values[:node_count]
-    elif node_count > field.dof_values.shape[0]:
-        field.dof_values = wp.empty(n=node_count, dtype=field.dof_dtype)
-
-
 class _ImplicitMPMScratchpad:
     """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
 
@@ -701,45 +675,27 @@ class _ImplicitMPMScratchpad:
 
         fraction_space = fem.make_collocated_function_space(velocity_basis, dtype=float)
 
-        if self.velocity_test is None:
-            # test, trial and discrete fields
-            self.velocity_test = fem.make_test(velocity_space, domain=domain, space_restriction=vel_space_restriction)
-            self.fraction_test = fem.make_test(fraction_space, space_restriction=vel_space_restriction)
+        # test, trial and discrete fields
+        self.velocity_test = fem.make_test(velocity_space, domain=domain, space_restriction=vel_space_restriction)
+        self.fraction_test = fem.make_test(fraction_space, space_restriction=vel_space_restriction)
 
-            self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
+        self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
 
-            self.fraction_field = fem.make_discrete_field(fraction_space, space_partition=vel_space_partition)
-            self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-            self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
+        self.fraction_field = fem.make_discrete_field(fraction_space, space_partition=vel_space_partition)
+        self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
 
-            if has_compliant_particles:
-                elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
-                self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
+        if has_compliant_particles:
+            elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
+            self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
 
-            collider_quadrature_order = self._sym_strain_space.degree + 1
-            self.collider_quadrature = fem.RegularQuadrature(
-                domain=domain,
-                order=collider_quadrature_order,
-                family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
-            )
-            self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
-
-        else:
-            _refit_test_field(self.velocity_test, velocity_space, vel_space_restriction)
-            _refit_test_field(self.fraction_test, fraction_space, vel_space_restriction)
-
-            _refit_trial_field(self.velocity_trial, velocity_space, vel_space_restriction)
-
-            _refit_discrete_field(self.fraction_field, fraction_space, vel_space_partition)
-            _refit_discrete_field(self.collider_velocity_field, velocity_space, vel_space_partition)
-            _refit_discrete_field(self.collider_distance_field, fraction_space, vel_space_partition)
-
-            if has_compliant_particles:
-                elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
-                _refit_discrete_field(self.elastic_parameters_field, elastic_parameters_space, vel_space_partition)
-
-            self.collider_quadrature._domain = domain
-            self.background_impulse_field.domain = domain
+        collider_quadrature_order = self._sym_strain_space.degree + 1
+        self.collider_quadrature = fem.RegularQuadrature(
+            domain=domain,
+            order=collider_quadrature_order,
+            family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
+        )
+        self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
 
         self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
@@ -756,37 +712,21 @@ class _ImplicitMPMScratchpad:
         divergence_space = fem.make_collocated_function_space(strain_basis, dtype=float)
         strain_yield_parameters_space = fem.make_collocated_function_space(strain_basis, dtype=YieldParamVec)
 
-        if self.sym_strain_test is None:
-            self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
-            self.divergence_test = fem.make_test(divergence_space, space_restriction=strain_space_restriction)
-            self.strain_yield_parameters_test = fem.make_test(
-                strain_yield_parameters_space, space_restriction=strain_space_restriction
-            )
+        self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
+        self.divergence_test = fem.make_test(divergence_space, space_restriction=strain_space_restriction)
+        self.strain_yield_parameters_test = fem.make_test(
+            strain_yield_parameters_space, space_restriction=strain_space_restriction
+        )
 
-            self.sym_strain_trial = fem.make_trial(
-                sym_strain_space, domain=domain, space_partition=strain_space_partition
-            )
+        self.sym_strain_trial = fem.make_trial(sym_strain_space, domain=domain, space_partition=strain_space_partition)
 
-            self.elastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-            self.plastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-            self.strain_yield_parameters_field = strain_yield_parameters_space.make_field(
-                space_partition=strain_space_partition
-            )
+        self.elastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+        self.plastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+        self.strain_yield_parameters_field = strain_yield_parameters_space.make_field(
+            space_partition=strain_space_partition
+        )
 
-            self.background_stress_field = fem.UniformField(domain, wp.mat33(0.0))
-        else:
-            _refit_test_field(self.sym_strain_test, sym_strain_space, strain_space_restriction)
-            _refit_test_field(self.divergence_test, divergence_space, strain_space_restriction)
-            _refit_test_field(
-                self.strain_yield_parameters_test, strain_yield_parameters_space, strain_space_restriction
-            )
-            _refit_trial_field(self.sym_strain_trial, sym_strain_space, strain_space_restriction)
-            _refit_discrete_field(self.elastic_strain_delta_field, sym_strain_space, strain_space_partition)
-            _refit_discrete_field(self.plastic_strain_delta_field, sym_strain_space, strain_space_partition)
-            _refit_discrete_field(
-                self.strain_yield_parameters_field, strain_yield_parameters_space, strain_space_partition
-            )
-            self.background_stress_field.domain = domain
+        self.background_stress_field = fem.UniformField(domain, wp.mat33(0.0))
 
         self.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
 
