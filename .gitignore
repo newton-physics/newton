@@ -33,7 +33,6 @@ rspec.xml
 # Documentation
 docs/_build/
 
-
 # Airspeed Velocity
 asv/env
 asv/results
