@@ -397,33 +397,52 @@ class ArticulationView:
         self._frequency_slices = {}
         self._frequency_indices = {}
 
-        if self.joints_contiguous:
-            self._frequency_slices["joint"] = slice(selected_joint_ids[0], selected_joint_ids[-1] + 1)
+        if len(selected_joint_ids) == 0:
+            self._frequency_slices["joint"] = slice(0, 0)
         else:
-            self._frequency_indices["joint"] = wp.array(selected_joint_ids, dtype=int, device=self.device)
+            if self.joints_contiguous:
+                self._frequency_slices["joint"] = slice(selected_joint_ids[0], selected_joint_ids[-1] + 1)
+            else:
+                self._frequency_indices["joint"] = wp.array(selected_joint_ids, dtype=int, device=self.device)
 
-        if self.joint_dofs_contiguous:
-            self._frequency_slices["joint_dof"] = slice(selected_joint_dof_ids[0], selected_joint_dof_ids[-1] + 1)
+        if len(selected_joint_dof_ids) == 0:
+            self._frequency_slices["joint_dof"] = slice(0, 0)
         else:
-            self._frequency_indices["joint_dof"] = wp.array(selected_joint_dof_ids, dtype=int, device=self.device)
+            if self.joint_dofs_contiguous:
+                self._frequency_slices["joint_dof"] = slice(selected_joint_dof_ids[0], selected_joint_dof_ids[-1] + 1)
+            else:
+                self._frequency_indices["joint_dof"] = wp.array(selected_joint_dof_ids, dtype=int, device=self.device)
 
-        if self.joint_coords_contiguous:
-            self._frequency_slices["joint_coord"] = slice(selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1)
+        if len(selected_joint_coord_ids) == 0:
+            self._frequency_slices["joint_coord"] = slice(0, 0)
         else:
-            self._frequency_indices["joint_coord"] = wp.array(selected_joint_coord_ids, dtype=int, device=self.device)
+            if self.joint_coords_contiguous:
+                self._frequency_slices["joint_coord"] = slice(
+                    selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1
+                )
+            else:
+                self._frequency_indices["joint_coord"] = wp.array(
+                    selected_joint_coord_ids, dtype=int, device=self.device
+                )
 
-        if self.links_contiguous:
-            self._frequency_slices["body"] = slice(selected_link_ids[0], selected_link_ids[-1] + 1)
+        if len(selected_link_ids) == 0:
+            self._frequency_slices["body"] = slice(0, 0)
         else:
-            self._frequency_indices["body"] = wp.array(selected_link_ids, dtype=int, device=self.device)
+            if self.links_contiguous:
+                self._frequency_slices["body"] = slice(selected_link_ids[0], selected_link_ids[-1] + 1)
+            else:
+                self._frequency_indices["body"] = wp.array(selected_link_ids, dtype=int, device=self.device)
 
-        if self.shapes_contiguous:
-            # HACK: we need to skip leading static shapes
-            self._frequency_slices["shape"] = slice(
-                selected_shape_ids[0] - envs_shape_start, selected_shape_ids[-1] + 1 - envs_shape_start
-            )
+        if len(selected_shape_ids) == 0:
+            self._frequency_slices["shape"] = slice(0, 0)
         else:
-            self._frequency_indices["shape"] = wp.array(selected_shape_ids, dtype=int, device=self.device)
+            if self.shapes_contiguous:
+                # HACK: we need to skip leading static shapes
+                self._frequency_slices["shape"] = slice(
+                    selected_shape_ids[0] - envs_shape_start, selected_shape_ids[-1] + 1 - envs_shape_start
+                )
+            else:
+                self._frequency_indices["shape"] = wp.array(selected_shape_ids, dtype=int, device=self.device)
 
         self.articulation_indices = wp.array(articulation_ids, dtype=int, device=self.device)
 
@@ -501,7 +520,19 @@ class ArticulationView:
 
         if _slice is not None:
             # create strided array
-            attrib = attrib[:, _slice]
+            if _slice.start == _slice.stop:
+                #! workaround for empty slice until this is fixed: https://github.com/NVIDIA/warp/issues/958
+                ptr_offset = _slice.start * attrib.strides[1]
+                attrib = wp.array(
+                    ptr=attrib.ptr + ptr_offset if attrib.ptr is not None else None,
+                    dtype=attrib.dtype,
+                    shape=(attrib.shape[0], 0),
+                    strides=attrib.strides,
+                    device=attrib.device,
+                    pinned=attrib.pinned,
+                )
+            else:
+                attrib = attrib[:, _slice]
         else:
             # create indexed array + contiguous staging array
             _indices = self._frequency_indices.get(frequency)

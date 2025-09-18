@@ -137,8 +137,6 @@ class Model:
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
-        self.shape_collision_group_map = {}
-        """Mapping from collision group to list of shape indices."""
         self.shape_collision_filter_pairs = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
@@ -290,6 +288,8 @@ class Model:
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_group = None
         """Environment group index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.max_joints_per_articulation = 0
+        """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""

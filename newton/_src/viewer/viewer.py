@@ -38,7 +38,7 @@ class ViewerBase:
         self.model_changed = True
 
         # map from shape hash -> Instances
-        self.shape_instances = {}
+        self._shape_instances = {}
 
         # cache for geometry created via log_shapes()
         # maps from geometry hash -> mesh path
@@ -61,6 +61,23 @@ class ViewerBase:
         self.show_springs = False
         self.show_triangles = True
 
+    def is_running(self) -> bool:
+        return True
+
+    def is_paused(self) -> bool:
+        return False
+
+    def is_key_down(self, key) -> bool:
+        """Default key query API. Concrete viewers can override.
+
+        Args:
+            key: Key identifier (string or backend-specific code)
+
+        Returns:
+            bool: Always False by default.
+        """
+        return False
+
     def set_model(self, model):
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
@@ -71,8 +88,14 @@ class ViewerBase:
             self.device = model.device
             self._populate_shapes()
 
+    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        pass
+
     def begin_frame(self, time):
         self.time = time
+
+    def is_paused(self):
+        return False
 
     def log_state(self, state):
         """Render the Newton model."""
@@ -81,7 +104,7 @@ class ViewerBase:
             return
 
         # compute shape transforms and render
-        for shapes in self.shape_instances.values():
+        for shapes in self._shape_instances.values():
             shapes.update(state)
             self.log_instances(
                 shapes.name,
@@ -436,6 +459,53 @@ class ViewerBase:
     ) -> int:
         return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid)))
 
+    def _should_show_shape(self, shape_index: int, shape_flags: int) -> bool:
+        """Determine if a shape should be visible based on current settings."""
+        # If we have a viewer with geometry toggle (ViewerGL), use it
+        if hasattr(self, "show_collision_geometry"):
+            has_collision = bool(shape_flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
+            is_visible = bool(shape_flags & int(newton.ShapeFlags.VISIBLE))
+
+            # Get the body this shape belongs to
+            shape_body = self.model.shape_body.numpy()
+            body_id = shape_body[shape_index]
+
+            # Always show environmental shapes (body_id = -1) regardless of toggle
+            if body_id < 0:
+                return is_visible
+
+            if self.show_collision_geometry:
+                # Collision mode: show ONLY collision shapes for articulated bodies
+                return has_collision
+            else:
+                # Visual mode: show ONLY visual shapes (non-collision), but with fallback
+                if has_collision:
+                    # This is a collision shape - only show as fallback if no visual shapes exist for this body
+                    return is_visible and self._should_show_collision_as_fallback(shape_index)
+                else:
+                    # This is a visual shape - show it if it's marked visible
+                    return is_visible
+
+        # Default behavior for other viewers - only show if marked visible
+        return bool(shape_flags & int(newton.ShapeFlags.VISIBLE))
+
+    def _should_show_collision_as_fallback(self, shape_index: int) -> bool:
+        """Check if we should show collision geometry as fallback when no visual geometry exists."""
+        if not hasattr(self, "model") or self.model is None:
+            return True
+
+        shape_body = self.model.shape_body.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        current_body = shape_body[shape_index]
+
+        # Check if this body has any visual-only shapes
+        return not any(
+            shape_body[i] == current_body
+            and (shape_flags[i] & int(newton.ShapeFlags.VISIBLE))
+            and not (shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES))
+            for i in range(len(shape_body))
+        )
+
     def _populate_geometry(
         self,
         geo_type: int,
@@ -508,8 +578,8 @@ class ViewerBase:
 
         # loop over shapes
         for s in range(shape_count):
-            # skip invisible
-            if (shape_flags[s] & int(newton.ShapeFlags.VISIBLE)) == 0:
+            # skip based on visibility rules
+            if not self._should_show_shape(s, shape_flags[s]):
                 continue
 
             geo_type = shape_geo_type[s]
@@ -531,8 +601,8 @@ class ViewerBase:
                 geo_src,
             )
 
-            if geo_hash in self.shape_instances:
-                batch = self.shape_instances[geo_hash]
+            if geo_hash in self._shape_instances:
+                batch = self._shape_instances[geo_hash]
             else:
                 # ensure geometry exists and get mesh path
                 mesh_name = self._populate_geometry(
@@ -544,15 +614,20 @@ class ViewerBase:
                 )
 
                 # add instances
-                shape_name = f"/model/shapes/shape_{len(self.shape_instances)}"
+                shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.Instances(shape_name, mesh_name, self.device)
 
-                self.shape_instances[geo_hash] = batch
+                self._shape_instances[geo_hash] = batch
 
             parent = shape_body[s]
             xform = wp.transform_expand(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
-            color = wp.vec3(self._shape_color_map(s))
+
+            if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+                color = wp.vec3(0.5, 0.5, 0.5)
+            else:
+                color = wp.vec3(self._shape_color_map(s))
+
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             if geo_type == newton.GeoType.MESH:
@@ -570,7 +645,7 @@ class ViewerBase:
             batch.add(parent, xform, scale, color, material)
 
         # upload all batches to the GPU
-        for batch in self.shape_instances.values():
+        for batch in self._shape_instances.values():
             batch.finalize()
 
     def _log_joints(self, state):

@@ -1010,8 +1010,8 @@ def _pos_jac_analytic(
 
     # motion sub-space column S
     S = joint_S_s[problem_idx, dof_idx]
-    omega = wp.vec3(S[0], S[1], S[2])
-    v_orig = wp.vec3(S[3], S[4], S[5])
+    v_orig = wp.vec3(S[0], S[1], S[2])
+    omega = wp.vec3(S[3], S[4], S[5])
     v_ee = v_orig + wp.cross(omega, ee_pos_world)
 
     # write three Jacobian rows (x, y, z)
@@ -1459,7 +1459,7 @@ def _rot_jac_analytic(
 
     # ω column from motion sub-space
     S = joint_S_s[problem_idx, dof_idx]
-    omega = wp.vec3(S[0], S[1], S[2])
+    omega = wp.vec3(S[3], S[4], S[5])
 
     # write three Jacobian rows (rx, ry, rz)
     jacobian[problem_idx, start_idx + 0, dof_idx] = weight * omega[0]

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import copy
 import ctypes
-import itertools
 import math
 import warnings
 from dataclasses import dataclass
@@ -356,15 +355,13 @@ class ModelBuilder:
         self.shape_material_restitution = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
-        self.shape_collision_group_map = {}
-        self.last_collision_group = 0
         # radius to use for broadphase collision checking
         self.shape_collision_radius = []
         # environment group index for each shape
         self.shape_group = []
 
         # filtering to ignore certain collision pairs
-        self.shape_collision_filter_pairs = set()
+        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
         # springs
         self.spring_indices = []
@@ -408,7 +405,7 @@ class ModelBuilder:
         self.body_q = []
         self.body_qd = []
         self.body_key = []
-        self.body_shapes = {}  # mapping from body to shapes
+        self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_group = []  # environment group index for each body
 
         # rigid joints
@@ -581,7 +578,7 @@ class ModelBuilder:
 
     def _compute_replicate_offsets(self, num_copies: int, spacing: tuple[float, float, float]):
         # compute positional offsets per environment
-        spacing = np.array(spacing)
+        spacing = np.array(spacing, dtype=np.float32)
         nonzeros = np.nonzero(spacing)[0]
         num_dim = nonzeros.shape[0]
         if num_dim > 0:
@@ -608,9 +605,9 @@ class ModelBuilder:
                     offset[1] = d1 * spacing[1]
                     offset[2] = d2 * spacing[2]
                     spacings.append(offset)
-            spacings = np.array(spacings)
+            spacings = np.array(spacings, dtype=np.float32)
         else:
-            spacings = np.zeros((num_copies, 3))
+            spacings = np.zeros((num_copies, 3), dtype=np.float32)
         min_offsets = np.min(spacings, axis=0)
         correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
         # ensure the envs are not shifted below the ground plane
@@ -639,8 +636,10 @@ class ModelBuilder:
                 Defaults to (5.0, 5.0, 0.0).
         """
         offsets = self._compute_replicate_offsets(num_copies, spacing)
+        xform = wp.transform_identity()
         for i in range(num_copies):
-            self.add_builder(builder, xform=wp.transform(offsets[i], wp.quat_identity()))
+            xform[:3] = offsets[i]
+            self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
         # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
@@ -748,7 +747,7 @@ class ModelBuilder:
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+            enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path (str): The USD path to import, defaults to "/".
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -903,7 +902,6 @@ class ModelBuilder:
         builder: ModelBuilder,
         xform: Transform | None = None,
         update_num_env_count: bool = True,
-        separate_collision_group: bool = True,
         environment: int | None = None,
     ):
         """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
@@ -912,6 +910,11 @@ class ModelBuilder:
         When adding a builder, ALL entities from the source builder will be assigned to the same
         environment group, overriding any group assignments that existed in the source builder.
         This ensures that all entities from a sub-builder are grouped together as a single environment.
+
+        Environment groups automatically handle collision filtering between different environments:
+        - Entities from different environments (except -1) do not collide with each other
+        - Global entities (group -1) collide with all environments
+        - Collision groups from the source builder are preserved as-is for fine-grained collision control within each environment
 
         To create global entities that are shared across all environments, set the main builder's
         `current_env_group` to -1 before adding entities directly (not via add_builder).
@@ -937,7 +940,6 @@ class ModelBuilder:
             update_num_env_count (bool): if True, the number of environments is updated appropriately.
                 For non-global entities (environment >= 0), this either increments num_envs (when environment is None)
                 or ensures num_envs is at least environment+1. Global entities (environment=-1) do not affect num_envs.
-            separate_collision_group (bool): if True, the shapes from the articulations in `builder` will all be put into a single new collision group, otherwise, only the shapes in collision group > -1 will be moved to a new group.
             environment (int | None): environment group index to assign to ALL entities from this builder.
                 If None, uses the current environment count as the group index. Use -1 for global entities.
                 Note: environment=-1 does not increase num_envs even when update_num_env_count=True.
@@ -963,7 +965,7 @@ class ModelBuilder:
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
-            out = wp.transformf()
+            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
@@ -971,7 +973,7 @@ class ModelBuilder:
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
             if xform is not None:
-                pos_offset = wp.transform_get_translation(xform)
+                pos_offset = xform.p
             else:
                 pos_offset = np.zeros(3)
             self.particle_q.extend((np.array(builder.particle_q) + pos_offset).tolist())
@@ -1006,33 +1008,31 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, wp.transform(*builder.shape_transform[s])))
+                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
             if b == -1:
-                if -1 not in self.body_shapes:
-                    self.body_shapes[-1] = []
                 self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
             else:
                 self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
-            joint_X_p = copy.deepcopy(builder.joint_X_p)
-            joint_q = copy.deepcopy(builder.joint_q)
+            start_q = len(self.joint_q)
+            start_X_p = len(self.joint_X_p)
+            self.joint_X_p.extend(builder.joint_X_p)
+            self.joint_q.extend(builder.joint_q)
             if xform is not None:
-                for i in range(len(joint_X_p)):
+                for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(joint_q[qi : qi + 3], joint_q[qi + 3 : qi + 7])
+                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
                         tf = transform_mul(xform, xform_prev)
-                        joint_q[qi : qi + 3] = tf.p
-                        joint_q[qi + 3 : qi + 7] = tf.q
+                        qi += start_q
+                        self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
-                        joint_X_p[i] = transform_mul(xform, wp.transform(*joint_X_p[i]))
-            self.joint_X_p.extend(joint_X_p)
-            self.joint_q.extend(joint_q)
+                        self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
@@ -1042,38 +1042,19 @@ class ModelBuilder:
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
 
-        for i in range(builder.body_count):
-            if xform is not None:
-                self.body_q.append(transform_mul(xform, wp.transform(*builder.body_q[i])))
-            else:
-                self.body_q.append(builder.body_q[i])
-
-        # apply collision group
-        if separate_collision_group:
-            self.shape_collision_group.extend([self.last_collision_group + 1 for _ in builder.shape_collision_group])
+        if xform is not None:
+            for i in range(builder.body_count):
+                self.body_q.append(transform_mul(xform, builder.body_q[i]))
         else:
-            self.shape_collision_group.extend(
-                [(g + self.last_collision_group if g > -1 else -1) for g in builder.shape_collision_group]
-            )
-        shape_count = self.shape_count
-        for i, j in builder.shape_collision_filter_pairs:
-            self.shape_collision_filter_pairs.add((i + shape_count, j + shape_count))
-        for group, shapes in builder.shape_collision_group_map.items():
-            if separate_collision_group:
-                extend_group = self.last_collision_group + 1
-            else:
-                extend_group = group + self.last_collision_group if group > -1 else -1
+            self.body_q.extend(builder.body_q)
 
-            if extend_group not in self.shape_collision_group_map:
-                self.shape_collision_group_map[extend_group] = []
+        # Copy collision groups without modification
+        self.shape_collision_group.extend(builder.shape_collision_group)
 
-            self.shape_collision_group_map[extend_group].extend([s + shape_count for s in shapes])
-
-        # update last collision group counter
-        if separate_collision_group:
-            self.last_collision_group += 1
-        elif builder.last_collision_group > -1:
-            self.last_collision_group += builder.last_collision_group
+        # Copy collision filter pairs with offset
+        self.shape_collision_filter_pairs.extend(
+            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
+        )
 
         # Handle environment group assignments
         # For particles
@@ -1370,7 +1351,11 @@ class ModelBuilder:
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
                 for parent_shape in self.body_shapes[parent]:
-                    self.shape_collision_filter_pairs.add((parent_shape, child_shape))
+                    # Ensure canonical order (smaller, larger) for consistent lookup
+                    a, b = parent_shape, child_shape
+                    if a > b:
+                        a, b = b, a
+                    self.shape_collision_filter_pairs.append((a, b))
 
         return self.joint_count - 1
 
@@ -1682,7 +1667,7 @@ class ModelBuilder:
         enabled: bool = True,
     ) -> int:
         """Adds a distance joint to the model. The distance joint constraints the distance between the joint anchor points on the two bodies (see :ref:`FK-IK`) it connects to the interval [`min_distance`, `max_distance`].
-        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 angular and then 3 linear velocity dimensions).
+        It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 linear and then 3 angular velocity dimensions).
 
         Args:
             parent: The index of the parent body.
@@ -2171,8 +2156,6 @@ class ModelBuilder:
                         body_data[last_dynamic_body]["shapes"].append(shape)
                     else:
                         self.shape_body[shape] = -1
-                        if -1 not in self.body_shapes:
-                            self.body_shapes[-1] = []
                         self.body_shapes[-1].append(shape)
 
                 if last_dynamic_body > -1:
@@ -2225,18 +2208,17 @@ class ModelBuilder:
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_group.clear()  # Clear body groups
-        static_shapes = self.body_shapes.get(-1)
+        static_shapes = self.body_shapes[-1]
         self.body_shapes.clear()
-        if static_shapes is not None:
-            # restore static shapes
-            self.body_shapes[-1] = static_shapes
+        # restore static shapes
+        self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
             new_id = len(self.body_key)
             body_remap[body["original_id"]] = new_id
             self.body_key.append(body["key"])
-            self.body_q.append(list(body["q"]))
-            self.body_qd.append(list(body["qd"]))
+            self.body_q.append(body["q"])
+            self.body_qd.append(body["qd"])
             m = body["mass"]
             inertia = body["inertia"]
             self.body_mass.append(m)
@@ -2316,8 +2298,8 @@ class ModelBuilder:
             self.joint_qd.extend(joint["qd"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
-            self.joint_X_p.append(list(joint["parent_xform"]))
-            self.joint_X_c.append(list(joint["child_xform"]))
+            self.joint_X_p.append(joint["parent_xform"])
+            self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
             # Rebuild joint group - use original group if it exists
             if original_joint_group and joint["original_id"] < len(original_joint_group):
@@ -2423,7 +2405,7 @@ class ModelBuilder:
         if body in self.body_shapes:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
-                self.shape_collision_filter_pairs.add((same_body_shape, shape))
+                self.shape_collision_filter_pairs.append((same_body_shape, shape))
             self.body_shapes[body].append(shape)
         else:
             self.body_shapes[body] = [shape]
@@ -2442,17 +2424,13 @@ class ModelBuilder:
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_collision_group.append(cfg.collision_group)
-        if cfg.collision_group not in self.shape_collision_group_map:
-            self.shape_collision_group_map[cfg.collision_group] = []
-        self.last_collision_group = max(self.last_collision_group, cfg.collision_group)
-        self.shape_collision_group_map[cfg.collision_group].append(shape)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
         if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
-                        self.shape_collision_filter_pairs.add((parent_shape, shape))
+                        self.shape_collision_filter_pairs.append((parent_shape, shape))
 
         if not is_static and cfg.density > 0.0:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
@@ -4177,9 +4155,8 @@ class ModelBuilder:
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
 
-            m.shape_collision_filter_pairs = self.shape_collision_filter_pairs
+            m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = self.shape_collision_group
-            m.shape_collision_group_map = self.shape_collision_group_map
 
             # ---------------------
             # springs
@@ -4367,11 +4344,20 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
+            # Compute max joints per articulation for IK kernel launches
+            max_joints_per_articulation = 0
+            for art_idx in range(len(self.articulation_start)):
+                joint_start = articulation_start[art_idx]
+                joint_end = articulation_start[art_idx + 1]
+                num_joints = joint_end - joint_start
+                max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
             m.articulation_group = wp.array(self.articulation_group, dtype=wp.int32)
+            m.max_joints_per_articulation = max_joints_per_articulation
 
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
@@ -4434,32 +4420,39 @@ class ModelBuilder:
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
         # Copy the set of filtered-out shape pairs to avoid modifying the original
-        filters = copy.copy(self.shape_collision_filter_pairs)
+        filters = model.shape_collision_filter_pairs
         contact_pairs = []
-        # iterate over collision groups (islands)
-        for group, shapes in self.shape_collision_group_map.items():
-            for s1, s2 in itertools.combinations(shapes, 2):
-                if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
-                if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
+
+        # Sort shapes by env group in case they are not sorted, keep only colliding shapes
+        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
+        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_group[i])
+
+        # Iterate over all shapes candidates
+        for i1 in range(len(sorted_indices)):
+            s1 = sorted_indices[i1]
+            env1 = self.shape_group[s1]
+            collision_group1 = self.shape_collision_group[s1]
+            for i2 in range(i1 + 1, len(sorted_indices)):
+                s2 = sorted_indices[i2]
+                env2 = self.shape_group[s2]
+                # Skip shapes from different environments (unless one is global). As the shapes are sorted,
+                # this means the shapes in this environment group have all been processed.
+                if env1 != -1 and env1 != env2:
+                    break
+
+                # Skip shapes from different collision group (unless one is global).
+                collision_group2 = self.shape_collision_group[s2]
+                if collision_group1 != -1 and collision_group2 != -1 and collision_group1 != collision_group2:
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
-                shape_a, shape_b = min(s1, s2), max(s1, s2)
+                if s1 > s2:
+                    shape_a, shape_b = s2, s1
+                else:
+                    shape_a, shape_b = s1, s2
 
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
-                    filters.add((shape_a, shape_b))
-            if group != -1 and -1 in self.shape_collision_group_map:
-                # shapes with collision group -1 collide with all other shapes
-                for s1, s2 in itertools.product(shapes, self.shape_collision_group_map[-1]):
-                    if not (self.shape_flags[s1] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-                    if not (self.shape_flags[s2] & ShapeFlags.COLLIDE_SHAPES):
-                        continue
-                    shape_a, shape_b = min(s1, s2), max(s1, s2)
-                    if (shape_a, shape_b) not in filters:
-                        contact_pairs.append((shape_a, shape_b))
-                        filters.add((shape_a, shape_b))
+
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)

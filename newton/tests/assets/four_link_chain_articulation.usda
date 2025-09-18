@@ -1,0 +1,152 @@
+#usda 1.0
+(
+    customLayerData = {}
+    defaultPrim = "Articulation"
+    endTimeCode = 100
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+}
+
+def Xform "Articulation" (
+    apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    bool physxArticulation:enabledSelfCollisions = 0
+    int physxArticulation:solverPositionIterationCount = 64
+    int physxArticulation:solverVelocityIterationCount = 64
+    double3 xformOp:rotateXYZ = (0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+    def Sphere "Body0" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float3[] extent = [(-50, -50, -50), (50, 50, 50)]
+        vector3f physics:angularVelocity = (0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+        float3 physics:diagonalInertia = (0.0001, 0.0001, 0.0001)
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 2
+        bool physics:rigidBodyEnabled = 1
+        vector3f physics:velocity = (0, 0, 0)
+        double radius = 0.5
+        quatf xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.2, 0.2, 0.2)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+    
+    def PhysicsFixedJoint "Joint0"
+    {
+        rel physics:body0 = </Articulation/Body0>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+
+    def Cube "Body1" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        float3[] extent = [(-50, -50, -50), (50, 50, 50)]
+        vector3f physics:angularVelocity = (0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+        bool physics:collisionEnabled = 1
+        float3 physics:diagonalInertia = (0.0001, 0.0001, 0.0001)
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 2
+        bool physics:rigidBodyEnabled = 1
+        vector3f physics:velocity = (0, 0, 0)
+        double size = 0.9999999776482582
+        quatf xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (2, 0.1, 0.1)
+        double3 xformOp:translate = (0.9999999776482582, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        float drive:angular:physics:damping = 100000
+        float drive:angular:physics:maxForce = inf
+        float drive:angular:physics:stiffness = 100000
+        float drive:angular:physics:targetPosition = 0
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </Articulation/Body0>
+        rel physics:body1 = </Articulation/Body1>
+        float physics:breakForce = inf
+        float physics:breakTorque = inf
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (-0.5, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+
+    def Cube "Body2" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        float3[] extent = [(-50, -50, -50), (50, 50, 50)]
+        vector3f physics:angularVelocity = (0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+        bool physics:collisionEnabled = 1
+        float3 physics:diagonalInertia = (0.0001, 0.0001, 0.0001)
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 2
+        bool physics:rigidBodyEnabled = 1
+        vector3f physics:velocity = (0, 0, 0)
+        double size = 0.9999999776482582
+        quatf xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (2, 0.1, 0.1)
+        double3 xformOp:translate = (1.9999999552965164, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def PhysicsRevoluteJoint "Joint2"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+
+    def Cube "Body3" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMassAPI"]
+    )
+    {
+        float3[] extent = [(-50, -50, -50), (50, 50, 50)]
+        vector3f physics:angularVelocity = (0, 0, 0)
+        point3f physics:centerOfMass = (0, 0, 0)
+        bool physics:collisionEnabled = 1
+        float3 physics:diagonalInertia = (0.0001, 0.0001, 0.0001)
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 2
+        bool physics:rigidBodyEnabled = 1
+        vector3f physics:velocity = (0, 0, 0)
+        double size = 0.9999999776482582
+        quatf xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (2, 0.1, 0.1)
+        double3 xformOp:translate = (2.9999999329447746, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def PhysicsRevoluteJoint "Joint3"
+    {
+        rel physics:body0 = </Articulation/Body2>
+        rel physics:body1 = </Articulation/Body3>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+}

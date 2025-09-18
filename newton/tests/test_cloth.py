@@ -879,15 +879,10 @@ class ClothSim:
         self.sim_time = 0.0
 
         if self.do_rendering:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path="Test Cloth",
-                model=self.model,
-                scaling=self.renderer_scale_factor,
-                show_joints=True,
-                show_particles=False,
-            )
+            self.viewer = newton.viewer.ViewerGL()
+            self.viewer.set_model(self.model)
         else:
-            self.renderer = None
+            self.viewer = None
 
         for _frame in range(self.num_test_frames):
             if self.graph:
@@ -895,10 +890,10 @@ class ClothSim:
             else:
                 self.simulate()
 
-            if self.renderer is not None:
-                self.renderer.begin_frame()
-                self.renderer.render(self.state0)
-                self.renderer.end_frame()
+            if self.viewer is not None:
+                self.viewer.begin_frame(self.sim_time)
+                self.viewer.log_state(self.state0)
+                self.viewer.end_frame()
             self.sim_time = self.sim_time + self.frame_dt
 
     def set_points_fixed(self, model, fixed_particles):

@@ -41,36 +41,42 @@ ROBOT_CONFIGS = {
         "integrator": "euler",
         "njmax": 100,
         "nconmax": 50,
+        "ls_parallel": False,
     },
     "g1": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 400,
         "nconmax": 150,
+        "ls_parallel": True,
     },
     "h1": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 400,
         "nconmax": 150,
+        "ls_parallel": True,
     },
     "cartpole": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 50,
         "nconmax": 50,
+        "ls_parallel": True,
     },
     "ant": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 50,
         "nconmax": 50,
+        "ls_parallel": True,
     },
     "quadruped": {
         "solver": "newton",
         "integrator": "euler",
         "njmax": 75,
         "nconmax": 50,
+        "ls_parallel": True,
     },
 }
 
@@ -99,12 +105,7 @@ def _setup_g1(articulation_builder):
         enable_self_collisions=False,
     )
     simplified_meshes = {}
-    try:
-        import tqdm  # noqa: PLC0415
-
-        meshes = tqdm.tqdm(articulation_builder.shape_source, desc="Simplifying meshes")
-    except ImportError:
-        meshes = articulation_builder.shape_source
+    meshes = articulation_builder.shape_source
     for i, m in enumerate(meshes):
         if m is None:
             continue
@@ -150,7 +151,7 @@ def _setup_cartpole(articulation_builder):
     )
 
     # Setting root pose
-    root_dofs = 3
+    root_dofs = 1
     articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
 
     return root_dofs
@@ -205,6 +206,7 @@ class Example:
         njmax=None,
         nconmax=None,
         builder=None,
+        ls_parallel=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -236,6 +238,7 @@ class Example:
         integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
+        ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=use_mujoco_cpu,
@@ -243,12 +246,14 @@ class Example:
             integrator=integrator,
             iterations=solver_iteration,
             ls_iterations=ls_iteration,
-            nefc_per_env=njmax,
+            njmax=njmax,
             ncon_per_env=nconmax,
+            ls_parallel=ls_parallel,
         )
 
         if stage_path and not headless:
-            self.renderer = newton.viewer.RendererOpenGL(self.model, stage_path)
+            self.renderer = newton.viewer.ViewerGL()
+            self.renderer.set_model(self.model)
         else:
             self.renderer = None
 
@@ -289,7 +294,7 @@ class Example:
             return
 
         self.renderer.begin_frame(self.sim_time)
-        self.renderer.render(self.state_0)
+        self.renderer.log_state(self.state_0)
         self.renderer.end_frame()
 
     @staticmethod
@@ -313,14 +318,14 @@ class Example:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
         builder = newton.ModelBuilder()
-        offsets = newton.examples.compute_env_offsets(num_envs)
-        for i in range(num_envs):
-            if randomize:
-                articulation_builder.joint_q[root_dofs:] = rng.uniform(
-                    -1.0, 1.0, size=(len(articulation_builder.joint_q) - root_dofs,)
+        builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
+        if randomize:
+            njoint = len(articulation_builder.joint_q)
+            for i in range(num_envs):
+                istart = i * njoint
+                builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
+                    -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
-            builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
-
         builder.add_ground_plane()
         return builder
 
@@ -377,6 +382,9 @@ if __name__ == "__main__":
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
+    parser.add_argument(
+        "--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search."
+    )
 
     args = parser.parse_known_args()[0]
 
@@ -400,6 +408,7 @@ if __name__ == "__main__":
             ls_iteration=args.ls_iteration,
             njmax=args.njmax,
             nconmax=args.nconmax,
+            ls_parallel=args.ls_parallel,
         )
 
         # Print simulation configuration summary
@@ -433,6 +442,7 @@ if __name__ == "__main__":
         )
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
+        # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
         print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
         print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
         print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")
