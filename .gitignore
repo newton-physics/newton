@@ -27,13 +27,15 @@ rspec.xml
 # IDEs & Editors
 .vscode/
 .history/
+.idea/
 
 # Documentation
 docs/_build/
-
-.idea/
 
 # Airspeed Velocity
 asv/env
 asv/results
 asv/html
+
+# visualizer / imgui
+imgui.ini

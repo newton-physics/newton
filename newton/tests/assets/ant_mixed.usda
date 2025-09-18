@@ -285,7 +285,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 10
             float state:angular:physics:velocity = 0.1
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
             
             # custom newton property (joint frequency)
             float newton:state:joint:testJointScalar = 2.25
@@ -330,7 +330,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 20
             float state:angular:physics:velocity = 0.2
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "front_right_leg" (
@@ -363,7 +363,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 30
             float state:angular:physics:velocity = 0.3
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "front_right_foot" (
@@ -396,7 +396,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 30
             float state:angular:physics:velocity = 0.3
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "left_back_leg" (
@@ -429,7 +429,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 40
             float state:angular:physics:velocity = 0.4
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "left_back_foot" (
@@ -462,7 +462,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 60
             float state:angular:physics:velocity = 0.6
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "right_back_leg" (
@@ -495,7 +495,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 70
             float state:angular:physics:velocity = 0.7
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
 
         def PhysicsRevoluteJoint "right_back_foot" (
@@ -528,7 +528,7 @@ def Xform "ant" (
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 80
             float state:angular:physics:velocity = 0.8
-            float physxJoint:armature = 0.01
+            float physxJoint:armature = 0.02
         }
     }
 

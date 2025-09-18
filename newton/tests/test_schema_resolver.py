@@ -2,14 +2,31 @@
 """
 Schema resolver tests for USD imports using ant.usda.
 
-This suite validates:
-1. Schema resolver priority handling with ["newton", "physx"] priority
-2. PhysX attribute mapping to Newton equivalents from USD file
-3. Engine-specific attribute parsing and storage from USD content
+Validation tests for the schema resolution system for Newton, PhysX,
+and MuJoCo physics engines when importing USD files. Tests cover:
 
-Prerequisites:
-- Activate newton conda environment: conda activate newton
-- Run from newton/tests directory: python3 test_schema_resolver.py
+## Core Schema Resolution:
+1. **Basic USD Import** - Validates successful import with Newton-PhysX priority
+2. **Schema Priority Handling** - Tests that plugin priority order affects attribute resolution
+3. **Engine-Specific Attribute Collection** - Verifies collection and storage of engine attributes
+4. **Direct Resolver Testing** - Tests Resolver class directly with USD stage manipulation
+
+## Attribute Resolution & Transformation Mapping:
+5. **PhysX Joint Armature** - Tests PhysX joint armature values are correctly resolved
+6. **Time Step Resolution** - Validates PhysX timeStepsPerSecond conversion to time_step
+7. **MuJoCo Solref Conversion** - Tests MuJoCo solref parameter conversion to stiffness/damping
+8. **Layered Fallback Behavior** - Tests 3-layer fallback: authored → explicit default → engine mapping default
+
+## Custom Attributes & State Initialization:
+9. **Newton Custom Attributes** - Tests custom Newton attributes (model/state/control assignments)
+10. **PhysX Engine Attributes** - Validates PhysX-specific attribute collection from ant_mixed.usda
+11. **Joint State Initialization** - Tests joint position/velocity initialization from USD attributes
+12. **D6 Joint State Initialization** - Tests complex D6 joint state initialization from humanoid.usda
+
+## Test Assets:
+- `ant.usda`: Basic ant robot with PhysX attributes
+- `ant_mixed.usda`: Extended ant with Newton custom attributes and mixed engine attributes
+- `humanoid.usda`: mujoco humanoid with D6 joints and Newton state attributes
 """
 
 import unittest
@@ -45,8 +62,14 @@ class TestSchemaResolver(unittest.TestCase):
         self.ant_usda_path = test_dir / "assets" / "ant.usda"
         self.assertTrue(self.ant_usda_path.exists(), f"Ant USDA file not found: {self.ant_usda_path}")
 
-    def test_import_ant_with_newton_physx_priority(self):
-        """Test importing ant.usda with Newton-PhysX priority and validate schema resolution."""
+    def test_basic_newton_physx_priority(self):
+        """
+        Test basic USD import functionality with Newton-PhysX schema priority.
+
+        Validates that parse_usd() successfully imports ant.usda with Newton having priority
+        over PhysX for attribute resolution. Confirms the import produces valid body/shape maps,
+        joint counts, and engine-specific attribute collection works properly.
+        """
         builder = ModelBuilder()
 
         # Import with Newton-PhysX priority
@@ -73,11 +96,24 @@ class TestSchemaResolver(unittest.TestCase):
         return result, builder
 
     def test_physx_joint_armature(self):
+        """
+        Test PhysX joint armature attribute resolution and priority handling.
+
+        Verifies that PhysX joint armature values (0.02) are correctly resolved from ant_mixed.usda
+        when PhysX has priority over Newton. Also confirms that when only Newton/MuJoCo plugins
+        are used (without PhysX), correct armature values are still found, demonstrating
+        fallback behavior.
+        """
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        ant_mixed_path = assets_dir / "ant_mixed.usda"
+        self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
+
         builder = ModelBuilder()
         parse_usd(
             builder=builder,
-            source=str(self.ant_usda_path),
-            schema_priority=[PhysxPlugin(), NewtonPlugin()],  # PhysX first
+            source=str(ant_mixed_path),
+            schema_priority=[PhysxPlugin()],  # PhysX first
             collect_engine_specific_attrs=True,
             verbose=False,
         )
@@ -87,12 +123,12 @@ class TestSchemaResolver(unittest.TestCase):
             if armature > 0:
                 armature_values_found.append(armature)
         for _i, armature in enumerate(armature_values_found):
-            self.assertAlmostEqual(armature, 0.01, places=3)
+            self.assertAlmostEqual(armature, 0.02, places=3)
 
         builder = ModelBuilder()
         parse_usd(
             builder=builder,
-            source=str(self.ant_usda_path),
+            source=str(ant_mixed_path),
             schema_priority=[NewtonPlugin(), MjcPlugin()],  # nothing should be found
             collect_engine_specific_attrs=True,
             verbose=False,
@@ -106,7 +142,14 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(armature, 0.01, places=3)
 
     def test_engine_specific_attrs_collection(self):
-        """Test collection of engine-specific attributes from real ant.usda file."""
+        """
+        Test engine-specific attribute collection from USD files.
+
+        Validates that engine-specific attributes (PhysX joint armature, limit damping,
+        articulation settings) are properly collected and stored during USD import.
+        Confirms expected attribute counts and values match the authored USD content,
+        ensuring the collection mechanism works correctly across different attribute types.
+        """
         builder = ModelBuilder()
 
         # Import with engine attribute collection enabled
@@ -154,7 +197,14 @@ class TestSchemaResolver(unittest.TestCase):
             )
 
     def test_schema_priority(self):
-        """Test that schema priority affects attribute resolution with USD."""
+        """
+        Test schema plugin priority ordering affects attribute resolution.
+
+        Imports the same USD file with different plugin priority orders (Newton-first vs PhysX-first)
+        and validates that both imports produce identical results. This confirms that priority
+        ordering works correctly and doesn't break the import process, while ensuring consistent
+        joint armature resolution regardless of priority order.
+        """
         builder1 = ModelBuilder()
         builder2 = ModelBuilder()
 
@@ -186,7 +236,14 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(builder1.joint_armature[6], builder2.joint_armature[6])
 
     def test_resolver(self):
-        """Test schema resolver directly with USD stage."""
+        """
+        Test direct Resolver class functionality with USD stage manipulation.
+
+        Opens a USD stage directly and tests the Resolver class methods for attribute resolution
+        and engine-specific attribute collection. Validates that individual prim attribute queries
+        work correctly and that the resolver can accumulate attributes from multiple prims during
+        direct stage traversal.
+        """
 
         # Open the USD stage
         stage = Usd.Stage.Open(str(self.ant_usda_path))
@@ -223,7 +280,14 @@ class TestSchemaResolver(unittest.TestCase):
                     self.assertAlmostEqual(attrs["physxJoint:armature"], 0.01, places=6)
 
     def test_time_step_resolution(self):
-        """Test time step resolution from USD physics scene."""
+        """
+        Test PhysX timeStepsPerSecond to time_step conversion functionality.
+
+        Locates the physics scene prim in ant.usda and tests the resolver's ability to
+        convert PhysX timeStepsPerSecond attribute (120 Hz) to Newton's time_step format
+        (1/120 seconds). Validates the mathematical transformation and fallback behavior
+        for time step resolution.
+        """
         # Open the USD stage
         stage = Usd.Stage.Open(str(self.ant_usda_path))
         self.assertIsNotNone(stage)
@@ -251,7 +315,14 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(time_step, expected_time_step, places=6)
 
     def test_mjc_solref(self):
-        """Load pre-authored ant_mixed.usda and compare resolved gains under different priorities."""
+        """
+        Test MuJoCo solref parameter conversion to stiffness and damping values.
+
+        Uses ant_mixed.usda to test MuJoCo's solref (solver reference) parameter conversion
+        to Newton's stiffness/damping representation. Compares results between Newton-priority
+        and MuJoCo-priority imports, validating that MuJoCo's solref values produce 2x the
+        stiffness/damping compared to PhysX/Newton when using specific solref parameters.
+        """
 
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -285,7 +356,15 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(mjc_kd, 2.0 * physx_kd, places=6)
 
     def test_newton_custom_attributes(self):
-        """Read pre-authored newton custom attributes in ant_mixed.usda and validate import/modelBuilder."""
+        """
+        Test Newton custom attribute parsing, assignment, and materialization.
+
+        Uses ant_mixed.usda with pre-authored Newton custom attributes to validate the complete
+        custom attribute pipeline: parsing from USD, assignment to model/state/control objects,
+        dtype inference (vec2, vec3, quat, scalars), default value handling, and final
+        materialization on the built model. Tests both authored and default values across
+        different assignment types and data types.
+        """
         # Use ant_mixed.usda which contains authored custom attributes
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -444,8 +523,15 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(int(control_joint_int[joint_idx]), 3)
         self.assertEqual(int(control_joint_int[other_joint_idx]), 0)
 
-    def test_physx_engine_specific_attrs_in_ant_mixed(self):
-        """Validate PhysX engine-specific attributes are collected from ant_mixed.usda."""
+    def test_physx_engine_specific_attrs(self):
+        """
+        Test PhysX engine-specific attribute collection and validation.
+
+        Uses ant_mixed.usda to validate that PhysX-specific attributes (articulation settings,
+        joint armature, limit damping) are properly collected during import. Confirms that
+        the expected attribute types are found, values match the authored USD content,
+        and the collection mechanism works across different PhysX attribute namespaces.
+        """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
         usd_path = assets_dir / "ant_mixed.usda"
@@ -494,12 +580,19 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Joint armature and limit damping should match authored values
         for _prim_path, val in joint_armature_found[:3]:
-            self.assertAlmostEqual(float(val), 0.01, places=6)
+            self.assertAlmostEqual(float(val), 0.02, places=6)
         for _prim_path, val in limit_damping_found[:3]:
             self.assertAlmostEqual(float(val), 0.1, places=6)
 
     def test_layered_fallback_behavior(self):
-        """Test the three-layer fallback: authored -> explicit default -> engine mapping default using ant_mixed.usda."""
+        """
+        Test three-layer attribute resolution fallback mechanism.
+
+        Uses ant_mixed.usda to test the complete fallback hierarchy: authored USD values →
+        explicit default parameters → engine mapping defaults. Validates each layer works
+        correctly by testing scenarios with authored PhysX values, explicit defaults,
+        and engine-specific mapping defaults across different plugin priority orders.
+        """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
         usd_path = assets_dir / "ant_mixed.usda"
@@ -522,9 +615,9 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = Resolver([NewtonPlugin(), PhysxPlugin()])
 
         # Test 1: Authored PhysX value takes precedence over explicit default
-        # physxJoint:armature = 0.01 should be returned even with explicit default
+        # physxJoint:armature = 0.02 should be returned even with explicit default
         val1 = resolver.get_value(joint_with_physx_armature, "joint", "armature", default=0.99)
-        self.assertAlmostEqual(val1, 0.01, places=6)
+        self.assertAlmostEqual(val1, 0.02, places=6)
 
         # Test 2: No Newton authored value, explicit default used
         resolver_newton_only = Resolver([NewtonPlugin()])
@@ -555,7 +648,14 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsNone(val6)
 
     def test_joint_state_initialization(self):
-        """Test that joint positions and velocities are correctly initialized from USD attributes."""
+        """
+        Test joint state initialization from PhysX state attributes.
+
+        Uses ant_mixed.usda with authored state:angular:physics:position/velocity attributes
+        to validate that joint positions and velocities are correctly initialized during
+        model building. Tests revolute joint state initialization with degree-to-radian
+        conversion and confirms expected values match the authored USD content.
+        """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
         usd_path = assets_dir / "ant_mixed.usda"
@@ -622,7 +722,14 @@ class TestSchemaResolver(unittest.TestCase):
         )
 
     def test_humanoid_d6_joint_state_initialization(self):
-        """Test D6 joint state initialization from Newton-namespaced attributes in humanoid.usda."""
+        """
+        Test complex D6 joint state initialization from Newton attributes.
+
+        Uses humanoid.usda with authored Newton rotX/rotY/rotZ position/velocity attributes
+        to validate D6 joint state initialization. Tests multi-DOF joint handling, per-axis
+        state initialization, and validates both D6 joints (multiple rotational DOFs) and
+        revolute joints (single DOF) are correctly initialized from authored Newton attributes.
+        """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
         humanoid_path = assets_dir / "humanoid.usda"
@@ -644,7 +751,6 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Map D6 joint indices to their expected Newton attribute values
         # Based on verbose output: joints 2,5,7,9,10,12,13 are D6 joints
-        # From the verbose output we can see the actual order and values
         expected_d6_joints = {
             2: [(-60.0, 0.6), (50.0, 0.55)],  # left_upper_arm: rotX, rotZ
             5: [(10.0, 0.1), (15.0, 0.15)],  # lower_waist: rotX, rotY
