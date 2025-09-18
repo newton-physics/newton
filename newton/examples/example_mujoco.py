@@ -218,8 +218,6 @@ class Example:
         self.use_cuda_graph = use_cuda_graph
         self.use_mujoco_cpu = use_mujoco_cpu
         self.actuation = actuation
-        solver_iteration = solver_iteration if solver_iteration is not None else 100
-        ls_iteration = ls_iteration if ls_iteration is not None else 50
 
         # set numpy random seed
         self.seed = 123
@@ -234,21 +232,17 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        solver = solver if solver is not None else ROBOT_CONFIGS[robot]["solver"]
-        integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
-        njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
-        nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
-        ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
-        self.solver = newton.solvers.SolverMuJoCo(
+        self.solver = Example.create_solver(
             self.model,
-            use_mujoco_cpu=use_mujoco_cpu,
-            solver=solver,
-            integrator=integrator,
-            iterations=solver_iteration,
-            ls_iterations=ls_iteration,
-            njmax=njmax,
-            ncon_per_env=nconmax,
-            ls_parallel=ls_parallel,
+            robot,
+            use_mujoco_cpu,
+            solver,
+            integrator,
+            solver_iteration,
+            ls_iteration,
+            njmax,
+            nconmax,
+            ls_parallel,
         )
 
         if stage_path and not headless:
@@ -328,6 +322,39 @@ class Example:
                 ).tolist()
         builder.add_ground_plane()
         return builder
+
+    @staticmethod
+    def create_solver(
+        model,
+        robot,
+        use_mujoco_cpu,
+        solver=None,
+        integrator=None,
+        solver_iteration=None,
+        ls_iteration=None,
+        njmax=None,
+        nconmax=None,
+        ls_parallel=None,
+    ):
+        solver_iteration = solver_iteration if solver_iteration is not None else 100
+        ls_iteration = ls_iteration if ls_iteration is not None else 50
+        solver = solver if solver is not None else ROBOT_CONFIGS[robot]["solver"]
+        integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
+        njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
+        nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
+        ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
+
+        return newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=use_mujoco_cpu,
+            solver=solver,
+            integrator=integrator,
+            iterations=solver_iteration,
+            ls_iterations=ls_iteration,
+            njmax=njmax,
+            ncon_per_env=nconmax,
+            ls_parallel=ls_parallel,
+        )
 
 
 if __name__ == "__main__":
