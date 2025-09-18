@@ -58,6 +58,10 @@ class KpiInitializeSolver:
     timeout = 3600
 
     def setup(self, robot, num_envs):
+        if robot == "h1":
+            # use more samples for H1 to reduce variance
+            self.repeat = 6
+
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
@@ -115,10 +119,14 @@ class FastInitializeSolver:
 
     rounds = 1
     number = 1
-    repeat = 5
+    repeat = 3
     min_run_count = 1
 
     def setup(self, robot, num_envs):
+        if robot == "h1":
+            # use more samples for H1 to reduce variance
+            self.repeat = 6
+
         wp.init()
         builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
 
