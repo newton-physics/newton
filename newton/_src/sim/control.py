@@ -35,9 +35,9 @@ class Control:
 
         The degrees of freedom for free joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
-        ``(t_x, t_y, t_z, f_x, f_y, f_z)``, where ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular) and ``f_x``, ``f_y``, and ``f_z`` are the components
-        of the force vector (linear). Both linear forces and angular torques applied to free joints are
+        ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
+        of the force vector (linear) and ``t_x``, ``t_y``, and ``t_z`` are the
+        components of the torque vector (angular). Both linear forces and angular torques applied to free joints are
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
 

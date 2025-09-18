@@ -64,7 +64,7 @@ def compute_ee_delta(
     rot_des = wp.transform_get_rotation(target)
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
-    ee_delta[env_id] = wp.spatial_vector(ang_diff[0], ang_diff[1], ang_diff[2], pos_diff[0], pos_diff[1], pos_diff[2])
+    ee_delta[env_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
 
 
 def compute_body_jacobian(
@@ -185,7 +185,7 @@ class Example:
             self.create_articulation(franka)
 
             xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.scene.add_builder(franka, xform, separate_collision_group=False)
+            self.scene.add_builder(franka, xform)
             self.bodies_per_env = franka.body_count
             self.dof_q_per_env = franka.joint_coord_count
             self.dof_qd_per_env = franka.joint_dof_count

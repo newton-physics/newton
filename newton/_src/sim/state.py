@@ -44,11 +44,11 @@ class State:
 
         self.body_qd: wp.array | None = None
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: angular velocity; last three: linear velocity."""
+        First three entries: linear velocity; last three: angular velocity."""
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: torque; last three: linear force.
+        First three entries: linear force; last three: torque.
 
         Note:
             :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass

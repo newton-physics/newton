@@ -21,7 +21,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.utils.recorder import BasicRecorder, ModelAndStateRecorder
+import newton.utils
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 wp.config.quiet = True
@@ -32,7 +32,7 @@ class TestRecorder(unittest.TestCase):
 
 
 def test_body_transform_recorder(test: TestRecorder, device):
-    recorder = BasicRecorder()
+    recorder = newton.utils.RecorderBasic()
 
     transform1 = wp.array([wp.transform([1, 2, 3], [0, 0, 0, 1])], dtype=wp.transform, device=device)
     transform2 = wp.array([wp.transform([4, 5, 6], [0, 0, 0, 1])], dtype=wp.transform, device=device)
@@ -51,7 +51,7 @@ def test_body_transform_recorder(test: TestRecorder, device):
     try:
         recorder.save_to_file(file_path)
 
-        new_recorder = BasicRecorder()
+        new_recorder = newton.utils.RecorderBasic()
         new_recorder.load_from_file(file_path, device=device)
 
         test.assertEqual(len(new_recorder.transforms_history), 2)
@@ -90,7 +90,8 @@ def _compare_serialized_data(test, data1, data2):
         test.fail(f"Unhandled type for comparison: {type(data1)}")
 
 
-def test_model_and_state_recorder(test: TestRecorder, device):
+def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_extension: str):
+    """Helper function to test model and state recorder with a specific file format."""
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
@@ -104,22 +105,43 @@ def test_model_and_state_recorder(test: TestRecorder, device):
         state.body_qd.fill_(wp.spatial_vector([0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i, 0.5 * i, 0.6 * i]))
         states.append(state)
 
-    recorder = ModelAndStateRecorder()
+    recorder = newton.utils.RecorderModelAndState()
     recorder.record_model(model)
     for state in states:
         recorder.record(state)
 
-    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp:
         file_path = tmp.name
 
     try:
         recorder.save_to_file(file_path)
 
-        new_recorder = ModelAndStateRecorder()
+        # Verify the file was created with the expected format
+        test.assertTrue(os.path.exists(file_path), f"File {file_path} was not created")
+
+        # For binary files, verify it's actually binary data
+        if file_extension == ".bin":
+            with open(file_path, "rb") as f:
+                data = f.read(10)  # Read first 10 bytes
+                # CBOR2 binary data should not be readable as text
+                test.assertIsInstance(data, bytes, "Binary file should contain bytes")
+
+        new_recorder = newton.utils.RecorderModelAndState()
         new_recorder.load_from_file(file_path)
 
-        _compare_serialized_data(test, recorder.model_data, new_recorder.model_data)
+        # Test that the model was loaded correctly
+        test.assertIsNotNone(new_recorder.deserialized_model)
 
+        # Test that we can create a new model and restore it
+        restored_model = newton.Model(device=device)
+        new_recorder.playback_model(restored_model)
+
+        # Basic model validation - check that key properties match
+        test.assertEqual(restored_model.body_count, model.body_count)
+        test.assertEqual(restored_model.joint_count, model.joint_count)
+        test.assertEqual(restored_model.shape_count, model.shape_count)
+
+        # Test state history
         test.assertEqual(len(recorder.history), len(new_recorder.history))
         for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
             _compare_serialized_data(test, original_state_data, loaded_state_data)
@@ -129,20 +151,44 @@ def test_model_and_state_recorder(test: TestRecorder, device):
             os.remove(file_path)
 
 
+def test_model_and_state_recorder_json(test: TestRecorder, device):
+    """Test model and state recorder with JSON format."""
+    _test_model_and_state_recorder_with_format(test, device, ".json")
+
+
+def test_model_and_state_recorder_binary(test: TestRecorder, device):
+    """Test model and state recorder with binary CBOR2 format."""
+    # Skip binary test if CBOR2 is not available
+    try:
+        import cbor2  # noqa: F401, PLC0415
+    except ImportError:
+        test.skipTest("cbor2 library not available for binary format testing")
+
+    _test_model_and_state_recorder_with_format(test, device, ".bin")
+
+
 devices = get_test_devices()
-for device in devices:
-    add_function_test(
-        TestRecorder,
-        f"test_body_transform_recorder_{device}",
-        test_body_transform_recorder,
-        devices=[device],
-    )
-    add_function_test(
-        TestRecorder,
-        f"test_model_and_state_recorder_{device}",
-        test_model_and_state_recorder,
-        devices=[device],
-    )
+
+add_function_test(
+    TestRecorder,
+    "test_body_transform_recorder",
+    test_body_transform_recorder,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_model_and_state_recorder_json",
+    test_model_and_state_recorder_json,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_model_and_state_recorder_binary",
+    test_model_and_state_recorder_binary,
+    devices=devices,
+)
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

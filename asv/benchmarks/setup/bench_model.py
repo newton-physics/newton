@@ -18,6 +18,7 @@ import gc
 import warp as wp
 
 wp.config.enable_backward = False
+wp.config.quiet = True
 
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
@@ -79,3 +80,29 @@ class FastInitializeModel:
             model = builder.finalize()
 
         del model
+
+
+if __name__ == "__main__":
+    import argparse
+
+    from newton.utils import run_benchmark
+
+    benchmark_list = {
+        "KpiInitializeModel": KpiInitializeModel,
+        "FastInitializeModel": FastInitializeModel,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        run_benchmark(benchmark)

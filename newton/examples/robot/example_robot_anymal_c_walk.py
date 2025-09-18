@@ -59,8 +59,8 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 
 def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
     root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
     joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
     joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
     vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
@@ -142,14 +142,13 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True)
 
         self.viewer.set_model(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -187,53 +186,51 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            obs = compute_obs(
-                self.act,
-                self.state_0,
-                self.joint_pos_initial,
-                self.torch_device,
-                self.lab_to_mujoco_indices,
-                self.gravity_vec,
-                self.command,
-            )
-            with torch.no_grad():
-                self.act = self.policy(obs)
-                self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-                a = self.joint_pos_initial + 0.5 * self.rearranged_act
-                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-                wp.copy(
-                    self.control.joint_target, a_wp
-                )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
-            if self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        obs = compute_obs(
+            self.act,
+            self.state_0,
+            self.joint_pos_initial,
+            self.torch_device,
+            self.lab_to_mujoco_indices,
+            self.gravity_vec,
+            self.command,
+        )
+        with torch.no_grad():
+            self.act = self.policy(obs)
+            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
+            a = self.joint_pos_initial + 0.5 * self.rearranged_act
+            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+            wp.copy(
+                self.control.joint_target, a_wp
+            )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+
         self.sim_time += self.frame_dt
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
 
 if __name__ == "__main__":
+    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
 
     example = Example(viewer)

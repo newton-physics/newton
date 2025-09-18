@@ -34,9 +34,13 @@ def get_asset(filename: str) -> str:
 
 
 def run(example):
+    if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
+        example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
+
     while example.viewer.is_running():
-        with wp.ScopedTimer("step", active=False):
-            example.step()
+        if not example.viewer.is_paused():
+            with wp.ScopedTimer("step", active=False):
+                example.step()
 
         with wp.ScopedTimer("render", active=False):
             example.render()
@@ -108,8 +112,7 @@ def create_parser():
     """
     import argparse  # noqa: PLC0415
 
-    # add_help=False since this is a parent parser
-    parser = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--viewer",
@@ -122,6 +125,12 @@ def create_parser():
         "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to initialize the viewer headless (for OpenGL viewer only).",
+    )
 
     return parser
 
@@ -146,8 +155,10 @@ def init(parser=None):
     # parse args
     if parser is None:
         parser = create_parser()
-
-    args = parser.parse_known_args()[0]
+        args = parser.parse_known_args()[0]
+    else:
+        # When parser is provided, use parse_args() to properly handle --help
+        args = parser.parse_args()
 
     # Set device if specified
     if args.device:
@@ -155,7 +166,7 @@ def init(parser=None):
 
     # Create viewer based on type
     if args.viewer == "gl":
-        viewer = newton.viewer.ViewerGL()
+        viewer = newton.viewer.ViewerGL(headless=args.headless)
     elif args.viewer == "usd":
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
@@ -199,6 +210,8 @@ def main():
         "robot_g1": "newton.examples.robot.example_robot_g1",
         "robot_h1": "newton.examples.robot.example_robot_h1",
         "robot_humanoid": "newton.examples.robot.example_robot_humanoid",
+        "robot_policy": "newton.examples.robot.example_robot_policy",
+        "robot_ur10": "newton.examples.robot.example_robot_ur10",
         "selection_articulations": "newton.examples.selection.example_selection_articulations",
         "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
         "selection_materials": "newton.examples.selection.example_selection_materials",
@@ -207,6 +220,7 @@ def main():
         "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
         "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
         "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
+        "sensor_contact": "newton.examples.sensors.example_sensor_contact",
     }
 
     if len(sys.argv) < 2:

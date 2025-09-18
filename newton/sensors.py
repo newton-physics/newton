@@ -14,12 +14,20 @@
 # limitations under the License.
 
 # Contact sensors
-from ._src.utils.contact_sensor import (
+from ._src.sensors.contact_sensor import (
     ContactSensor,
+    MatchKind,
     populate_contacts,
+)
+
+# Raycast sensors
+from ._src.sensors.raycast_sensor import (
+    RaycastSensor,
 )
 
 __all__ = [
     "ContactSensor",
+    "MatchKind",
+    "RaycastSensor",
     "populate_contacts",
 ]

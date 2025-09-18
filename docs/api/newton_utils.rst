@@ -9,8 +9,8 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
-   BasicRecorder
-   ModelAndStateRecorder
+   RecorderBasic
+   RecorderModelAndState
 
 .. rubric:: Functions
 
@@ -37,6 +37,7 @@ newton.utils
    quat_to_rpy
    quat_twist
    quat_twist_angle
+   run_benchmark
    smooth_max
    smooth_min
    transform_twist

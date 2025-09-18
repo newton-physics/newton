@@ -17,10 +17,13 @@ import subprocess
 import sys
 
 import warp as wp
+
+wp.config.quiet = True
+
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 
-class SlowExampleAnymalMuJoCo:
+class SlowExampleRobotAnymal:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -38,20 +41,17 @@ class SlowExampleAnymalMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_anymal_c_walk",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--headless",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleCartpoleMuJoCo:
+class SlowExampleRobotCartpole:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -69,20 +69,17 @@ class SlowExampleCartpoleMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_cartpole",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--no-use-cuda-graph",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleClothManipulation:
+class SlowExampleClothFranka:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -98,20 +95,18 @@ class SlowExampleClothManipulation:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_robot_manipulating_cloth",
-            "--stage-path",
-            "None",
+            "newton.examples.cloth.example_cloth_franka",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleClothSelfContactVBD:
+class SlowExampleClothTwist:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -127,20 +122,18 @@ class SlowExampleClothSelfContactVBD:
         command = [
             sys.executable,
             "-m",
-            "newton.examples.example_cloth_self_contact",
-            "--stage-path",
-            "None",
+            "newton.examples.cloth.example_cloth_twist",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleHumanoidMuJoCo:
+class SlowExampleRobotHumanoid:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -158,21 +151,17 @@ class SlowExampleHumanoidMuJoCo:
             sys.executable,
             "-m",
             "newton.examples.robot.example_robot_humanoid",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
-            "--headless",
-            "--no-use-cuda-graph",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-class SlowExampleQuadrupedXPBD:
+class SlowExampleBasicUrdf:
     warmup_time = 0
     repeat = 2
     number = 1
@@ -190,13 +179,41 @@ class SlowExampleQuadrupedXPBD:
             sys.executable,
             "-m",
             "newton.examples.basic.example_basic_urdf",
-            "--stage-path",
-            "None",
             "--num-frames",
             "1",
+            "--viewer",
+            "null",
         ]
 
         # Run the script as a subprocess
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        subprocess.run(command, capture_output=True, text=True, check=True)
 
-        print(f"Output:\n{result.stdout}\n{result.stderr}")
+
+if __name__ == "__main__":
+    import argparse
+
+    from newton.utils import run_benchmark
+
+    benchmark_list = {
+        "SlowExampleBasicUrdf": SlowExampleBasicUrdf,
+        "SlowExampleRobotAnymal": SlowExampleRobotAnymal,
+        "SlowExampleRobotCartpole": SlowExampleRobotCartpole,
+        "SlowExampleRobotHumanoid": SlowExampleRobotHumanoid,
+        "SlowExampleClothFranka": SlowExampleClothFranka,
+        "SlowExampleClothTwist": SlowExampleClothTwist,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        run_benchmark(benchmark)

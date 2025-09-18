@@ -596,8 +596,8 @@ def evaluate_body_particle_contact(
             if body_index >= 0:
                 body_v_s = body_qd[body_index]
 
-            body_w = wp.spatial_top(body_v_s)
-            body_v = wp.spatial_bottom(body_v_s)
+            body_w = wp.spatial_bottom(body_v_s)
+            body_v = wp.spatial_top(body_v_s)
 
             # compute the body velocity at the particle position
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])

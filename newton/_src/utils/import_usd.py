@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import os
 import re
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -27,7 +29,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 
@@ -71,7 +73,7 @@ def parse_usd(
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes. If a shape has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -136,7 +138,7 @@ def parse_usd(
         "convexhull": "convex_hull",
         "boundingsphere": "bounding_sphere",
         "boundingcube": "bounding_box",
-        "meshSimplification": "quadratic",
+        "meshsimplification": "quadratic",
     }
     # mapping from remeshing method to a list of shape indices
     remeshing_queue = {}
@@ -271,7 +273,8 @@ def parse_usd(
         multi_env_builder = builder
         builder = ModelBuilder()
 
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
+    non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -309,6 +312,9 @@ def parse_usd(
             or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
         ):
             return
+        path_name = str(prim.GetPath())
+        if any(re.match(path, path_name) for path in ignore_paths):
+            return
         xform = incoming_xform * parse_xform(prim)
         if prim.IsInstance():
             proto = prim.GetPrototype()
@@ -322,9 +328,6 @@ def parse_usd(
         if type_name.endswith("joint"):
             return
         scale = parse_scale(prim)
-        path_name = str(prim.GetPath())
-        if any(re.match(path, path_name) for path in ignore_paths):
-            return
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -513,27 +516,41 @@ def parse_usd(
                 scale = np.array(op.Get(), dtype=np.float32)
         return scale
 
+    def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
+        if get_transforms:
+            parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+        else:
+            parent_tf = None
+            child_tf = None
+
+        parent_path = str(joint_desc.body0)
+        child_path = str(joint_desc.body1)
+        parent_id = body_index_map.get(parent_path, -1)
+        child_id = body_index_map.get(child_path, -1)
+        # If child_id is -1, swap parent and child
+        if child_id == -1:
+            if parent_id == -1:
+                warnings.warn(f"Skipping joint {joint_desc.primPath}: both bodies unresolved", stacklevel=2)
+                return
+            parent_id, child_id = child_id, parent_id
+            if get_transforms:
+                parent_tf, child_tf = child_tf, parent_tf
+            if verbose:
+                print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+        if get_transforms:
+            return parent_id, child_id, parent_tf, child_tf
+        else:
+            return parent_id, child_id
+
     def parse_joint(joint_desc, joint_path, incoming_xform=None):
         if not joint_desc.jointEnabled and only_load_enabled_joints:
             return
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
-        parent_path = str(joint_desc.body0)
-        child_path = str(joint_desc.body1)
-        parent_id = path_body_map.get(parent_path, -1)
-        child_id = path_body_map.get(child_path, -1)
-        parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
-        child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
-        # If child_id is -1, swap parent and child
-        if child_id == -1:
-            if parent_id == -1:
-                if verbose:
-                    print(f"Skipping joint {joint_path}: both bodies unresolved")
-                return
-            parent_id, child_id = child_id, parent_id
-            parent_tf, child_tf = child_tf, parent_tf
-            if verbose:
-                print(f"Joint {joint_path} connects {parent_path} to world")
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
+            joint_desc, path_body_map, get_transforms=True
+        )
         if incoming_xform is not None:
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
@@ -764,7 +781,11 @@ def parse_usd(
         )
 
     joint_descriptions = {}
+    # stores physics spec for every RigidBody in the selected range
     body_specs = {}
+    # set of prim paths of rigid bodies that are ignored
+    # (to avoid repeated regex evaluations)
+    ignored_body_paths = set()
     material_specs = {}
     # maps from rigid body path to density value if it has been defined
     body_density = {}
@@ -784,8 +805,19 @@ def parse_usd(
     # Setting up the default material
     material_specs[""] = PhysicsMaterial()
 
+    def warn_invalid_desc(path, descriptor) -> bool:
+        if not descriptor.isValid:
+            warnings.warn(
+                f'Warning: Invalid {type(descriptor).__name__} descriptor for prim at path "{path}".',
+                stacklevel=2,
+            )
+            return True
+        return False
+
     # Parsing physics materials from the stage
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
+        if warn_invalid_desc(sdf_path, desc):
+            continue
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -797,7 +829,12 @@ def parse_usd(
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs, strict=False):
+            if warn_invalid_desc(prim_path, rigid_body_desc):
+                continue
             body_path = str(prim_path)
+            if any(re.match(p, body_path) for p in ignore_paths):
+                ignored_body_paths.add(body_path)
+                continue
             body_specs[body_path] = rigid_body_desc
             body_density[body_path] = default_shape_density
             prim = stage.GetPrimAtPath(prim_path)
@@ -816,6 +853,9 @@ def parse_usd(
                     body_density[body_path] = density
             # <--- Marking for deprecation
 
+    # maps from articulation_id to bool indicating if self-collisions are enabled
+    articulation_has_self_collision = {}
+
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         for key, value in ret_dict.items():
             if key in {
@@ -831,15 +871,18 @@ def parse_usd(
                     joint_descriptions[str(path)] = joint_spec
 
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
-        # maps from articulation_id to bool indicating if self-collisions are enabled
-        articulation_has_self_collision = {}
 
         articulation_id = builder.articulation_count
         body_data = {}
         for path, desc in zip(paths, articulation_descs, strict=False):
-            prim = stage.GetPrimAtPath(path)
-            builder.add_articulation(str(path))
+            if warn_invalid_desc(path, desc):
+                continue
+            articulation_path = str(path)
+            if any(re.match(p, articulation_path) for p in ignore_paths):
+                continue
+            articulation_prim = stage.GetPrimAtPath(path)
             body_ids = {}
+            body_keys = []
             current_body_id = 0
             art_bodies = []
             if verbose:
@@ -848,11 +891,13 @@ def parse_usd(
                 if verbose:
                     print(f"\t{p!s}")
                 key = str(p)
+                if key in ignored_body_paths:
+                    continue
 
                 if p == Sdf.Path.emptyPath:
-                    current_body_id = -1
+                    continue
                 else:
-                    usd_prim = stage.GetPrimAtPath(Sdf.Path(key))
+                    usd_prim = stage.GetPrimAtPath(p)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -880,72 +925,119 @@ def parse_usd(
                     del body_specs[key]
 
                 body_ids[key] = current_body_id
+                body_keys.append(key)
                 current_body_id += 1
 
+            if len(body_ids) == 0:
+                # no bodies under the articulation or we ignored all of them
+                continue
+
+            # determine the joint graph for this articulation
             joint_names = []
             joint_edges: list[tuple[int, int]] = []
             for p in desc.articulatedJoints:
-                joint_names.append(str(p))
-                joint_desc = joint_descriptions[str(p)]
-                joint_edges.append((body_ids[str(joint_desc.body0)], body_ids[str(joint_desc.body1)]))
+                joint_key = str(p)
+                joint_desc = joint_descriptions[joint_key]
+                #! it may be possible that a joint is filtered out in the middle of
+                #! a chain of joints, which results in a disconnected graph
+                #! we should raise an error in this case
+                if any(re.match(p, joint_key) for p in ignore_paths):
+                    continue
+                if str(joint_desc.body0) in ignored_body_paths:
+                    continue
+                if str(joint_desc.body1) in ignored_body_paths:
+                    continue
+                joint_names.append(joint_key)
+                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
+                joint_edges.append((parent_id, child_id))
 
-            # add joints in topological order
-            if joint_ordering is not None:
-                if verbose:
-                    print(f"Sorting joints using {joint_ordering} ordering...")
-                sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
-                if verbose:
-                    print("Joint ordering:", sorted_joints)
-            else:
-                sorted_joints = np.arange(len(joint_names))
+            articulation_xform = wp.mul(incoming_world_xform, parse_xform(articulation_prim))
 
-            # insert the bodies in the order of the joints
-            if bodies_follow_joint_ordering:
-                inserted_bodies = set()
-                for jid in sorted_joints:
-                    parent, child = joint_edges[jid]
-                    if parent >= 0 and parent not in inserted_bodies:
-                        b = add_body(**body_data[parent])
-                        inserted_bodies.add(parent)
-                        art_bodies.append(b)
-                        path_body_map[body_data[parent]["key"]] = b
-                    if child >= 0 and child not in inserted_bodies:
-                        b = add_body(**body_data[child])
-                        inserted_bodies.add(child)
-                        art_bodies.append(b)
-                        path_body_map[body_data[child]["key"]] = b
-
-            articulation_xform = wp.mul(incoming_world_xform, parse_xform(prim))
-            first_joint_parent = joint_edges[sorted_joints[0]][0]
-            if first_joint_parent != -1:
-                # the mechanism is floating since there is no joint connecting it to the world
-                # we explicitly add a free joint to make sure Featherstone and MuJoCo can simulate it
+            if len(joint_edges) == 0:
+                # We have an articulation without joints, i.e. only free rigid bodies
                 if bodies_follow_joint_ordering:
-                    child_body = body_data[first_joint_parent]
-                    child_body_id = path_body_map[child_body["key"]]
+                    for i in body_ids.values():
+                        builder.add_articulation(body_data[i]["key"])
+                        child_body_id = add_body(**body_data[i])
+                        # apply the articulation transform to the body
+                        builder.body_q[child_body_id] = articulation_xform
+                        builder.add_joint_free(child=child_body_id)
+                        # note the free joint's coordinates will be initialized by the body_q of the
+                        # child body
                 else:
-                    child_body_id = art_bodies[first_joint_parent]
-                builder.add_joint_free(child=child_body_id)
-                builder.joint_q[-7:] = articulation_xform
-            for joint_id, i in enumerate(sorted_joints):
-                if joint_id == 0 and first_joint_parent == -1:
-                    # the articulation root joint receives the articulation transform as parent transform
-                    # except if we already inserted a floating-base joint
-                    parse_joint(
-                        joint_descriptions[joint_names[i]],
-                        joint_path=joint_names[i],
-                        incoming_xform=articulation_xform,
-                    )
+                    for i, child_body_id in enumerate(art_bodies):
+                        builder.add_articulation(body_keys[i])
+                        # apply the articulation transform to the body
+                        builder.body_q[child_body_id] = articulation_xform
+                        builder.add_joint_free(child=child_body_id)
+                        # note the free joint's coordinates will be initialized by the body_q of the
+                        # child body
+                sorted_joints = []
+            else:
+                # we have an articulation with joints, we need to sort them topologically
+                builder.add_articulation(articulation_path)
+                if joint_ordering is not None:
+                    if verbose:
+                        print(f"Sorting joints using {joint_ordering} ordering...")
+                    sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
+                    if verbose:
+                        print("Joint ordering:", sorted_joints)
                 else:
-                    parse_joint(
-                        joint_descriptions[joint_names[i]],
-                        joint_path=joint_names[i],
-                    )
+                    sorted_joints = np.arange(len(joint_names))
+
+            if len(sorted_joints) > 0:
+                # insert the bodies in the order of the joints
+                if bodies_follow_joint_ordering:
+                    inserted_bodies = set()
+                    for jid in sorted_joints:
+                        parent, child = joint_edges[jid]
+                        if parent >= 0 and parent not in inserted_bodies:
+                            b = add_body(**body_data[parent])
+                            inserted_bodies.add(parent)
+                            art_bodies.append(b)
+                            path_body_map[body_data[parent]["key"]] = b
+                        if child >= 0 and child not in inserted_bodies:
+                            b = add_body(**body_data[child])
+                            inserted_bodies.add(child)
+                            art_bodies.append(b)
+                            path_body_map[body_data[child]["key"]] = b
+
+                first_joint_parent = joint_edges[sorted_joints[0]][0]
+                if first_joint_parent != -1:
+                    # the mechanism is floating since there is no joint connecting it to the world
+                    # we explicitly add a free joint connecting the first body in the articulation to the world
+                    # to make sure Featherstone and MuJoCo can simulate it
+                    if bodies_follow_joint_ordering:
+                        child_body = body_data[first_joint_parent]
+                        child_body_id = path_body_map[child_body["key"]]
+                    else:
+                        child_body_id = art_bodies[first_joint_parent]
+                    # apply the articulation transform to the body
+                    #! investigate why assigning body_q (joint_q) by art_xform * body_q is breaking the tests
+                    # builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
+                    builder.add_joint_free(child=child_body_id)
+                    builder.joint_q[-7:] = articulation_xform
+
+                # insert the remaining joints in topological order
+                for joint_id, i in enumerate(sorted_joints):
+                    if joint_id == 0 and first_joint_parent == -1:
+                        # the articulation root joint receives the articulation transform as parent transform
+                        # except if we already inserted a floating-base joint
+                        parse_joint(
+                            joint_descriptions[joint_names[i]],
+                            joint_path=joint_names[i],
+                            incoming_xform=articulation_xform,
+                        )
+                    else:
+                        parse_joint(
+                            joint_descriptions[joint_names[i]],
+                            joint_path=joint_names[i],
+                        )
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
             articulation_has_self_collision[articulation_id] = parse_generic(
-                prim,
+                articulation_prim,
                 "physxArticulation:enabledSelfCollisions",
                 default=enable_self_collisions,
             )
@@ -953,11 +1045,16 @@ def parse_usd(
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
-        parse_body(
+        key = str(path)
+        body_id = parse_body(
             rigid_body_desc,
             stage.GetPrimAtPath(path),
             incoming_xform=incoming_world_xform,
+            add_body_to_builder=True,
         )
+        # add articulation and free joint for this body
+        builder.add_articulation(key)
+        builder.add_joint_free(child=body_id)
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
@@ -975,10 +1072,14 @@ def parse_usd(
         }:
             paths, shape_specs = value
             for xpath, shape_spec in zip(paths, shape_specs, strict=False):
+                if warn_invalid_desc(xpath, shape_spec):
+                    continue
+                path = str(xpath)
+                if any(re.match(p, path) for p in ignore_paths):
+                    continue
                 prim = stage.GetPrimAtPath(xpath)
                 # print(prim)
                 # print(shape_spec)
-                path = str(xpath)
                 if path in path_shape_map:
                     if verbose:
                         print(f"Shape at {path} already added, skipping.")
@@ -1152,23 +1253,21 @@ def parse_usd(
     for path1, path2 in path_collision_filters:
         shape1 = path_shape_map[path1]
         shape2 = path_shape_map[path2]
-        builder.shape_collision_filter_pairs.add((shape1, shape2))
+        builder.shape_collision_filter_pairs.append((shape1, shape2))
 
     # apply collision filters to all shapes that have no collision
     for shape_id in no_collision_shapes:
         for other_shape_id in range(builder.shape_count):
             if other_shape_id != shape_id:
-                builder.shape_collision_filter_pairs.add((shape_id, other_shape_id))
+                builder.shape_collision_filter_pairs.append((shape_id, other_shape_id))
 
     # apply collision filters from articulations that have self collisions disabled
     for art_id, bodies in articulation_bodies.items():
         if not articulation_has_self_collision[art_id]:
-            for body1 in bodies:
-                for body2 in bodies:
-                    if body1 != body2:
-                        for shape1 in builder.body_shapes[body1]:
-                            for shape2 in builder.body_shapes[body2]:
-                                builder.shape_collision_filter_pairs.add((shape1, shape2))
+            for body1, body2 in itertools.combinations(bodies, 2):
+                for shape1 in builder.body_shapes[body1]:
+                    for shape2 in builder.body_shapes[body2]:
+                        builder.shape_collision_filter_pairs.append((shape1, shape2))
 
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1179,6 +1278,8 @@ def parse_usd(
                 continue
             body_path = str(path)
             body_id = path_body_map.get(body_path, -1)
+            if body_id == -1:
+                continue
             mass = parse_float(prim, "physics:mass")
             if mass is not None:
                 builder.body_mass[body_id] = mass
@@ -1196,6 +1297,40 @@ def parse_usd(
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
+
+            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated
+            I_m = np.array(builder.body_inertia[body_id])
+            mass = builder.body_mass[body_id]
+            if I_m.max() == 0.0:
+                if mass > 0.0:
+                    # Heuristic: assume a uniform density sphere with the given mass
+                    # For a sphere: I = (2/5) * m * r^2
+                    # Estimate radius from mass assuming reasonable density (e.g., water density ~1000 kg/m³)
+                    # This gives r = (3*m/(4*π*p))^(1/3)
+                    density = default_shape_density  # kg/m³
+                    volume = mass / density
+                    radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
+                    _, _, I_default = compute_sphere_inertia(density, radius)
+
+                    # Apply parallel axis theorem if center of mass is offset
+                    com = builder.body_com[body_id]
+                    if np.linalg.norm(com) > 1e-6:
+                        # I = I_cm + m * d² where d is distance from COM to body origin
+                        d_squared = np.sum(com**2)
+                        I_default += mass * d_squared * np.eye(3)
+
+                    builder.body_inertia[body_id] = I_default
+                    builder.body_inv_inertia[body_id] = wp.inverse(I_default)
+
+                    if verbose:
+                        print(
+                            f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]"
+                        )
+                else:
+                    warnings.warn(
+                        f"Body {body_path} has zero mass and zero inertia despite having the MassAPI USD schema applied.",
+                        stacklevel=2,
+                    )
 
     # add free joints to floating bodies that's just been added by import_usd
     new_bodies = path_body_map.values()

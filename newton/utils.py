@@ -119,9 +119,19 @@ __all__ += [
 # ==================================================================================
 # recorders
 # ==================================================================================
-from ._src.utils.recorder import BasicRecorder, ModelAndStateRecorder  # noqa: E402
+from ._src.utils.recorder import RecorderBasic, RecorderModelAndState  # noqa: E402
 
 __all__ += [
-    "BasicRecorder",
-    "ModelAndStateRecorder",
+    "RecorderBasic",
+    "RecorderModelAndState",
+]
+
+# ==================================================================================
+# run benchmark
+# ==================================================================================
+
+from ._src.utils.benchmark import run_benchmark  # noqa: E402
+
+__all__ += [
+    "run_benchmark",
 ]
