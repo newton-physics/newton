@@ -67,29 +67,23 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        with wp.ScopedTimer("replicate", detailed=False):
-            builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
 
         builder.add_ground_plane()
 
-        with wp.ScopedTimer("finalize", detailed=False):
-            self.model = builder.finalize()
-        with wp.ScopedTimer("create SolverMuJoCo", detailed=True):
-            self.solver = newton.solvers.SolverMuJoCo(
-                self.model,
-                use_mujoco_cpu=False,
-                solver="newton",
-                integrator="euler",
-                njmax=300,
-                ncon_per_env=150,
-                cone="elliptic",
-                impratio=100,
-                iterations=100,
-                ls_iterations=50,
-            )
-
-        import sys
-        sys.exit(0)
+        self.model = builder.finalize()
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            use_mujoco_cpu=False,
+            solver="newton",
+            integrator="euler",
+            njmax=300,
+            ncon_per_env=150,
+            cone="elliptic",
+            impratio=100,
+            iterations=100,
+            ls_iterations=50,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -140,7 +134,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=8192, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
 
     viewer, args = newton.examples.init(parser)
 

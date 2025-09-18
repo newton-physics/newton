@@ -123,13 +123,11 @@ class Example:
             allegro_hand.joint_target[i] = 0.0
 
         builder = newton.ModelBuilder()
-        with wp.ScopedTimer("replicate", detailed=False):
-            builder.replicate(allegro_hand, self.num_envs, spacing=(1, 1, 0))
+        builder.replicate(allegro_hand, self.num_envs, spacing=(1, 1, 0))
 
         builder.add_ground_plane()
 
-        with wp.ScopedTimer("finalize", detailed=False):
-            self.model = builder.finalize()
+        self.model = builder.finalize()
         # print("Colliders:")
         # print("\n".join(map(str, ((np.array(self.model.shape_key)[self.model.shape_contact_pairs.numpy()])).tolist())))
 
@@ -137,20 +135,18 @@ class Example:
 
         self.env_time = wp.zeros(self.num_envs, dtype=wp.float32)
 
-        with wp.ScopedTimer("solver", detailed=True):
-            self.solver = newton.solvers.SolverMuJoCo(
-                self.model,
-                solver="newton",
-                integrator="euler",
-                njmax=200,
-                ncon_per_env=150,
-                impratio=10.0,
-                cone="elliptic",
-                iterations=100,
-                ls_iterations=50,
-                use_mujoco_cpu=False,
-            )
-        import sys; sys.exit()
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            solver="newton",
+            integrator="euler",
+            njmax=200,
+            ncon_per_env=150,
+            impratio=10.0,
+            cone="elliptic",
+            iterations=100,
+            ls_iterations=50,
+            use_mujoco_cpu=False,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -219,7 +215,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=8192, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
 
     viewer, args = newton.examples.init(parser)
 

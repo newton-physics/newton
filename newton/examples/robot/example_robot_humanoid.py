@@ -118,7 +118,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=2, help="Total number of simulated environments.")
+    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
 
     viewer, args = newton.examples.init(parser)
 
