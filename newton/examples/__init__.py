@@ -190,9 +190,10 @@ def main():
     example_map = {}
     modules = ["basic", "cloth", "diffsim", "ik", "mpm", "robot", "selection", "sensors"]
     for module in sorted(modules):
-        for example in os.listdir(os.path.join(get_source_directory(), module)):
+        for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):
             if example.endswith(".py") and example != "__init__.py":
-                example_map[example[:-3]] = f"newton.examples.{module}.{example[:-3]}"
+                example_name = example[8:-3]  # Remove "example_" prefix and ".py" file ext
+                example_map[example_name] = f"newton.examples.{module}.{example[:-3]}"
 
     if len(sys.argv) < 2:
         print("Usage: python -m newton.examples <example_name>")
