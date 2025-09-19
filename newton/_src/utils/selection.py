@@ -517,29 +517,31 @@ class ArticulationView:
             _slice = _slice.get()
         elif not isinstance(_slice, int):
             raise TypeError(f"Invalid slice type: expected Slice or int, got {type(_slice)}")
-
-        if _slice is not None:
-            # create strided array
-            if _slice.start == _slice.stop:
-                #! workaround for empty slice until this is fixed: https://github.com/NVIDIA/warp/issues/958
-                ptr_offset = _slice.start * attrib.strides[1]
-                attrib = wp.array(
-                    ptr=attrib.ptr + ptr_offset if attrib.ptr is not None else None,
-                    dtype=attrib.dtype,
-                    shape=(attrib.shape[0], 0),
-                    strides=attrib.strides,
-                    device=attrib.device,
-                    pinned=attrib.pinned,
-                )
-            else:
-                attrib = attrib[:, _slice]
+        if isinstance(_slice, int):
+            attrib = attrib[:, _slice]
         else:
-            # create indexed array + contiguous staging array
-            _indices = self._frequency_indices.get(frequency)
-            if _indices is None:
-                raise AttributeError(f"Unable to determine the frequency of attribute '{name}'")
-            attrib = wp.indexedarray(attrib, [None, _indices])
-            attrib._staging_array = wp.empty_like(attrib)
+            if _slice is not None:
+                # create strided array
+                if _slice.start == _slice.stop:
+                    #! workaround for empty slice until this is fixed: https://github.com/NVIDIA/warp/issues/958
+                    ptr_offset = _slice.start * attrib.strides[1]
+                    attrib = wp.array(
+                        ptr=attrib.ptr + ptr_offset if attrib.ptr is not None else None,
+                        dtype=attrib.dtype,
+                        shape=(attrib.shape[0], 0),
+                        strides=attrib.strides,
+                        device=attrib.device,
+                        pinned=attrib.pinned,
+                    )
+                else:
+                    attrib = attrib[:, _slice]
+            else:
+                # create indexed array + contiguous staging array
+                _indices = self._frequency_indices.get(frequency)
+                if _indices is None:
+                    raise AttributeError(f"Unable to determine the frequency of attribute '{name}'")
+                attrib = wp.indexedarray(attrib, [None, _indices])
+                attrib._staging_array = wp.empty_like(attrib)
 
         return attrib
 
