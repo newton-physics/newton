@@ -1616,6 +1616,34 @@ class SolverMuJoCo(SolverBase):
             )
 
     @staticmethod
+    def find_body_collision_filter_pairs(colliding_shapes, shape_filters, shape_bodies, body_shapes):
+        """For shape collision filter pairs, find body collision filter pairs that are contained within."""
+        colliding_shapes = set(colliding_shapes)
+        body_filters = set()
+        body_non_filterable = set()
+        remaining_shape_filters = []
+        for sp in shape_filters:
+            if sp[0] not in colliding_shapes or sp[1] not in colliding_shapes:
+                continue
+            b1, b2 = shape_bodies[sp[0]], shape_bodies[sp[1]]
+            bp = min(b1, b2), max(b1, b2)
+            if bp in body_filters:
+                continue
+            if bp in body_non_filterable:
+                remaining_shape_filters.append(sp)
+                continue
+            b1_shapes = {s for s in body_shapes[bp[0]] if s in colliding_shapes}
+            b2_shapes = {s for s in body_shapes[bp[1]] if s in colliding_shapes}
+            if all(
+                (bs1, bs2) in shape_filters or (bs2, bs1) in shape_filters for bs1, bs2 in product(b1_shapes, b2_shapes)
+            ):
+                body_filters.add(bp)
+            else:
+                body_non_filterable.add(bp)
+                remaining_shape_filters.append(sp)
+        return list(body_filters), remaining_shape_filters
+
+    @staticmethod
     def color_collision_shapes(model: Model, selected_shapes: nparray, visualize_graph: bool = False) -> np.ndarray:
         """
         Find a graph coloring of the collision filter pairs in the model.
@@ -1950,7 +1978,7 @@ class SolverMuJoCo(SolverBase):
         mj_bodies = [spec.worldbody]
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
-        # mapping from Newton shape id to MuJoCo geom id
+        # mapping from Newton shape id to MuJoCo geom name
         shape_mapping = {}
 
         # ensure unique names
@@ -1992,6 +2020,15 @@ class SolverMuJoCo(SolverBase):
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
         colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
+
+        # filter out non-colliding bodies using excludes
+        body_filters, shape_filters = self.find_body_collision_filter_pairs(
+            colliding_shapes,
+            self.model.shape_collision_filter_pairs,
+            self.model.shape_body.list(),
+            self.model.body_shapes,
+        )
+
         shape_color = self.color_collision_shapes(model, colliding_shapes)
 
         # number of shapes we are instantiating in MuJoCo (which will be replicated for the number of envs)
@@ -2315,6 +2352,10 @@ class SolverMuJoCo(SolverBase):
         assert len(spec.geoms) == colliding_shapes_per_env, (
             "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
         )
+
+        for b1, b2 in body_filters:
+            mb1, mb2 = body_mapping[b1], body_mapping[b2]
+            spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         self.mj_model = spec.compile()
 
