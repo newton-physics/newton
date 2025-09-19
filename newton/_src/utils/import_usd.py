@@ -87,7 +87,7 @@ def parse_usd(
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_priority (list[SchemaPlugin]): Plugin instances in priority order. Default is
-            [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
+            [NewtonPlugin()].
         collect_solver_specific_attrs (bool): If True, solver-specific attributes are collected. Default is True.
 
     Returns:
@@ -639,8 +639,8 @@ def parse_usd(
                 initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "linear_velocity", default=None)
 
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-            joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-            joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
+            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
+            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
             if key == UsdPhysics.ObjectType.PrismaticJoint:
                 builder.add_joint_prismatic(**joint_params)
@@ -665,6 +665,8 @@ def parse_usd(
             # Store initial state for D6 joints
             d6_initial_positions = {}
             d6_initial_velocities = {}
+            # Track which axes were added as DOFs (in order)
+            d6_dof_axes = []
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -767,6 +769,8 @@ def parse_usd(
                             friction=joint_friction,
                         )
                     )
+                    # Track that this axis was added as a DOF
+                    d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
                     # Resolve per-axis rotational gains
                     rot_name = _rot_names[dof]
@@ -805,15 +809,17 @@ def parse_usd(
                             friction=joint_friction,
                         )
                     )
+                    # Track that this axis was added as a DOF
+                    d6_dof_axes.append(rot_name)
                     joint_prim.CreateAttribute(
                         f"physics:tensor:{_rot_names[dof]}:dofOffset", Sdf.ValueTypeNames.UInt
                     ).Set(num_dofs)
-                    joint_prim.CreateAttribute(
-                        f"state:{_rot_names[dof]}:physics:position", Sdf.ValueTypeNames.Float
-                    ).Set(0)
-                    joint_prim.CreateAttribute(
-                        f"state:{_rot_names[dof]}:physics:velocity", Sdf.ValueTypeNames.Float
-                    ).Set(0)
+                    # joint_prim.CreateAttribute(
+                    #     f"state:{_rot_names[dof]}:physics:position", Sdf.ValueTypeNames.Float
+                    # ).Set(0)
+                    # joint_prim.CreateAttribute(
+                    #     f"state:{_rot_names[dof]}:physics:velocity", Sdf.ValueTypeNames.Float
+                    # ).Set(0)
                     num_dofs += 1
 
             builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
@@ -869,9 +875,8 @@ def parse_usd(
                 q_end = len(builder.joint_q)
                 qd_end = len(builder.joint_qd)
 
-            # Apply initial values for each axis that was added as a DOF
-            dof_idx = 0
-            for axis_name in ["transX", "transY", "transZ", "rotX", "rotY", "rotZ"]:
+            # Apply initial values for each axis that was actually added as a DOF
+            for dof_idx, axis_name in enumerate(d6_dof_axes):
                 if dof_idx >= (qd_end - qd_start):
                     break
 
@@ -890,10 +895,6 @@ def parse_usd(
                     builder.joint_qd[qd_start + dof_idx] = vel_val
                     if verbose:
                         print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
-
-                # Only increment if this axis actually has a DOF (simplified heuristic)
-                if axis_name in d6_initial_positions or axis_name in d6_initial_velocities:
-                    dof_idx += 1
 
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}

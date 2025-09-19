@@ -855,7 +855,7 @@ class ModelBuilder:
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             schema_priority (list[SchemaPlugin]): Plugin instances in priority order. Default is
-                [MjcPlugin(), PhysxPlugin(), NewtonPlugin()].
+                [NewtonPlugin()].
             collect_solver_specific_attrs (bool): If True, solver-specific attributes are collected. Default is True.
 
         Returns:

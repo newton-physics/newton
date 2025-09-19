@@ -298,6 +298,9 @@ def Xform "ant" (
             # new types for testing
             float2 newton:control:joint:testControlJointVec2 = (0.25, -0.75)
             quatf newton:model:joint:testJointQuat = (0.70710677, 0, 0, 0.70710677)
+            # These are made up attributes for mjc that is used only for testing engine specific attribute collection
+            float mjc:model:joint:testMjcJointScalar = 3.14
+            vector3f mjc:state:joint:testMjcJointVec3 = (1.0, 2.0, 3.0)
         }
 
         def PhysicsRevoluteJoint "front_left_foot" (

@@ -296,7 +296,7 @@ class TestSchemaResolver(unittest.TestCase):
         # Find the physics scene prim
         physics_scene_prim = None
         for prim in stage.Traverse():
-            if "physicsScene" in str(prim.GetPath()).lower():
+            if "physicsscene" in str(prim.GetPath()).lower():
                 physics_scene_prim = prim
                 break
 
@@ -675,18 +675,7 @@ class TestSchemaResolver(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
 
-        # Joints in ant_mixed.usda have state:angular:physics:position/velocity values:
-        # Based on actual USD file content (some joints may have same values):
-        expected_values = [
-            (10.0, 0.1),  # front_left_leg
-            (20.0, 0.2),  # front_left_foot
-            (30.0, 0.3),  # front_right_leg
-            (30.0, 0.3),  # front_right_foot (same as front_right_leg for now)
-            (40.0, 0.4),  # left_back_leg (was updated to 50° but test shows 40°)
-            (60.0, 0.6),  # left_back_foot
-            (70.0, 0.7),  # right_back_leg
-            (80.0, 0.8),  # right_back_foot
-        ]
+        # Joints in ant_mixed.usda have state:angular:physics:position/velocity values
 
         # Check joint positions and velocities
         joint_q = state.joint_q.numpy()
@@ -695,28 +684,49 @@ class TestSchemaResolver(unittest.TestCase):
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
 
+        # Map joint keys to expected values for more robust testing
+        expected_joint_values = {
+            "/ant/joints/front_left_leg": (10.0, 0.1),
+            "/ant/joints/front_left_foot": (20.0, 0.2),
+            "/ant/joints/front_right_leg": (30.0, 0.3),
+            "/ant/joints/front_right_foot": (30.0, 0.3),
+            "/ant/joints/left_back_leg": (40.0, 0.4),
+            "/ant/joints/left_back_foot": (60.0, 0.6),
+            "/ant/joints/right_back_leg": (70.0, 0.7),
+            "/ant/joints/right_back_foot": (80.0, 0.8),
+        }
+
         # Find revolute joints and validate their specific values
         revolute_joints_found = 0
-        revolute_idx = 0
         for i in range(model.joint_count):
             joint_type = joint_types[i]
             if joint_type == 1:  # JointType.REVOLUTE
+                joint_key = builder.joint_key[i] if i < len(builder.joint_key) else None
+                if joint_key not in expected_joint_values:
+                    continue
+
                 q_start = int(joint_q_start[i])
                 qd_start = int(joint_qd_start[i])
 
                 actual_pos = joint_q[q_start]
                 actual_vel = joint_qd[qd_start]
 
-                # Check against expected values for this specific joint
-                if revolute_idx < len(expected_values):
-                    expected_pos_deg, expected_vel = expected_values[revolute_idx]
-                    expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
+                expected_pos_deg, expected_vel = expected_joint_values[joint_key]
+                expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
-                    self.assertAlmostEqual(actual_pos, expected_pos_rad, places=4)
-                    self.assertAlmostEqual(actual_vel, expected_vel, places=4)
-                    revolute_joints_found += 1
-
-                revolute_idx += 1
+                self.assertAlmostEqual(
+                    actual_pos,
+                    expected_pos_rad,
+                    places=4,
+                    msg=f"Joint {joint_key} position mismatch: expected {expected_pos_deg}°, got {actual_pos * 180 / 3.14159:.1f}°",
+                )
+                self.assertAlmostEqual(
+                    actual_vel,
+                    expected_vel,
+                    places=4,
+                    msg=f"Joint {joint_key} velocity mismatch: expected {expected_vel}, got {actual_vel}",
+                )
+                revolute_joints_found += 1
 
         self.assertGreater(
             revolute_joints_found, 0, "Should find at least one revolute joint with initialized position"
@@ -838,6 +848,200 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertGreater(
             revolute_joints_validated, 0, "Should validate at least one revolute joint against authored values"
         )
+
+    def test_d6_dof_index_mapping_correctness(self):
+        """
+        Test D6 joint DOF index mapping correctness when some axes have no authored values.
+
+        This test validates D6 DOF index mapping to ensure that dof_idx would not
+        desync when some DOFs existed but had no authored initial position/velocity values.
+        Uses humanoid.usda to test scenarios where D6 joints have selective axis values.
+
+        The test ensures that:
+        1. DOF indices correctly map to the actual DOF axes that were added
+        2. Missing initial values don't cause index shifts for subsequent axes
+        3. Only axes that were actually added as DOFs are processed
+        """
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        humanoid_path = assets_dir / "humanoid.usda"
+        if not humanoid_path.exists():
+            self.skipTest(f"Missing humanoid USD: {humanoid_path}")
+
+        # Create a custom USD stage to test specific D6 DOF mapping scenarios
+        if Usd is None:
+            self.skipTest("USD not available")
+
+        stage = Usd.Stage.Open(str(humanoid_path))
+        self.assertIsNotNone(stage)
+
+        # Test the specific case that would trigger the bug:
+        # Find a D6 joint and verify its DOF mapping behavior
+        builder = ModelBuilder()
+        parse_usd(
+            builder=builder,
+            source=str(humanoid_path),
+            schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
+            collect_solver_specific_attrs=True,
+            verbose=False,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+
+        # Get joint data
+        joint_q = state.joint_q.numpy()
+        joint_qd = state.joint_qd.numpy()
+        joint_types = model.joint_type.numpy()
+        joint_q_start = model.joint_q_start.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+
+        # Test specific D6 joints that have selective axis values
+        # Joint 7 (left_thigh) has rotX, rotY, rotZ values: (-10°, 0.1), (-50°, 0.5), (25°, 0.25)
+        # Joint 9 (left_foot) has only rotX, rotY values: (30°, 0.3), (-30°, 0.4) - missing rotZ
+        # Joint 10 (right_thigh) has rotX, rotY, rotZ values: (5°, 0.05), (20°, 0.2), (-30°, 0.3)
+
+        test_cases = [
+            {
+                "joint_idx": 7,  # left_thigh - has all 3 rotational DOFs
+                "expected_values": [(-10.0, 0.1), (-50.0, 0.5), (25.0, 0.25)],
+                "description": "D6 joint with all rotational DOFs authored",
+            },
+            {
+                "joint_idx": 9,  # left_foot - has only 2 rotational DOFs
+                "expected_values": [(30.0, 0.3), (-30.0, 0.4)],
+                "description": "D6 joint with partial rotational DOFs authored",
+            },
+            {
+                "joint_idx": 10,  # right_thigh - has all 3 rotational DOFs
+                "expected_values": [(5.0, 0.05), (20.0, 0.2), (-30.0, 0.3)],
+                "description": "D6 joint with all rotational DOFs authored (different values)",
+            },
+        ]
+
+        validated_joints = 0
+
+        for test_case in test_cases:
+            joint_idx = test_case["joint_idx"]
+            expected_values = test_case["expected_values"]
+            description = test_case["description"]
+
+            if joint_idx >= len(joint_types):
+                continue
+
+            joint_type = joint_types[joint_idx]
+            if joint_type != 6:  # Not a D6 joint
+                continue
+
+            q_start = int(joint_q_start[joint_idx])
+            qd_start = int(joint_qd_start[joint_idx])
+
+            # Get DOF count for this joint
+            if joint_idx + 1 < len(joint_q_start):
+                qd_end = int(joint_qd_start[joint_idx + 1])
+            else:
+                qd_end = len(joint_qd)
+
+            dof_count = qd_end - qd_start
+
+            # Validate that we have the expected number of DOFs
+            self.assertEqual(
+                dof_count, len(expected_values), f"{description}: Expected {len(expected_values)} DOFs, got {dof_count}"
+            )
+
+            # Validate each DOF maps to the correct expected value
+            for dof_idx in range(dof_count):
+                expected_pos_deg, expected_vel = expected_values[dof_idx]
+                expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
+
+                actual_pos = joint_q[q_start + dof_idx]
+                actual_vel = joint_qd[qd_start + dof_idx]
+
+                # This is the critical test: if DOF indices were incorrectly mapped,
+                # these values would be wrong or zero
+                self.assertAlmostEqual(
+                    actual_pos,
+                    expected_pos_rad,
+                    places=4,
+                    msg=f"{description}: Joint {joint_idx} DOF {dof_idx} position mapping incorrect. "
+                    f"Expected {expected_pos_deg}° ({expected_pos_rad:.4f} rad), got {actual_pos:.4f} rad",
+                )
+                self.assertAlmostEqual(
+                    actual_vel,
+                    expected_vel,
+                    places=4,
+                    msg=f"{description}: Joint {joint_idx} DOF {dof_idx} velocity mapping incorrect. "
+                    f"Expected {expected_vel}, got {actual_vel}",
+                )
+
+            validated_joints += 1
+
+        # Ensure we actually tested some joints
+        self.assertGreater(
+            validated_joints, 0, "Should have validated at least one D6 joint for DOF index mapping correctness"
+        )
+
+        # Additional verification: check that joints with missing axes don't have incorrect values
+        # Joint 9 (left_foot) should only have 2 DOFs, not 3, so accessing a 3rd DOF should be invalid
+        joint_9_qd_start = int(joint_qd_start[9])
+        joint_9_qd_end = int(joint_qd_start[10]) if 10 < len(joint_qd_start) else len(joint_qd)
+        joint_9_dof_count = joint_9_qd_end - joint_9_qd_start
+
+        # This joint should have exactly 2 DOFs (rotX, rotY), not 3
+        self.assertEqual(
+            joint_9_dof_count,
+            2,
+            f"Joint 9 (left_foot) should have 2 DOFs, got {joint_9_dof_count}. "
+            "This indicates the DOF mapping fix is working correctly.",
+        )
+
+    def test_attribute_parsing(self):
+        """
+        Test that both Newton and MuJoCo custom attributes are correctly parsed and collected.
+        """
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        ant_mixed_path = assets_dir / "ant_mixed.usda"
+        self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
+
+        # Test with all three plugins to ensure attribute collection works
+        builder = ModelBuilder()
+        result = parse_usd(
+            builder=builder,
+            source=str(ant_mixed_path),
+            schema_priority=[NewtonPlugin(), PhysxPlugin(), MjcPlugin()],
+            collect_solver_specific_attrs=True,
+            verbose=False,
+        )
+
+        solver_attrs = result.get("solver_specific_attrs", {})
+
+        # Verify Newton attributes are collected
+        self.assertIn("newton", solver_attrs, "Newton solver attributes should be collected")
+        newton_attrs = solver_attrs["newton"]
+        joint_path = "/ant/joints/front_left_leg"
+        self.assertIn(joint_path, newton_attrs, f"Newton attributes should be found on {joint_path}")
+
+        # Check specific Newton custom attributes
+        newton_joint_attrs = newton_attrs[joint_path]
+        self.assertIn("newton:state:joint:testJointScalar", newton_joint_attrs)
+        self.assertAlmostEqual(newton_joint_attrs["newton:state:joint:testJointScalar"], 2.25, places=2)
+        self.assertIn("newton:model:joint:testJointVec", newton_joint_attrs)
+
+        # Verify MuJoCo attributes are collected
+        self.assertIn("mjc", solver_attrs, "MuJoCo solver attributes should be collected")
+        mjc_attrs = solver_attrs["mjc"]
+        self.assertIn(joint_path, mjc_attrs, f"MuJoCo attributes should be found on {joint_path}")
+
+        # Check specific MuJoCo custom attributes
+        mjc_joint_attrs = mjc_attrs[joint_path]
+        self.assertIn("mjc:model:joint:testMjcJointScalar", mjc_joint_attrs)
+        self.assertAlmostEqual(mjc_joint_attrs["mjc:model:joint:testMjcJointScalar"], 3.14, places=2)
+        self.assertIn("mjc:state:joint:testMjcJointVec3", mjc_joint_attrs)
+        mjc_vec = mjc_joint_attrs["mjc:state:joint:testMjcJointVec3"]
+        self.assertAlmostEqual(float(mjc_vec[0]), 1.0, places=1)
+        self.assertAlmostEqual(float(mjc_vec[1]), 2.0, places=1)
+        self.assertAlmostEqual(float(mjc_vec[2]), 3.0, places=1)
 
 
 def run_tests():

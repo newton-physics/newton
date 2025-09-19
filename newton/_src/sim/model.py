@@ -622,9 +622,9 @@ class Model:
             src = getattr(self, name, None)
             if src is None:
                 continue
-            try:
+            if isinstance(src, wp.array):
                 setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
-            except Exception:
+            else:
                 setattr(contacts, name, src)
         return contacts
 

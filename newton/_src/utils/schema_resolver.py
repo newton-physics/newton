@@ -128,8 +128,8 @@ class SchemaPlugin:
         )
 
         # Collect attributes by known solver-specific prefixes
-        # PhysX uses multiple prefixes, others use {name}:
-        main_prefix = self.name if self.name == "physx" else f"{self.name}:"
+        # USD expects namespace tokens without ':' (e.g., 'newton', 'mjc', 'physxArticulation')
+        main_prefix = self.name
         all_prefixes = [main_prefix]
         if self.extra_attr_namespaces:
             all_prefixes.extend(self.extra_attr_namespaces)
@@ -268,6 +268,10 @@ class PhysxPlugin(SchemaPlugin):
         "physxLimit",
         # Articulations
         "physxArticulation",
+        # State attributes (for joint position/velocity initialization)
+        "state",
+        # Drive attributes
+        "drive",
     ]
 
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
@@ -336,7 +340,7 @@ def _solref_to_stiffness(solref):
         timeconst = float(solref[0])
     except Exception:
         return None
-    # Direct mode: both negative → interpret as (damping, stiffness)
+    # Direct mode: both negative → interpret as (stiffness, damping)
     if timeconst <= 0.0:
         return -timeconst
     return 1.0 / (timeconst * timeconst)
@@ -352,7 +356,7 @@ def _solref_to_damping(solref):
         dampratio = float(solref[1])
     except Exception:
         return None
-    # Direct mode: both negative → interpret as (damping, stiffness)
+    # Direct mode: both negative → interpret as (stiffness, damping)
     if timeconst <= 0.0 or dampratio <= 0.0:
         return -dampratio
     return (2.0 * dampratio) / timeconst
