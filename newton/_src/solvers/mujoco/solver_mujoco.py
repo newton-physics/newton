@@ -1616,7 +1616,7 @@ class SolverMuJoCo(SolverBase):
             )
 
     @staticmethod
-    def find_body_collision_filter_pairs(colliding_shapes, shape_filters, shape_bodies, body_shapes):
+    def find_body_collision_filter_pairs(colliding_shapes, shape_filters, shape_groups, shape_bodies, body_shapes):
         """For shape collision filter pairs, find body collision filter pairs that are contained within."""
         colliding_shapes = set(colliding_shapes)
         body_filters = set()
@@ -1634,14 +1634,36 @@ class SolverMuJoCo(SolverBase):
                 continue
             b1_shapes = {s for s in body_shapes[bp[0]] if s in colliding_shapes}
             b2_shapes = {s for s in body_shapes[bp[1]] if s in colliding_shapes}
-            if all(
-                (bs1, bs2) in shape_filters or (bs2, bs1) in shape_filters for bs1, bs2 in product(b1_shapes, b2_shapes)
+            if any(
+                SolverMuJoCo.shapes_can_collide(bs1, bs2, shape_filters, shape_groups)
+                for bs1, bs2 in product(b1_shapes, b2_shapes)
             ):
-                body_filters.add(bp)
-            else:
                 body_non_filterable.add(bp)
                 remaining_shape_filters.append(sp)
+            else:
+                body_filters.add(bp)
         return list(body_filters), remaining_shape_filters
+
+    @staticmethod
+    def shapes_can_collide(a, b, shape_filter_pairs=None, shape_group=None):
+        if a == b:
+            return False
+        if shape_filter_pairs is not None and ((a, b) in shape_filter_pairs or (b, a) in shape_filter_pairs):
+            return False
+
+        # skip env groups
+
+        if shape_group is not None:
+            group_a, group_b = shape_group[a], shape_group[b]
+
+            # Mirrors warp funcs in broad_phase_common.py
+            if group_a == 0 or group_b == 0:
+                return False
+            if group_a > 0 and not (group_a == group_b or group_b < 0):
+                return False
+            elif group_a < 0 and not (group_a != group_b):
+                return False
+        return True
 
     @staticmethod
     def color_collision_shapes(model: Model, selected_shapes: nparray, visualize_graph: bool = False) -> np.ndarray:
@@ -2025,7 +2047,8 @@ class SolverMuJoCo(SolverBase):
         body_filters, shape_filters = self.find_body_collision_filter_pairs(
             colliding_shapes,
             self.model.shape_collision_filter_pairs,
-            self.model.shape_body.list(),
+            self.model.shape_collision_group,
+            self.model.shape_body.numpy().tolist(),
             self.model.body_shapes,
         )
 
