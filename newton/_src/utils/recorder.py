@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Mapping
+from typing import Generic, TypeVar
 
 import numpy as np
 import warp as wp
@@ -32,6 +33,100 @@ try:
     HAS_CBOR2 = True
 except ImportError:
     HAS_CBOR2 = False
+
+
+T = TypeVar("T")
+
+
+class RingBuffer(Generic[T]):
+    """
+    A ring buffer that behaves like a list but only keeps the last N items.
+
+    This class provides a list-like interface while maintaining a fixed capacity.
+    When the buffer is full, new items overwrite the oldest items.
+    """
+
+    def __init__(self, capacity: int = 100):
+        """
+        Initialize the ring buffer.
+
+        Args:
+            capacity (int): Maximum number of items to store. Default is 100.
+        """
+        self.capacity = capacity
+        self._buffer: list[T] = []
+        self._start = 0  # Index of the oldest item
+        self._size = 0  # Current number of items
+
+    def append(self, item: T) -> None:
+        """Add an item to the buffer."""
+        if self._size < self.capacity:
+            # Buffer not full yet, just append
+            self._buffer.append(item)
+            self._size += 1
+        else:
+            # Buffer is full, overwrite the oldest item
+            self._buffer[self._start] = item
+            self._start = (self._start + 1) % self.capacity
+
+    def __len__(self) -> int:
+        """Return the number of items in the buffer."""
+        return self._size
+
+    def __getitem__(self, index: int) -> T:
+        """Get an item by index (0 is the oldest item)."""
+        if not isinstance(index, int):
+            raise TypeError("Index must be an integer")
+
+        if not (0 <= index < self._size):
+            raise IndexError(f"Index {index} out of range [0, {self._size})")
+
+        # Convert logical index to physical buffer index
+        if self._size < self.capacity:
+            # Buffer not full, simple indexing
+            return self._buffer[index]
+        else:
+            # Buffer is full, need to account for wrap-around
+            physical_index = (self._start + index) % self.capacity
+            return self._buffer[physical_index]
+
+    def __setitem__(self, index: int, value: T) -> None:
+        """Set an item by index."""
+        if not isinstance(index, int):
+            raise TypeError("Index must be an integer")
+
+        if not (0 <= index < self._size):
+            raise IndexError(f"Index {index} out of range [0, {self._size})")
+
+        # Convert logical index to physical buffer index
+        if self._size < self.capacity:
+            # Buffer not full, simple indexing
+            self._buffer[index] = value
+        else:
+            # Buffer is full, need to account for wrap-around
+            physical_index = (self._start + index) % self.capacity
+            self._buffer[physical_index] = value
+
+    def __iter__(self):
+        """Iterate over items in order (oldest to newest)."""
+        for i in range(self._size):
+            yield self[i]
+
+    def clear(self) -> None:
+        """Clear all items from the buffer."""
+        self._buffer.clear()
+        self._start = 0
+        self._size = 0
+
+    def to_list(self) -> list[T]:
+        """Convert the ring buffer to a regular list."""
+        return [self[i] for i in range(self._size)]
+
+    def from_list(self, items: list[T]) -> None:
+        """Replace buffer contents with items from a list."""
+        self.clear()
+        for item in items:
+            self.append(item)
 
 
 def _get_serialization_format(file_path: str) -> str:
@@ -602,11 +697,20 @@ class RecorderBasic:
 class RecorderModelAndState:
     """A class to record and playback simulation model and state using JSON serialization."""
 
-    def __init__(self):
+    def __init__(self, max_history_size: int | None = None):
         """
         Initializes the Recorder.
+
+        Args:
+            max_history_size (int | None): Maximum number of states to keep in history.
+                If None, uses unlimited history (regular list). If specified, uses a
+                ring buffer that keeps only the last N states. Default is None for
+                backward compatibility.
         """
-        self.history: list[dict] = []
+        if max_history_size is None:
+            self.history: list[dict] = []
+        else:
+            self.history: RingBuffer[dict] = RingBuffer(max_history_size)
         self.raw_model: Model | None = None
         self.deserialized_model: dict | None = None
 
@@ -706,7 +810,9 @@ class RecorderModelAndState:
             else:
                 raise
 
-        data_to_save = {"model": self.raw_model, "states": self.history}
+        # Convert history to list for serialization if needed
+        states_to_save = self.history.to_list() if isinstance(self.history, RingBuffer) else self.history
+        data_to_save = {"model": self.raw_model, "states": states_to_save}
         serialized_data = serialize_newton(data_to_save, format_type)
 
         if format_type == "json":
@@ -754,4 +860,12 @@ class RecorderModelAndState:
 
         raw = deserialize_newton(serialized_data, format_type)
         self.deserialized_model = raw["model"]
-        self.history = raw["states"]
+
+        # Handle loading states into the appropriate container type
+        loaded_states = raw["states"]
+        if isinstance(self.history, RingBuffer):
+            # If we're using a ring buffer, load states into it
+            self.history.from_list(loaded_states)
+        else:
+            # If we're using a regular list, assign directly
+            self.history = loaded_states
