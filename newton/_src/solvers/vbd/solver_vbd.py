@@ -19,7 +19,7 @@ import warnings
 
 import numpy as np
 import warp as wp
-from warp.types import float32, matrix
+from warp.types import float32, matrix, vector
 
 from ...core.types import override
 from ...geometry import ParticleFlags
@@ -48,15 +48,22 @@ VBD_DEBUG_PRINTING_OPTIONS = {
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
-# Rotational dynamics precision control
-# Set to True for high-accuracy scenarios with large rotations (slower but more accurate)
-# Set to False for standard simulations (faster with small-angle approximations)
+# Small-angle threshold (radians)
+SMALL_ANGLE_EPS = wp.constant(1.0e-7)
+
+# Temporary test flags.
+# Rotational dynamics mode: False=first-order small-angle; True=closed-form (small-angle below eps)
 USE_EXACT_ROTATIONAL_DYNAMICS = wp.constant(False)
+
 # Minimum stretch stiffness for cable constraints
-STRETCH_STIFFNESS_MIN = wp.constant(1000.0)
+STRETCH_STIFFNESS_MIN = wp.constant(10000.0)
 
 
 class mat32(matrix(shape=(3, 2), dtype=float32)):
+    pass
+
+
+class vec6(vector(length=6, dtype=float32)):
     pass
 
 
@@ -648,25 +655,18 @@ def evaluate_rigid_contact_from_collision(
 
     # Friction forces
     if friction_mu > 0.0:
-        # Relative contact velocity for friction
+        # Relative contact velocity and tangential slip (world space)
         v_rel = dx_rel / dt
-
-        # Tangential slip velocity
         v_n = n * wp.dot(n, v_rel)
         v_t = v_rel - v_n
-        u = v_t * dt  # Tangential slip over timestep
+        u = v_t * dt
         eps_u = friction_epsilon * dt
 
         # Normal load (use updated normal force including damping)
         N = wp.max(0.0, wp.dot(f_total, n))
 
-        # Tangent frame and 2D projection
-        e0, e1 = build_orthonormal_basis(n)
-        T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
-        u2 = wp.transpose(T) * u
-
-        # Apply friction using shared helper
-        f_friction, K_friction = compute_friction(friction_mu, N, T, u2, eps_u)
+        # Projected isotropic friction (no explicit tangent basis)
+        f_friction, K_friction = compute_projected_isotropic_friction(friction_mu, N, n, u, eps_u)
         f_total = f_total + f_friction
         K_total = K_total + K_friction
 
@@ -679,7 +679,7 @@ def evaluate_rigid_contact_from_collision(
     r_b = x_c_b_now - x_com_b_now  # Moment arm from B's COM to contact point
 
     # Angular/linear coupling using contact Jacobian J = [-[r]x, I]:
-    r_a_skew = wp.mat33(0.0, -r_a[2], r_a[1], r_a[2], 0.0, -r_a[0], -r_a[1], r_a[0], 0.0)
+    r_a_skew = wp.skew(r_a)
     r_a_skew_T_K = wp.transpose(r_a_skew) * K_total
     torque_a = wp.cross(r_a, force_a)
     h_aa_a = r_a_skew_T_K * r_a_skew
@@ -687,7 +687,7 @@ def evaluate_rigid_contact_from_collision(
 
     h_ll_a = K_total  # Linear-linear (always computed)
 
-    r_b_skew = wp.mat33(0.0, -r_b[2], r_b[1], r_b[2], 0.0, -r_b[0], -r_b[1], r_b[0], 0.0)
+    r_b_skew = wp.skew(r_b)
     r_b_skew_T_K = wp.transpose(r_b_skew) * K_total
     torque_b = wp.cross(r_b, force_b)
     h_aa_b = r_b_skew_T_K * r_b_skew
@@ -1373,6 +1373,42 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
     return force, hessian
 
 
+@wp.func
+def compute_projected_isotropic_friction(
+    friction_mu: float,
+    normal_load: float,
+    n_hat: wp.vec3,
+    slip_u: wp.vec3,
+    eps_u: float,
+) -> tuple[wp.vec3, wp.mat33]:
+    """
+    Isotropic friction aligned with tangential slip using projector P = I - n n^T.
+
+    Returns force and Hessian in world coordinates without constructing a tangent basis.
+    """
+    # Tangential slip in the contact tangent plane without forming P: u_t = u - n (n·u)
+    dot_nu = wp.dot(n_hat, slip_u)
+    u_t = slip_u - n_hat * dot_nu
+    u_norm = wp.length(u_t)
+
+    if u_norm > 0.0:
+        # IPC-style regularization
+        if u_norm > eps_u:
+            f1_SF_over_x = 1.0 / u_norm
+        else:
+            f1_SF_over_x = (-u_norm / eps_u + 2.0) / eps_u
+
+        # Factor common scalar; force aligned with u_t, Hessian proportional to projector
+        scale = friction_mu * normal_load * f1_SF_over_x
+        f = -(scale * u_t)
+        K = scale * (wp.identity(3, float) - wp.outer(n_hat, n_hat))
+    else:
+        f = wp.vec3(0.0)
+        K = wp.mat33(0.0)
+
+    return f, K
+
+
 @wp.kernel
 def forward_step(
     dt: float,
@@ -1526,6 +1562,45 @@ def solve_chol33(L: wp.mat33, b: wp.vec3) -> wp.vec3:
     return wp.vec3(x0, x1, x2)
 
 
+@wp.func
+def chol33_lower_to_packed(A: wp.mat33) -> vec6:
+    # Cholesky factorization A = L * L^T, packed lower-triangular
+    a00 = A[0, 0]
+    a10 = A[1, 0]
+    a11 = A[1, 1]
+    a20 = A[2, 0]
+    a21 = A[2, 1]
+    a22 = A[2, 2]
+
+    L00 = wp.sqrt(a00)
+    L10 = a10 / L00
+    L20 = a20 / L00
+
+    L11 = wp.sqrt(a11 - L10 * L10)
+    L21 = (a21 - L20 * L10) / L11
+
+    L22 = wp.sqrt(a22 - L20 * L20 - L21 * L21)
+
+    # Pack into vec6: [L00, L10, L11, L20, L21, L22]
+    return vec6(L00, L10, L11, L20, L21, L22)
+
+
+@wp.func
+def solve_chol33_packed(Lp: vec6, b: wp.vec3) -> wp.vec3:
+    # Solve (L L^T) x = b using packed lower-triangular
+    # Forward: L y = b
+    y0 = b[0] / Lp[0]  # L00
+    y1 = (b[1] - Lp[1] * y0) / Lp[2]  # L10, L11
+    y2 = (b[2] - Lp[3] * y0 - Lp[4] * y1) / Lp[5]  # L20, L21, L22
+
+    # Back: L^T x = y
+    x2 = y2 / Lp[5]
+    x1 = (y1 - Lp[4] * x2) / Lp[2]
+    x0 = (y0 - Lp[1] * x1 - Lp[3] * x2) / Lp[0]
+
+    return wp.vec3(x0, x1, x2)
+
+
 @wp.kernel
 def solve_rigid_body(
     dt: float,
@@ -1622,7 +1697,7 @@ def solve_rigid_body(
         v = wp.vec3(dq[0], dq[1], dq[2])
         angle = wp.length(v)
         w_scalar = dq[3]
-        if angle > 1.0e-12:
+        if angle > SMALL_ANGLE_EPS:
             # dq.w >= 0 after shortest-arc enforcement
             theta_magnitude = 2.0 * wp.atan2(angle, w_scalar)
             theta_body = theta_magnitude * (v / angle)
@@ -1688,10 +1763,10 @@ def solve_rigid_body(
     A_reg = h_aa + epsA * I3
 
     # Cholesky factorization of M_reg (SPD)
-    Lm = chol33_lower(M_reg)
+    Lm_p = chol33_lower_to_packed(M_reg)
 
     # MinvF := (M_reg)^{-1} F  via chol solve
-    MinvF = solve_chol33(Lm, f_force)
+    MinvF = solve_chol33_packed(Lm_p, f_force)
 
     # Minv * C^T (three solves with the same Lm)
     # rows of C are columns of C^T
@@ -1699,40 +1774,33 @@ def solve_rigid_body(
     C_r1 = wp.vec3(h_al[1, 0], h_al[1, 1], h_al[1, 2])
     C_r2 = wp.vec3(h_al[2, 0], h_al[2, 1], h_al[2, 2])
 
-    X0 = solve_chol33(Lm, C_r0)  # column 0 of MinvCt
-    X1 = solve_chol33(Lm, C_r1)  # column 1
-    X2 = solve_chol33(Lm, C_r2)  # column 2
+    X0 = solve_chol33_packed(Lm_p, C_r0)  # column 0 of MinvCt
+    X1 = solve_chol33_packed(Lm_p, C_r1)  # column 1
+    X2 = solve_chol33_packed(Lm_p, C_r2)  # column 2
 
     MinvCt = wp.mat33(X0[0], X1[0], X2[0], X0[1], X1[1], X2[1], X0[2], X1[2], X2[2])
 
-    # Schur complement: S = A_reg - C * Minv * C^T
+    # Direct 6x6 via block-Cholesky
     S = A_reg - (h_al * MinvCt)
-
-    # Regularization
-    trS = (S[0, 0] + S[1, 1] + S[2, 2]) / 3.0
+    trS = wp.trace(S) / 3.0
     epsS = 1.0e-9 * (trS + 1.0)
     S = S + epsS * I3
-
-    # Cholesky of S
-    Ls = chol33_lower(S)
+    Ls_p = chol33_lower_to_packed(S)
 
     rhs_w = f_torque - (h_al * MinvF)
+    w_world = solve_chol33_packed(Ls_p, rhs_w)
 
-    # Solve S * w_world = rhs_w
-    w_world = solve_chol33(Ls, rhs_w)
-
-    # x_inc = Minv * (F - C^T * w_world)
     Ct_w = wp.vec3(
         h_al[0, 0] * w_world[0] + h_al[1, 0] * w_world[1] + h_al[2, 0] * w_world[2],
         h_al[0, 1] * w_world[0] + h_al[1, 1] * w_world[1] + h_al[2, 1] * w_world[2],
         h_al[0, 2] * w_world[0] + h_al[1, 2] * w_world[1] + h_al[2, 2] * w_world[2],
     )
-    x_inc = solve_chol33(Lm, f_force - Ct_w)
+    x_inc = solve_chol33_packed(Lm_p, f_force - Ct_w)
 
     ang_mag = wp.length(w_world)
 
     if USE_EXACT_ROTATIONAL_DYNAMICS:
-        if ang_mag > 1.0e-12:
+        if ang_mag > SMALL_ANGLE_EPS:
             dq_world = wp.quat_from_axis_angle(w_world / ang_mag, ang_mag)
             rot_new = wp.mul(dq_world, rot_current)
         else:
@@ -2163,7 +2231,7 @@ def update_body_velocity(
         v_part = wp.vec3(dq[0], dq[1], dq[2])
         w_scalar = dq[3]
         v_norm = wp.length(v_part)
-        if v_norm > 1.0e-12:
+        if v_norm > SMALL_ANGLE_EPS:
             theta = 2.0 * wp.atan2(v_norm, w_scalar)
             omega = (theta / dt) * (v_part / v_norm)
         else:
@@ -2267,7 +2335,7 @@ def compute_right_jacobian_inverse(kappa: wp.vec3) -> wp.mat33:
     # Use first-order small-angle form whenever either:
     # - the rotation is tiny (theta < eps), or
     # - the exact rotational dynamics flag is disabled.
-    if (theta < 1.0e-7) or (not USE_EXACT_ROTATIONAL_DYNAMICS):
+    if (theta < SMALL_ANGLE_EPS) or (not USE_EXACT_ROTATIONAL_DYNAMICS):
         # Jr^{-1}(kappa) ≈ I + 0.5 [kappa]_x
         kappa_skew = wp.skew(kappa)
         return I3 + 0.5 * kappa_skew
@@ -2378,12 +2446,9 @@ def evaluate_cable_bend_force_hessian(
 
     torque = tau_world
 
-    # Local SPD angular Hessian: H_local = ke * (Jr_inv^T * Jr_inv)
-    Jr_inv_local = Jr_inv
-    H_local = ke * (wp.transpose(Jr_inv_local) * Jr_inv_local)
-
-    # World Hessian: H_aa = R_wp * H_local * R_wp^T
-    H_aa = (R_wp * H_local) * wp.transpose(R_wp)
+    # Let A = R_wp * (Jr_inv^T); then H_aa = ke * (A * A^T)
+    A = R_wp * wp.transpose(Jr_inv)
+    H_aa = ke * (A * wp.transpose(A))
 
     return torque, H_aa
 
