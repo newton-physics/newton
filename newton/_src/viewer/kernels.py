@@ -32,16 +32,30 @@ def compute_pick_state_kernel(
     pick_body: wp.array(dtype=int),
     pick_state: wp.array(dtype=float),
 ):
+    """
+    Initialize the pick state when a body is first picked.
+
+    This kernel stores:
+    - The local space attachment point on the body
+    - The initial world space target position
+    - The original mouse cursor target
+    - The current world space picked point on geometry (for visualization)
+    """
     if body_index < 0:
         return
 
     # store body index
     pick_body[0] = body_index
 
-    # store target world
+    # store target world (current position)
     pick_state[3] = hit_point_world[0]
     pick_state[4] = hit_point_world[1]
     pick_state[5] = hit_point_world[2]
+
+    # store original mouse cursor target (same as initial target)
+    pick_state[8] = hit_point_world[0]
+    pick_state[9] = hit_point_world[1]
+    pick_state[10] = hit_point_world[2]
 
     # compute and store local space attachment point
     X_wb = body_q[body_index]
@@ -52,6 +66,11 @@ def compute_pick_state_kernel(
     pick_state[1] = pick_pos_local[1]
     pick_state[2] = pick_pos_local[2]
 
+    # store current world space picked point on geometry (initially same as hit point)
+    pick_state[11] = hit_point_world[0]
+    pick_state[12] = hit_point_world[1]
+    pick_state[13] = hit_point_world[2]
+
 
 @wp.kernel
 def apply_picking_force_kernel(
@@ -60,37 +79,102 @@ def apply_picking_force_kernel(
     body_f: wp.array(dtype=wp.spatial_vector),
     pick_body_arr: wp.array(dtype=int),
     pick_state: wp.array(dtype=float),
+    body_com: wp.array(dtype=wp.vec3),
+    body_mass: wp.array(dtype=float),
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
         return
 
     pick_pos_local = wp.vec3(pick_state[0], pick_state[1], pick_state[2])
-    pick_target_world = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
+    current_target = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
     pick_stiffness = pick_state[6]
-    pick_damping = pick_state[7]
-    angular_damping = 1.0  # Damping coefficient for angular velocity
+    # pick_damping from pick_state[7] is ignored - we compute critical damping
+
+    # Get the original mouse cursor target
+    mouse_cursor_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
+
+    # Apply smooth movement towards the mouse cursor target
+    desired_delta = mouse_cursor_target - current_target
+    desired_distance = wp.length(desired_delta)
+
+    # Use adaptive movement speed based on distance (gentle movement)
+    max_delta_per_frame = 0.02  # Doubled for more responsive movement
+
+    if desired_distance > 0.001:  # Avoid division by zero
+        # Scale movement speed based on distance (gentler scaling)
+        adaptive_speed = wp.min(desired_distance * 1.0, max_delta_per_frame * 3.0)
+        movement_speed = wp.min(adaptive_speed, desired_distance)  # Don't overshoot
+
+        # Move toward the mouse cursor target
+        direction = desired_delta / desired_distance
+        pick_target_world = current_target + direction * movement_speed
+
+        # Update the current target in pick_state
+        pick_state[3] = pick_target_world[0]
+        pick_state[4] = pick_target_world[1]
+        pick_state[5] = pick_target_world[2]
+    else:
+        pick_target_world = current_target
+
+    # Get body properties for stability
+    mass = body_mass[pick_body]
+
+    # Compute critical damping to avoid oscillations: c_critical = 2 * sqrt(k * m)
+    pick_damping = 2.0 * wp.sqrt(pick_stiffness * mass)
 
     # world space attachment point
     X_wb = body_q[pick_body]
     pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
 
-    # center of mass
-    com = wp.transform_get_translation(X_wb)
+    # update current world space picked point on geometry (for visualization)
+    pick_state[11] = pick_pos_world[0]
+    pick_state[12] = pick_pos_world[1]
+    pick_state[13] = pick_pos_world[2]
+
+    # center of mass (corrected calculation)
+    com = wp.transform_point(X_wb, body_com[pick_body])
 
     # get velocity of attachment point
-    omega = wp.spatial_bottom(body_qd[pick_body])
     vel_com = wp.spatial_top(body_qd[pick_body])
-    vel_world = vel_com + wp.cross(omega, pick_pos_world - com)
 
-    # compute spring force
-    f = pick_stiffness * (pick_target_world - pick_pos_world) - pick_damping * vel_world
+    # compute spring force with critical damping (only damp linear velocity, not rotational)
+    f = pick_stiffness * (pick_target_world - pick_pos_world) - pick_damping * vel_com
 
-    # compute torque with angular damping
-    t = wp.cross(pick_pos_world - com, f) - angular_damping * omega
+    # Force limiting to prevent instability
+    max_force = mass * 10000.0
+    force_magnitude = wp.length(f)
+    if force_magnitude > max_force:
+        f = f * (max_force / force_magnitude)
+
+    # compute torque (no angular damping)
+    t = wp.cross(pick_pos_world - com, f)
+
+    # Add velocity damping forces (separate from spring constraint damping)
+    velocity_damping_factor = 50.0 * mass  # Mass-dependent velocity damping
+    angular_velocity_damping_factor = 5.0 * mass  # Mass-dependent angular velocity damping
+
+    linear_vel = wp.spatial_top(body_qd[pick_body])
+    angular_vel = wp.spatial_bottom(body_qd[pick_body])
+
+    # Apply velocity damping forces
+    velocity_damping_force = -velocity_damping_factor * linear_vel
+    angular_velocity_damping_torque = -angular_velocity_damping_factor * angular_vel
+
+    # Torque limiting for stability
+    max_torque = mass * 5.0  # Simple torque limit based on mass
+    torque_magnitude = wp.length(t)
+    if torque_magnitude > max_torque:
+        t = t * (max_torque / torque_magnitude)
+
+    # Combine spring torque with angular velocity damping
+    total_torque = t + angular_velocity_damping_torque
+
+    # Combine spring force with velocity damping
+    total_force = f + velocity_damping_force
 
     # apply force and torque
-    wp.atomic_add(body_f, pick_body, wp.spatial_vector(f, t))
+    wp.atomic_add(body_f, pick_body, wp.spatial_vector(total_force, total_torque))
 
 
 @wp.kernel
@@ -100,18 +184,19 @@ def update_pick_target_kernel(
     # read-write
     pick_state: wp.array(dtype=float),
 ):
-    # get current target position
-    current_target = wp.vec3(pick_state[3], pick_state[4], pick_state[5])
+    # get original mouse cursor target
+    original_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
 
-    # compute distance from ray origin to current target
-    dist = wp.length(current_target - p)
+    # compute distance from ray origin to original target (to maintain depth)
+    dist = wp.length(original_target - p)
 
-    # project new target onto sphere with same radius
-    new_target = p + d * dist
+    # Project new mouse cursor target at the same depth
+    new_mouse_target = p + d * dist
 
-    pick_state[3] = new_target[0]
-    pick_state[4] = new_target[1]
-    pick_state[5] = new_target[2]
+    # Update the original mouse cursor target (no smoothing here)
+    pick_state[8] = new_mouse_target[0]
+    pick_state[9] = new_mouse_target[1]
+    pick_state[10] = new_mouse_target[2]
 
 
 @wp.kernel

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ import numpy as np
 
 import newton
 import newton.examples
+from newton._src.geometry.types import GeoType
 from newton.tests.unittest_utils import assert_np_equal
 
 MESH_URDF = """
@@ -245,6 +247,62 @@ class TestImportUrdf(unittest.TestCase):
         self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
         self.assertTrue(all(np.array(builder.joint_armature) == 42.0))
         assert builder.body_count == 4
+
+    def test_cylinder_shapes_preserved(self):
+        """Test that cylinder geometries are properly imported as cylinders, not capsules."""
+        # Create URDF content with cylinder geometry
+        urdf_content = """
+<robot name="cylinder_test">
+    <link name="base_link">
+        <collision>
+            <geometry>
+                <cylinder radius="0.5" length="2.0"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </collision>
+        <visual>
+            <geometry>
+                <cylinder radius="0.5" length="2.0"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </visual>
+    </link>
+    <link name="second_link">
+        <collision>
+            <geometry>
+                <capsule radius="0.3" height="1.0"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </collision>
+    </link>
+</robot>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            urdf_path = os.path.join(tmpdir, "cylinder_test.urdf")
+            with open(urdf_path, "w") as f:
+                f.write(urdf_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_urdf(urdf_path)
+
+            # Check shape types
+            shape_types = list(builder.shape_type)
+
+            # First shape should be cylinder (collision)
+            self.assertEqual(shape_types[0], GeoType.CYLINDER)
+
+            # Second shape should be cylinder (visual)
+            self.assertEqual(shape_types[1], GeoType.CYLINDER)
+
+            # Third shape should be capsule
+            self.assertEqual(shape_types[2], GeoType.CAPSULE)
+
+            # Check cylinder properties - radius and half_height
+            # shape_scale stores (radius, half_height, 0) for cylinders
+            shape_scale = builder.shape_scale[0]
+            self.assertAlmostEqual(shape_scale[0], 0.5)  # radius
+            self.assertAlmostEqual(shape_scale[1], 1.0)  # half_height (length/2)
 
 
 if __name__ == "__main__":

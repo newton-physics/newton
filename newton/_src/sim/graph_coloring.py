@@ -217,7 +217,7 @@ def color_graph(
         Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
     """
     if num_nodes == 0:
-        return
+        return []
 
     particle_colors = wp.empty(shape=(num_nodes), dtype=wp.int32, device="cpu")
 

@@ -158,7 +158,7 @@ def parse_urdf(
             for cylinder in geo.findall("cylinder"):
                 # Apply axis rotation to transform
                 xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
-                s = builder.add_shape_capsule(
+                s = builder.add_shape_cylinder(
                     body=link,
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
@@ -532,12 +532,12 @@ def parse_urdf(
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:
-            builder.shape_collision_filter_pairs.add((i, j))
+            builder.shape_collision_filter_pairs.append((i, j))
 
     if not enable_self_collisions:
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
-                builder.shape_collision_filter_pairs.add((i, j))
+                builder.shape_collision_filter_pairs.append((i, j))
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

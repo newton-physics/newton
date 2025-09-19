@@ -181,6 +181,146 @@ class TestImportUsd(unittest.TestCase):
             self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_filtering(self):
+        def test_filtering(
+            msg,
+            ignore_paths,
+            bodies_follow_joint_ordering,
+            expected_articulation_count,
+            expected_joint_types,
+            expected_body_keys,
+            expected_joint_keys,
+        ):
+            builder = newton.ModelBuilder()
+            builder.add_usd(
+                os.path.join(os.path.dirname(__file__), "assets", "four_link_chain_articulation.usda"),
+                ignore_paths=ignore_paths,
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            )
+            self.assertEqual(
+                builder.joint_count,
+                len(expected_joint_types),
+                f"Expected {len(expected_joint_types)} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_count}",
+            )
+            self.assertEqual(
+                builder.articulation_count,
+                expected_articulation_count,
+                f"Expected {expected_articulation_count} articulations after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.articulation_count}",
+            )
+            self.assertEqual(
+                builder.joint_type,
+                expected_joint_types,
+                f"Expected {expected_joint_types} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_type}",
+            )
+            self.assertEqual(
+                builder.body_key,
+                expected_body_keys,
+                f"Expected {expected_body_keys} bodies after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.body_key}",
+            )
+            self.assertEqual(
+                builder.joint_key,
+                expected_joint_keys,
+                f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_key}",
+            )
+
+        for bodies_follow_joint_ordering in [True, False]:
+            test_filtering(
+                "filter out nothing",
+                ignore_paths=[],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[
+                    newton.JointType.FIXED,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                ],
+                expected_body_keys=[
+                    "/Articulation/Body0",
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                ],
+                expected_joint_keys=[
+                    "/Articulation/Joint0",
+                    "/Articulation/Joint1",
+                    "/Articulation/Joint2",
+                    "/Articulation/Joint3",
+                ],
+            )
+
+            # we filter out all joints, so 4 free-body articulations are created
+            test_filtering(
+                "filter out all joints",
+                ignore_paths=[".*Joint"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=4,
+                expected_joint_types=[newton.JointType.FREE] * 4,
+                expected_body_keys=[
+                    "/Articulation/Body0",
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                ],
+                expected_joint_keys=["joint_1", "joint_2", "joint_3", "joint_4"],
+            )
+
+            # here we filter out the root fixed joint so that the articulation
+            # becomes floating-base
+            test_filtering(
+                "filter out the root fixed joint",
+                ignore_paths=[".*Joint0"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[
+                    newton.JointType.FREE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                    newton.JointType.REVOLUTE,
+                ],
+                expected_body_keys=[
+                    "/Articulation/Body0",
+                    "/Articulation/Body1",
+                    "/Articulation/Body2",
+                    "/Articulation/Body3",
+                ],
+                expected_joint_keys=["joint_1", "/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+            # filter out all the bodies
+            test_filtering(
+                "filter out all bodies",
+                ignore_paths=[".*Body"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=0,
+                expected_joint_types=[],
+                expected_body_keys=[],
+                expected_joint_keys=[],
+            )
+
+            # filter out the last body, which means the last joint is also filtered out
+            test_filtering(
+                "filter out the last body",
+                ignore_paths=[".*Body3"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FIXED, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body0", "/Articulation/Body1", "/Articulation/Body2"],
+                expected_joint_keys=["/Articulation/Joint0", "/Articulation/Joint1", "/Articulation/Joint2"],
+            )
+
+            # filter out the first body, which means the first two joints are also filtered out and the articulation becomes floating-base
+            test_filtering(
+                "filter out the first body",
+                ignore_paths=[".*Body0"],
+                bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                expected_articulation_count=1,
+                expected_joint_types=[newton.JointType.FREE, newton.JointType.REVOLUTE, newton.JointType.REVOLUTE],
+                expected_body_keys=["/Articulation/Body1", "/Articulation/Body2", "/Articulation/Body3"],
+                expected_joint_keys=["joint_1", "/Articulation/Joint2", "/Articulation/Joint3"],
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_env_cloning(self):
         builder_no_cloning = newton.ModelBuilder()
         builder_cloning = newton.ModelBuilder()
@@ -397,6 +537,16 @@ class TestImportUsd(unittest.TestCase):
         self.assertEqual(builder.body_count, 1)
         self.assertEqual(builder.shape_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
+        self.assertEqual(builder.body_key[0], "/World/Box")
+        self.assertEqual(builder.shape_key[0], "/World/Box")
+
+        # Ensure the body has a free joint assigned and is in an articulation
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+        self.assertEqual(builder.joint_parent[0], -1)
+        self.assertEqual(builder.joint_child[0], 0)
+        self.assertEqual(builder.articulation_count, 1)
+        self.assertEqual(builder.articulation_key[0], "/World/Box")
 
         # Get parsed inertia tensor
         inertia_parsed = np.array(builder.body_inertia[0])
