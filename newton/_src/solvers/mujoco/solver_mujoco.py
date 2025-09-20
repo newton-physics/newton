@@ -1625,13 +1625,17 @@ class SolverMuJoCo(SolverBase):
         body_exclude_pairs = []
         shape_set = set(colliding_shapes)
 
+        body_shapes = {}
+        for body in selected_bodies:
+            shapes = model.body_shapes[body]
+            shapes = [s for s in shapes if s in shape_set]
+            body_shapes[body] = shapes
+
         bodies_a, bodies_b = np.triu_indices(len(selected_bodies), k=1)
         for body_a, body_b in zip(bodies_a, bodies_b, strict=True):
             b1, b2 = selected_bodies[body_a], selected_bodies[body_b]
-            shapes_1 = model.body_shapes[b1]
-            shapes_2 = model.body_shapes[b2]
-            shapes_1 = [s for s in shapes_1 if s in shape_set]
-            shapes_2 = [s for s in shapes_2 if s in shape_set]
+            shapes_1 = body_shapes[b1]
+            shapes_2 = body_shapes[b2]
             excluded = True
             for shape_1 in shapes_1:
                 for shape_2 in shapes_2:
