@@ -107,7 +107,6 @@ class Example:
         particles_per_cell=3,
         tolerance=1.0e-5,
         sand_friction=0.48,
-        dynamic_grid=True,
     ):
         # setup simulation parameters first
         self.fps = 60
@@ -166,18 +165,36 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         # add sand particles
-        max_fraction = 1.0
+        density = 2500.0
         particle_lo = np.array([-0.5, -0.5, 0.0])  # emission lower bound
         particle_hi = np.array([0.5, 2.5, 0.15])  # emission upper bound
         particle_res = np.array(
             np.ceil(particles_per_cell * (particle_hi - particle_lo) / voxel_size),
             dtype=int,
         )
-        _spawn_particles(builder, particle_res, particle_lo, particle_hi, max_fraction)
+        _spawn_particles(builder, particle_res, particle_lo, particle_hi, density)
 
         # finalize model
         self.model = builder.finalize()
+
         self.model.particle_mu = sand_friction
+        self.model.particle_ke = 1.0e15
+
+        # setup mpm solver
+        mpm_options = SolverImplicitMPM.Options()
+        mpm_options.voxel_size = voxel_size
+        mpm_options.tolerance = tolerance
+        mpm_options.transfer_scheme = "pic"
+        mpm_options.grid_type = "sparse"
+        mpm_options.strain_basis = "P0"
+        mpm_options.max_iterations = 50
+
+        # global defaults
+        mpm_options.hardening = 0.0
+        mpm_options.critical_fraction = 0.0
+        mpm_options.air_drag = 1.0
+
+        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
         # Select and merge meshes for robot/sand collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
@@ -196,22 +213,11 @@ class Example:
         self.collider_rest_points = collider_points
         self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
 
+        mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0])
+
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(self.model)
-
-        # setup mpm solver
-        mpm_options = SolverImplicitMPM.Options()
-        mpm_options.voxel_size = voxel_size
-        mpm_options.max_fraction = max_fraction
-        mpm_options.tolerance = tolerance
-        mpm_options.unilateral = False
-        mpm_options.max_iterations = 50
-        mpm_options.dynamic_grid = dynamic_grid
-        if not dynamic_grid:
-            mpm_options.grid_padding = 5
-
-        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
-        self.mpm_solver.setup_collider(self.model, [self.collider_mesh])
+        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()
@@ -246,7 +252,8 @@ class Example:
         )
         self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
-        self.command[0, 0] = 1
+
+        self._auto_forward = True
 
         # set model on viewer and setup capture
         self.viewer.set_model(self.model)
@@ -280,11 +287,10 @@ class Example:
 
     def simulate_robot(self):
         # robot substeps
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=0.1)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, contacts=None, dt=self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def simulate_sand(self):
@@ -293,6 +299,23 @@ class Example:
         self.mpm_solver.step(self.state_0, self.state_0, contacts=None, control=None, dt=self.frame_dt)
 
     def step(self):
+        # Build command from viewer keyboard
+        if hasattr(self.viewer, "is_key_down"):
+            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+
+            if fwd or lat or rot:
+                # disable forward motion
+                self._auto_forward = False
+
+            self.command[0, 0] = float(fwd)
+            self.command[0, 1] = float(lat)
+            self.command[0, 2] = float(rot)
+
+        if self._auto_forward:
+            self.command[0, 0] = 1
+
         # compute control before graph/step
         self.apply_control()
         if self.graph:
@@ -330,7 +353,7 @@ class Example:
         self.collider_mesh.refit()
 
 
-def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, packing_fraction):
+def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, density):
     Nx = res[0]
     Ny = res[1]
     Nz = res[2]
@@ -345,7 +368,7 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, pa
     cell_volume = np.prod(cell_size)
 
     radius = np.max(cell_size) * 0.5
-    volume = np.prod(cell_volume) * packing_fraction
+    mass = np.prod(cell_volume) * density
 
     rng = np.random.default_rng()
     points += 2.0 * radius * (rng.random(points.shape) - 0.5)
@@ -353,11 +376,10 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, pa
 
     builder.particle_q = points
     builder.particle_qd = vel
-    builder.particle_mass = np.full(points.shape[0], volume)
-    builder.particle_radius = np.full(points.shape[0], radius)
-    builder.particle_flags = np.zeros(points.shape[0], dtype=int)
 
-    print("Particle count: ", points.shape[0])
+    builder.particle_mass = np.full(points.shape[0], mass)
+    builder.particle_radius = np.full(points.shape[0], radius)
+    builder.particle_flags = np.ones(points.shape[0], dtype=int)
 
 
 def _merge_meshes(
@@ -383,15 +405,12 @@ def _merge_meshes(
 
 
 if __name__ == "__main__":
-    import argparse
-
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
     parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
-    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
-    parser.add_argument("--dynamic-grid", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
@@ -408,7 +427,6 @@ if __name__ == "__main__":
         particles_per_cell=args.particles_per_cell,
         tolerance=args.tolerance,
         sand_friction=args.sand_friction,
-        dynamic_grid=args.dynamic_grid,
     )
 
     # Run via unified example runner

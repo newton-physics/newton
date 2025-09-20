@@ -50,20 +50,22 @@ def test_sand_cube_on_plane(test, device):
     builder.add_ground_plane()
 
     model: newton.Model = builder.finalize(device=device)
+    model.particle_ke = 1.0e15
     model.particle_mu = friction
 
     state_0: newton.State = model.state()
     state_1: newton.State = model.state()
 
     options = SolverImplicitMPM.Options()
-    options.dynamic_grid = False  # use static grid as dynamic grid is GPU-only
-    options.grid_padding = 3
+    options.grid_type = "dense"  # use dense grid as sparse grid is GPU-only
     options.voxel_size = voxel_size
 
     solver = SolverImplicitMPM(model, options)
 
     solver.enrich_state(state_0)
     solver.enrich_state(state_1)
+
+    init_pos = state_0.particle_q.numpy()
 
     # Run a few steps
     for _k in range(25):
@@ -77,8 +79,19 @@ def test_sand_cube_on_plane(test, device):
     assert voxel_size < bb_max[model.up_axis] < N * voxel_size
 
     assert np.all(bb_min > -N * voxel_size)
-    assert np.all(bb_min < 0.0)
+    assert np.all(bb_min < np.min(init_pos, axis=0))
     assert np.all(bb_max < 2 * N * voxel_size)
+
+    # Checks that contact impulses are consistent
+    impulses, grid_points = solver.collect_collider_impulses(state_0)
+
+    impulses = impulses.numpy()
+    active_contacts = np.flatnonzero(np.linalg.norm(impulses, axis=1) > 0.01)
+    contact_points = grid_points.numpy()[active_contacts]
+    contact_impulses = impulses[active_contacts]
+
+    assert np.all(contact_points[:, model.up_axis] == 0.0)
+    assert np.all(contact_impulses[:, model.up_axis] < 0.0)
 
 
 devices = get_test_devices(mode="basic")
