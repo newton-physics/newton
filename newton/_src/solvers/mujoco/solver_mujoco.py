@@ -1211,7 +1211,7 @@ class SolverMuJoCo(SolverBase):
         mjw_model: MjWarpModel | None = None,
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
-        njmax: int = 100,
+        njmax: int | None = None,
         ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
@@ -1711,7 +1711,7 @@ class SolverMuJoCo(SolverBase):
         separate_envs_to_worlds: bool = True,
         iterations: int = 20,
         ls_iterations: int = 10,
-        njmax: int = 100,  # number of constraints per world
+        njmax: int | None = None,  # number of constraints per world
         ncon_per_env: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "euler",
@@ -2421,10 +2421,22 @@ class SolverMuJoCo(SolverBase):
             else:
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
+                    if rigid_contact_max < self.mj_data.ncon * nworld:
+                        print(f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon}")
+                        nconmax = self.mj_data.ncon * nworld
+                    else:
+                        nconmax = rigid_contact_max
                 else:
+                    nconmax = self.mj_data.ncon * nworld
                     rigid_contact_max = model.rigid_contact_max
-                nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(njmax, self.mj_data.nefc)
+
+            if njmax is not None:
+                if njmax < self.mj_data.nefc:
+                    print(f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc}")
+                    njmax = self.mj_data.nefc
+            else:
+                njmax = self.mj_data.nefc
+
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model,
                 self.mj_data,
