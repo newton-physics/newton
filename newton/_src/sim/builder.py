@@ -1986,7 +1986,7 @@ class ModelBuilder:
                 if show_shape_keys:
                     shape_label.append(self.shape_key[i])
                 if show_shape_types:
-                    shape_label.append(f"\n({shape_type_str(self.shape_type[i])})")
+                    shape_label.append(f"({shape_type_str(self.shape_type[i])})")
                 vertices.append("\n".join(shape_label))
         edges = []
         edge_labels = []
