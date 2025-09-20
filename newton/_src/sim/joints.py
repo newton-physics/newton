@@ -43,6 +43,9 @@ class JointType(IntEnum):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
+    CABLE = 7
+    """Cable joint: constrains two bodies like a cable with stiffness/damping."""
+
 
 def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     """
@@ -75,6 +78,9 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     elif joint_type == JointType.FIXED:
         dof_count = 0
         coord_count = 0
+    elif joint_type == JointType.CABLE:
+        dof_count = 1
+        coord_count = 1
     return dof_count, coord_count
 
 
