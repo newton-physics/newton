@@ -780,10 +780,19 @@ def test_mesh_ground_collision_index(test, device):
     test.assertEqual(sorted(tids), [-1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2])
     tids = [t for t in tids if t != -1]
     # retrieve the mesh vertices from the contact thread indices
-    assert_np_equal(contacts.rigid_contact_point0.numpy()[:3], vertices[tids])
-    assert_np_equal(contacts.rigid_contact_point1.numpy()[:3, 0], vertices[tids, 0], tol=1e-6)
-    assert_np_equal(contacts.rigid_contact_point1.numpy()[:3, 1:], np.zeros((3, 2)), tol=1e-6)
-    assert_np_equal(contacts.rigid_contact_normal.numpy()[:3], np.tile([0.0, 1.0, 0.0], (3, 1)), tol=1e-6)
+    expected_contacts = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ]
+    )
+    assert_np_equal(contacts.rigid_contact_point0.numpy()[:3], expected_contacts, tol=1e-6)
+    assert_np_equal(contacts.rigid_contact_point1.numpy()[:3, 0], expected_contacts[:, 0], tol=1e-6)
+    assert_np_equal(
+        contacts.rigid_contact_point1.numpy()[:3, 1:], np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]), tol=1e-6
+    )
+    assert_np_equal(contacts.rigid_contact_normal.numpy()[:3], np.tile([0.0, -1.0, 0.0], (3, 1)), tol=1e-6)
 
 
 devices = get_test_devices(mode="basic")
