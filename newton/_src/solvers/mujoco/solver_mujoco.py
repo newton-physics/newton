@@ -1635,7 +1635,11 @@ class SolverMuJoCo(SolverBase):
             excluded = True
             for shape_1 in shapes_1:
                 for shape_2 in shapes_2:
-                    if (shape_1, shape_2) not in model.shape_collision_filter_pairs:
+                    if shape_1 > shape_2:
+                        s1, s2 = shape_2, shape_1
+                    else:
+                        s1, s2 = shape_1, shape_2
+                    if (s1, s2) not in model.shape_collision_filter_pairs:
                         excluded = False
                         break
             if excluded:
