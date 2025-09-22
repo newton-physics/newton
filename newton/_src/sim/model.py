@@ -29,7 +29,12 @@ from .state import State
 
 
 class AttributeAssignment(IntEnum):
-    """Enumeration of attribute assignment categories."""
+    """Enumeration of attribute assignment categories.
+
+    Defines which component of the simulation system owns and manages specific attributes.
+    This categorization determines where custom attributes are attached during simulation
+    object creation (State, Control, or Contacts).
+    """
 
     MODEL = 0
     STATE = 1
@@ -38,7 +43,13 @@ class AttributeAssignment(IntEnum):
 
 
 class AttributeFrequency(IntEnum):
-    """Enumeration of attribute frequency categories."""
+    """Enumeration of attribute frequency categories.
+
+    Defines the dimensional structure and indexing pattern for custom attributes.
+    This determines how many elements an attribute array should have and how it
+    should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
+    For instance, an attribute with frequency JOINT_DOF has one element per joint degree of freedom, BODY frequency translates to one element per body.
+    """
 
     JOINT = 0
     JOINT_DOF = 1
@@ -497,12 +508,14 @@ class Model:
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
-        for name, _freq in list(self.attribute_frequency.items()):
-            if self.get_attribute_assignment(name) != AttributeAssignment.STATE:
+        for name, _freq in self.attribute_frequency.items():
+            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.STATE:
                 continue
             src = getattr(self, name, None)
             if src is None:
-                continue
+                raise AttributeError(
+                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
+                )
             # clone onto state with same dtype
             setattr(s, name, wp.clone(src, requires_grad=requires_grad))
 
@@ -542,12 +555,14 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         # attach custom attributes with assignment==CONTROL
-        for name, _freq in list(self.attribute_frequency.items()):
-            if self.get_attribute_assignment(name) != AttributeAssignment.CONTROL:
+        for name, _freq in self.attribute_frequency.items():
+            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.CONTROL:
                 continue
             src = getattr(self, name, None)
             if src is None:
-                continue
+                raise AttributeError(
+                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
+                )
             if clone_variables:
                 setattr(c, name, wp.clone(src, requires_grad=requires_grad))
             else:
@@ -616,12 +631,14 @@ class Model:
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom attributes with assignment==CONTACT
-        for name, _freq in list(self.attribute_frequency.items()):
-            if self.get_attribute_assignment(name) != AttributeAssignment.CONTACT:
+        for name, _freq in self.attribute_frequency.items():
+            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.CONTACT:
                 continue
             src = getattr(self, name, None)
             if src is None:
-                continue
+                raise AttributeError(
+                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
+                )
             if isinstance(src, wp.array):
                 setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
             else:
@@ -676,15 +693,3 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
-
-    def get_attribute_assignment(self, name):
-        """
-        Get the assignment of an attribute.
-
-        Returns:
-            AttributeAssignment: The assignment of the attribute.
-        """
-        assignment = self.attribute_assignment.get(name)
-        if assignment is None:
-            return AttributeAssignment.MODEL
-        return assignment

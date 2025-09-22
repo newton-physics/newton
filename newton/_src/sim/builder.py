@@ -88,8 +88,33 @@ class CustomAttribute:
     values: dict[int, Any] | None = None
 
     def __post_init__(self):
+        """Initialize default values and ensure values dict exists."""
+        # Set dtype-specific default value if none was provided
+        if self.default is None:
+            self.default = self._default_for_dtype(self.dtype)
+
         if self.values is None:
             self.values = {}
+
+    @staticmethod
+    def _default_for_dtype(d: object) -> Any:
+        """Get default value for dtype when not specified."""
+        # quaternions get identity quaternion
+        if d is wp.quat:
+            return wp.quat_identity()
+        # vectors default to zeros of their length
+        if wp.types.type_is_vector(d):
+            length = getattr(d, "_shape_", (1,))[0] or 1
+            return np.zeros(
+                length,
+                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
+            )
+        # scalars
+        if d is wp.bool:
+            return False
+        if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
+            return 0
+        return 0.0
 
     def build_wp_array(self, count: int, requires_grad: bool = False) -> wp.array:
         """Build wp.array from count, dtype, default and overrides."""
@@ -519,26 +544,6 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, CustomAttribute] = {}
 
-    @staticmethod
-    def _default_for_dtype(d: object) -> Any:
-        """Get default value for dtype when not specified."""
-        # quaternions get identity quaternion
-        if d is wp.quat:
-            return wp.quat_identity()
-        # vectors default to zeros of their length
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            return np.zeros(
-                length,
-                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
-            )
-        # scalars
-        if d is wp.bool:
-            return False
-        if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
-            return 0
-        return 0.0
-
     def add_custom_attribute(
         self,
         name: str,
@@ -567,10 +572,6 @@ class ModelBuilder:
                     f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
                 )
             return
-
-        # Use dtype-specific default if none provided
-        if default is None:
-            default = self._default_for_dtype(dtype if dtype is not None else wp.float32)
 
         self.custom_attributes[name] = CustomAttribute(
             assignment=assignment,
