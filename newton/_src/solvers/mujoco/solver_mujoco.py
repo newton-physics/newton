@@ -2477,7 +2477,10 @@ class SolverMuJoCo(SolverBase):
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
                     if rigid_contact_max < self.mj_data.ncon * nworld:
-                        warnings.warn(f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following a MjWarp requirement.", stacklevel=2)
+                        warnings.warn(
+                            f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following a MjWarp requirement.",
+                            stacklevel=2,
+                        )
                         nconmax = self.mj_data.ncon * nworld
                     else:
                         nconmax = rigid_contact_max
@@ -2486,7 +2489,10 @@ class SolverMuJoCo(SolverBase):
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
-                    warnings.warn(f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following a MjWarp requirement.", stacklevel=2)
+                    warnings.warn(
+                        f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following a MjWarp requirement.",
+                        stacklevel=2,
+                    )
                     njmax = self.mj_data.nefc
             else:
                 njmax = self.mj_data.nefc
