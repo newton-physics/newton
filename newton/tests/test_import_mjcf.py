@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.geometry.types import GeoType
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -565,6 +566,76 @@ class TestImportMjcf(unittest.TestCase):
 
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
+
+    def test_cylinder_shapes_preserved(self):
+        """Test that cylinder geometries are properly imported as cylinders, not capsules."""
+        # Create MJCF content with cylinder geometry
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="cylinder_test">
+    <worldbody>
+        <body name="test_body">
+            <geom type="cylinder" size="0.5 1.0" />
+            <geom type="cylinder" size="0.3 0.8" fromto="0 0 0 1 0 0" />
+            <geom type="capsule" size="0.2 0.5" />
+            <geom type="box" size="0.4 0.4 0.4" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "cylinder_test.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path)
+
+            # Check that we have the correct number of shapes
+            self.assertEqual(builder.shape_count, 4)
+
+            # Check shape types
+            shape_types = list(builder.shape_type)
+
+            # First two shapes should be cylinders
+            self.assertEqual(shape_types[0], GeoType.CYLINDER)
+            self.assertEqual(shape_types[1], GeoType.CYLINDER)
+
+            # Third shape should be capsule
+            self.assertEqual(shape_types[2], GeoType.CAPSULE)
+
+            # Fourth shape should be box
+            self.assertEqual(shape_types[3], GeoType.BOX)
+
+    def test_cylinder_properties_preserved(self):
+        """Test that cylinder properties (radius, height) are correctly imported."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="cylinder_props_test">
+    <worldbody>
+        <body name="test_body">
+            <geom type="cylinder" size="0.75 1.5" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "cylinder_props.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path)
+
+            # Check shape properties
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
+
+            # Check that radius and half_height are preserved
+            # shape_scale stores (radius, half_height, 0) for cylinders
+            shape_scale = builder.shape_scale[0]
+            self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
+            self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
 
 if __name__ == "__main__":

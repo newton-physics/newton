@@ -18,14 +18,16 @@
 #
 # Shows how to control robot pretrained in IsaacLab with RL.
 # The policy is loaded from a file and the robot is controlled via keyboard.
-# Press space to start the simulation.
+#
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
 # Run this example with:
-# python example_robot_policy.py --robot g1_29dof
-# python example_robot_policy.py --robot go2
-# python example_robot_policy.py --robot anymal
-# to run the example with physX trained policies run with --physx
+# python -m newton.examples robot_policy --robot g1_29dof
+# python -m newton.examples robot_policy --robot g1_23dof
+# python -m newton.examples robot_policy --robot go2
+# python -m newton.examples robot_policy --robot anymal
+# python -m newton.examples robot_policy --robot anymal --physx
+# to run the example with a PhysX-trained policy run with --physx
 ###########################################################################
 
 from dataclasses import dataclass
@@ -136,8 +138,8 @@ def compute_obs(
     joint_qd = state.joint_qd if state.joint_qd is not None else []
 
     root_quat_w = torch.tensor(joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
     joint_pos_current = torch.tensor(joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
     joint_vel_current = torch.tensor(joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
 
