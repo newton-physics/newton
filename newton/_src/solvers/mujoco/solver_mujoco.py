@@ -1237,8 +1237,8 @@ class SolverMuJoCo(SolverBase):
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax (int): Maximum number of constraints per environment (world).
-            ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
+            njmax (int): Maximum number of constraints per environment (world). If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            ncon_per_env (int | None): Number of contact points per environment (world). If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -2422,17 +2422,16 @@ class SolverMuJoCo(SolverBase):
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
                     if rigid_contact_max < self.mj_data.ncon * nworld:
-                        print(f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon}")
+                        warnings.warn(f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following a MjWarp requirement.", stacklevel=2)
                         nconmax = self.mj_data.ncon * nworld
                     else:
                         nconmax = rigid_contact_max
                 else:
                     nconmax = self.mj_data.ncon * nworld
-                    rigid_contact_max = model.rigid_contact_max
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
-                    print(f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc}")
+                    warnings.warn(f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following a MjWarp requirement.", stacklevel=2)
                     njmax = self.mj_data.nefc
             else:
                 njmax = self.mj_data.nefc
