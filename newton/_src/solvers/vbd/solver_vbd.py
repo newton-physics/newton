@@ -2510,11 +2510,14 @@ class SolverVBD(SolverBase):
     ):
         model = self.model
 
+        # use gravity from state if available, otherwise use model gravity
+        gravity = state_in.gravity if state_in.gravity is not None else model.gravity
+
         wp.launch(
             kernel=forward_step,
             inputs=[
                 dt,
-                model.gravity,
+                gravity,
                 self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
@@ -2671,11 +2674,14 @@ class SolverVBD(SolverBase):
 
         model = self.model
 
+        # use gravity from state if available, otherwise use model gravity
+        gravity = state_in.gravity if state_in.gravity is not None else model.gravity
+
         wp.launch(
             kernel=forward_step_penetration_free,
             inputs=[
                 dt,
-                model.gravity,
+                gravity,
                 self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,

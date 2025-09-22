@@ -113,12 +113,15 @@ class SolverStyle3D(SolverBase):
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 
+        # Use gravity from state if available, otherwise use model gravity
+        gravity = state_in.gravity if state_in.gravity is not None else self.model.gravity
+
         wp.launch(
             kernel=init_step_kernel,
             dim=self.model.particle_count,
             inputs=[
                 dt,
-                self.model.gravity,
+                gravity,
                 state_in.particle_f,
                 state_in.particle_qd,
                 state_in.particle_q,

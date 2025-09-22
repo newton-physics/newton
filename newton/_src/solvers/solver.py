@@ -195,6 +195,9 @@ class SolverBase:
                 Defaults to 0.0.
         """
         if model.body_count:
+            # Use gravity from state if available, otherwise use model gravity
+            gravity = state_in.gravity if state_in.gravity is not None else model.gravity
+
             wp.launch(
                 kernel=integrate_bodies,
                 dim=model.body_count,
@@ -207,7 +210,7 @@ class SolverBase:
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
-                    model.gravity,
+                    gravity,
                     angular_damping,
                     dt,
                 ],
@@ -232,6 +235,9 @@ class SolverBase:
             dt (float): The time step (typically in seconds).
         """
         if model.particle_count:
+            # Use gravity from state if available, otherwise use model gravity
+            gravity = state_in.gravity if state_in.gravity is not None else model.gravity
+
             wp.launch(
                 kernel=integrate_particles,
                 dim=model.particle_count,
@@ -241,7 +247,7 @@ class SolverBase:
                     state_in.particle_f,
                     model.particle_inv_mass,
                     model.particle_flags,
-                    model.gravity,
+                    gravity,
                     dt,
                     model.particle_max_velocity,
                 ],

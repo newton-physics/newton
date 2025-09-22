@@ -1328,6 +1328,14 @@ class SolverMuJoCo(SolverBase):
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        # Update gravity if it's set in state
+        if state_in.gravity is not None:
+            if self.use_mujoco_cpu:
+                self.mj_model.opt.gravity[:] = state_in.gravity
+            else:
+                # MuJoCo Warp uses a warp array for gravity
+                self.mjw_model.opt.gravity.fill_(state_in.gravity)
+
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:

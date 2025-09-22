@@ -1454,6 +1454,9 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
+            # Use gravity from state if available, otherwise use model gravity
+            gravity = state_in.gravity if state_in.gravity is not None else model.gravity
+
             velocity_int = fem.integrate(
                 integrate_velocity,
                 quadrature=pic,
@@ -1462,7 +1465,7 @@ class SolverImplicitMPM(SolverBase):
                     "velocities": state_in.particle_qd,
                     "velocity_gradients": state_in.particle_qd_grad,
                     "dt": dt,
-                    "gravity": model.gravity,
+                    "gravity": gravity,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
