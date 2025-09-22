@@ -245,7 +245,6 @@ class Example:
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             joint_ordering="dfs",
-            hide_collision_shapes=True,
         )
         builder.approximate_meshes("convex_hull")
 
@@ -281,6 +280,7 @@ class Example:
 
         # Set model in viewer
         self.viewer.set_model(self.model)
+        self.viewer.show_collision = False
         self.viewer.vsync = True
 
         # Ensure FK evaluation (for non-MuJoCo solvers)

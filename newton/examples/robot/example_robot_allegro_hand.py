@@ -98,7 +98,6 @@ class Example:
             enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*palm_link/visuals", ".*DexCube/visuals"],
             load_non_physics_prims=True,
-            hide_collision_shapes=False,
         )
 
         # hide collision shapes for the hand links

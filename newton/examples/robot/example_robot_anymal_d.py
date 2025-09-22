@@ -56,11 +56,7 @@ class Example:
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         asset_file = str(asset_path / "usd" / "anymal_d.usda")
         articulation_builder.add_usd(
-            asset_file,
-            collapse_fixed_joints=False,
-            enable_self_collisions=False,
-            load_non_physics_prims=True,
-            hide_collision_shapes=True,
+            asset_file, collapse_fixed_joints=False, enable_self_collisions=False, load_non_physics_prims=True
         )
 
         articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
@@ -94,6 +90,7 @@ class Example:
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
+        self.viewer.show_collision = False
 
         # put graph capture into it's own function
         self.capture()
