@@ -13,18 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._src.sim.ik import (
-    IKJacobianMode,
-    IKJointLimitObjective,
-    IKLBFGSOptimizer,
-    IKLMOptimizer,
-    IKObjective,
-    IKOptimizer,
-    IKPositionObjective,
-    IKRotationObjective,
-    IKSampler,
-    IKSolver,
-)
+"""Inverse-kinematics submodule."""
+
+from .ik_common import IKJacobianMode
+from .ik_lbfgs_optimizer import IKLBFGSOptimizer
+from .ik_lm_optimizer import IKLMOptimizer
+from .ik_objectives import IKJointLimitObjective, IKObjective, IKPositionObjective, IKRotationObjective
+from .ik_solver import IKOptimizer, IKSampler, IKSolver
 
 __all__ = [
     "IKJacobianMode",
