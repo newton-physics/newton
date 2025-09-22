@@ -516,7 +516,7 @@ class ArticulationView:
         elif isinstance(_slice, Slice):
             _slice = _slice.get()
         elif isinstance(_slice, int):
-            _slice = slice(_slice, _slice + 1)
+            return attrib[:, _slice]
         else:
             raise TypeError(f"Invalid slice type: expected Slice or int, got {type(_slice)}")
 
@@ -524,14 +524,14 @@ class ArticulationView:
             # create strided array
             if _slice.start == _slice.stop:
                 #! workaround for empty slice until this is fixed: https://github.com/NVIDIA/warp/issues/958
-                ptr_offset = _slice.start * attrib.strides[1]
                 attrib = wp.array(
-                    ptr=attrib.ptr + ptr_offset if attrib.ptr is not None else None,
+                    ptr=attrib.ptr,
                     dtype=attrib.dtype,
-                    shape=(attrib.shape[0], 0),
+                    shape=(attrib.shape[0], 0, *attrib.shape[2:]),
                     strides=attrib.strides,
                     device=attrib.device,
                     pinned=attrib.pinned,
+                    copy=False,
                 )
             else:
                 attrib = attrib[:, _slice]
