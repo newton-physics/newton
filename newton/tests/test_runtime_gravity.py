@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import unittest
+
 import warp as wp
 
 import newton
-from newton.solvers import SolverXPBD, SolverVBD, SolverSemiImplicit, SolverMuJoCo
-from newton.tests.unittest_utils import *
+from newton.solvers import SolverSemiImplicit, SolverXPBD
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestRuntimeGravity(unittest.TestCase):
@@ -29,51 +29,51 @@ class TestRuntimeGravity(unittest.TestCase):
 def test_runtime_gravity_particles(test, device, solver_fn):
     """Test that particles respond correctly to runtime gravity changes"""
     builder = newton.ModelBuilder(gravity=-9.81)
-    
+
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-    
+
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    
+
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    
+
     dt = 0.01
-    
+
     # Step 1: Simulate with default gravity
     for _ in range(10):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     z_vel_default = state_0.particle_qd.numpy()[0, 2]
     test.assertLess(z_vel_default, -0.5)  # Should be falling
-    
+
     # Step 2: Change gravity to zero at runtime
     state_0.set_gravity((0.0, 0.0, 0.0))
     state_1.set_gravity((0.0, 0.0, 0.0))  # Set on both states to handle swapping
-    
+
     # Simulate with zero gravity
     for _ in range(10):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     z_vel_zero_g = state_0.particle_qd.numpy()[0, 2]
     # Velocity should remain constant with zero gravity
     test.assertAlmostEqual(z_vel_zero_g, z_vel_default, places=4)
-    
+
     # Step 3: Change gravity to positive (upward)
     state_0.set_gravity((0.0, 0.0, 9.81))
     state_1.set_gravity((0.0, 0.0, 9.81))  # Set on both states to handle swapping
-    
+
     # Simulate with upward gravity
     for _ in range(20):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     z_vel_upward = state_0.particle_qd.numpy()[0, 2]
     test.assertGreater(z_vel_upward, z_vel_zero_g)  # Should be accelerating upward
 
@@ -81,42 +81,42 @@ def test_runtime_gravity_particles(test, device, solver_fn):
 def test_runtime_gravity_bodies(test, device, solver_fn):
     """Test that rigid bodies respond correctly to runtime gravity changes"""
     builder = newton.ModelBuilder(gravity=-9.81)
-    
+
     # Set default shape density
     builder.default_shape_cfg.density = 1000.0
-    
+
     # Add a free-floating rigid body
     b = builder.add_body()
     builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
     builder.add_joint_free(b)
-    
+
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    
+
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    
+
     dt = 0.01
-    
+
     # Step 1: Simulate with default gravity
     for _ in range(10):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     body_vel_default = state_0.body_qd.numpy()[0, :3]
     test.assertLess(body_vel_default[2], -0.5)  # Should be falling
-    
+
     # Step 2: Change gravity to horizontal
     state_0.set_gravity((9.81, 0.0, 0.0))
     state_1.set_gravity((9.81, 0.0, 0.0))  # Set on both states to handle swapping
-    
+
     # Simulate with horizontal gravity
     for _ in range(20):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     body_vel_horizontal = state_0.body_qd.numpy()[0, :3]
     test.assertGreater(body_vel_horizontal[0], 0.5)  # Should be accelerating in X direction
 
@@ -124,27 +124,27 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 def test_gravity_fallback(test, device):
     """Test that solvers fall back to model gravity when state gravity is not set"""
     builder = newton.ModelBuilder(gravity=-9.81)
-    
+
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-    
+
     model = builder.finalize(device=device)
     solver = SolverXPBD(model)
-    
+
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    
+
     # Don't set gravity on state - should use model gravity
     test.assertIsNone(state_0.gravity)
-    
+
     dt = 0.01
-    
+
     # Simulate with model gravity
     for _ in range(10):
         state_0.clear_forces()
         solver.step(state_0, state_1, control, None, dt)
         state_0, state_1 = state_1, state_0
-    
+
     z_vel = state_0.particle_qd.numpy()[0, 2]
     test.assertLess(z_vel, -0.5)  # Should be falling with model gravity
 
@@ -160,12 +160,8 @@ solvers_particles = {
 solvers_bodies = {
     "xpbd": lambda model: SolverXPBD(model),
     "semi_implicit": lambda model: SolverSemiImplicit(model),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=True, update_data_interval=0
-    ),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=False, update_data_interval=0
-    ),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0),
 }
 
 # Add tests for each device and solver combination
@@ -179,7 +175,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-    
+
     # Body tests (all solvers including MuJoCo)
     for solver_name, solver_fn in solvers_bodies.items():
         # Skip CPU MuJoCo on CUDA devices
@@ -192,7 +188,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-    
+
     # Test gravity fallback once per device
     add_function_test(
         TestRuntimeGravity,
