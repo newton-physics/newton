@@ -202,6 +202,7 @@ class ViewerBase:
         materials=None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
+        hidden=False,
     ):
         """
         Convenience helper to create/cache a mesh of a given geometry and
@@ -220,6 +221,7 @@ class ViewerBase:
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             thickness: Optional thickness (used for hashing consistency)
             is_solid: If False, can be used for wire/solid hashing parity
+            hidden: If True, the shape will not be rendered
         """
 
         # normalize geo_scale to a list for hashing + mesh creation
@@ -273,7 +275,7 @@ class ViewerBase:
         materials = _ensure_vec4_array(materials, default_material)
 
         # finally, log the instances
-        self.log_instances(name, mesh_path, xforms, scales, colors, materials)
+        self.log_instances(name, mesh_path, xforms, scales, colors, materials, hidden=hidden)
 
     def log_geo(
         self,
