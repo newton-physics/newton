@@ -56,6 +56,7 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 0.8)),
             collapse_fixed_joints=True,
             enable_self_collisions=False,
+            hide_collision_shapes=True,
         )
 
         for i in range(6, g1.joint_dof_count):
@@ -90,7 +91,6 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
-        self.viewer.show_collision = False
 
         self.capture()
 

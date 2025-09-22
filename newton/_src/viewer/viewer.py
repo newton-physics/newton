@@ -60,9 +60,9 @@ class ViewerBase:
         self.show_contacts = False
         self.show_springs = False
         self.show_triangles = True
-        self.show_collision = True  # show collision shapes
-        self.show_visual = True  # show visual  shapes (non collider)
-        self.show_static = True  # force static hapes to be visible
+        self.show_collision = False  # force show collision shapes
+        self.show_visual = True  # show visual shapes (non collider)
+        self.show_static = False  # force static shapes to be visible
 
     def is_running(self) -> bool:
         return True
@@ -474,14 +474,19 @@ class ViewerBase:
         if is_static and self.show_static:
             return True
 
+        # if show_collision is True, then collider shapes are always visible
         if is_collider and self.show_collision:
             return True
 
         if is_visual and self.show_visual:
             return True
 
+        # allow hiding all visual shapes with the toggle
+        if is_visual and not self.show_visual:
+            return False
+
         # if no overrides set then revert to shape visibility
-        return False
+        return bool(flags & int(newton.ShapeFlags.VISIBLE))
 
     def _populate_geometry(
         self,
@@ -607,7 +612,7 @@ class ViewerBase:
             if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
-                color = wp.vec3(self._shape_color_map(s))
+                color = wp.vec3(self._shape_color_map(geo_type))
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
@@ -710,18 +715,13 @@ class ViewerBase:
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
-        # Paul Tol - Bright 9
-        colors = [
-            [68, 119, 170],  # blue
-            [102, 204, 238],  # cyan
-            [34, 136, 51],  # green
-            [204, 187, 68],  # yellow
-            [238, 102, 119],  # red
-            [170, 51, 119],  # magenta
-            [187, 187, 187],  # grey
-            [238, 153, 51],  # orange
-            [0, 153, 136],  # teal
-        ]
+        import colorsys  # noqa: PLC0415
 
-        num_colors = len(colors)
-        return [c / 255.0 for c in colors[i % num_colors]]
+        # golden ratio of hue provides evenly spaced colors
+        _PHI = 0.6180339887498948
+
+        # Pastel HLS: lightness ~0.6, saturation ~0.65 works well on dark backgrounds
+        h = (i * _PHI) % 1.0
+        l, s = 0.6, 0.65
+        r, g, b = colorsys.hls_to_rgb(h, l, s)
+        return [r, g, b]

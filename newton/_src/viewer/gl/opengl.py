@@ -774,7 +774,7 @@ class RendererGL:
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
         self.sky_upper = self.background_color
-        self.sky_lower = (139.0 / 255.0, 151 / 255.0, 186.0 / 255.0)
+        self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
         try:
             import pyglet  # noqa: PLC0415

@@ -84,6 +84,7 @@ class Example:
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=True,
+            hide_collision_shapes=True,
         )
         # create a pedestal
         ur10.add_shape_cylinder(-1, xform=wp.transform(wp.vec3(0, 0, height / 2)), half_height=height / 2, radius=0.08)
@@ -158,7 +159,6 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
-        self.viewer.show_collision = False
 
         self.capture()
 

@@ -60,6 +60,7 @@ class Example:
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             load_non_physics_prims=True,
+            hide_collision_shapes=True,
         )
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
@@ -83,7 +84,6 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
-        self.viewer.show_collision = False
 
         self.capture()
 
