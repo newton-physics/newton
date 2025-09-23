@@ -613,8 +613,6 @@ class SolverXPBD(SolverBase):
 
                 if model.body_count:
                     body_deltas.zero_()
-                    # use gravity from state if available, otherwise use model gravity
-                    gravity = state_in.gravity if state_in.gravity is not None else model.gravity
 
                     wp.launch(
                         kernel=apply_rigid_restitution,
@@ -640,7 +638,7 @@ class SolverXPBD(SolverBase):
                             contacts.rigid_contact_thickness0,
                             contacts.rigid_contact_thickness1,
                             rigid_contact_inv_weight_init,
-                            gravity,
+                            model.gravity,
                             dt,
                         ],
                         outputs=[

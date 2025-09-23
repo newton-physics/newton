@@ -195,13 +195,13 @@ def integrate_velocity(
     velocities: wp.array(dtype=wp.vec3),
     velocity_gradients: wp.array(dtype=wp.mat33),
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     inv_cell_volume: float,
 ):
     # APIC velocity prediction
     node_offset = domain(fem.at_node(u, s)) - domain(s)
     vel_apic = velocities[s.qp_index] + velocity_gradients[s.qp_index] * node_offset
-    vel_adv = vel_apic + dt * gravity
+    vel_adv = vel_apic + dt * gravity[0]
 
     return wp.dot(u(s), vel_adv) * inv_cell_volume
 
@@ -1454,9 +1454,6 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=True,
         ):
-            # Use gravity from state if available, otherwise use model gravity
-            gravity = state_in.gravity if state_in.gravity is not None else model.gravity
-
             velocity_int = fem.integrate(
                 integrate_velocity,
                 quadrature=pic,
@@ -1465,7 +1462,7 @@ class SolverImplicitMPM(SolverBase):
                     "velocities": state_in.particle_qd,
                     "velocity_gradients": state_in.particle_qd_grad,
                     "dt": dt,
-                    "gravity": gravity,
+                    "gravity": model.gravity,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,

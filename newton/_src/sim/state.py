@@ -61,9 +61,6 @@ class State:
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates, shape (joint_dof_count,), dtype float."""
 
-        self.gravity: wp.vec3 | None = None
-        """Optional gravity override for runtime modification. If None, uses model.gravity."""
-
     def clear_forces(self) -> None:
         """
         Clear all force arrays (for particles and bodies) in the state object.
@@ -76,19 +73,6 @@ class State:
 
             if self.body_count:
                 self.body_f.zero_()
-
-    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
-        """
-        Set gravity for runtime modification.
-
-        Args:
-            gravity: Gravity vector as a tuple, list, or wp.vec3.
-                    Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
-        """
-        if isinstance(gravity, tuple | list):
-            self.gravity = wp.vec3(gravity[0], gravity[1], gravity[2])
-        else:
-            self.gravity = gravity
 
     @property
     def requires_grad(self) -> bool:

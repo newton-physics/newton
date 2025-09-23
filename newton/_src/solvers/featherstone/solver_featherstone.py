@@ -361,8 +361,6 @@ class SolverFeatherstone(SolverBase):
 
                 # evaluate joint inertias, motion vectors, and forces
                 state_aug.body_f_s.zero_()
-                # use gravity from state if available, otherwise use model gravity
-                gravity = state_in.gravity if state_in.gravity is not None else model.gravity
 
                 wp.launch(
                     eval_rigid_id,
@@ -380,7 +378,7 @@ class SolverFeatherstone(SolverBase):
                         state_in.body_q,
                         state_aug.body_q_com,
                         model.joint_X_p,
-                        gravity,
+                        model.gravity,
                     ],
                     outputs=[
                         state_aug.joint_S_s,

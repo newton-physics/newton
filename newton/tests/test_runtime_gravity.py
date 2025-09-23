@@ -51,8 +51,8 @@ def test_runtime_gravity_particles(test, device, solver_fn):
     test.assertLess(z_vel_default, -0.5)  # Should be falling
 
     # Step 2: Change gravity to zero at runtime
-    state_0.set_gravity((0.0, 0.0, 0.0))
-    state_1.set_gravity((0.0, 0.0, 0.0))  # Set on both states to handle swapping
+    model.set_gravity((0.0, 0.0, 0.0))
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
 
     # Simulate with zero gravity
     for _ in range(10):
@@ -65,8 +65,8 @@ def test_runtime_gravity_particles(test, device, solver_fn):
     test.assertAlmostEqual(z_vel_zero_g, z_vel_default, places=4)
 
     # Step 3: Change gravity to positive (upward)
-    state_0.set_gravity((0.0, 0.0, 9.81))
-    state_1.set_gravity((0.0, 0.0, 9.81))  # Set on both states to handle swapping
+    model.set_gravity((0.0, 0.0, 9.81))
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
 
     # Simulate with upward gravity
     for _ in range(20):
@@ -108,8 +108,8 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
     test.assertLess(body_vel_default[2], -0.5)  # Should be falling
 
     # Step 2: Change gravity to horizontal
-    state_0.set_gravity((9.81, 0.0, 0.0))
-    state_1.set_gravity((9.81, 0.0, 0.0))  # Set on both states to handle swapping
+    model.set_gravity((9.81, 0.0, 0.0))
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
 
     # Simulate with horizontal gravity
     for _ in range(20):
@@ -134,8 +134,9 @@ def test_gravity_fallback(test, device):
     state_0, state_1 = model.state(), model.state()
     control = model.control()
 
-    # Don't set gravity on state - should use model gravity
-    test.assertIsNone(state_0.gravity)
+    # Verify model gravity is set correctly
+    gravity_vec = model.gravity.numpy()[0]
+    test.assertAlmostEqual(gravity_vec[2], -9.81, places=4)
 
     dt = 0.01
 
@@ -147,6 +148,77 @@ def test_gravity_fallback(test, device):
 
     z_vel = state_0.particle_qd.numpy()[0, 2]
     test.assertLess(z_vel, -0.5)  # Should be falling with model gravity
+
+
+def test_runtime_gravity_with_cuda_graph(test, device):
+    """Test that runtime gravity changes work with CUDA graph capture"""
+    if not device.is_cuda:
+        test.skipTest("CUDA graph capture only available on CUDA devices")
+
+    builder = newton.ModelBuilder(gravity=-9.81)
+
+    # Add a few particles
+    for i in range(5):
+        builder.add_particle(pos=(i * 0.5, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+
+    model = builder.finalize(device=device)
+    solver = SolverXPBD(model)
+
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    dt = 0.01
+
+    # Step once to initialize
+    state_0.clear_forces()
+    solver.step(state_0, state_1, control, None, dt)
+
+    # Start graph capture
+    wp.capture_begin()
+
+    try:
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, dt)
+
+        # End capture and get graph
+        graph = wp.capture_end()
+
+        # Now test that we can change gravity and it affects the simulation
+        # even when using the captured graph
+
+        # Test 1: Default gravity
+        for _ in range(10):
+            wp.capture_launch(graph)
+            state_0, state_1 = state_1, state_0
+
+        z_vel_default = state_0.particle_qd.numpy()[0, 2]
+        test.assertLess(z_vel_default, -0.5)  # Should be falling
+
+        # Test 2: Change to zero gravity
+        model.set_gravity((0.0, 0.0, 0.0))
+        # Note: We don't need to notify solver for graph replay
+
+        vel_before = state_0.particle_qd.numpy()[0, 2]
+        for _ in range(10):
+            wp.capture_launch(graph)
+            state_0, state_1 = state_1, state_0
+
+        vel_after = state_0.particle_qd.numpy()[0, 2]
+        test.assertAlmostEqual(vel_before, vel_after, places=4)  # Velocity should stay constant
+
+        # Test 3: Change to upward gravity
+        model.set_gravity((0.0, 0.0, 9.81))
+
+        for _ in range(20):
+            wp.capture_launch(graph)
+            state_0, state_1 = state_1, state_0
+
+        z_vel_upward = state_0.particle_qd.numpy()[0, 2]
+        test.assertGreater(z_vel_upward, 0.5)  # Should be moving upward
+
+    except Exception as e:
+        # Make sure to end capture if something goes wrong
+        wp.capture_end()
+        raise e
 
 
 devices = get_test_devices()
@@ -196,6 +268,15 @@ for device in devices:
         test_gravity_fallback,
         devices=[device],
     )
+
+    # Test CUDA graph capture (only on CUDA devices)
+    if device.is_cuda:
+        add_function_test(
+            TestRuntimeGravity,
+            "test_runtime_gravity_with_cuda_graph",
+            test_runtime_gravity_with_cuda_graph,
+            devices=[device],
+        )
 
 
 if __name__ == "__main__":
