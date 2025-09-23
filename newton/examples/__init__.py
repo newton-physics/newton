@@ -33,10 +33,21 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def _find_nonfinite(obj: newton.State | newton.Contacts | newton.Model | newton.Control) -> list[str]:
+    """Helper function to check if all Warp array members of an object are finite."""
+    nonfinite_members = []
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if not np.isfinite(attr.numpy()).all():
+                nonfinite_members.append(key)
+    return nonfinite_members
+
+
 def run(example):
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
+    enable_testing = hasattr(example, "test_mode") and example.test_mode
     while example.viewer.is_running():
         if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
@@ -45,7 +56,33 @@ def run(example):
         with wp.ScopedTimer("render", active=False):
             example.render()
 
+    if enable_testing and hasattr(example, "test"):
+        example.test()
+
     example.viewer.close()
+
+    if enable_testing:
+        # generic tests for finiteness of Newton objects
+        if hasattr(example, "state_0"):
+            nonfinite_members = _find_nonfinite(example.state_0)
+            if nonfinite_members:
+                raise ValueError(f"Non-finite members found in state_0: {nonfinite_members}")
+        if hasattr(example, "state_1"):
+            nonfinite_members = _find_nonfinite(example.state_1)
+            if nonfinite_members:
+                raise ValueError(f"Non-finite members found in state_1: {nonfinite_members}")
+        if hasattr(example, "contacts"):
+            nonfinite_members = _find_nonfinite(example.contacts)
+            if nonfinite_members:
+                raise ValueError(f"Non-finite members found in contacts: {nonfinite_members}")
+        if hasattr(example, "model"):
+            nonfinite_members = _find_nonfinite(example.model)
+            if nonfinite_members:
+                raise ValueError(f"Non-finite members found in model: {nonfinite_members}")
+        if hasattr(example, "control"):
+            nonfinite_members = _find_nonfinite(example.control)
+            if nonfinite_members:
+                raise ValueError(f"Non-finite members found in control: {nonfinite_members}")
 
 
 def compute_env_offsets(
@@ -131,6 +168,12 @@ def create_parser():
         default=False,
         help="Whether to initialize the viewer headless (for OpenGL viewer only).",
     )
+    parser.add_argument(
+        "--test",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to run the example in test mode.",
+    )
 
     return parser
 
@@ -177,6 +220,9 @@ def init(parser=None):
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if args.test:
+        wp.config.quiet = True
 
     return viewer, args
 
