@@ -614,7 +614,7 @@ class ViewerBase:
             if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
-                color = wp.vec3(self._shape_color_map(geo_type))
+                color = wp.vec3(self._shape_color_map(shape_hash))
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
@@ -717,13 +717,18 @@ class ViewerBase:
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
-        import colorsys  # noqa: PLC0415
+        # Paul Tol - Bright 9
+        colors = [
+            [68, 119, 170],  # blue
+            [102, 204, 238],  # cyan
+            [34, 136, 51],  # green
+            [204, 187, 68],  # yellow
+            [238, 102, 119],  # red
+            [170, 51, 119],  # magenta
+            [187, 187, 187],  # grey
+            [238, 153, 51],  # orange
+            [0, 153, 136],  # teal
+        ]
 
-        # golden ratio of hue provides evenly spaced colors
-        _PHI = 0.6180339887498948
-
-        # Pastel HLS: lightness ~0.6, saturation ~0.65 works well on dark backgrounds
-        h = (i * _PHI) % 1.0
-        l, s = 0.6, 0.65
-        r, g, b = colorsys.hls_to_rgb(h, l, s)
-        return [r, g, b]
+        num_colors = len(colors)
+        return [c / 255.0 for c in colors[i % num_colors]]
