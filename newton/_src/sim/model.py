@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import IntEnum
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -56,6 +58,62 @@ class AttributeFrequency(IntEnum):
     JOINT_COORD = 2
     BODY = 3
     SHAPE = 4
+
+
+@dataclass
+class CustomAttribute:
+    """
+    Represents a custom attribute definition for the ModelBuilder.
+
+    Attributes:
+        assignment: Assignment category (see AttributeAssignment enum)
+        frequency: Frequency category (see AttributeFrequency enum)
+        name: Variable name to expose on the Model
+        dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        default: Default value for the attribute
+        values: Dictionary mapping indices to specific values (overrides)
+    """
+
+    assignment: AttributeAssignment
+    frequency: AttributeFrequency
+    name: str
+    dtype: object
+    default: Any = None
+    values: dict[int, Any] | None = None
+
+    def __post_init__(self):
+        """Initialize default values and ensure values dict exists."""
+        # Set dtype-specific default value if none was provided
+        if self.default is None:
+            self.default = self._default_for_dtype(self.dtype)
+
+        if self.values is None:
+            self.values = {}
+
+    @staticmethod
+    def _default_for_dtype(d: object) -> Any:
+        """Get default value for dtype when not specified."""
+        # quaternions get identity quaternion
+        if d is wp.quat:
+            return wp.quat_identity()
+        # vectors default to zeros of their length
+        if wp.types.type_is_vector(d):
+            length = getattr(d, "_shape_", (1,))[0] or 1
+            return np.zeros(
+                length,
+                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
+            )
+        # scalars
+        if d is wp.bool:
+            return False
+        if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
+            return 0
+        return 0.0
+
+    def build_array(self, count: int, requires_grad: bool = False) -> wp.array:
+        """Build wp.array from count, dtype, default and overrides."""
+        arr = [self.values.get(i, self.default) for i in range(count)]
+        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad)
 
 
 class Model:
@@ -508,16 +566,7 @@ class Model:
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
-        for name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.STATE:
-                continue
-            src = getattr(self, name, None)
-            if src is None:
-                raise AttributeError(
-                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
-                )
-            # clone onto state with same dtype
-            setattr(s, name, wp.clone(src, requires_grad=requires_grad))
+        self._add_custom_attributes(s, AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
 
@@ -555,18 +604,9 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         # attach custom attributes with assignment==CONTROL
-        for name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.CONTROL:
-                continue
-            src = getattr(self, name, None)
-            if src is None:
-                raise AttributeError(
-                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
-                )
-            if clone_variables:
-                setattr(c, name, wp.clone(src, requires_grad=requires_grad))
-            else:
-                setattr(c, name, src)
+        self._add_custom_attributes(
+            c, AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
+        )
         return c
 
     def collide(
@@ -631,19 +671,41 @@ class Model:
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom attributes with assignment==CONTACT
+        self._add_custom_attributes(contacts, AttributeAssignment.CONTACT, requires_grad=requires_grad)
+        return contacts
+
+    def _add_custom_attributes(
+        self,
+        destination: object,
+        assignment: AttributeAssignment,
+        requires_grad: bool = False,
+        clone_arrays: bool = True,
+    ) -> None:
+        """
+        Add custom attributes of a specific assignment type to a destination object.
+
+        Args:
+            destination: The object to add attributes to (State, Control, or Contacts)
+            assignment: The assignment type to filter attributes by
+            requires_grad: Whether cloned arrays should have requires_grad enabled
+            clone_arrays: Whether to clone wp.arrays (True) or use references (False)
+        """
         for name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != AttributeAssignment.CONTACT:
+            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != assignment:
                 continue
             src = getattr(self, name, None)
             if src is None:
                 raise AttributeError(
                     f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
                 )
+
             if isinstance(src, wp.array):
-                setattr(contacts, name, wp.clone(src, requires_grad=requires_grad))
+                if clone_arrays:
+                    setattr(destination, name, wp.clone(src, requires_grad=requires_grad))
+                else:
+                    setattr(destination, name, src)
             else:
-                setattr(contacts, name, src)
-        return contacts
+                setattr(destination, name, src)
 
     def add_attribute(
         self, name: str, attrib: wp.array, frequency: AttributeFrequency, assignment: AttributeAssignment | None = None
