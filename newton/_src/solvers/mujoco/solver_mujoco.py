@@ -1073,8 +1073,8 @@ def update_model_properties_kernel(
     # MuJoCo model properties
     gravity_dst: wp.array(dtype=wp.vec3f),
 ):
-    # Copy gravity
-    gravity_dst[0] = gravity_src[0]
+    world_idx = wp.tid()
+    gravity_dst[world_idx] = gravity_src[0]
 
 
 @wp.kernel
@@ -2754,17 +2754,18 @@ class SolverMuJoCo(SolverBase):
         if self.use_mujoco_cpu:
             self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
         else:
-            wp.launch(
-                kernel=update_model_properties_kernel,
-                dim=1,
-                inputs=[
-                    self.model.gravity,
-                ],
-                outputs=[
-                    self.mjw_model.opt.gravity,
-                ],
-                device=self.model.device,
-            )
+            if hasattr(self, "mjw_data"):
+                wp.launch(
+                    kernel=update_model_properties_kernel,
+                    dim=self.mjw_data.nworld,
+                    inputs=[
+                        self.model.gravity,
+                    ],
+                    outputs=[
+                        self.mjw_model.opt.gravity,
+                    ],
+                    device=self.model.device,
+                )
 
     def render_mujoco_viewer(
         self,
