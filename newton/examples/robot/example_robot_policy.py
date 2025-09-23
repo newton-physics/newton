@@ -270,6 +270,7 @@ class Example:
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
             ncon_per_env=30,
+            njmax=100,
         )
 
         # Initialize state objects
