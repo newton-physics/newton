@@ -605,14 +605,15 @@ class _ImplicitMPMScratchpad:
         self,
         geo_partition: fem.GeometryPartition,
         strain_basis_str: str,
+        temporary_store: fem.TemporaryStore,
     ):
         """Create velocity and strain function spaces over the given geometry."""
         self.domain = fem.Cells(geo_partition)
 
-        self._create_velocity_function_space()
-        self._create_strain_function_space(strain_basis_str)
+        self._create_velocity_function_space(temporary_store)
+        self._create_strain_function_space(strain_basis_str, temporary_store)
 
-    def _create_velocity_function_space(self):
+    def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore):
         """Create velocity and fraction spaces and their partition/restriction."""
         domain = self.domain
         grid = domain.geometry
@@ -624,16 +625,21 @@ class _ImplicitMPMScratchpad:
         velocity_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
 
         vel_space_partition = fem.make_space_partition(
-            space_topology=velocity_space.topology, geometry_partition=domain.geometry_partition, with_halo=False
+            space_topology=velocity_space.topology,
+            geometry_partition=domain.geometry_partition,
+            with_halo=False,
+            temporary_store=temporary_store,
         )
 
-        vel_space_restriction = fem.make_space_restriction(space_partition=vel_space_partition, domain=domain)
+        vel_space_restriction = fem.make_space_restriction(
+            space_partition=vel_space_partition, domain=domain, temporary_store=temporary_store
+        )
 
         self._velocity_basis = velocity_basis
         self._velocity_space = velocity_space
         self._vel_space_restriction = vel_space_restriction
 
-    def _create_strain_function_space(self, strain_basis_str: str):
+    def _create_strain_function_space(self, strain_basis_str: str, temporary_store: fem.TemporaryStore):
         """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
         domain = self.domain
         grid = domain.geometry
@@ -656,10 +662,15 @@ class _ImplicitMPMScratchpad:
         )
 
         strain_space_partition = fem.make_space_partition(
-            space_topology=sym_strain_space.topology, geometry_partition=domain.geometry_partition, with_halo=False
+            space_topology=sym_strain_space.topology,
+            geometry_partition=domain.geometry_partition,
+            with_halo=False,
+            temporary_store=temporary_store,
         )
 
-        strain_space_restriction = fem.make_space_restriction(space_partition=strain_space_partition, domain=domain)
+        strain_space_restriction = fem.make_space_restriction(
+            space_partition=strain_space_partition, domain=domain, temporary_store=temporary_store
+        )
 
         self._strain_basis = strain_basis
         self._sym_strain_space = sym_strain_space
@@ -681,26 +692,44 @@ class _ImplicitMPMScratchpad:
         fraction_space = fem.make_collocated_function_space(velocity_basis, dtype=float)
 
         # test, trial and discrete fields
-        self.velocity_test = fem.make_test(velocity_space, domain=domain, space_restriction=vel_space_restriction)
-        self.fraction_test = fem.make_test(fraction_space, space_restriction=vel_space_restriction)
+        if self.velocity_test is None:
+            self.velocity_test = fem.make_test(velocity_space, domain=domain, space_restriction=vel_space_restriction)
+            self.fraction_test = fem.make_test(fraction_space, space_restriction=vel_space_restriction)
 
-        self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
+            self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
 
-        self.fraction_field = fem.make_discrete_field(fraction_space, space_partition=vel_space_partition)
-        self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-        self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
+            self.fraction_field = fem.make_discrete_field(fraction_space, space_partition=vel_space_partition)
+            self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+            self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
 
-        if has_compliant_particles:
-            elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
-            self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
+            if has_compliant_particles:
+                elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
+                self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
 
-        collider_quadrature_order = self._sym_strain_space.degree + 1
-        self.collider_quadrature = fem.RegularQuadrature(
-            domain=domain,
-            order=collider_quadrature_order,
-            family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
-        )
-        self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
+            collider_quadrature_order = self._sym_strain_space.degree + 1
+            self.collider_quadrature = fem.RegularQuadrature(
+                domain=domain,
+                order=collider_quadrature_order,
+                family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
+            )
+            self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
+        else:
+            self.velocity_test.rebind(velocity_space, vel_space_restriction)
+            self.fraction_test.rebind(fraction_space, vel_space_restriction)
+
+            self.velocity_trial.rebind(velocity_space, vel_space_partition, domain)
+
+            self.fraction_field.rebind(fraction_space, vel_space_partition)
+            self.collider_velocity_field.rebind(velocity_space, vel_space_partition)
+            self.collider_distance_field.rebind(fraction_space, vel_space_partition)
+
+            if has_compliant_particles:
+                elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
+                self.elastic_parameters_field.rebind(elastic_parameters_space, vel_space_partition)
+
+            self.collider_quadrature._domain = domain
+            self.background_impulse_field.domain = domain
+
         self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
@@ -722,21 +751,36 @@ class _ImplicitMPMScratchpad:
         divergence_space = fem.make_collocated_function_space(strain_basis, dtype=float)
         strain_yield_parameters_space = fem.make_collocated_function_space(strain_basis, dtype=YieldParamVec)
 
-        self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
-        self.divergence_test = fem.make_test(divergence_space, space_restriction=strain_space_restriction)
-        self.strain_yield_parameters_test = fem.make_test(
-            strain_yield_parameters_space, space_restriction=strain_space_restriction
-        )
+        if self.sym_strain_test is None:
+            self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
+            self.divergence_test = fem.make_test(divergence_space, space_restriction=strain_space_restriction)
+            self.strain_yield_parameters_test = fem.make_test(
+                strain_yield_parameters_space, space_restriction=strain_space_restriction
+            )
+            self.sym_strain_trial = fem.make_trial(
+                sym_strain_space, domain=domain, space_partition=strain_space_partition
+            )
 
-        self.sym_strain_trial = fem.make_trial(sym_strain_space, domain=domain, space_partition=strain_space_partition)
+            self.elastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+            self.plastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
+            self.strain_yield_parameters_field = strain_yield_parameters_space.make_field(
+                space_partition=strain_space_partition
+            )
 
-        self.elastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-        self.plastic_strain_delta_field = sym_strain_space.make_field(space_partition=strain_space_partition)
-        self.strain_yield_parameters_field = strain_yield_parameters_space.make_field(
-            space_partition=strain_space_partition
-        )
+            self.background_stress_field = fem.UniformField(domain, wp.mat33(0.0))
+        else:
+            self.sym_strain_test.rebind(sym_strain_space, strain_space_restriction)
+            self.divergence_test.rebind(divergence_space, strain_space_restriction)
+            self.strain_yield_parameters_test.rebind(strain_yield_parameters_space, strain_space_restriction)
 
-        self.background_stress_field = fem.UniformField(domain, wp.mat33(0.0))
+            self.sym_strain_trial.rebind(sym_strain_space, strain_space_partition, domain)
+
+            self.elastic_strain_delta_field.rebind(sym_strain_space, strain_space_partition)
+            self.plastic_strain_delta_field.rebind(sym_strain_space, strain_space_partition)
+            self.strain_yield_parameters_field.rebind(strain_yield_parameters_space, strain_space_partition)
+
+            self.background_stress_field.domain = domain
+
         self.stress_field = sym_strain_space.make_field(space_partition=strain_space_partition)
 
     def allocate_temporaries(
@@ -1416,7 +1460,7 @@ class SolverImplicitMPM(SolverBase):
                 )
             else:
                 volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
-                grid = fem.Nanogrid(volume)
+                grid = fem.Nanogrid(volume, temporary_store=temporary_store)
 
         return grid
 
@@ -1442,9 +1486,13 @@ class SolverImplicitMPM(SolverBase):
         ):
             if self._scratchpad is None:
                 self._scratchpad = _ImplicitMPMScratchpad()
-                self._scratchpad.create_function_spaces(geo_partition, strain_basis_str=self.strain_basis)
+                self._scratchpad.create_function_spaces(
+                    geo_partition, strain_basis_str=self.strain_basis, temporary_store=self.temporary_store
+                )
             elif self.grid_type != "fixed":
-                self._scratchpad.create_function_spaces(geo_partition, strain_basis_str=self.strain_basis)
+                self._scratchpad.create_function_spaces(
+                    geo_partition, strain_basis_str=self.strain_basis, temporary_store=self.temporary_store
+                )
 
             has_compliant_colliders = self.mpm_model.min_collider_mass < _INFINITY
 
