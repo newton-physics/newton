@@ -151,7 +151,7 @@ def integrate_velocity_apic(
     vel_apic = velocity_gradients[s.qp_index] * node_offset
 
     vel_adv = (
-        wp.where(particle_flags[s.qp_index] == newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY)
+        wp.where(particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE, particle_density[s.qp_index], _INFINITY)
         * vel_apic
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume
@@ -307,7 +307,7 @@ def advect_particles(
     vel: wp.array(dtype=wp.vec3),
     vel_grad: wp.array(dtype=wp.mat33),
 ):
-    if particle_flags[s.qp_index] != newton.ParticleFlags.ACTIVE:
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         pos[s.qp_index] = pos_prev[s.qp_index]
         return
 
@@ -339,7 +339,7 @@ def update_particle_strains(
     elastic_strain: wp.array(dtype=wp.mat33),
     particle_Jp: wp.array(dtype=float),
 ):
-    if particle_flags[s.qp_index] != newton.ParticleFlags.ACTIVE:
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         return
 
     # plastic strain
