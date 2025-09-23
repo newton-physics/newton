@@ -114,8 +114,6 @@ def compute_delassus_diagonal(
     diag_block = mat66(0.0)
     if compliance_mat_diagonal:
         diag_block = compliance_mat_diagonal[tau_i]
-    else:
-        diag_block = mat66(0.0)
 
     mass_ratio = float(1.0)
     for b in range(block_beg, block_end):
