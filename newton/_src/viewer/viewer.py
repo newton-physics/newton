@@ -457,7 +457,25 @@ class ViewerBase:
         is_solid: bool,
         geo_src=None,
     ) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid)))
+        # For mesh types, use mesh properties instead of object reference for better instancing
+        if geo_type == newton.GeoType.MESH and geo_src is not None:
+            # Use mesh properties that actually define the geometry
+            hash_data = (
+                int(geo_type),
+                tuple(geo_scale),
+                float(thickness),
+                bool(is_solid),
+                len(geo_src.vertices) if hasattr(geo_src, "vertices") and geo_src.vertices is not None else 0,
+                len(geo_src.indices) if hasattr(geo_src, "indices") and geo_src.indices is not None else 0,
+            )
+        else:
+            hash_data = (
+                int(geo_type),
+                tuple(geo_scale),
+                float(thickness),
+                bool(is_solid),
+            )
+        return hash(hash_data)
 
     def _should_show_shape(self, shape_index: int, shape_flags: int) -> bool:
         """Determine if a shape should be visible based on current settings."""
@@ -494,6 +512,13 @@ class ViewerBase:
         if not hasattr(self, "model") or self.model is None:
             return True
 
+        # Use pre-computed set for O(1) lookup instead of O(n) search
+        if hasattr(self, "_bodies_with_visual_shapes"):
+            shape_body = self.model.shape_body.numpy()
+            current_body = shape_body[shape_index]
+            return current_body not in self._bodies_with_visual_shapes
+
+        # Fallback to original method if pre-computation not available
         shape_body = self.model.shape_body.numpy()
         shape_flags = self.model.shape_flags.numpy()
         current_body = shape_body[shape_index]
@@ -575,6 +600,14 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_count = len(shape_body)
+
+        # pre-compute body visual shapes to avoid O(n^2) complexity in _should_show_collision_as_fallback
+        self._bodies_with_visual_shapes = set()
+        for i in range(shape_count):
+            if (shape_flags[i] & int(newton.ShapeFlags.VISIBLE)) and not (
+                shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            ):
+                self._bodies_with_visual_shapes.add(shape_body[i])
 
         # loop over shapes
         for s in range(shape_count):
