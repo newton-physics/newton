@@ -130,7 +130,7 @@ class ViewerRerun(ViewerBase):
 
         rr.log(name, mesh_3d, static=True)
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         Log instanced mesh data to rerun using InstancePoses3D.
 
