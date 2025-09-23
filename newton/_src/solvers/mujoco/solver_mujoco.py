@@ -1495,12 +1495,12 @@ class SolverMuJoCo(SolverBase):
     def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
-            # we have a MjWarp Data object
+            # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
             nworld = mj_data.nworld
         else:
-            # we have a MjData object from Mujoco
+            # we have an MjData object from Mujoco
             qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
             nworld = 1
@@ -1540,7 +1540,7 @@ class SolverMuJoCo(SolverBase):
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
-            # we have a MjWarp Data object
+            # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
             nworld = mj_data.nworld
@@ -1548,7 +1548,7 @@ class SolverMuJoCo(SolverBase):
             xpos = mj_data.xpos
             xquat = mj_data.xquat
         else:
-            # we have a MjData object from Mujoco
+            # we have an MjData object from Mujoco
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
@@ -2478,7 +2478,7 @@ class SolverMuJoCo(SolverBase):
                     rigid_contact_max = nworld * ncon_per_env
                     if rigid_contact_max < self.mj_data.ncon * nworld:
                         warnings.warn(
-                            f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following a MjWarp requirement.",
+                            f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following an MjWarp requirement.",
                             stacklevel=2,
                         )
                         nconmax = self.mj_data.ncon * nworld
@@ -2490,7 +2490,7 @@ class SolverMuJoCo(SolverBase):
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
                     warnings.warn(
-                        f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following a MjWarp requirement.",
+                        f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
                         stacklevel=2,
                     )
                     njmax = self.mj_data.nefc
