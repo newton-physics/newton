@@ -2146,12 +2146,15 @@ class SolverMuJoCo(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
 
-            # this assumes that the joint position is 0
-            tf = wp.transform(*joint_parent_xform[ji])
-            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
+            # use the correct global joint index
+            j = selected_joints[ji]
 
-            joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            joint_rot = wp.quat(*joint_child_xform[ji, 3:])
+            # this assumes that the joint position is 0
+            tf = wp.transform(*joint_parent_xform[j])
+            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
+
+            joint_pos = wp.vec3(*joint_child_xform[j, :3])
+            joint_rot = wp.quat(*joint_child_xform[j, 3:])
 
             # ensure unique body name
             name = model.body_key[child]
@@ -2175,9 +2178,9 @@ class SolverMuJoCo(SolverBase):
             mj_bodies.append(body)
 
             # add joint
-            j_type = joint_type[ji]
-            qd_start = joint_qd_start[ji]
-            name = model.joint_key[ji]
+            j_type = joint_type[j]
+            qd_start = joint_qd_start[j]
+            name = model.joint_key[j]
             if name not in joint_names:
                 joint_names[name] = 1
             else:
@@ -2185,7 +2188,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[ji] = len(spec.joints)
+            joint_mjc_dof_start[j] = len(spec.joints)
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -2195,7 +2198,7 @@ class SolverMuJoCo(SolverBase):
                     limited=False,
                 )
             elif j_type in supported_joint_types:
-                lin_axis_count, ang_axis_count = joint_dof_dim[ji]
+                lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
