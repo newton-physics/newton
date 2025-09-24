@@ -63,7 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import AttributeAssignment, AttributeFrequency, CustomAttribute, Model
+from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -491,20 +491,20 @@ class ModelBuilder:
     def add_custom_attribute(
         self,
         name: str,
-        frequency: AttributeFrequency,
+        frequency: ModelAttributeFrequency,
         default=None,
         dtype=None,
-        assignment: AttributeAssignment = AttributeAssignment.MODEL,
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ):
         """Define a custom per-entity attribute to be added to the Model.
 
         Args:
             name: Variable name to expose on the Model
-            frequency: AttributeFrequency enum value
+            frequency: ModelAttributeFrequency enum value
             default: Default value for the attribute. If None, will use dtype-specific default
                 (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
             dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
-            assignment: AttributeAssignment enum value determining where the attribute appears
+            assignment: ModelAttributeAssignment enum value determining where the attribute appears
         """
         if name in self.custom_attributes:
             # validate that specification matches exactly
@@ -4466,15 +4466,15 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency == AttributeFrequency.BODY:
+                if frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
-                elif frequency == AttributeFrequency.SHAPE:
+                elif frequency == ModelAttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif frequency == AttributeFrequency.JOINT:
+                elif frequency == ModelAttributeFrequency.JOINT:
                     count = m.joint_count
-                elif frequency == AttributeFrequency.JOINT_DOF:
+                elif frequency == ModelAttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif frequency == AttributeFrequency.JOINT_COORD:
+                elif frequency == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
                 else:
                     continue

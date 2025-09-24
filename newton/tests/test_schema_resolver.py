@@ -36,7 +36,7 @@ from typing import Any
 import warp as wp
 
 from newton import ModelBuilder
-from newton._src.sim.model import AttributeFrequency
+from newton._src.sim.model import ModelAttributeFrequency
 from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.schema_resolver import (
     PrimType,
@@ -421,7 +421,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
-        self.assertEqual(model.get_attribute_frequency("testBodyVec"), AttributeFrequency.BODY)
+        self.assertEqual(model.get_attribute_frequency("testBodyVec"), ModelAttributeFrequency.BODY)
 
         body_map = result["path_body_map"]
         idx = body_map[body_path]
@@ -467,7 +467,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(float(body_vec[other_idx, 2]), 0.0, places=6)
 
         # Joint custom property materialization and defaults
-        self.assertEqual(model.get_attribute_frequency("testJointScalar"), AttributeFrequency.JOINT)
+        self.assertEqual(model.get_attribute_frequency("testJointScalar"), ModelAttributeFrequency.JOINT)
         # Authored joint value
         self.assertIn(joint_name, builder.joint_key)
         joint_idx = builder.joint_key.index(joint_name)

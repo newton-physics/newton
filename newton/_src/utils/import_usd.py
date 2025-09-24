@@ -32,7 +32,7 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
-from ..sim.model import AttributeFrequency
+from ..sim.model import ModelAttributeFrequency
 from .schema_resolver import PrimType, SchemaResolver, SchemaResolverNewton, _ResolverManager
 
 
@@ -296,7 +296,7 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # Initialize schema resolver according to precedence
-    R = _ResolverManager(schema_resolvers)
+    R = _ResolverManager(schema_resolvers, collect_solver_attrs=collect_solver_specific_attrs)
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -1623,7 +1623,7 @@ def parse_usd(
     solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
     custom_props = R.get_custom_attributes() or {}
 
-    def _assign_value(cp_name: str, frequency: AttributeFrequency, prim_path: str, value) -> None:
+    def _assign_value(cp_name: str, frequency: ModelAttributeFrequency, prim_path: str, value) -> None:
         v = value
         spec = builder.custom_attributes.get(cp_name)
         if spec is None:
@@ -1631,19 +1631,19 @@ def parse_usd(
         overrides = spec.values
         if overrides is None:
             return
-        if frequency == AttributeFrequency.BODY:
+        if frequency == ModelAttributeFrequency.BODY:
             idx = path_body_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == AttributeFrequency.SHAPE:
+        elif frequency == ModelAttributeFrequency.SHAPE:
             idx = path_shape_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == AttributeFrequency.JOINT:
+        elif frequency == ModelAttributeFrequency.JOINT:
             idx = path_joint_map.get(prim_path, -1)
             if idx >= 0:
                 overrides[int(idx)] = v
-        elif frequency == AttributeFrequency.JOINT_DOF:
+        elif frequency == ModelAttributeFrequency.JOINT_DOF:
             j = path_joint_map.get(prim_path, -1)
             if j >= 0:
                 dof_begin = builder.joint_qd_start[j]
@@ -1652,7 +1652,7 @@ def parse_usd(
                 )
                 for k in range(int(dof_begin), int(dof_end)):
                     overrides[k] = v
-        elif frequency == AttributeFrequency.JOINT_COORD:
+        elif frequency == ModelAttributeFrequency.JOINT_COORD:
             j = path_joint_map.get(prim_path, -1)
             if j >= 0:
                 coord_begin = builder.joint_q_start[j]

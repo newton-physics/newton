@@ -30,7 +30,7 @@ from .control import Control
 from .state import State
 
 
-class AttributeAssignment(IntEnum):
+class ModelAttributeAssignment(IntEnum):
     """Enumeration of attribute assignment categories.
 
     Defines which component of the simulation system owns and manages specific attributes.
@@ -44,7 +44,7 @@ class AttributeAssignment(IntEnum):
     CONTACT = 3
 
 
-class AttributeFrequency(IntEnum):
+class ModelAttributeFrequency(IntEnum):
     """Enumeration of attribute frequency categories.
 
     Defines the dimensional structure and indexing pattern for custom attributes.
@@ -66,16 +66,16 @@ class CustomAttribute:
     Represents a custom attribute definition for the ModelBuilder.
 
     Attributes:
-        assignment: Assignment category (see AttributeAssignment enum)
-        frequency: Frequency category (see AttributeFrequency enum)
+        assignment: Assignment category (see ModelAttributeAssignment enum)
+        frequency: Frequency category (see ModelAttributeFrequency enum)
         name: Variable name to expose on the Model
         dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
     """
 
-    assignment: AttributeAssignment
-    frequency: AttributeFrequency
+    assignment: ModelAttributeAssignment
+    frequency: ModelAttributeFrequency
     name: str
     dtype: object
     default: Any = None
@@ -466,70 +466,70 @@ class Model:
         """Device on which the Model was allocated."""
 
         self.attribute_frequency = {}
-        """Classifies each attribute using AttributeFrequency enum values (per body, per joint, per DOF, etc.)."""
+        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)."""
 
         self.attribute_assignment = {}
-        """Assignment for custom attributes using AttributeAssignment enum values.
-        If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=AttributeAssignment.MODEL)."""
+        """Assignment for custom attributes using ModelAttributeAssignment enum values.
+        If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
 
         # attributes per body
-        self.attribute_frequency["body_q"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_qd"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_com"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_inertia"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_inv_inertia"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_mass"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_inv_mass"] = AttributeFrequency.BODY
-        self.attribute_frequency["body_f"] = AttributeFrequency.BODY
+        self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_qd"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_com"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_inertia"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_inv_inertia"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_mass"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_inv_mass"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_f"] = ModelAttributeFrequency.BODY
 
         # attributes per joint
-        self.attribute_frequency["joint_type"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_parent"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_child"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_ancestor"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_X_p"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_X_c"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_dof_dim"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_enabled"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_twist_lower"] = AttributeFrequency.JOINT
-        self.attribute_frequency["joint_twist_upper"] = AttributeFrequency.JOINT
+        self.attribute_frequency["joint_type"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_parent"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_child"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_ancestor"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_X_p"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_X_c"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_dof_dim"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_enabled"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_twist_lower"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_twist_upper"] = ModelAttributeFrequency.JOINT
 
         # attributes per joint coord
-        self.attribute_frequency["joint_q"] = AttributeFrequency.JOINT_COORD
+        self.attribute_frequency["joint_q"] = ModelAttributeFrequency.JOINT_COORD
 
         # attributes per joint dof
-        self.attribute_frequency["joint_qd"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_f"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_armature"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_axis"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_ke"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_kd"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_dof_mode"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_lower"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_upper"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_ke"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_kd"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_effort_limit"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_friction"] = AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_velocity_limit"] = AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_qd"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_f"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_armature"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_axis"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_ke"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_kd"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_dof_mode"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_lower"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_upper"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_ke"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_kd"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_effort_limit"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_friction"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_velocity_limit"] = ModelAttributeFrequency.JOINT_DOF
 
         # attributes per shape
-        self.attribute_frequency["shape_transform"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_body"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_flags"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_ke"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_kd"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_kf"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_ka"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_mu"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_restitution"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_type"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_is_solid"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_thickness"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_source_ptr"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_scale"] = AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_filter"] = AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_transform"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_body"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_flags"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_ke"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kd"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kf"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_ka"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_source_ptr"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_scale"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_filter"] = ModelAttributeFrequency.SHAPE
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
@@ -566,7 +566,7 @@ class Model:
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
-        self._add_custom_attributes(s, AttributeAssignment.STATE, requires_grad=requires_grad)
+        self._add_custom_attributes(s, ModelAttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
 
@@ -605,7 +605,7 @@ class Model:
             c.muscle_activations = self.muscle_activations
         # attach custom attributes with assignment==CONTROL
         self._add_custom_attributes(
-            c, AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
+            c, ModelAttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
         return c
 
@@ -671,13 +671,13 @@ class Model:
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(contacts, AttributeAssignment.CONTACT, requires_grad=requires_grad)
+        self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
     def _add_custom_attributes(
         self,
         destination: object,
-        assignment: AttributeAssignment,
+        assignment: ModelAttributeAssignment,
         requires_grad: bool = False,
         clone_arrays: bool = True,
     ) -> None:
@@ -691,7 +691,7 @@ class Model:
             clone_arrays: Whether to clone wp.arrays (True) or use references (False)
         """
         for name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(name, AttributeAssignment.MODEL) != assignment:
+            if self.attribute_assignment.get(name, ModelAttributeAssignment.MODEL) != assignment:
                 continue
             src = getattr(self, name, None)
             if src is None:
@@ -708,7 +708,11 @@ class Model:
                 setattr(destination, name, src)
 
     def add_attribute(
-        self, name: str, attrib: wp.array, frequency: AttributeFrequency, assignment: AttributeAssignment | None = None
+        self,
+        name: str,
+        attrib: wp.array,
+        frequency: ModelAttributeFrequency,
+        assignment: ModelAttributeAssignment | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -716,8 +720,8 @@ class Model:
         Args:
             name (str): Name of the attribute.
             attrib (wp.array): The array to add as an attribute.
-            frequency (AttributeFrequency): The frequency of the attribute using AttributeFrequency enum.
-            assignment (AttributeAssignment, optional): The assignment category using AttributeAssignment enum.
+            frequency (ModelAttributeFrequency): The frequency of the attribute using ModelAttributeFrequency enum.
+            assignment (ModelAttributeAssignment, optional): The assignment category using ModelAttributeAssignment enum.
 
         Raises:
             AttributeError: If the attribute already exists, is not a wp.array, or is on the wrong device.
@@ -746,7 +750,7 @@ class Model:
             name (str): Name of the attribute.
 
         Returns:
-            AttributeFrequency: The frequency of the attribute as an enum value.
+            ModelAttributeFrequency: The frequency of the attribute as an enum value.
 
         Raises:
             AttributeError: If the attribute frequency is not known.

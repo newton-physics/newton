@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..sim.model import AttributeAssignment, AttributeFrequency, CustomAttribute
+from ..sim.model import CustomAttribute, ModelAttributeAssignment, ModelAttributeFrequency
 
 try:
     from pxr import Usd
@@ -466,7 +466,9 @@ class _ResolverManager:
         if newton_attrs:
             self._accumulate_custom_attributes(prim_path, newton_attrs)
 
-    def _parse_custom_attr_name(self, name: str) -> tuple[AttributeAssignment, AttributeFrequency, str] | None:
+    def _parse_custom_attr_name(
+        self, name: str
+    ) -> tuple[ModelAttributeAssignment, ModelAttributeFrequency, str] | None:
         """Parse names like 'newton:assignment:frequency:variable_name'."""
         try:
             head, assignment, frequency, variable = name.split(":", 3)
@@ -476,8 +478,8 @@ class _ResolverManager:
             return None
 
         try:
-            assignment_enum = AttributeAssignment[assignment.upper()]
-            frequency_enum = AttributeFrequency[frequency.upper()]
+            assignment_enum = ModelAttributeAssignment[assignment.upper()]
+            frequency_enum = ModelAttributeFrequency[frequency.upper()]
         except KeyError:
             return None
 
