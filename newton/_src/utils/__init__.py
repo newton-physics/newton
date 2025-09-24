@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
 import warp as wp
 from warp.context import assert_conditional_graph_support
 
@@ -194,6 +196,17 @@ def vec_abs(a: wp.vec3):
     return wp.vec3(wp.abs(a[0]), wp.abs(a[1]), wp.abs(a[2]))
 
 
+@wp.func
+def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
+    """
+    Check if two Warp vectors are all close.
+    """
+    for i in range(wp.static(len(a))):
+        if wp.abs(a[i] - b[i]) > atol + rtol * wp.abs(b[i]):
+            return False
+    return True
+
+
 def check_conditional_graph_support():
     """
     Check if conditional graph support is available in the current environment.
@@ -219,6 +232,7 @@ __all__ = [
     "smooth_min",
     "topological_sort",
     "vec_abs",
+    "vec_allclose",
     "vec_leaky_max",
     "vec_leaky_min",
     "vec_max",
