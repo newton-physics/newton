@@ -165,6 +165,19 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
 
+            # Set UVs if provided (do not set every frame)
+            if uvs is not None:
+                primvars_api = UsdGeom.PrimvarsAPI(mesh_prim)
+
+                # Get or create the 'st' primvar
+                if not primvars_api.GetPrimvar("st"):
+                    st = primvars_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+                else:
+                    st = primvars_api.GetPrimvar("st")
+
+                st.Set(uvs.numpy().astype(np.float32))
+                st.SetInterpolation(UsdGeom.Tokens.vertex)
+
             # Store the prototype path
             self._meshes[name] = mesh_prim
 
@@ -176,11 +189,6 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-
-        # Set UVs if provided (simplified for now)
-        if uvs is not None:
-            # TODO: Implement UV support for USD meshes
-            pass
 
         # how to hide the prototype mesh but not the instances in USD?
         # mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
