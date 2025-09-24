@@ -136,7 +136,7 @@ def _setup_h1(articulation_builder):
     articulation_builder.default_shape_cfg.mu = 0.75
 
     asset_path = newton.utils.download_asset("unitree_h1")
-    asset_file = str(asset_path / "usd" / "h1_minimal.usd")
+    asset_file = str(asset_path / "usd" / "h1_minimal.usda")
     articulation_builder.add_usd(
         asset_file,
         ignore_paths=["/GroundPlane"],
