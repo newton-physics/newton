@@ -184,7 +184,7 @@ class ViewerUSD(ViewerBase):
         # how to hide the prototype mesh but not the instances in USD?
         # mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         Create or update a PointInstancer for mesh instances.
 

@@ -259,14 +259,16 @@ def color_graph(
     return color_groups
 
 
-def plot_graph(vertices, edges, edge_labels=None):
+def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=None):
     """
     Plots a graph using matplotlib and networkx.
 
     Args:
-        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        vertices: A numpy array of shape (N,) containing the vertex indices.
         edges: A numpy array of shape (M, 2) containing the vertex indices of the edges.
         edge_labels: A list of edge labels.
+        node_labels: A list of node labels.
+        node_colors: A list of node colors.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415
     import networkx as nx  # noqa: PLC0415
@@ -291,11 +293,11 @@ def plot_graph(vertices, edges, edge_labels=None):
     pos = nx.spring_layout(G, k=3.5, iterations=200)
 
     default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
-    nx.draw_networkx_nodes(G, pos, **default_draw_args)
+    nx.draw_networkx_nodes(G, pos, node_color=node_colors, **default_draw_args)
     nx.draw_networkx_labels(
         G,
         pos,
-        labels=dict(enumerate(vertices)),
+        labels=dict(enumerate(node_labels if node_labels is not None else vertices)),
         font_size=8,
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 0.5},
     )

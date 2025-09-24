@@ -69,7 +69,7 @@ ROBOT_CONFIGS = {
     "go2": RobotConfig(
         asset_dir="unitree_go2",
         policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
-        asset_path="usd/go2.usd",
+        asset_path="usd/go2.usda",
         yaml_path="rl_policies/go2.yaml",
     ),
     "g1_29dof": RobotConfig(
@@ -270,6 +270,7 @@ class Example:
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
             ncon_per_env=30,
+            njmax=100,
         )
 
         # Initialize state objects
