@@ -399,12 +399,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
     )
-    parser.add_argument(
-        "--show-mujoco-viewer",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Toggle MuJoCo viewer next to Newton renderer when SolverMuJoCo is active.",
-    )
 
     parser.add_argument(
         "--random-init", default=False, action=argparse.BooleanOptionalAction, help="Randomize initial pose."
@@ -500,24 +494,7 @@ if __name__ == "__main__":
         print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
         print("=" * TOTAL_WIDTH + "\n")
 
-        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco_cpu
-        if show_mujoco_viewer:
-            import mujoco
-            import mujoco.viewer
-            import mujoco_warp
-
-            mjm, mjd = example.solver.mj_model, example.solver.mj_data
-            m, d = example.solver.mjw_model, example.solver.mjw_data
-            viewer = mujoco.viewer.launch_passive(mjm, mjd)
-
         for _ in range(args.num_frames):
             example.step()
             example.render()
 
-            if show_mujoco_viewer:
-                if not example.solver.use_mujoco_cpu:
-                    mujoco_warp.get_data_into(mjd, mjm, d)
-                viewer.sync()
-
-        if example.renderer:
-            example.renderer.save()
