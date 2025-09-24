@@ -11,6 +11,7 @@ wheels/
 
 # Tool cache
 .cache/
+.thumbs/
 
 # Coverage reports
 .coverage
@@ -27,13 +28,17 @@ rspec.xml
 # IDEs & Editors
 .vscode/
 .history/
+.idea/
 
 # Documentation
 docs/_build/
-
-.idea/
 
 # Airspeed Velocity
 asv/env
 asv/results
 asv/html
+
+# Log files, settings
+MUJOCO_LOG.TXT
+imgui.ini
+newton/tests/outputs/

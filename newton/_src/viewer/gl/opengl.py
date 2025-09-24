@@ -537,7 +537,6 @@ class MeshInstancerGL:
         self.device = mesh.device
         self.hidden = False
         self.instance_transform_buffer = None
-        self.instance_scale_buffer = None
         self.instance_color_buffer = None
         self.instance_material_buffer = None
 
@@ -555,13 +554,12 @@ class MeshInstancerGL:
                 # Ignore any errors (e.g., context already destroyed)
                 pass
 
-        if self.vao is not None:
+        if hasattr(self, "vao") and self.vao is not None:
             try:
                 gl.glDeleteVertexArrays(1, self.vao)
                 gl.glDeleteBuffers(1, self.instance_transform_buffer)
                 gl.glDeleteBuffers(1, self.instance_color_buffer)
                 gl.glDeleteBuffers(1, self.instance_material_buffer)
-                gl.glDeleteBuffers(1, self.instance_scale_buffer)
             except Exception:
                 # Ignore any errors during interpreter shutdown
                 pass
@@ -776,7 +774,7 @@ class RendererGL:
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
         self.sky_upper = self.background_color
-        self.sky_lower = (139.0 / 255.0, 151 / 255.0, 186.0 / 255.0)
+        self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
         try:
             import pyglet  # noqa: PLC0415
