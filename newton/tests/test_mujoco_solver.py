@@ -1538,7 +1538,6 @@ class TestMuJoCoConversion(unittest.TestCase):
         expected_groups = [0, 1, 0, 1]
         self.assertEqual(list(joint_groups), expected_groups)
 
-        # Joint types: REVOLUTE=0, FREE=2
         # Expected types: [revolute, revolute, free, free]
         self.assertEqual(joint_types[0], JointType.REVOLUTE, "Joint 0 should be revolute")
         self.assertEqual(joint_types[1], JointType.REVOLUTE, "Joint 1 should be revolute")
