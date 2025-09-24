@@ -30,8 +30,8 @@ class KpiInitializeModel:
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
     repeat = 3
+    number = 1
     min_run_count = 1
     timeout = 3600
 
@@ -47,13 +47,44 @@ class KpiInitializeModel:
         wp.synchronize_device()
 
 
+class KpiInitializeSolver:
+    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
+    param_names = ["robot", "num_envs"]
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+    timeout = 3600
+
+    def setup(self, robot, num_envs):
+        if robot == "h1":
+            # use more samples for H1 to reduce variance
+            self.repeat = 10
+
+        wp.init()
+        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_solver(self, robot, num_envs):
+        self._solver = Example.create_solver(self._model, robot, use_mujoco_cpu=False)
+        wp.synchronize_device()
+
+    def teardown(self, robot, num_envs):
+        del self._solver
+        del self._model
+
+
 class FastInitializeModel:
     params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
     param_names = ["robot", "num_envs"]
 
     rounds = 1
-    number = 1
     repeat = 3
+    number = 1
     min_run_count = 1
 
     def setup_cache(self):
@@ -82,6 +113,36 @@ class FastInitializeModel:
         del model
 
 
+class FastInitializeSolver:
+    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
+    param_names = ["robot", "num_envs"]
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+
+    def setup(self, robot, num_envs):
+        if robot == "h1":
+            # use more samples for H1 to reduce variance
+            self.repeat = 10
+
+        wp.init()
+        builder = Example.create_model_builder(robot, num_envs, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_solver(self, robot, num_envs):
+        self._solver = Example.create_solver(self._model, robot, use_mujoco_cpu=False)
+        wp.synchronize_device()
+
+    def teardown(self, robot, num_envs):
+        del self._solver
+        del self._model
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -90,6 +151,8 @@ if __name__ == "__main__":
     benchmark_list = {
         "KpiInitializeModel": KpiInitializeModel,
         "FastInitializeModel": FastInitializeModel,
+        "KpiInitializeSolver": KpiInitializeSolver,
+        "FastInitializeSolver": FastInitializeSolver,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
