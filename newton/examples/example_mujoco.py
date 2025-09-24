@@ -265,7 +265,6 @@ class Example:
             nconmax,
             ls_parallel,
         )
-        self.solver.mjw_model.opt.graph_conditional = False
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
