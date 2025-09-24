@@ -87,6 +87,7 @@ class ViewerRerun(ViewerBase):
         uvs: wp.array = None,
         hidden=False,
         backface_culling=True,
+        face_varying_uv=False,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -97,8 +98,10 @@ class ViewerRerun(ViewerBase):
             indices (wp.array): Triangle indices (wp.uint32).
             normals (wp.array, optional): Vertex normals (wp.vec3).
             uvs (wp.array, optional): UV coordinates (wp.vec2).
+            uv_indices (wp.array, optional): Triangle indices (wp.uint32) for UVs
             hidden (bool): Whether the mesh is hidden (unused).
             backface_culling (bool): Whether to enable backface culling (unused).
+            face_varying_uv (bool): Whether to enable face varying UV (default: vertex varying).
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)

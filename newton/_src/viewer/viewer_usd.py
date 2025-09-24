@@ -134,6 +134,7 @@ class ViewerUSD(ViewerBase):
         uvs: wp.array = None,
         hidden=False,
         backface_culling=True,
+        face_varying_uv=False,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -146,7 +147,7 @@ class ViewerUSD(ViewerBase):
             uvs (wp.array, optional): UV coordinates as a warp array of wp.vec2.
             hidden (bool, optional): If True, mesh will be hidden. Default is False.
             backface_culling (bool, optional): If True, enable backface culling. Default is True.
-
+            face_varying_uv (bool, optional): If True, enable face varying UV. Default is False (vertex varying).
         Returns:
             str: The mesh prototype path.
         """
@@ -176,7 +177,13 @@ class ViewerUSD(ViewerBase):
                     st = primvars_api.GetPrimvar("st")
 
                 st.Set(uvs.numpy().astype(np.float32))
-                st.SetInterpolation(UsdGeom.Tokens.vertex)
+
+                if face_varying_uv:
+                    assert len(uvs) == len(indices_np)
+                    st.SetInterpolation(UsdGeom.Tokens.faceVarying)
+                else:
+                    assert len(uvs) == len(points_np)
+                    st.SetInterpolation(UsdGeom.Tokens.vertex)
 
             # Store the prototype path
             self._meshes[name] = mesh_prim
