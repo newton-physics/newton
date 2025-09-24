@@ -66,7 +66,7 @@ class Example:
         voxel_size=0.05,
         particles_per_cell=3,
         tolerance=1.0e-5,
-        sand_friction=0.48,
+        grid_type="sparse",
     ):
         # setup simulation parameters first
         self.fps = 60
@@ -148,7 +148,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.model.particle_mu = sand_friction
+        self.model.particle_mu = 0.48
         self.model.particle_ke = 1.0e15
 
         # setup mpm solver
@@ -156,11 +156,11 @@ class Example:
         mpm_options.voxel_size = voxel_size
         mpm_options.tolerance = tolerance
         mpm_options.transfer_scheme = "pic"
-        mpm_options.grid_type = "sparse"
+        mpm_options.grid_type = grid_type
+        mpm_options.grid_padding = 5 if grid_type == "fixed" else 0
+
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
-
-        # global defaults
         mpm_options.hardening = 0.0
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
@@ -238,6 +238,12 @@ class Example:
                 self.simulate_robot()
             self.graph = capture.graph
 
+        self.sand_graph = None
+        if wp.get_device().is_cuda and self.mpm_solver.grid_type == "fixed":
+            with wp.ScopedCapture() as capture:
+                self.simulate_sand()
+            self.sand_graph = capture.graph
+
     def apply_control(self):
         obs = compute_obs(
             self.act,
@@ -295,8 +301,10 @@ class Example:
         else:
             self.simulate_robot()
 
-        # MPM solver step is not graph-capturable yet
-        self.simulate_sand()
+        if self.sand_graph:
+            wp.capture_launch(self.sand_graph)
+        else:
+            self.simulate_sand()
 
         self.sim_time += self.frame_dt
 
@@ -407,7 +415,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
-    parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
+    parser.add_argument("--grid-type", "-gt", choices=["sparse", "dense", "fixed"], default="sparse")
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
 
     # Parse arguments and initialize viewer
@@ -424,7 +432,7 @@ if __name__ == "__main__":
         voxel_size=args.voxel_size,
         particles_per_cell=args.particles_per_cell,
         tolerance=args.tolerance,
-        sand_friction=args.sand_friction,
+        grid_type=args.grid_type,
     )
 
     # Run via unified example runner
