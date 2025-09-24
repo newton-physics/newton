@@ -1239,9 +1239,11 @@ def solve_rheology(
         if device.is_capturing:
             wp.capture_while(condition, do_iteration_with_condition)
         else:
+            gc.disable()
             with wp.ScopedCapture(force_module_load=False) as capture:
                 wp.capture_while(condition, do_iteration_with_condition)
             solve_graph = capture.graph
+            gc.enable()
             wp.capture_launch(solve_graph)
 
             if verbose:

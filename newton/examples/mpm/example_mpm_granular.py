@@ -89,13 +89,15 @@ class Example:
     def capture(self):
         self.graph = None
         if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+            if self.sim_substeps % 2 != 0:
+                wp.utils.warn("Sim substeps must be even for graph capture of MPM step")
+            else:
+                with wp.ScopedCapture() as capture:
+                    self.simulate()
+                self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
             self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
