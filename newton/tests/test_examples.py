@@ -531,18 +531,33 @@ add_example_test(
 )
 
 
-class TestOtherExamples(unittest.TestCase):
+class TestMPMExamples(unittest.TestCase):
     pass
 
 
 add_example_test(
-    TestOtherExamples,
+    TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
     test_options={"viewer": "null", "num_frames": 100},
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_multi_material",
+    devices=cuda_test_devices,
+    test_options={"viewer": "null", "num_frames": 10},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_grain_rendering",
+    devices=cuda_test_devices,
+    test_options={"viewer": "null", "num_frames": 10},
+    use_viewer=True,
+)
 
 if __name__ == "__main__":
     # force rebuild of all kernels
