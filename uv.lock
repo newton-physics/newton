@@ -861,6 +861,7 @@ dev = [
     { name = "tqdm" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64'" },
 ]
 docs = [
     { name = "myst-parser" },
@@ -888,6 +889,7 @@ examples = [
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64'" },
 ]
 importers = [
     { name = "alphashape" },
@@ -898,6 +900,7 @@ importers = [
     { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64'" },
 ]
 sim = [
     { name = "cbor2" },
@@ -921,6 +924,7 @@ torch-cu12 = [
     { name = "torch" },
     { name = "trimesh" },
     { name = "usd-core", marker = "platform_machine != 'aarch64'" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64'" },
 ]
 
 [package.dev-dependencies]
@@ -992,6 +996,10 @@ requires-dist = [
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'torch-cu12'", specifier = ">=25.5" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'dev'", specifier = ">=2.1.0a3" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'examples'", specifier = ">=2.1.0a3" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.1.0a3" },
+    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.1.0a3" },
     { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250823", index = "https://pypi.nvidia.com/" },
     { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250823" },
 ]
@@ -2298,6 +2306,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/18/b2/f07c4706c4809169ecae0f18da05ff37e47069a6c9978bb3e43c500f2c44/usd_core-25.8-cp313-none-macosx_10_9_universal2.whl", hash = "sha256:992756dac5ea29ad40eaac085126ae22e15b3f37174735d409ee0995420b584e", size = 37431897, upload-time = "2025-07-31T19:20:24.254Z" },
     { url = "https://files.pythonhosted.org/packages/43/7b/f275eeb308883cf64f5b36a466efe45c12c72e0ddf011feff393ae67f329/usd_core-25.8-cp313-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e1882ee4821c9dda9e749caf1d7d80ac29b0f4000554cdb35dd4191d4816d3cc", size = 26624317, upload-time = "2025-07-31T19:20:27.689Z" },
     { url = "https://files.pythonhosted.org/packages/63/5f/c32bf32ae163e6ad5257ec0cfcb58966275de5c55ae0a884bad71cd5f625/usd_core-25.8-cp313-none-win_amd64.whl", hash = "sha256:6d98ad58514afc5c28c9610b4e1017da9b460932192ce564cf311b2451b308de", size = 12771777, upload-time = "2025-07-31T19:20:30.362Z" },
+]
+
+[[package]]
+name = "usd-exchange"
+version = "2.1.0a3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/98/54628e43c7f37304fd0546e198b4ce1de876854905e991df21db5e340f0d/usd_exchange-2.1.0a3-cp310-cp310-manylinux_2_35_aarch64.whl", hash = "sha256:e8e2e4dc29fb2aba8b6be813969fe7b909eaa625ae2aa955eac526e6f660b952", size = 20238132, upload-time = "2025-09-19T00:52:12.766Z" },
+    { url = "https://files.pythonhosted.org/packages/05/d4/1a2d28acb633c824050097c1c347bb232744f633e9587682217f9120a744/usd_exchange-2.1.0a3-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:5996b6b1e88ae6b8a31353cd75e23accdc47337d72577e7fee5b74020092f212", size = 20240640, upload-time = "2025-09-19T00:51:23.109Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/98/c1da562a48900eaa3303441d9e48fc84cd1ae567d2027d3a770a82d41f3d/usd_exchange-2.1.0a3-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:ed59f23ab31bed6877c4fa4493757ca052b5fea2c4658dafcf2277ecf0f1037e", size = 20274655, upload-time = "2025-09-19T00:50:31.173Z" },
 ]
 
 [[package]]
