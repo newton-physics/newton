@@ -753,6 +753,8 @@ class _ImplicitMPMScratchpad:
         self.strain_node_particle_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
         self.int_symmetric_strain = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=vec6)
 
+        sp.bsr_set_zero(self.strain_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=vel_node_count)
+
         if has_critical_fraction:
             self.strain_node_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
             self.strain_node_collider_volume = fem.borrow_temporary(
@@ -1142,8 +1144,8 @@ class SolverImplicitMPM(SolverBase):
         self.coloring = options.solver == "gauss-seidel"
         self.apic = options.transfer_scheme == "apic"
 
-        self._scratchpad = None
         self.temporary_store = fem.TemporaryStore()
+        self._scratchpad = None
 
         self._use_cuda_graph = False
         if self.model.device.is_cuda:
@@ -1155,6 +1157,9 @@ class SolverImplicitMPM(SolverBase):
 
         self._enable_timers = False
         self._timers_use_nvtx = False
+
+        if self.grid_type == "fixed":
+            self._rebuild_scratchpad(model.particle_q)
 
     @staticmethod
     def enrich_state(state: newton.State):
@@ -1199,8 +1204,8 @@ class SolverImplicitMPM(SolverBase):
         model = self.model
 
         with wp.ScopedDevice(model.device):
-            if self._scratchpad is None or self.grid_type != "fixed":
-                self._rebuild_scratchpad(state_in)
+            if self.grid_type != "fixed":
+                self._rebuild_scratchpad(state_in.particle_q)
 
             self._step_impl(state_in, state_out, dt, self._scratchpad)
 
@@ -1357,10 +1362,7 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            if self.grid_type == "sparse":
-                volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
-                grid = fem.Nanogrid(volume)
-            else:
+            if self.grid_type == "dense":
                 # Compute bounds and transfer to host
                 device = positions.device
                 if device.is_cuda:
@@ -1401,10 +1403,13 @@ class SolverImplicitMPM(SolverBase):
                     bounds_hi=wp.vec3(grid_max * voxel_size),
                     res=wp.vec3i((grid_max - grid_min).astype(int)),
                 )
+            else:
+                volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
+                grid = fem.Nanogrid(volume)
 
         return grid
 
-    def _rebuild_scratchpad(self, state_in: newton.State):
+    def _rebuild_scratchpad(self, positions: wp.array):
         """(Re)create function spaces and allocate per-step temporaries.
 
         Allocates the grid based on current particle positions, rebuilds
@@ -1412,7 +1417,7 @@ class SolverImplicitMPM(SolverBase):
         optionally computes a Gauss-Seidel coloring for the strain nodes.
         """
         geo_partition = self._allocate_grid(
-            state_in.particle_q,
+            positions,
             voxel_size=self.mpm_model.voxel_size,
             temporary_store=self.temporary_store,
             padding_voxels=self.grid_padding,
@@ -1776,11 +1781,6 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            sp.bsr_set_zero(
-                scratch.strain_matrix,
-                rows_of_blocks=strain_node_count,
-                cols_of_blocks=vel_node_count,
-            )
             fem.integrate(
                 strain_delta_form,
                 quadrature=pic,
@@ -1911,7 +1911,23 @@ class SolverImplicitMPM(SolverBase):
         """
         domain = scratch.velocity_test.domain
 
-        if state_in.impulse_field is not None:
+        if state_in.impulse_field is None:
+            state_in.impulse_field = scratch.impulse_field
+            state_in.stress_field = scratch.stress_field
+            state_in.velocity_field = scratch.velocity_field
+            state_in.collider_ids = scratch.collider_ids
+
+        if (
+            state_out.velocity_field is None
+            or state_out.velocity_field.space_partition != scratch.velocity_field.space_partition
+        ):
+            state_out.impulse_field = scratch.impulse_field
+            state_out.stress_field = scratch.stress_field
+            state_out.velocity_field = scratch.velocity_field
+            state_out.collider_ids = scratch.collider_ids
+
+        # Interpolate previous impulse
+        if state_in.impulse_field is not state_out.impulse_field:
             prev_impulse_field = (
                 state_in.impulse_field
                 if self.grid_type == "fixed"
@@ -1925,7 +1941,7 @@ class SolverImplicitMPM(SolverBase):
             )
 
         # Interpolate previous stress
-        if state_in.stress_field is not None:
+        if state_in.stress_field is not state_out.stress_field:
             prev_stress_field = (
                 state_in.stress_field
                 if self.grid_type == "fixed"
@@ -1937,20 +1953,6 @@ class SolverImplicitMPM(SolverBase):
                     scratch.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
                 ),
             )
-
-        if (
-            state_out.velocity_field is None
-            or state_out.velocity_field.space_partition != scratch.velocity_field.space_partition
-        ):
-            state_out.impulse_field = scratch.impulse_field
-            state_out.stress_field = scratch.stress_field
-            state_out.velocity_field = scratch.velocity_field
-            state_out.collider_ids = scratch.collider_ids
-        else:
-            state_out.velocity_field.dof_values.assign(scratch.velocity_field.dof_values)
-            state_out.impulse_field.dof_values.assign(scratch.impulse_field.dof_values)
-            state_out.stress_field.dof_values.assign(scratch.stress_field.dof_values)
-            state_out.collider_ids.assign(scratch.collider_ids)
 
     def _compute_coloring(
         self,

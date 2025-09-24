@@ -84,6 +84,14 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -93,7 +101,10 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def test(self):
@@ -224,6 +235,7 @@ if __name__ == "__main__":
     parser.add_argument("--hardening", type=float, default=0.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
+    parser.add_argument("--grid-padding", "-gp", type=int, default=0)
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 

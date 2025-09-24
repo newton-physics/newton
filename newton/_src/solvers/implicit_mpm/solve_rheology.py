@@ -822,7 +822,7 @@ def update_condition(
     condition: wp.array(dtype=int),
 ):
     cur_it = iteration[0] + 1
-    stop = (wp.sqrt(residual[0]) < residual_threshold and cur_it >= min_iterations) or cur_it >= max_iterations
+    stop = (wp.sqrt(residual[0]) < residual_threshold and cur_it > min_iterations) or cur_it > max_iterations
 
     iteration[0] = cur_it
     condition[0] = wp.where(stop, 0, 1)
@@ -1210,12 +1210,16 @@ def solve_rheology(
         temporary_store=temporary_store,
     )
 
+    solve_graph = None
     if use_graph:
         min_iterations = 5
         iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
+        iteration_and_condition.array.fill_(1)
 
-        gc.disable()
-        with wp.ScopedCapture(force_module_load=False) as iteration_capture:
+        iteration = iteration_and_condition.array[:1]
+        condition = iteration_and_condition.array[1:]
+
+        def do_iteration_with_condition():
             do_iteration()
             residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
             wp.launch(
@@ -1226,31 +1230,28 @@ def solve_rheology(
                     min_iterations,
                     max_iterations,
                     residual,
-                    iteration_and_condition.array[:1],
-                    iteration_and_condition.array[1:],
+                    iteration,
+                    condition,
                 ],
             )
-        iteration_graph = iteration_capture.graph
 
-        with wp.ScopedCapture(force_module_load=False) as capture:
-            wp.capture_while(
-                condition=iteration_and_condition.array[1:],
-                while_body=iteration_graph,
-            )
-        solve_graph = capture.graph
-        gc.enable()
+        device = delta_stress.array.device
+        if device.is_capturing:
+            wp.capture_while(condition, do_iteration_with_condition)
+        else:
+            with wp.ScopedCapture(force_module_load=False) as capture:
+                wp.capture_while(condition, do_iteration_with_condition)
+            solve_graph = capture.graph
+            wp.capture_launch(solve_graph)
 
-        iteration_and_condition.array.assign([0, 1])
-        wp.capture_launch(solve_graph)
-
-        if verbose:
-            res = math.sqrt(residual.numpy()[0]) / residual_scale
-            print(
-                f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
-                f"{iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
-            )
+            if verbose:
+                residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+                res = math.sqrt(residual.numpy()[0]) / residual_scale
+                print(
+                    f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
+                    f"{iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
+                )
     else:
-        solve_graph = None
         solve_granularity = 25 if gs else 50
 
         for batch in range(max_iterations // solve_granularity):
