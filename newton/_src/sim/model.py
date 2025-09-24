@@ -526,9 +526,9 @@ class Model:
             )
 
         if isinstance(gravity, tuple | list):
-            self.gravity.assign(wp.vec3(gravity[0], gravity[1], gravity[2]))
+            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
         else:
-            self.gravity.assign(gravity)
+            self.gravity.assign([gravity])
 
     def collide(
         self: Model,
