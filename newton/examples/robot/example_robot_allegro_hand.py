@@ -28,7 +28,6 @@
 #
 ###########################################################################
 
-import itertools
 import re
 
 import warp as wp
@@ -96,23 +95,14 @@ class Example:
         allegro_hand.add_usd(
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
-            enable_self_collisions=False,
-            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*palm_link/visuals", ".*DexCube/visuals"],
+            enable_self_collisions=True,
+            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
             load_non_physics_prims=True,
-            hide_collision_shapes=False,
         )
-
-        # manually disable self collisions for the hand links
-        joint_start, joint_end = tuple(allegro_hand.articulation_start)  # there are only 2 entries currently
-        bodies = [allegro_hand.joint_child[j] for j in range(joint_start, joint_end)]
-        for body1, body2 in itertools.combinations(bodies, 2):
-            for shape1 in allegro_hand.body_shapes[body1]:
-                for shape2 in allegro_hand.body_shapes[body2]:
-                    allegro_hand.shape_collision_filter_pairs.append((shape1, shape2))
 
         # hide collision shapes for the hand links
         for i, key in enumerate(allegro_hand.shape_key):
-            if re.match(".*Robot/.*?/collision", key) and "palm_link" not in key:
+            if re.match(".*Robot/.*?/collision", key):
                 allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
@@ -128,8 +118,6 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        # print("Colliders:")
-        # print("\n".join(map(str, ((np.array(self.model.shape_key)[self.model.shape_contact_pairs.numpy()])).tolist())))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
@@ -206,8 +194,6 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
-
-        # self.solver.render_mujoco_viewer()
 
     def test(self):
         pass

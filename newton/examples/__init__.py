@@ -187,41 +187,13 @@ def main():
     import sys  # noqa: PLC0415
 
     # Map short names to full module paths
-    example_map = {
-        "basic_pendulum": "newton.examples.basic.example_basic_pendulum",
-        "basic_urdf": "newton.examples.basic.example_basic_urdf",
-        "basic_viewer": "newton.examples.basic.example_basic_viewer",
-        "basic_shapes": "newton.examples.basic.example_basic_shapes",
-        "basic_joints": "newton.examples.basic.example_basic_joints",
-        "cloth_bending": "newton.examples.cloth.example_cloth_bending",
-        "cloth_franka": "newton.examples.cloth.example_cloth_franka",
-        "cloth_hanging": "newton.examples.cloth.example_cloth_hanging",
-        "cloth_style3d": "newton.examples.cloth.example_cloth_style3d",
-        "ik_benchmark": "newton.examples.ik.example_ik_benchmark",
-        "ik_franka": "newton.examples.ik.example_ik_franka",
-        "ik_h1": "newton.examples.ik.example_ik_h1",
-        "cloth_twist": "newton.examples.cloth.example_cloth_twist",
-        "cloth_example": "newton.examples.cloth.example_cloth_example",
-        "mpm_granular": "newton.examples.mpm.example_mpm_granular",
-        "mpm_anymal": "newton.examples.mpm.example_mpm_anymal",
-        "robot_anymal_c_walk": "newton.examples.robot.example_robot_anymal_c_walk",
-        "robot_anymal_d": "newton.examples.robot.example_robot_anymal_d",
-        "robot_cartpole": "newton.examples.robot.example_robot_cartpole",
-        "robot_g1": "newton.examples.robot.example_robot_g1",
-        "robot_h1": "newton.examples.robot.example_robot_h1",
-        "robot_humanoid": "newton.examples.robot.example_robot_humanoid",
-        "robot_policy": "newton.examples.robot.example_robot_policy",
-        "robot_ur10": "newton.examples.robot.example_robot_ur10",
-        "selection_articulations": "newton.examples.selection.example_selection_articulations",
-        "selection_cartpole": "newton.examples.selection.example_selection_cartpole",
-        "selection_materials": "newton.examples.selection.example_selection_materials",
-        "diffsim_ball": "newton.examples.diffsim.example_diffsim_ball",
-        "diffsim_cloth": "newton.examples.diffsim.example_diffsim_cloth",
-        "diffsim_drone": "newton.examples.diffsim.example_diffsim_drone",
-        "diffsim_spring_cage": "newton.examples.diffsim.example_diffsim_spring_cage",
-        "diffsim_soft_body": "newton.examples.diffsim.example_diffsim_soft_body",
-        "sensor_contact": "newton.examples.sensors.example_sensor_contact",
-    }
+    example_map = {}
+    modules = ["basic", "cloth", "diffsim", "ik", "mpm", "robot", "selection", "sensors"]
+    for module in sorted(modules):
+        for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):
+            if example.endswith(".py"):
+                example_name = example[8:-3]  # Remove "example_" prefix and ".py" file ext
+                example_map[example_name] = f"newton.examples.{module}.{example[:-3]}"
 
     if len(sys.argv) < 2:
         print("Usage: python -m newton.examples <example_name>")

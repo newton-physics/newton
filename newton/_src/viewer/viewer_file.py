@@ -103,7 +103,7 @@ class ViewerFile(ViewerBase):
         """File viewer doesn't render meshes, so this is a no-op."""
         pass
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """File viewer doesn't render instances, so this is a no-op."""
         pass
 
