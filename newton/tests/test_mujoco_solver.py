@@ -1554,6 +1554,11 @@ class TestMuJoCoConversion(unittest.TestCase):
         expected_selected = [0, 2]
         np.testing.assert_array_equal(selected_joints, expected_selected, "Should select only env 0 joints [0, 2]")
 
+        # Also verify per-env DOF mapping is set for both local joints (indices 0 and 1)
+        dof_start_map = solver.joint_mjc_dof_start.numpy()
+        self.assertNotEqual(dof_start_map[0], -1, "Local joint 0 must have a valid MuJoCo DOF start")
+        self.assertNotEqual(dof_start_map[1], -1, "Local joint 1 must have a valid MuJoCo DOF start")
+
         # THE BUG: When processing selected joints, the code uses ji directly
         # So when ji=1:
         # - It SHOULD use joint[selected_joints[1]] = joint[2] (free joint from env 0)
@@ -1564,10 +1569,6 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Get joint types from MuJoCo
         mjc_joint_types = mjw_model.jnt_type.numpy()  # First world
-
-        print(f"Selected joints: {selected_joints}")
-        print(f"Newton joint types: {joint_types} (1=revolute, 4=free)")
-        print(f"\nMuJoCo joint types: {mjc_joint_types} (0=free, 3=hinge)")
 
         # Expected MuJoCo joint types for env 0 after topological sorting:
         # Joint 2 (free) will be first because it's on body 0 (the base)

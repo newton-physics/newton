@@ -2153,8 +2153,9 @@ class SolverMuJoCo(SolverBase):
             tf = wp.transform(*joint_parent_xform[j])
             tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
 
-            joint_pos = wp.vec3(*joint_child_xform[j, :3])
-            joint_rot = wp.quat(*joint_child_xform[j, 3:])
+            jc_xform = wp.transform(*joint_child_xform[j])
+            joint_pos = jc_xform.p
+            joint_rot = jc_xform.q
 
             # ensure unique body name
             name = model.body_key[child]
@@ -2188,7 +2189,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[j] = len(spec.joints)
+            joint_mjc_dof_start[ji] = len(spec.joints)
 
             if j_type == JointType.FREE:
                 body.add_joint(
