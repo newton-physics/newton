@@ -388,7 +388,7 @@ def write_junit_results(
         elif test_status == "SKIP":
             skip = ET.SubElement(test_case, "skipped")
             # Set the skip reason
-            skip.set("message", str(test_data[5]))
+            skip.set("message", str(test_data[4]))
 
     tree = ET.ElementTree(root)
 
