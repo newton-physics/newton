@@ -53,7 +53,7 @@ class Example:
         h1.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("unitree_h1")
-        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usda")
         h1.add_usd(
             asset_file,
             ignore_paths=["/GroundPlane"],
