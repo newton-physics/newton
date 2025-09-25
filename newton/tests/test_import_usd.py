@@ -1061,7 +1061,7 @@ class TestImportSampleAssets(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_h1(self):
         builder = newton.ModelBuilder()
-        asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usd")
+        asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usda")
 
         builder.add_usd(
             asset_path,

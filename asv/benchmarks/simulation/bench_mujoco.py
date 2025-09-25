@@ -85,6 +85,7 @@ class KpiAnt:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=10,
             )
 
             for _ in range(self.num_frames):
@@ -157,6 +158,7 @@ class KpiCartpole:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=3,
             )
 
             wp.synchronize_device()
@@ -231,6 +233,7 @@ class KpiG1:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=10,
             )
 
             wp.synchronize_device()
@@ -305,6 +308,7 @@ class KpiH1:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=10,
             )
 
             wp.synchronize_device()
@@ -378,6 +382,7 @@ class KpiHumanoid:
                 num_envs=num_envs,
                 use_cuda_graph=True,
                 builder=self.builder[num_envs],
+                ls_iteration=15,
             )
 
             wp.synchronize_device()
