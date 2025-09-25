@@ -12,6 +12,7 @@ env:
   AWS_S3_BUCKET: newton-github-workflow-artifacts
 
 on:
+  merge_group:
   pull_request_target:
 
 # Cancels in-progress runs of this workflow for the same pull request,
