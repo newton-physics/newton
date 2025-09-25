@@ -233,9 +233,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_worldid_out: wp.array(dtype=int),
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
-    hfield_geom_pair_in: int,
-    ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
-    collision_hftri_index_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
 ):
     # See kernel solve_body_contact_positions for reference
@@ -246,12 +243,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     if tid == 0:
         ncon_out[0] = rigid_contact_count[0]
         ncollision_out[0] = 0
-
-    if tid < hfield_geom_pair_in * nworld_in:
-        ncon_hfield_out[tid] = 0
-
-    # Zero collision pair indices
-    collision_hftri_index_out[tid] = 0
 
     if tid >= rigid_contact_count[0]:
         return
@@ -1394,9 +1385,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.contact.worldid,
                 # Data to clear
                 self.mjw_data.nworld,
-                self.mjw_data.ncon_hfield.shape[1],
-                self.mjw_data.ncon_hfield.reshape(-1),
-                self.mjw_data.collision_hftri_index,
                 self.mjw_data.ncollision,
             ],
         )

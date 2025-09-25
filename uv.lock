@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform != 'darwin'",
@@ -770,7 +770,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.1"
-source = { git = "https://github.com/google-deepmind/mujoco_warp#64bb938f87b6aaf840753ef9ddc198db655020c0" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp#8f870c87272888f36dcec4e337285de55e0eaa30" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
@@ -2341,6 +2341,7 @@ dependencies = [
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 wheels = [
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-macosx_10_13_universal2.whl", hash = "sha256:b53b0640534f5659fb5b9e68e6c5d518565e5aed07f729151b7dec4e888e566e" },
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:28f7ef23bcd128bb6da2d2115b7eb34ebb0c8d28b522d71b287ae636516e28e3" },
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:204b8cfde848b3f2eb80f34646b5f11c91bec896ba7168e42ffe69ad4ca445e2" },
     { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.9.0.dev20250825-py3-none-win_amd64.whl", hash = "sha256:b7068b75ff622ffa295a83526d4e18e85b0327c21664949df89ede821dc4bd20" },

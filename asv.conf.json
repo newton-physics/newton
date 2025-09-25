@@ -19,7 +19,7 @@
     "python -m pip install -U --pre warp-lang==1.9.0.dev20250825 --index-url=https://pypi.nvidia.com/",
     "python -m pip install -U --pre mujoco==3.3.6.dev802089588 -f https://py.mujoco.org/",
     "python -m pip install -U torch==2.8.0+cu129 --index-url https://download.pytorch.org/whl/cu129",
-    "python -m pip install git+https://github.com/google-deepmind/mujoco_warp@64bb938f87b6aaf840753ef9ddc198db655020c0",
+    "python -m pip install git+https://github.com/google-deepmind/mujoco_warp@8f870c87272888f36dcec4e337285de55e0eaa30",
     "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
   ]
 }
