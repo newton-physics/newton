@@ -28,7 +28,7 @@ from newton.examples.example_mujoco import Example
 def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
     tid = wp.tid()
 
-    joint_target[tid] = wp.randf(state)
+    joint_target[tid] = wp.randf(state) * 2.0 - 1.0
 
 
 class FastAnt:
