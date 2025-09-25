@@ -24,6 +24,13 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 from newton.examples.example_mujoco import Example
 
 
+@wp.kernel
+def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
+    tid = wp.tid()
+
+    joint_target[tid] = wp.randf(state)
+
+
 class FastAnt:
     num_frames = 50
     robot = "ant"
@@ -41,7 +48,7 @@ class FastAnt:
             robot=self.robot,
             randomize=True,
             headless=True,
-            actuation="random",
+            actuation="None",
             num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
@@ -49,15 +56,29 @@ class FastAnt:
 
         wp.synchronize_device()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self):
-        for _ in range(self.num_frames):
-            self.example.step()
+        # Recapture the graph with control application included
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            print("Cannot use graph capture. Graph capture is disabled.")
+        else:
+            state = wp.rand_init(self.example.seed)
+            with wp.ScopedCapture() as capture:
+                wp.launch(
+                    apply_random_control,
+                    dim=(self.example.model.joint_dof_count,),
+                    inputs=[state],
+                    outputs=[self.example.control.joint_target],
+                )
+                self.example.simulate()
+            self.graph = capture.graph
+
         wp.synchronize_device()
 
-        return self.example.benchmark_time * 1000 / (self.num_frames * self.example.sim_substeps * self.num_envs)
-
-    track_simulate.unit = "ms/env-step"
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_simulate(self):
+        for _ in range(self.num_frames):
+            wp.capture_launch(self.graph)
+        wp.synchronize_device()
 
 
 class KpiAnt:
@@ -123,14 +144,10 @@ class FastCartpole:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self):
+    def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
-
-        return self.example.benchmark_time * 1000 / (self.num_frames * self.example.sim_substeps * self.num_envs)
-
-    track_simulate.unit = "ms/env-step"
 
 
 class KpiCartpole:
@@ -197,14 +214,10 @@ class FastG1:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self):
+    def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
-
-        return self.example.benchmark_time * 1000 / (self.num_frames * self.example.sim_substeps * self.num_envs)
-
-    track_simulate.unit = "ms/env-step"
 
 
 class KpiG1:
@@ -272,14 +285,10 @@ class FastH1:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self):
+    def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
-
-        return self.example.benchmark_time * 1000 / (self.num_frames * self.example.sim_substeps * self.num_envs)
-
-    track_simulate.unit = "ms/env-step"
 
 
 class KpiH1:
@@ -347,14 +356,10 @@ class FastHumanoid:
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self):
+    def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
-
-        return self.example.benchmark_time * 1000 / (self.num_frames * self.example.sim_substeps * self.num_envs)
-
-    track_simulate.unit = "ms/env-step"
 
 
 class KpiHumanoid:
