@@ -1201,7 +1201,7 @@ class SolverMuJoCo(SolverBase):
         mjw_model: MjWarpModel | None = None,
         mjw_data: MjWarpData | None = None,
         separate_envs_to_worlds: bool | None = None,
-        njmax: int = 100,
+        njmax: int | None = None,
         ncon_per_env: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
@@ -1227,8 +1227,8 @@ class SolverMuJoCo(SolverBase):
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_envs_to_worlds (bool | None): If True, each Newton environment is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax (int): Maximum number of constraints per environment (world).
-            ncon_per_env (int | None): Number of contact points per environment (world). If None, the number of contact points is estimated from the model.
+            njmax (int): Maximum number of constraints per environment (world). If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            ncon_per_env (int | None): Number of contact points per environment (world). If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -1483,12 +1483,12 @@ class SolverMuJoCo(SolverBase):
     def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
-            # we have a MjWarp Data object
+            # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
             nworld = mj_data.nworld
         else:
-            # we have a MjData object from Mujoco
+            # we have an MjData object from Mujoco
             qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
             nworld = 1
@@ -1528,7 +1528,7 @@ class SolverMuJoCo(SolverBase):
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
-            # we have a MjWarp Data object
+            # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
             nworld = mj_data.nworld
@@ -1536,7 +1536,7 @@ class SolverMuJoCo(SolverBase):
             xpos = mj_data.xpos
             xquat = mj_data.xquat
         else:
-            # we have a MjData object from Mujoco
+            # we have an MjData object from Mujoco
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
@@ -1749,7 +1749,7 @@ class SolverMuJoCo(SolverBase):
         separate_envs_to_worlds: bool = True,
         iterations: int = 20,
         ls_iterations: int = 10,
-        njmax: int = 100,  # number of constraints per world
+        njmax: int | None = None,  # number of constraints per world
         ncon_per_env: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "euler",
@@ -2134,12 +2134,16 @@ class SolverMuJoCo(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
 
-            # this assumes that the joint position is 0
-            tf = wp.transform(*joint_parent_xform[ji])
-            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[ji]))
+            # use the correct global joint index
+            j = selected_joints[ji]
 
-            joint_pos = wp.vec3(*joint_child_xform[ji, :3])
-            joint_rot = wp.quat(*joint_child_xform[ji, 3:])
+            # this assumes that the joint position is 0
+            tf = wp.transform(*joint_parent_xform[j])
+            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
+
+            jc_xform = wp.transform(*joint_child_xform[j])
+            joint_pos = jc_xform.p
+            joint_rot = jc_xform.q
 
             # ensure unique body name
             name = model.body_key[child]
@@ -2163,9 +2167,9 @@ class SolverMuJoCo(SolverBase):
             mj_bodies.append(body)
 
             # add joint
-            j_type = joint_type[ji]
-            qd_start = joint_qd_start[ji]
-            name = model.joint_key[ji]
+            j_type = joint_type[j]
+            qd_start = joint_qd_start[j]
+            name = model.joint_key[j]
             if name not in joint_names:
                 joint_names[name] = 1
             else:
@@ -2183,7 +2187,7 @@ class SolverMuJoCo(SolverBase):
                     limited=False,
                 )
             elif j_type in supported_joint_types:
-                lin_axis_count, ang_axis_count = joint_dof_dim[ji]
+                lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
@@ -2464,10 +2468,27 @@ class SolverMuJoCo(SolverBase):
             else:
                 if ncon_per_env is not None:
                     rigid_contact_max = nworld * ncon_per_env
+                    if rigid_contact_max < self.mj_data.ncon * nworld:
+                        warnings.warn(
+                            f"[WARNING] Value for ncon_per_env is changed from {ncon_per_env} to {self.mj_data.ncon} following an MjWarp requirement.",
+                            stacklevel=2,
+                        )
+                        nconmax = self.mj_data.ncon * nworld
+                    else:
+                        nconmax = rigid_contact_max
                 else:
-                    rigid_contact_max = model.rigid_contact_max
-                nconmax = max(rigid_contact_max, self.mj_data.ncon * nworld)  # this avoids error in mujoco.
-            njmax = max(njmax, self.mj_data.nefc)
+                    nconmax = self.mj_data.ncon * nworld
+
+            if njmax is not None:
+                if njmax < self.mj_data.nefc:
+                    warnings.warn(
+                        f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
+                        stacklevel=2,
+                    )
+                    njmax = self.mj_data.nefc
+            else:
+                njmax = self.mj_data.nefc
+
             self.mjw_data = mujoco_warp.put_data(
                 self.mj_model,
                 self.mj_data,

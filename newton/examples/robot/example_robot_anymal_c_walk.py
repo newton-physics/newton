@@ -142,7 +142,7 @@ class Example:
             builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
 
         self.viewer.set_model(self.model)
 
