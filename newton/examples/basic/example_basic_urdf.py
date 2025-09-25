@@ -27,7 +27,6 @@
 ###########################################################################
 
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -35,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs, test_mode):
+    def __init__(self, viewer, num_envs):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -44,7 +43,6 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_envs = num_envs
-        self.test_mode = test_mode
 
         self.viewer = viewer
 
@@ -128,52 +126,28 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        with wp.ScopedDevice(self.model.device):
-            failures = wp.zeros(self.num_envs, dtype=bool)
-            wp.launch(
-                verify_example,
-                dim=self.num_envs,
-                inputs=[
-                    self.state_0.body_q,
-                    self.state_0.body_qd,
-                    self.model.body_count // self.num_envs,
-                ],
-                outputs=[failures],
-            )
-            failures_np = failures.numpy()
-            if np.any(failures_np):
-                raise ValueError(f"Tests failed for the following environments: {np.where(failures_np)[0]}")
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "quadruped links are not moving too fast",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
+
+        bodies_per_env = self.model.body_count // self.num_envs
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "quadrupeds have reached the terminal height",
+            lambda q, qd: wp.abs(q[2] - 0.48) < 0.01,
+            # only select the root body of each environment
+            indices=[i * bodies_per_env for i in range(self.num_envs)],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
-
-
-@wp.kernel
-def verify_example(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    bodies_per_env: int,
-    # output
-    failures: wp.array(dtype=bool),
-):
-    env_id = wp.tid()
-    success = bool(True)
-
-    # low velocity
-    for i in range(bodies_per_env):
-        for j in range(6):
-            if wp.abs(body_qd[env_id * bodies_per_env + i][j]) > 0.1:
-                success = False
-                break
-
-    # terminal height
-    if wp.abs(body_q[env_id * bodies_per_env + 0][2] - 0.48) > 0.01:
-        success = False
-
-    failures[env_id] = not success
 
 
 if __name__ == "__main__":
@@ -185,6 +159,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer, args.num_envs, args.test)
+    example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
