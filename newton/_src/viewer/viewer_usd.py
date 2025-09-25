@@ -74,6 +74,7 @@ class ViewerUSD(ViewerBase):
             fps (int, optional): Frames per second for time sampling. Default is 60.
             up_axis (str, optional): USD up axis, either 'Y' or 'Z'. Default is 'Z'.
             num_frames (int, optional): Maximum number of frames to record. Default is 100. If None, recording is unlimited.
+            scaling (float, optional): Uniform scaling applied to the scene root. Default is 1.0.
 
         Raises:
             ImportError: If the usd-core package is not installed.
@@ -93,7 +94,14 @@ class ViewerUSD(ViewerBase):
         self.stage.SetFramesPerSecond(fps)
         self.stage.SetStartTimeCode(0)
 
-        UsdGeom.SetStageUpAxis(self.stage, UsdGeom.Tokens.z)
+        axis_token = {
+            "X": UsdGeom.Tokens.x,
+            "Y": UsdGeom.Tokens.y,
+            "Z": UsdGeom.Tokens.z,
+        }.get(self.up_axis.strip().upper())
+
+        UsdGeom.SetStageUpAxis(self.stage, axis_token)
+        UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
 
         self.root = UsdGeom.Xform.Define(self.stage, "/root")
 
@@ -162,7 +170,11 @@ class ViewerUSD(ViewerBase):
             print(f"USD output saved in: {os.path.abspath(self.output_path)}")
 
     def _get_path(self, name):
-        return "/root" + name
+        # Handle both absolute and relative paths correctly
+        if name.startswith("/"):
+            return "/root" + name
+        else:
+            return "/root/" + name
 
     def log_mesh(
         self,
@@ -251,15 +263,16 @@ class ViewerUSD(ViewerBase):
 
             if not instance:
                 instance = self.stage.DefinePrim(instance_path)
-                instance.GetPrim().GetReferences().AddInternalReference(self._get_path(mesh))
+                instance.GetReferences().AddInternalReference(self._get_path(mesh))
+
                 UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited")
+                _usd_add_xform(instance)
 
             # update transform
             if xform is not None:
                 pos = xform[i][:3]
                 rot = xform[i][3:7]
 
-                _usd_add_xform(instance)
                 _usd_set_xform(instance, pos, rot, scale[i], self._frame_index)
 
             # update color
@@ -441,10 +454,11 @@ class ViewerUSD(ViewerBase):
         else:
             color_interp = "vertex"
 
-        instancer = UsdGeom.Points.Get(self.stage, name)
+        path = self._get_path(name)
+        instancer = UsdGeom.Points.Get(self.stage, path)
         if not instancer:
-            self._ensure_scopes_for_path(self.stage, self._get_path(name))
-            instancer = UsdGeom.Points.Define(self.stage, self._get_path(name))
+            self._ensure_scopes_for_path(self.stage, path)
+            instancer = UsdGeom.Points.Define(self.stage, path)
 
             UsdGeom.Primvar(instancer.GetWidthsAttr()).SetInterpolation(radius_interp)
             UsdGeom.Primvar(instancer.GetDisplayColorAttr()).SetInterpolation(color_interp)
