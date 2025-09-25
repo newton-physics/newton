@@ -207,6 +207,17 @@ def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool
     return True
 
 
+@wp.func
+def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
+    """
+    Check if a Warp vector is inside the given limits.
+    """
+    for i in range(wp.static(len(a))):
+        if a[i] < lower[i] or a[i] > upper[i]:
+            return False
+    return True
+
+
 def check_conditional_graph_support():
     """
     Check if conditional graph support is available in the current environment.
@@ -233,6 +244,7 @@ __all__ = [
     "topological_sort",
     "vec_abs",
     "vec_allclose",
+    "vec_inside_limits",
     "vec_leaky_max",
     "vec_leaky_min",
     "vec_max",
