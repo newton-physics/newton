@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -54,6 +55,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
+from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -61,7 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model
+from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -483,6 +485,45 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+        # Custom attributes (user-defined per-frequency arrays)
+        self.custom_attributes: dict[str, CustomAttribute] = {}
+
+    def add_custom_attribute(
+        self,
+        name: str,
+        frequency: ModelAttributeFrequency,
+        default=None,
+        dtype=None,
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
+    ):
+        """Define a custom per-entity attribute to be added to the Model.
+
+        Args:
+            name: Variable name to expose on the Model
+            frequency: ModelAttributeFrequency enum value
+            default: Default value for the attribute. If None, will use dtype-specific default
+                (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
+            assignment: ModelAttributeAssignment enum value determining where the attribute appears
+        """
+        if name in self.custom_attributes:
+            # validate that specification matches exactly
+            existing = self.custom_attributes[name]
+            # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
+            target_dtype = dtype if dtype is not None else existing.dtype
+            if existing.frequency != frequency or existing.dtype != target_dtype or existing.assignment != assignment:
+                raise ValueError(
+                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
+                )
+            return
+
+        self.custom_attributes[name] = CustomAttribute(
+            assignment=assignment,
+            frequency=frequency,
+            name=name,
+            dtype=dtype if dtype is not None else wp.float32,
+            default=default,
+        )
 
     @property
     def up_vector(self) -> Vec3:
@@ -730,6 +771,8 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        schema_resolvers: list[SchemaResolver] | None = None,
+        collect_solver_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -756,6 +799,17 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
+                [SchemaResolverNewton()].
+            collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+                configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
+                (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
+                are authored in the USD but not strictly required to build the simulation. This is useful for
+                inspection, experimentation, or custom pipelines that read these values via
+                :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
+                properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
+                prevents parsing them. Default is ``True``.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -807,6 +861,8 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
+            schema_resolvers,
+            collect_solver_specific_attrs,
         )
 
     def add_mjcf(
@@ -4405,6 +4461,33 @@ class ModelBuilder:
             m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
+
+            # Add custom attributes onto the model (with lazy evaluation)
+            # Early return if no custom attributes exist to avoid overhead
+            if not self.custom_attributes:
+                return m
+
+            # Process custom attributes
+            for var_name, custom_attr in self.custom_attributes.items():
+                frequency = custom_attr.frequency
+
+                # determine count by frequency
+                if frequency == ModelAttributeFrequency.BODY:
+                    count = m.body_count
+                elif frequency == ModelAttributeFrequency.SHAPE:
+                    count = m.shape_count
+                elif frequency == ModelAttributeFrequency.JOINT:
+                    count = m.joint_count
+                elif frequency == ModelAttributeFrequency.JOINT_DOF:
+                    count = m.joint_dof_count
+                elif frequency == ModelAttributeFrequency.JOINT_COORD:
+                    count = m.joint_coord_count
+                else:
+                    continue
+
+                wp_arr = custom_attr.build_array(count, requires_grad)
+                if not hasattr(m, var_name):
+                    m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 
             return m
 
