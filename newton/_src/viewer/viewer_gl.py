@@ -852,7 +852,7 @@ class ViewerGL(ViewerBase):
                     imgui.text(f"Environments: {self.model.num_envs}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
-                    gravity = self.model.gravity
+                    gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
 
