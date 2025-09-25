@@ -313,8 +313,8 @@ class Model:
         """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
-        self.gravity = np.array((0.0, 0.0, -9.81))
-        """Gravity vector, shape [3], float."""
+        self.gravity = None
+        """Gravity vector, shape [1], dtype vec3."""
 
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
@@ -507,6 +507,28 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
         return c
+
+    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+        """
+        Set gravity for runtime modification.
+
+        Args:
+            gravity: Gravity vector as a tuple, list, or wp.vec3.
+                    Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
+
+        Note:
+            After calling this method, you should notify solvers via
+            `solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`.
+        """
+        if self.gravity is None:
+            raise RuntimeError(
+                "Model gravity not initialized. Ensure the model was created via ModelBuilder.finalize()"
+            )
+
+        if isinstance(gravity, tuple | list):
+            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
+        else:
+            self.gravity.assign([gravity])
 
     def collide(
         self: Model,

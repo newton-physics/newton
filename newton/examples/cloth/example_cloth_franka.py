@@ -518,7 +518,7 @@ class Example:
                 particle_count = self.model.particle_count
                 # set particle_count = 0 to circumvent
                 self.model.particle_count = 0
-                self.model.gravity = wp.vec3(0)
+                self.model.set_gravity((0.0, 0.0, 0.0))
 
                 # Update the robot pose - this will modify state_0 and copy to state_1
                 self.model.shape_contact_pair_count = 0
@@ -530,7 +530,7 @@ class Example:
                 self.state_0.particle_f.zero_()
 
                 self.model.particle_count = particle_count
-                self.model.gravity = wp.vec3(0, 0, self.gravity)
+                self.model.set_gravity((0.0, 0.0, self.gravity))
 
             # cloth sim
             self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
