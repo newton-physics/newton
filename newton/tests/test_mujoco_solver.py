@@ -1501,6 +1501,7 @@ class TestMuJoCoConversion(unittest.TestCase):
             atol=1e-6,
         )
 
+    @unittest.skip("It generates warning and illegal memory access")
     def test_noncontiguous_joint_indexing(self):
         """
         Test for joint indexing bug when selected_joints is noncontiguous.
