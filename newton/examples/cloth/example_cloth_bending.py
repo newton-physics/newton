@@ -129,6 +129,32 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles have come close to a rest",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
+
+        @wp.func
+        def is_inside_box(q: wp.vec3, lower: wp.vec3, upper: wp.vec3) -> bool:
+            return (
+                q.x > lower.x and q.x < upper.x and q.y > lower.y and q.y < upper.y and q.z > lower.z and q.z < upper.z
+            )
+
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: is_inside_box(q, wp.vec3(-3.0, -3.0, 0.0), wp.vec3(3.0, 3.0, 2.0)),
+        )
+
+        newton.examples.test_particle_state(
+            self.state_0,
+            "lower particles touch the ground",
+            lambda q, qd: q[2] < 0.15,
+            indices=[4, 5, 12, 13],
+        )
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -137,4 +163,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

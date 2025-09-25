@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+from collections.abc import Callable
 
 import numpy as np
 import warp as wp
@@ -43,11 +44,122 @@ def _find_nonfinite(obj: newton.State | newton.Contacts | newton.Model | newton.
     return nonfinite_members
 
 
-def run(example):
+def test_body_state(
+    model: newton.Model,
+    state: newton.State,
+    test_name: str,
+    test_fn: wp.Function | Callable[[wp.transform, wp.spatial_vectorf], bool],
+    indices: list[int] | None = None,
+):
+    """
+    Test the position and velocity coordinates of the given bodies by applying the given test function to each body.
+    The function will raise a ``ValueError`` if the test fails for any of the given bodies.
+
+    Args:
+        model: The model to test.
+        state: The state to test.
+        test_name: The name of the test.
+        test_fn: The test function to evaluate. Maps from the body pose and twist to a boolean.
+        indices: The indices of the bodies to test. If None, all bodies will be tested.
+    """
+
+    # construct a Warp kernel to evaluate the test function for the given body indices
+    if isinstance(test_fn, wp.Function):
+        warp_test_fn = test_fn
+    else:
+        warp_test_fn, _ = wp.utils.create_warp_function(test_fn)
+    if indices is None:
+        indices = np.arange(model.body_count, dtype=np.int32).tolist()
+
+    @wp.kernel
+    def test_fn_kernel(
+        body_q: wp.array(dtype=wp.transform),
+        body_qd: wp.array(dtype=wp.spatial_vector),
+        indices: wp.array(dtype=int),
+        # output
+        failures: wp.array(dtype=bool),
+    ):
+        env_id = wp.tid()
+        index = indices[env_id]
+        failures[env_id] = not warp_test_fn(body_q[index], body_qd[index])
+
+    body_q = state.body_q
+    body_qd = state.body_qd
+    with wp.ScopedDevice(body_q.device):
+        failures = wp.zeros(len(indices), dtype=bool)
+        indices_array = wp.array(indices, dtype=int)
+        wp.launch(
+            test_fn_kernel,
+            dim=len(indices),
+            inputs=[body_q, body_qd, indices_array],
+            outputs=[failures],
+        )
+        failures_np = failures.numpy()
+        if np.any(failures_np):
+            body_key = np.array(model.body_key)[indices]
+            failed_bodies = body_key[np.where(failures_np)[0]]
+            raise ValueError(f'Test "{test_name}" failed for the following bodies: [{", ".join(failed_bodies)}]')
+
+
+def test_particle_state(
+    state: newton.State,
+    test_name: str,
+    test_fn: wp.Function | Callable[[wp.vec3, wp.vec3], bool],
+    indices: list[int] | None = None,
+):
+    """
+    Test the position and velocity coordinates of the given particles by applying the given test function to each particle.
+    The function will raise a ``ValueError`` if the test fails for any of the given particles.
+
+    Args:
+        model: The model to test.
+        state: The state to test.
+        test_name: The name of the test.
+        test_fn: The test function to evaluate. Maps from the particle position and velocity to a boolean.
+        indices: The indices of the particles to test. If None, all particles will be tested.
+    """
+
+    # construct a Warp kernel to evaluate the test function for the given body indices
+    if isinstance(test_fn, wp.Function):
+        warp_test_fn = test_fn
+    else:
+        warp_test_fn, _ = wp.utils.create_warp_function(test_fn)
+    if indices is None:
+        indices = np.arange(state.particle_count, dtype=np.int32).tolist()
+
+    @wp.kernel
+    def test_fn_kernel(
+        particle_q: wp.array(dtype=wp.vec3),
+        particle_qd: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=int),
+        # output
+        failures: wp.array(dtype=bool),
+    ):
+        env_id = wp.tid()
+        index = indices[env_id]
+        failures[env_id] = not warp_test_fn(particle_q[index], particle_qd[index])
+
+    particle_q = state.particle_q
+    particle_qd = state.particle_qd
+    with wp.ScopedDevice(particle_q.device):
+        failures = wp.zeros(len(indices), dtype=bool)
+        indices_array = wp.array(indices, dtype=int)
+        wp.launch(
+            test_fn_kernel,
+            dim=len(indices),
+            inputs=[particle_q, particle_qd, indices_array],
+            outputs=[failures],
+        )
+        failures_np = failures.numpy()
+        if np.any(failures_np):
+            failed_particles = np.where(failures_np)[0]
+            raise ValueError(f'Test "{test_name}" failed for {len(failed_particles)} out of {len(indices)} particles')
+
+
+def run(example, args):
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
-    enable_testing = hasattr(example, "test_mode") and example.test_mode
     while example.viewer.is_running():
         if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
@@ -56,12 +168,12 @@ def run(example):
         with wp.ScopedTimer("render", active=False):
             example.render()
 
-    if enable_testing and hasattr(example, "test"):
+    if args.test and hasattr(example, "test"):
         example.test()
 
     example.viewer.close()
 
-    if enable_testing:
+    if args.test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
             nonfinite_members = _find_nonfinite(example.state_0)
@@ -221,9 +333,6 @@ def init(parser=None):
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
-    if args.test:
-        wp.config.quiet = True
-
     return viewer, args
 
 
@@ -270,4 +379,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "init", "run"]
+__all__ = ["create_parser", "init", "run", "test_body_state"]
