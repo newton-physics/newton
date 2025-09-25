@@ -98,10 +98,10 @@ class ViewerRerun(ViewerBase):
             indices (wp.array): Triangle indices (wp.uint32).
             normals (wp.array, optional): Vertex normals (wp.vec3).
             uvs (wp.array, optional): UV coordinates (wp.vec2).
-            uv_indices (wp.array, optional): Triangle indices (wp.uint32) for UVs
             hidden (bool): Whether the mesh is hidden (unused).
             backface_culling (bool): Whether to enable backface culling (unused).
-            face_varying_uv (bool): Whether to enable face varying UV (default: vertex varying).
+            face_varying_uv (bool, optional): Whether the mesh UVs are face-varying
+                                              (currently not used, always vertex-varying).
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)

@@ -63,7 +63,7 @@ class ViewerNull(ViewerBase):
             uvs: Texture coordinates (optional).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
-            face_varying_uv: Enable face varying UV (default: vertex varying).
+            face_varying_uv: Whether the mesh UVs are face-varying (optional).
         """
         pass
 

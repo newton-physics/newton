@@ -145,9 +145,17 @@ class ViewerUSD(ViewerBase):
             indices (wp.array): Triangle indices as a warp array of wp.uint32.
             normals (wp.array, optional): Vertex normals as a warp array of wp.vec3.
             uvs (wp.array, optional): UV coordinates as a warp array of wp.vec2.
+                - If `face_varying_uv=False`, this array is expected to contain one UV per vertex,
+                  aligned with the `points` array (i.e., indexed by vertex indices).
+                - This allows each vertex to share the same UV across all faces that reference it.
             hidden (bool, optional): If True, mesh will be hidden. Default is False.
             backface_culling (bool, optional): If True, enable backface culling. Default is True.
-            face_varying_uv (bool, optional): If True, enable face varying UV. Default is False (vertex varying).
+            face_varying_uv (bool, optional): Whether the mesh UVs are face-varying.
+                - If `False` (default): `uvs` are treated as vertex-varying, meaning each vertex has
+                  a single UV coordinate that is reused across all faces.
+                - If `True`: `uvs` are treated as face-varying, meaning each triangle corner can
+                  have its own UV coordinate. In this case, the `uvs` array must have the same length
+                  as the `indices` array, so each face index corresponds to a unique UV coordinate.
         Returns:
             str: The mesh prototype path.
         """
@@ -179,11 +187,21 @@ class ViewerUSD(ViewerBase):
                 st.Set(uvs.numpy().astype(np.float32))
 
                 if face_varying_uv:
-                    assert len(uvs) == len(indices_np)
-                    st.SetInterpolation(UsdGeom.Tokens.faceVarying)
+                    if len(uvs) != len(indices_np):
+                        raise RuntimeError(
+                            "UV count mismatch: when using face-varying UVs, "
+                            "the length of 'uvs' must equal the length of 'indices'."
+                        )
+                    else:
+                        st.SetInterpolation(UsdGeom.Tokens.faceVarying)
                 else:
-                    assert len(uvs) == len(points_np)
-                    st.SetInterpolation(UsdGeom.Tokens.vertex)
+                    if len(uvs) != len(points_np):
+                        raise RuntimeError(
+                            "UV count mismatch: when using vertex-varying UVs, "
+                            "the length of 'uvs' must equal the length of 'points'."
+                        )
+                    else:
+                        st.SetInterpolation(UsdGeom.Tokens.vertex)
 
             # Store the prototype path
             self._meshes[name] = mesh_prim
