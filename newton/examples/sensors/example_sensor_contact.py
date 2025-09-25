@@ -139,7 +139,7 @@ class Example:
             prune_noncolliding=True,
         )
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_env=100)
 
         self.viewer.set_model(self.model)
 

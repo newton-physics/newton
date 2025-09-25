@@ -48,6 +48,7 @@ importers = [
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
 ]
 
 # Examples dependencies including visualization
@@ -99,12 +100,11 @@ name = "nvidia"
 url = "https://pypi.nvidia.com/"
 explicit = true
 
-
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
 mujoco = { index = "mujoco" }
-torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
+torch = [{ index = "pytorch-cu129", extra = "torch-cu12" }]
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]
@@ -116,8 +116,8 @@ indent-width = 4
 exclude = []
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [tool.ruff.lint]

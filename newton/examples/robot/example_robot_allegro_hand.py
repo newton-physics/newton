@@ -96,14 +96,13 @@ class Example:
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
-            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*palm_link/visuals", ".*DexCube/visuals"],
+            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
             load_non_physics_prims=True,
-            hide_collision_shapes=False,
         )
 
         # hide collision shapes for the hand links
         for i, key in enumerate(allegro_hand.shape_key):
-            if re.match(".*Robot/.*?/collision", key) and "palm_link" not in key:
+            if re.match(".*Robot/.*?/collision", key):
                 allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains

@@ -1205,7 +1205,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 @wp.kernel
 def forward_step(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1220,7 +1220,7 @@ def forward_step(
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
         inertia[particle] = pos_prev[particle]
         return
-    vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
+    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
     pos[particle] = pos[particle] + vel_new * dt
     inertia[particle] = pos[particle]
 
@@ -1228,7 +1228,7 @@ def forward_step(
 @wp.kernel
 def forward_step_penetration_free(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1245,7 +1245,7 @@ def forward_step_penetration_free(
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
         inertia[particle_index] = pos_prev[particle_index]
         return
-    vel_new = vel[particle_index] + (gravity + external_force[particle_index] * inv_mass[particle_index]) * dt
+    vel_new = vel[particle_index] + (gravity[0] + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
     inertia[particle_index] = pos_inertia
 
