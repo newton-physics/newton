@@ -96,6 +96,7 @@ class KpiAnt:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -109,11 +110,13 @@ class KpiAnt:
                 ls_iteration=10,
             )
 
+            wp.synchronize_device()
             for _ in range(self.num_frames):
                 example.step()
-        wp.synchronize_device()
+            wp.synchronize_device()
+            total_time += example.benchmark_time
 
-        return example.benchmark_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
 
     track_simulate.unit = "ms/env-step"
 
@@ -183,6 +186,7 @@ class KpiCartpole:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -200,8 +204,9 @@ class KpiCartpole:
             for _ in range(self.num_frames):
                 example.step()
             wp.synchronize_device()
+            total_time += example.benchmark_time
 
-        return example.benchmark_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
 
     track_simulate.unit = "ms/env-step"
 
@@ -272,6 +277,7 @@ class KpiG1:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -289,8 +295,9 @@ class KpiG1:
             for _ in range(self.num_frames):
                 example.step()
             wp.synchronize_device()
+            total_time += example.benchmark_time
 
-        return example.benchmark_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
 
     track_simulate.unit = "ms/env-step"
 
@@ -361,6 +368,7 @@ class KpiH1:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -378,8 +386,9 @@ class KpiH1:
             for _ in range(self.num_frames):
                 example.step()
             wp.synchronize_device()
+            total_time += example.benchmark_time
 
-        return example.benchmark_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
 
     track_simulate.unit = "ms/env-step"
 
@@ -449,6 +458,7 @@ class KpiHumanoid:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -466,8 +476,9 @@ class KpiHumanoid:
             for _ in range(self.num_frames):
                 example.step()
             wp.synchronize_device()
+            total_time += example.benchmark_time
 
-        return example.benchmark_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
 
     track_simulate.unit = "ms/env-step"
 
