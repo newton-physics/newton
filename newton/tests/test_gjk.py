@@ -15,6 +15,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 from newton import GeoType
@@ -278,7 +279,8 @@ class TestGJK(unittest.TestCase):
 
         dist, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
         self.assertAlmostEqual(-1, dist)
-        normal = wp.normalize(x1 - x2)
+        diff = x1 - x2
+        normal = diff / np.linalg.norm(diff)
         self.assertAlmostEqual(normal[0], 1)
         self.assertAlmostEqual(normal[1], 0)
         self.assertAlmostEqual(normal[2], 0)
