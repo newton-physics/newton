@@ -35,8 +35,7 @@ class Collision:
         Initialize the collision handler, including BVHs and buffers.
 
         Args:
-            model:
-            device: The target Warp device (e.g. "cpu" or "cuda:0").
+            model: The simulation model containing particle and geometry data.
         """
         self.model = model
         self.radius = 3e-3  # Contact radius
@@ -74,20 +73,18 @@ class Collision:
 
         Args:
             pos: Array of vertex positions.
-            tri_indices: Array of triangle vertex indices.
-            edge_indices: Array of edge vertex indices.
         """
         self.tri_bvh.refit(pos, self.model.tri_indices, self.radius)
         self.edge_bvh.refit(pos, self.model.edge_indices, self.radius)
 
-    def frame_begin(self, particle_q: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3), dt: float):
+    def frame_begin(self, particle_q: wp.array(dtype=wp.vec3), particle_qd: wp.array(dtype=wp.vec3), dt: float):
         """
         Perform broad-phase collision detection using BVHs.
 
         Args:
-            pos: Array of vertex positions.
-            tri_indices: Triangle connectivity.
-            edge_indices: Edge connectivity.
+            particle_q: Array of vertex positions.
+            particle_qd: Array of vertex velocities.
+            dt: simulation time step.
         """
         max_dist = self.radius * 3.0
         query_radius = self.radius
@@ -143,10 +140,8 @@ class Collision:
         """
         Evaluates contact forces and the diagonal of the Hessian for implicit time integration.
 
-        Steps:
-            1. Refits BVH based on current positions.
-            2. Detects edge-edge and vertex-triangle collisions.
-            3. Launches kernel to accumulate forces and Hessians for all particles.
+        This method launches kernels to compute contact forces and Hessian contributions
+        based on broad-phase collision candidates computed in frame_begin().
 
         Args:
             dt (float): Time step.
