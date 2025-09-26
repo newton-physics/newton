@@ -53,7 +53,7 @@ class Example:
         h1.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("unitree_h1")
-        asset_file = str(asset_path / "usd" / "h1_minimal.usd")
+        asset_file = str(asset_path / "usd" / "h1_minimal.usda")
         h1.add_usd(
             asset_file,
             ignore_paths=["/GroundPlane"],
@@ -76,7 +76,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, iterations=100, ls_iterations=50, njmax=100)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -84,7 +84,12 @@ class Example:
 
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
+            self.model,
+            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            impratio=100,
+            iterations=100,
+            ls_iterations=50,
+            ncon_per_env=20,
         )
 
         self.state_0 = self.model.state()

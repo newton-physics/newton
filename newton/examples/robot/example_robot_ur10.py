@@ -76,7 +76,7 @@ class Example:
         ur10 = newton.ModelBuilder()
 
         asset_path = newton.utils.download_asset("universal_robots_ur10")
-        asset_file = str(asset_path / "UR10.usda")
+        asset_file = str(asset_path / "usd" / "ur10_instanceable.usda")
         height = 1.2
         ur10.add_usd(
             asset_file,

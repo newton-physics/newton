@@ -361,6 +361,7 @@ class SolverFeatherstone(SolverBase):
 
                 # evaluate joint inertias, motion vectors, and forces
                 state_aug.body_f_s.zero_()
+
                 wp.launch(
                     eval_rigid_id,
                     dim=model.articulation_count,
