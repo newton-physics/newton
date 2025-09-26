@@ -135,7 +135,7 @@ class FastCartpole:
             robot=self.robot,
             randomize=True,
             headless=True,
-            actuation="random",
+            actuation="None",
             num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
@@ -143,10 +143,28 @@ class FastCartpole:
 
         wp.synchronize_device()
 
+        # Recapture the graph with control application included
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            print("Cannot use graph capture. Graph capture is disabled.")
+        else:
+            state = wp.rand_init(self.example.seed)
+            with wp.ScopedCapture() as capture:
+                wp.launch(
+                    apply_random_control,
+                    dim=(self.example.model.joint_dof_count,),
+                    inputs=[state],
+                    outputs=[self.example.control.joint_target],
+                )
+                self.example.simulate()
+            self.graph = capture.graph
+
+        wp.synchronize_device()
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
-            self.example.step()
+            wp.capture_launch(self.graph)
         wp.synchronize_device()
 
 
@@ -205,7 +223,7 @@ class FastG1:
             robot=self.robot,
             randomize=True,
             headless=True,
-            actuation="random",
+            actuation="None",
             num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
@@ -213,10 +231,28 @@ class FastG1:
 
         wp.synchronize_device()
 
+        # Recapture the graph with control application included
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            print("Cannot use graph capture. Graph capture is disabled.")
+        else:
+            state = wp.rand_init(self.example.seed)
+            with wp.ScopedCapture() as capture:
+                wp.launch(
+                    apply_random_control,
+                    dim=(self.example.model.joint_dof_count,),
+                    inputs=[state],
+                    outputs=[self.example.control.joint_target],
+                )
+                self.example.simulate()
+            self.graph = capture.graph
+
+        wp.synchronize_device()
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
-            self.example.step()
+            wp.capture_launch(self.graph)
         wp.synchronize_device()
 
 
@@ -276,7 +312,7 @@ class FastH1:
             robot=self.robot,
             randomize=True,
             headless=True,
-            actuation="random",
+            actuation="None",
             num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
@@ -284,10 +320,28 @@ class FastH1:
 
         wp.synchronize_device()
 
+        # Recapture the graph with control application included
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            print("Cannot use graph capture. Graph capture is disabled.")
+        else:
+            state = wp.rand_init(self.example.seed)
+            with wp.ScopedCapture() as capture:
+                wp.launch(
+                    apply_random_control,
+                    dim=(self.example.model.joint_dof_count,),
+                    inputs=[state],
+                    outputs=[self.example.control.joint_target],
+                )
+                self.example.simulate()
+            self.graph = capture.graph
+
+        wp.synchronize_device()
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
-            self.example.step()
+            wp.capture_launch(self.graph)
         wp.synchronize_device()
 
 
@@ -347,7 +401,7 @@ class FastHumanoid:
             robot=self.robot,
             randomize=True,
             headless=True,
-            actuation="random",
+            actuation="None",
             num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
@@ -355,10 +409,28 @@ class FastHumanoid:
 
         wp.synchronize_device()
 
+        # Recapture the graph with control application included
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            print("Cannot use graph capture. Graph capture is disabled.")
+        else:
+            state = wp.rand_init(self.example.seed)
+            with wp.ScopedCapture() as capture:
+                wp.launch(
+                    apply_random_control,
+                    dim=(self.example.model.joint_dof_count,),
+                    inputs=[state],
+                    outputs=[self.example.control.joint_target],
+                )
+                self.example.simulate()
+            self.graph = capture.graph
+
+        wp.synchronize_device()
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
-            self.example.step()
+            wp.capture_launch(self.graph)
         wp.synchronize_device()
 
 
