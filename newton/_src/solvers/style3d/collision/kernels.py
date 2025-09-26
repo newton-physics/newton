@@ -204,25 +204,25 @@ def handle_edge_edge_contacts_kernel(
         c2 = wp.lerp(x2, x3, t)
         dir = c1 - c2
         dist = wp.length(dir)
-        limitted_thickness = thickness
+        limited_thickness = thickness
 
         len1 = wp.length(x2 - x3)
         avg_len = (len0 + len1) * 0.5
         if edge0[2] == edge1[0] or edge0[3] == edge1[0]:
-            limitted_thickness = wp.min(limitted_thickness, avg_len * 0.5)
+            limited_thickness = wp.min(limited_thickness, avg_len * 0.5)
         elif edge0[2] == edge1[1] or edge0[3] == edge1[1]:
-            limitted_thickness = wp.min(limitted_thickness, avg_len * 0.5)
+            limited_thickness = wp.min(limited_thickness, avg_len * 0.5)
         if edge1[2] == edge0[0] or edge1[3] == edge0[0]:
-            limitted_thickness = wp.min(limitted_thickness, avg_len * 0.5)
+            limited_thickness = wp.min(limited_thickness, avg_len * 0.5)
         elif edge1[2] == edge0[1] or edge1[3] == edge0[1]:
-            limitted_thickness = wp.min(limitted_thickness, avg_len * 0.5)
+            limited_thickness = wp.min(limited_thickness, avg_len * 0.5)
 
-        if 1e-6 < dist < limitted_thickness:
+        if 1e-6 < dist < limited_thickness:
             stiff_1 = (static_diags[edge1[0]] + static_diags[edge1[1]]) / 2.0
             stiff = stiff_factor * (stiff_0 * stiff_1) / (stiff_0 + stiff_1)
 
             dir = wp.normalize(dir)
-            force = stiff * dir * (limitted_thickness - dist)
+            force = stiff * dir * (limited_thickness - dist)
             hess = stiff * wp.outer(dir, dir)
 
             force0 += force * (1.0 - s)
