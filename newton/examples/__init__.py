@@ -87,6 +87,8 @@ def test_body_state(
 
     body_q = state.body_q
     body_qd = state.body_qd
+    if body_q is None or body_qd is None:
+        raise ValueError("Body state is not available")
     with wp.ScopedDevice(body_q.device):
         failures = wp.zeros(len(indices), dtype=bool)
         indices_array = wp.array(indices, dtype=int)
@@ -114,7 +116,6 @@ def test_particle_state(
     The function will raise a ``ValueError`` if the test fails for any of the given particles.
 
     Args:
-        model: The model to test.
         state: The state to test.
         test_name: The name of the test.
         test_fn: The test function to evaluate. Maps from the particle position and velocity to a boolean.
@@ -143,6 +144,8 @@ def test_particle_state(
 
     particle_q = state.particle_q
     particle_qd = state.particle_qd
+    if particle_q is None or particle_qd is None:
+        raise ValueError("Particle state is not available")
     with wp.ScopedDevice(particle_q.device):
         failures = wp.zeros(len(indices), dtype=bool)
         indices_array = wp.array(indices, dtype=int)

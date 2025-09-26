@@ -201,7 +201,7 @@ class Example:
             self.model,
             self.state_0,
             "static bodies are not moving",
-            lambda q, qd: max(abs(qd)) == 0.0 and max(abs(qd)) == 0.0,
+            lambda q, qd: max(abs(qd)) == 0.0,
             indices=[2, 4],
         )
         newton.examples.test_body_state(
