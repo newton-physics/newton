@@ -34,9 +34,11 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
-def _find_nonfinite(obj: newton.State | newton.Contacts | newton.Model | newton.Control) -> list[str]:
+def _find_nonfinite(obj: newton.State | newton.Contacts | newton.Model | newton.Control | None) -> list[str]:
     """Helper function to check if all Warp array members of an object are finite."""
     nonfinite_members = []
+    if obj is None:
+        return nonfinite_members
     for key, attr in obj.__dict__.items():
         if isinstance(attr, wp.array):
             if not np.isfinite(attr.numpy()).all():

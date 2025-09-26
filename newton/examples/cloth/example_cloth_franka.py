@@ -21,6 +21,8 @@
 # showcasing its ability to handle complex contacts while ensuring it
 # remains intersection-free.
 #
+# Command: python -m newton.examples cloth_franka
+#
 ###########################################################################
 
 from __future__ import annotations
@@ -501,9 +503,6 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
-        pass
-
     def simulate(self):
         self.cloth_solver.rebuild_bvh(self.state_0)
         for _step in range(self.sim_substeps):
@@ -553,6 +552,24 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, wp.vec3(-0.34, -0.85, 0.03), wp.vec3(0.34, -0.13, 0.36)),
+        )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particle velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 2.0,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 0.7,
+        )
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -563,4 +580,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

@@ -136,16 +136,10 @@ class Example:
             lambda q, qd: max(abs(qd)) < 0.1,
         )
 
-        @wp.func
-        def is_inside_box(q: wp.vec3, lower: wp.vec3, upper: wp.vec3) -> bool:
-            return (
-                q.x > lower.x and q.x < upper.x and q.y > lower.y and q.y < upper.y and q.z > lower.z and q.z < upper.z
-            )
-
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: is_inside_box(q, wp.vec3(-3.0, -3.0, 0.0), wp.vec3(3.0, 3.0, 2.0)),
+            lambda q, qd: newton.utils.vec_inside_limits(q, wp.vec3(-3.0, -3.0, 0.0), wp.vec3(3.0, 3.0, 2.0)),
         )
 
         newton.examples.test_particle_state(
