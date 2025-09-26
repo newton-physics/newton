@@ -344,6 +344,8 @@ def solve_untangling_kernel(
                 R *= -1.0
             G += intersection_gradient_vector(R, E, face_normal)
 
+        if wp.length(G) < 1.0e-12:
+            continue
         G = wp.normalize(G)
 
         # Can be precomputed
