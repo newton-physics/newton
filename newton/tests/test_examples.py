@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from typing import Any
+from typing import Any, Literal
 
 import warp as wp
 
@@ -82,6 +82,13 @@ def add_example_test(
     test_suffix: str | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
+
+    # verify the module exists
+    try:
+        import importlib
+        importlib.import_module(f"newton.examples.{name}")
+    except ImportError as e:
+        raise ImportError(f"Test module {name} not found") from e
 
     if test_options is None:
         test_options = {}
@@ -137,7 +144,7 @@ def add_example_test(
             command = [sys.executable]
 
         # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device)])
+        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test"])
 
         if not use_viewer:
             stage_path = (
@@ -214,6 +221,7 @@ add_example_test(
     TestBasicExamples,
     name="basic.example_basic_urdf",
     devices=test_devices,
+    test_options={"num-frames": 200},
     test_options_cpu={"num_envs": 16},
     test_options_cuda={"num_envs": 64},
     use_viewer=True,
@@ -223,7 +231,13 @@ add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=t
 
 add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150},
+)
 
 
 class TestClothExamples(unittest.TestCase):
@@ -234,8 +248,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 100},
+    test_options={"num_frames": 200},
     use_viewer=True,
 )
 add_example_test(
@@ -245,6 +258,16 @@ add_example_test(
     test_options={},
     test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
     use_viewer=True,
+    test_suffix="vbd",
+)
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_cloth_hanging",
+    devices=test_devices,
+    test_options={"solver": "style3d"},
+    test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
+    use_viewer=True,
+    test_suffix="style3d",
 )
 add_example_test(
     TestClothExamples,
@@ -288,9 +311,8 @@ add_example_test(
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"usd_required": True, "num_frames": 500, "torch_required": True},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
 add_example_test(
@@ -304,17 +326,15 @@ add_example_test(
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
     use_viewer=True,
 )
 add_example_test(
