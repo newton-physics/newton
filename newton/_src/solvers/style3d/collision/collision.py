@@ -134,7 +134,7 @@ class Collision:
         state_out: State,
         contacts: Contacts,
         particle_forces: wp.array(dtype=wp.vec3),
-        particle_q_prev: wp.array(dtype=wp.vec3) = None,
+        particle_q_prev: wp.array(dtype=wp.vec3),
         particle_stiff: wp.array(dtype=wp.vec3) = None,
     ):
         """
@@ -238,7 +238,7 @@ class Collision:
     def contact_hessian_diagonal(self):
         """Return diagonal of contact Hessian for preconditioning.
         Note:
-            Should be called after `eval_contact_force_hessian()`.
+            Should be called after `accumulate_contact_force()`.
         """
         return self.contact_hessian_diags
 
