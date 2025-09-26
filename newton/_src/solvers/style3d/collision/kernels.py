@@ -73,7 +73,7 @@ def eval_body_contact_kernel(
 ):
     t_id = wp.tid()
 
-    particle_body_contact_count = min(contact_max, contact_count[0])
+    particle_body_contact_count = wp.min(contact_max, contact_count[0])
 
     if t_id < particle_body_contact_count:
         particle_idx = soft_contact_particle[t_id]
