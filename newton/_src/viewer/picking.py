@@ -77,7 +77,7 @@ class Picking:
 
     def _apply_picking_force(self, state: newton.State) -> None:
         """
-        Applies a force to the body at the picking position.
+        Applies a force to the picked body.
 
         Args:
             state (newton.State): The simulation state.
@@ -118,7 +118,7 @@ class Picking:
         """
         Updates the picking target.
 
-        This function is used to track the forces that need to be applied to the picked body as the mouse is dragged.
+        This function is used to track the force that needs to be applied to the picked body as the mouse is dragged.
 
         Args:
             ray_start (wp.vec3f): The start point of the ray.
@@ -140,7 +140,7 @@ class Picking:
 
     def pick(self, state: newton.State, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
         """
-        Picks the select gemeometry and compute the initial state of the picking. I.e. the force that
+        Picks the selected geometry and computes the initial state of the picking. I.e. the force that
         will be applied to the picked body.
 
         Args:
