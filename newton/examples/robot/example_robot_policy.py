@@ -469,4 +469,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
     # Run using standard example loop
-    newton.examples.run(example)
+    newton.examples.run(example, args)

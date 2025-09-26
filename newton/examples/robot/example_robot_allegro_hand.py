@@ -207,4 +207,4 @@ if __name__ == "__main__":
 
     example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

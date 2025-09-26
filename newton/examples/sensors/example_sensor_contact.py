@@ -351,4 +351,4 @@ if __name__ == "__main__":
         # Create viewer and run
         example = Example(viewer, num_envs=args.num_envs)
 
-        newton.examples.run(example)
+        newton.examples.run(example, args)

@@ -258,4 +258,4 @@ if __name__ == "__main__":
     example.check_grad()
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

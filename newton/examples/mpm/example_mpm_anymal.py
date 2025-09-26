@@ -430,4 +430,4 @@ if __name__ == "__main__":
     )
 
     # Run via unified example runner
-    newton.examples.run(example)
+    newton.examples.run(example, args)
