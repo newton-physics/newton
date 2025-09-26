@@ -122,21 +122,34 @@ class Example:
             self.model,
             self.state_0,
             "cart only moves along y direction",
-            lambda q, qd: qd[0] == 0.0 and abs(qd[1]) > 0.05 and qd[2] == 0.0 and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and qd[2] == 0.0
+            and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
             indices=[i * num_bodies_per_env for i in range(self.num_envs)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 only has y-axis linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0 and abs(qd[1]) > 0.05 and qd[2] == 0.0 and abs(qd[3]) > 0.3 and qd[4] == 0.0 and qd[5] == 0.0,
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and qd[2] == 0.0
+            and abs(qd[3]) > 0.3
+            and qd[4] == 0.0
+            and qd[5] == 0.0,
             indices=[i * num_bodies_per_env + 1 for i in range(self.num_envs)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 only has yz-plane linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0 and abs(qd[1]) > 0.05 and abs(qd[2]) > 0.05 and abs(qd[3]) > 0.2 and qd[4] == 0.0 and qd[5] == 0.0,
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and abs(qd[2]) > 0.05
+            and abs(qd[3]) > 0.2
+            and qd[4] == 0.0
+            and qd[5] == 0.0,
             indices=[i * num_bodies_per_env + 2 for i in range(self.num_envs)],
         )
         qd = self.state_0.body_qd.numpy()

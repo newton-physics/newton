@@ -101,7 +101,7 @@ class Example:
             solver_params = {
                 "tri_aniso_ke": wp.vec3(1.0e4, 1.0e4, 1.0e3),
                 "edge_aniso_ke": wp.vec3(2.0e-6, 1.0e-6, 5.0e-6),
-            } 
+            }
 
         elif self.solver_type == "xpbd":
             solver_params = {

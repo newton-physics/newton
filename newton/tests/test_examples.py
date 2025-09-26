@@ -24,12 +24,13 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import importlib
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from typing import Any, Literal
+from typing import Any
 
 import warp as wp
 
@@ -85,7 +86,6 @@ def add_example_test(
 
     # verify the module exists
     try:
-        import importlib
         importlib.import_module(f"newton.examples.{name}")
     except ImportError as e:
         raise ImportError(f"Test module {name} not found") from e

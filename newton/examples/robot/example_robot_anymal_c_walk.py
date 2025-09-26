@@ -239,7 +239,9 @@ class Example:
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_allclose(qd, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0), rtol=0.1, atol=0.15),
+            lambda q, qd: newton.utils.vec_allclose(
+                qd, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0), rtol=0.1, atol=0.15
+            ),
             indices=[0],
         )
 
