@@ -27,7 +27,7 @@ class Picking:
     Picking system.
 
     Allows to pick a body in the viewer by right clicking on it and dragging the mouse.
-    This can be used to move objects around in the viewer, a typical use case is to check solver resilience or
+    This can be used to move objects around in the viewer, a typical use case is to check for solver resilience or
     see how well a RL policy is coping with disturbances.
     """
 
@@ -195,9 +195,10 @@ class Picking:
         if dist < 1.0e10 and body_index >= 0:
             self.pick_dist = dist
 
-            # world space hit point
+            # Ensures that the ray direction and start point are vec3f objects
             d = wp.vec3f(d[0], d[1], d[2])
             p = wp.vec3f(p[0], p[1], p[2])
+            # world space hit point
             hit_point_world = p + d * float(dist)
 
             wp.launch(
