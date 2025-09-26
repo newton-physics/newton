@@ -153,9 +153,8 @@ class Picking:
             self.pick_dist = dist
 
             # world space hit point
-            if type(d) is not type(p):
-                d = wp.vec3f(d[0], d[1], d[2])
-                p = wp.vec3f(p[0], p[1], p[2])
+            d = wp.vec3f(d[0], d[1], d[2])
+            p = wp.vec3f(p[0], p[1], p[2])
             hit_point_world = p + d * float(dist)
 
             wp.launch(
