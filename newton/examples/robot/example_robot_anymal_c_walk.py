@@ -235,13 +235,12 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.2,
         )
+        forward_vel = wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_allclose(
-                qd, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0), rtol=0.1, atol=0.15
-            ),
+            lambda q, qd: newton.utils.vec_allclose(qd, forward_vel, rtol=0.1, atol=0.15),
             indices=[0],
         )
 

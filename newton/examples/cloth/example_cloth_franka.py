@@ -553,10 +553,12 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
+        p_lower = wp.vec3(-0.34, -0.85, 0.03)
+        p_upper = wp.vec3(0.34, -0.13, 0.36)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, wp.vec3(-0.34, -0.85, 0.03), wp.vec3(0.34, -0.13, 0.36)),
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
         )
         newton.examples.test_particle_state(
             self.state_0,

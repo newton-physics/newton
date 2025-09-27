@@ -192,11 +192,14 @@ class Example:
                 "particles are above the ground",
                 lambda q, qd: q[2] > 0.0,
             )
+
         min_x = -float(self.sim_width) * 0.11
+        p_lower = wp.vec3(min_x, -4.0, -1.8)
+        p_upper = wp.vec3(0.1, 7.0, 4.0)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, wp.vec3(min_x, -4.0, -1.8), wp.vec3(0.0, 7.0, 4.0)),
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
         )
 
     def render(self):

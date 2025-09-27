@@ -136,10 +136,12 @@ class Example:
             lambda q, qd: max(abs(qd)) < 0.1,
         )
 
+        p_lower = wp.vec3(-3.0, -3.0, 0.0)
+        p_upper = wp.vec3(3.0, 3.0, 2.0)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, wp.vec3(-3.0, -3.0, 0.0), wp.vec3(3.0, 3.0, 2.0)),
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
         )
 
         newton.examples.test_particle_state(

@@ -28,6 +28,8 @@ import warp as wp
 import newton
 import newton.examples
 
+wp.set_device("cpu")
+
 
 class Example:
     def __init__(self, viewer, num_envs=4):
@@ -113,7 +115,18 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.01,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all humanoids have come to a rest",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
 
 
 if __name__ == "__main__":
