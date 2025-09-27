@@ -184,9 +184,6 @@ class Example:
 
         self.time += 1.0 / 60.0
 
-    def test(self):
-        pass
-
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -194,4 +191,4 @@ if __name__ == "__main__":
 
     # Create viewer and run
     example = Example(viewer)
-    newton.examples.run(example)
+    newton.examples.run(example, args)

@@ -224,4 +224,4 @@ if __name__ == "__main__":
     example = Example(viewer, verbose=args.verbose)
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

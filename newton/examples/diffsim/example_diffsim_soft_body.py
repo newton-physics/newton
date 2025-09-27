@@ -374,4 +374,4 @@ if __name__ == "__main__":
     example = Example(viewer, material_behavior=args.material_behavior, verbose=args.verbose)
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

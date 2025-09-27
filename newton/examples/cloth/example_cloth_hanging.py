@@ -19,6 +19,8 @@
 # This simulation demonstrates a simple cloth hanging behavior. A planar cloth
 # mesh is fixed on one side and hangs under gravity, colliding with the ground.
 #
+# Command: python -m newton.examples cloth_hanging (--solver [euler, style3d, xpbd, vbd])
+#
 ###########################################################################
 
 import warp as wp
@@ -58,7 +60,7 @@ class Example:
         self.viewer = viewer
 
         if self.solver_type == "style3d":
-            builder = newton.sim.Style3DModelBuilder()
+            builder = newton.Style3DModelBuilder()
         else:
             builder = newton.ModelBuilder()
 
@@ -183,7 +185,22 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        if self.solver_type != "style3d":
+            # TODO(Style3D): handle ground collisions
+            newton.examples.test_particle_state(
+                self.state_0,
+                "particles are above the ground",
+                lambda q, qd: q[2] > 0.0,
+            )
+
+        min_x = -float(self.sim_width) * 0.11
+        p_lower = wp.vec3(min_x, -4.0, -1.8)
+        p_upper = wp.vec3(0.1, 7.0, 4.0)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -218,4 +235,4 @@ if __name__ == "__main__":
         width=args.width,
     )
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

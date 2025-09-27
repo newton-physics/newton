@@ -84,6 +84,8 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="revolute_a_b",
         )
+        # set initial joint angle
+        builder.joint_q[-1] = wp.pi * 0.5
 
         # -----------------------------
         # PRISMATIC (slider) joint demo
@@ -132,6 +134,7 @@ class Example:
                 p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1)
             )
         )
+
         rigid_cfg = newton.ModelBuilder.ShapeConfig()
         rigid_cfg.density = 0.0
         builder.add_shape_sphere(a_ball, radius=radius, cfg=rigid_cfg)
@@ -144,6 +147,8 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="ball_a_b",
         )
+        # set initial joint angle
+        builder.joint_q[-4:] = wp.quat_rpy(0.5, 0.6, 0.7)
 
         # finalize model
         self.model = builder.finalize()
@@ -192,7 +197,34 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "static bodies are not moving",
+            lambda q, qd: max(abs(qd)) == 0.0,
+            indices=[2, 4],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "fixed link body has come to a rest",
+            lambda q, qd: max(abs(qd)) < 1e-2,
+            indices=[0],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "slider link body has come to a rest",
+            lambda q, qd: max(abs(qd)) < 1e-5,
+            indices=[3],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "movable links are not moving too fast",
+            lambda q, qd: max(abs(qd)) < 3.0,
+            indices=[1, 5],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -208,4 +240,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

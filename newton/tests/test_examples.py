@@ -24,6 +24,7 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import importlib
 import os
 import subprocess
 import sys
@@ -83,6 +84,12 @@ def add_example_test(
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
+    # verify the module exists
+    try:
+        importlib.import_module(f"newton.examples.{name}")
+    except ImportError as e:
+        raise ImportError(f"Test module {name} not found") from e
+
     if test_options is None:
         test_options = {}
     if test_options_cpu is None:
@@ -137,7 +144,7 @@ def add_example_test(
             command = [sys.executable]
 
         # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device)])
+        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test"])
 
         if not use_viewer:
             stage_path = (
@@ -214,6 +221,7 @@ add_example_test(
     TestBasicExamples,
     name="basic.example_basic_urdf",
     devices=test_devices,
+    test_options={"num-frames": 200},
     test_options_cpu={"num_envs": 16},
     test_options_cuda={"num_envs": 64},
     use_viewer=True,
@@ -223,7 +231,13 @@ add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=t
 
 add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_shapes", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150},
+)
 
 
 class TestClothExamples(unittest.TestCase):
@@ -234,8 +248,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 100},
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 add_example_test(
@@ -243,32 +256,42 @@ add_example_test(
     name="cloth.example_cloth_hanging",
     devices=test_devices,
     test_options={},
-    test_options_cpu={"width": 32, "height": 16, "num_frames": 10},
+    test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
     use_viewer=True,
+    test_suffix="vbd",
+)
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_cloth_hanging",
+    devices=test_devices,
+    test_options={"solver": "style3d"},
+    test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
+    use_viewer=True,
+    test_suffix="style3d",
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_style3d",
     devices=test_devices,
     test_options={},
-    test_options_cuda={"num_frames": 32},
-    test_options_cpu={"num_frames": 2},
+    test_options_cuda={"num-frames": 32},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=test_devices,
-    test_options={"num_frames": 50},
-    test_options_cpu={"num_frames": 2},
+    test_options={"num-frames": 50},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_twist",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 20},
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 20},
     use_viewer=True,
 )
 
@@ -281,63 +304,60 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_cartpole",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 100},
-    test_options_cpu={"num_frames": 10},
+    test_options={"usd_required": True, "num-frames": 100},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
-    devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500, "torch_required": True},
-    test_options_cpu={"num_frames": 10},
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_d",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
+    test_options={"usd_required": True, "num-frames": 500},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
-    devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
-    devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_humanoid",
     devices=test_devices,
-    test_options={"num_frames": 500},
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 500},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
-    test_options={"usd_required": True, "num_frames": 500},
-    test_options_cpu={"num_frames": 10},
+    test_options={"usd_required": True, "num-frames": 500},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num_frames": 500},
+    test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
 
@@ -350,8 +370,8 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_29dof"},
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
     test_suffix="G1_29dof",
 )
@@ -359,7 +379,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     use_viewer=True,
     test_suffix="G1_23dof",
 )
@@ -367,7 +387,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -375,7 +395,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal"},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -383,7 +403,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num_frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -392,7 +412,7 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"torch_required": True},
-    test_options_cuda={"num_frames": 500, "robot": "go2"},
+    test_options_cuda={"num-frames": 500, "robot": "go2"},
     use_viewer=True,
     test_suffix="Go2",
 )
@@ -401,7 +421,7 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"torch_required": True},
-    test_options_cuda={"num_frames": 500, "robot": "go2", "physx": True},
+    test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
     test_suffix="Go2_Physx",
 )
@@ -415,7 +435,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"num_frames": 100, "torch_required": True},
+    test_options={"num-frames": 100, "torch_required": True},
     use_viewer=True,
 )
 
@@ -445,24 +465,24 @@ add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_articulations",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_materials",
     devices=test_devices,
-    test_options={"num_frames": 100},
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 
@@ -475,8 +495,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_ball",
     devices=test_devices,
-    test_options={"num_frames": 4 * 36},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 36},
+    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2 * 36},
     use_viewer=True,
 )
 
@@ -484,8 +504,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_cloth",
     devices=test_devices,
-    test_options={"num_frames": 4 * 120},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 120},
+    test_options={"num-frames": 4 * 120},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2 * 120},
     use_viewer=True,
 )
 
@@ -493,8 +513,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_drone",
     devices=test_devices,
-    test_options={"num_frames": 180},  # sim_steps
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 180},  # sim_steps
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 
@@ -502,8 +522,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_spring_cage",
     devices=test_devices,
-    test_options={"num_frames": 4 * 30},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 30},
+    test_options={"num-frames": 4 * 30},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2 * 30},
     use_viewer=True,
 )
 
@@ -511,8 +531,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_soft_body",
     devices=test_devices,
-    test_options={"num_frames": 4 * 60},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 60},
+    test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2 * 60},
     use_viewer=True,
 )
 
@@ -525,8 +545,8 @@ add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
     devices=test_devices,
-    test_options={"num_frames": 4 * 36},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 2 * 36},
+    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2 * 36},
     use_viewer=True,
 )
 
@@ -539,7 +559,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num_frames": 100},
+    test_options={"viewer": "null", "num-frames": 100},
     use_viewer=True,
 )
 
@@ -547,7 +567,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num_frames": 10},
+    test_options={"viewer": "null", "num-frames": 10},
     use_viewer=True,
 )
 
@@ -555,7 +575,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num_frames": 10},
+    test_options={"viewer": "null", "num-frames": 10},
     use_viewer=True,
 )
 

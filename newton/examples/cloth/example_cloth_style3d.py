@@ -172,7 +172,13 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        p_lower = wp.vec3(-0.5, -0.2, 0.9)
+        p_upper = wp.vec3(0.5, 0.2, 1.6)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -188,4 +194,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

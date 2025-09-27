@@ -818,4 +818,4 @@ if __name__ == "__main__":
     )
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)
