@@ -29,7 +29,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Contacts
-from newton.examples import compute_env_offsets
 from newton.selection import ArticulationView
 from newton.sensors import ContactSensor, populate_contacts
 
@@ -113,11 +112,8 @@ class Example:
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
 
-        env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
-
         builder = newton.ModelBuilder()
-        for i in range(self.num_envs):
-            builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
+        builder.replicate(env_builder, self.num_envs, spacing=(4.0, 4.0, 0.0))
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors

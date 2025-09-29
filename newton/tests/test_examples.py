@@ -24,7 +24,6 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
-import importlib
 import os
 import subprocess
 import sys
@@ -85,10 +84,9 @@ def add_example_test(
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
     # verify the module exists
-    try:
-        importlib.import_module(f"newton.examples.{name}")
-    except ImportError as e:
-        raise ImportError(f"Test module {name} not found") from e
+    file_exists = os.path.exists(f"newton/examples/{name.replace('.', '/')}.py")
+    if not file_exists:
+        raise ValueError(f"Example {name} does not exist")
 
     if test_options is None:
         test_options = {}
