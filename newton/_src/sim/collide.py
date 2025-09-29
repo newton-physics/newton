@@ -23,7 +23,7 @@ from ..geometry.kernels import (
     broadphase_collision_pairs,
     count_contact_points,
     create_soft_contacts,
-    handle_contact_pairs,
+    generate_handle_contact_pairs_kernel,
 )
 from .contacts import Contacts
 from .model import Model
@@ -134,6 +134,8 @@ class CollisionPipeline:
         self.iterate_mesh_vertices = iterate_mesh_vertices
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
+
+        self.handle_contact_pairs_kernel = generate_handle_contact_pairs_kernel(requires_grad)
 
     @classmethod
     def from_model(
@@ -290,7 +292,7 @@ class CollisionPipeline:
                 self.rigid_pair_point_count.zero_()
 
             wp.launch(
-                kernel=handle_contact_pairs,
+                kernel=self.handle_contact_pairs_kernel,
                 dim=self.rigid_contact_max,
                 inputs=[
                     state.body_q,
