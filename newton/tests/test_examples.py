@@ -272,26 +272,23 @@ add_example_test(
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_style3d",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={},
     test_options_cuda={"num-frames": 32},
-    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 50},
-    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_twist",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 100},
-    test_options_cpu={"num-frames": 20},
     use_viewer=True,
 )
 

@@ -173,12 +173,12 @@ def run(example, args):
         with wp.ScopedTimer("render", active=False):
             example.render()
 
-    if args.test and hasattr(example, "test"):
+    if args is not None and args.test and hasattr(example, "test"):
         example.test()
 
     example.viewer.close()
 
-    if args.test:
+    if args is not None and args.test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
             nonfinite_members = _find_nonfinite(example.state_0)
