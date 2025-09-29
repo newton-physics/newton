@@ -2042,7 +2042,7 @@ def sphere_plane_collision(
 
 def generate_handle_contact_pairs_kernel(enable_backward: bool):
 
-    @wp.kernel(enable_backward=enable_backward)
+    @wp.kernel(module="unique", enable_backward=enable_backward)
     def handle_contact_pairs(
         body_q: wp.array(dtype=wp.transform),
         shape_transform: wp.array(dtype=wp.transform),
