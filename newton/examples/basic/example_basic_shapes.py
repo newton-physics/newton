@@ -62,9 +62,11 @@ class Example:
         )
         builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
 
-        # CYLINDER (no collision support)
-        # body_cylinder = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()), key="cylinder")
-        # builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
+        # CYLINDER
+        body_cylinder = builder.add_body(
+            xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()), key="cylinder"
+        )
+        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
 
         # BOX
         body_box = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 2.0, drop_z), q=wp.quat_identity()), key="box")
@@ -151,13 +153,21 @@ class Example:
             lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
             [1],
         )
+        cylinder_q = wp.transform(0.0, -4.0, 0.6, 0.0, 0.0, 0.0, 1.0)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cylinder at rest pose",
+            lambda q, qd: newton.utils.vec_allclose(q, cylinder_q, atol=1e-4),
+            [2],
+        )
         box_q = wp.transform(0.0, 2.0, 0.25, 0.0, 0.0, 0.0, 1.0)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "box at rest pose",
             lambda q, qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
-            [2],
+            [3],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far
         newton.examples.test_body_state(
@@ -165,7 +175,7 @@ class Example:
             self.state_0,
             "bunny at rest pose",
             lambda q, qd: q[2] > 0.01 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
-            [3],
+            [4],
         )
 
     def render(self):
