@@ -245,6 +245,10 @@ def assert_np_equal(result: np.ndarray, expect: np.ndarray, tol=0.0):
         np.testing.assert_array_equal(result, expect)
 
 
+def most(x: np.ndarray, min_ratio: float = 0.8) -> bool:
+    return bool(np.sum(x > 0) / len(x) >= min_ratio)
+
+
 # if check_output is True any output to stdout will be treated as an error
 def create_test_func(func, device, check_output, **kwargs):
     # pass args to func
