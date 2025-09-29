@@ -137,14 +137,23 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
 
-        b = builder.add_body(xform=wp.transform(wp.vec3(6.0, y_pos, 1.0), wp.quat_identity()))
+        b = builder.add_body(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_joint_free(b)
+        builder.add_shape_cylinder(
+            body=b,
+            radius=0.1 * scale,
+            half_height=0.3 * scale,
+        )
+        expected_end_positions.append(wp.vec3(5.0, y_pos, 0.3 * scale))
+
+        b = builder.add_body(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_mesh(
             body=b,
             mesh=cube_mesh,
             scale=wp.vec3(scale, scale, scale),
         )
-        expected_end_positions.append(wp.vec3(6.0, y_pos, 0.3 * scale))
+        expected_end_positions.append(wp.vec3(7.0, y_pos, 0.3 * scale))
 
     builder.add_ground_plane()
 
@@ -182,7 +191,7 @@ devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=100),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
 }
