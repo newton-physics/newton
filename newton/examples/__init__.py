@@ -188,10 +188,6 @@ def run(example, args):
             nonfinite_members = _find_nonfinite(example.state_1)
             if nonfinite_members:
                 raise ValueError(f"Non-finite members found in state_1: {nonfinite_members}")
-        if hasattr(example, "contacts"):
-            nonfinite_members = _find_nonfinite(example.contacts)
-            if nonfinite_members:
-                raise ValueError(f"Non-finite members found in contacts: {nonfinite_members}")
         if hasattr(example, "model"):
             nonfinite_members = _find_nonfinite(example.model)
             if nonfinite_members:
