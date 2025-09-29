@@ -788,7 +788,7 @@ class _ImplicitMPMScratchpad:
         collider_count: int,
         has_compliant_bodies: bool,
         has_critical_fraction: bool,
-        coloring: bool,
+        max_colors: int,
         temporary_store: fem.TemporaryStore,
     ):
         """Allocate transient arrays sized to current grid and options."""
@@ -818,8 +818,9 @@ class _ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
             self.vel_node_volume = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
 
-        if coloring:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2 + 1, dtype=int)
+        if max_colors > 0:
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
+            self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
         """Release previously allocated temporaries to the store."""
@@ -1150,6 +1151,30 @@ def _allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
         )
 
     return volume
+
+
+_NULL_COLOR = 1 << 31 - 1  # color for null nodes. make sure it is sorted last
+
+
+@wp.kernel
+def compute_color_offsets(
+    max_color_count: int,
+    unique_count: wp.array(dtype=int),
+    unique_colors: wp.array(dtype=int),
+    color_counts: wp.array(dtype=int),
+    color_offsets: wp.array(dtype=int),
+):
+    current_sum = int(0)
+    count = unique_count[0]
+
+    for k in range(count):
+        color_offsets[k] = current_sum
+        color = unique_colors[k]
+        local_count = wp.where(color == _NULL_COLOR, 0, color_counts[k])
+        current_sum += local_count
+
+    for k in range(count, max_color_count + 1):
+        color_offsets[k] = current_sum
 
 
 class SolverImplicitMPM(SolverBase):
@@ -1500,7 +1525,7 @@ class SolverImplicitMPM(SolverBase):
                 collider_count=self.mpm_model.collider.meshes.shape[0],
                 has_compliant_bodies=has_compliant_colliders,
                 has_critical_fraction=self.mpm_model.critical_fraction > 0.0,
-                coloring=self.coloring,
+                max_colors=self._max_colors(),
                 temporary_store=self.temporary_store,
             )
 
@@ -2014,6 +2039,9 @@ class SolverImplicitMPM(SolverBase):
                 ),
             )
 
+    def _max_colors(self):
+        return 27 if self.strain_basis == "Q1" else 8
+
     def _compute_coloring(
         self,
         scratch: _ImplicitMPMScratchpad,
@@ -2027,7 +2055,7 @@ class SolverImplicitMPM(SolverBase):
         grid = space_partition.geo_partition.geometry
 
         nodes_per_element = space_partition.space_topology.MAX_NODES_PER_ELEMENT
-        is_dg = space_partition.geo_partition.cell_count() * nodes_per_element == space_partition.node_count()
+        is_dg = self.strain_basis != "Q1"
         strain_node_count = space_partition.node_count()
 
         if is_dg:
@@ -2038,7 +2066,7 @@ class SolverImplicitMPM(SolverBase):
             colored_element_count = strain_node_count
             nodes_per_element = 1
 
-        colors = fem.borrow_temporary(self.temporary_store, shape=colored_element_count * 2, dtype=int)
+        colors = fem.borrow_temporary(self.temporary_store, shape=colored_element_count * 2 + 1, dtype=int)
         color_indices = scratch.color_indices
 
         partition_arg = space_partition.partition_arg_value(colors.array.device)
@@ -2053,8 +2081,12 @@ class SolverImplicitMPM(SolverBase):
                 partition_arg: space_partition.PartitionArg,
             ):
                 pid = wp.tid()
-                vid = space_partition.partition_node_index(partition_arg, pid * nodes_per_element) // nodes_per_element
+                nid = space_partition.partition_node_index(partition_arg, pid * nodes_per_element)
+                if nid == fem.types.NULL_NODE_INDEX:
+                    colors[pid] = _NULL_COLOR
+                    return
 
+                vid = nid // nodes_per_element
                 c = voxels[vid]
                 colors[pid] = ((c[0] & 1) << 2) + ((c[1] & 1) << 1) + (c[2] & 1)
                 color_indices[pid] = vid
@@ -2079,7 +2111,6 @@ class SolverImplicitMPM(SolverBase):
                 dim=colored_element_count,
                 inputs=[voxels, colors.array, color_indices.array, nodes_per_element, partition_arg],
             )
-            max_color_count = 8
 
         elif self.strain_basis == "Q1":
 
@@ -2091,9 +2122,12 @@ class SolverImplicitMPM(SolverBase):
                 partition_arg: space_partition.PartitionArg,
             ):
                 pid = wp.tid()
-                vid = space_partition.partition_node_index(partition_arg, pid)
+                nid = space_partition.partition_node_index(partition_arg, pid)
+                if nid == fem.types.NULL_NODE_INDEX:
+                    colors[pid] = _NULL_COLOR
+                    return
 
-                c = voxels[vid]
+                c = voxels[nid]
                 colors[pid] = positive_mod3(c[0]) * 9 + positive_mod3(c[1]) * 3 + positive_mod3(c[2])
                 color_indices[pid] = pid
 
@@ -2117,15 +2151,8 @@ class SolverImplicitMPM(SolverBase):
                 dim=colored_element_count,
                 inputs=[voxels, colors.array, color_indices.array, partition_arg],
             )
-            max_color_count = 27
         else:
             raise RuntimeError("Unsupported strain basis for coloring")
-
-        max_color_count = min(max_color_count, colored_element_count)
-
-        color_counts_host = fem.borrow_temporary(
-            self.temporary_store, shape=max_color_count + 1, dtype=int, device="cpu", pinned=colors.array.device.is_cuda
-        )
 
         wp.utils.radix_sort_pairs(
             keys=colors.array,
@@ -2134,26 +2161,21 @@ class SolverImplicitMPM(SolverBase):
         )
 
         unique_colors = colors.array[colored_element_count:]
+        color_count = unique_colors[colored_element_count:]
         color_node_counts = color_indices.array[colored_element_count:]
 
         wp.utils.runlength_encode(
             colors.array,
+            value_count=colored_element_count,
             run_values=unique_colors,
             run_lengths=color_node_counts,
-            value_count=colored_element_count,
-            run_count=color_node_counts[max_color_count : max_color_count + 1],
+            run_count=color_count,
         )
 
-        wp.copy(src=color_node_counts[: max_color_count + 1], dest=color_counts_host.array)
+        wp.launch(
+            compute_color_offsets,
+            dim=1,
+            inputs=[self._max_colors(), color_count, unique_colors, color_node_counts, scratch.color_offsets],
+        )
 
-        color_counts_np = color_counts_host.array.numpy()
-
-        color_count = color_counts_np[-1]
-
-        color_offsets = np.concatenate([[0], np.cumsum(color_counts_np[:color_count])])
-
-        colors.release()
-        color_counts_host.release()
-
-        scratch.color_offsets = color_offsets
         scratch.color_nodes_per_element = nodes_per_element

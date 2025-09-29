@@ -537,8 +537,10 @@ def apply_stress_delta(
 
 @wp.kernel
 def apply_stress_gs(
-    color_offset: int,
+    color: int,
+    launch_dim: int,
     color_nodes_per_element: int,
+    color_offsets: wp.array(dtype=int),
     color_indices: wp.array(dtype=int),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
@@ -554,29 +556,36 @@ def apply_stress_gs(
     strain matrix is not assembled
     """
 
-    base_index = color_indices[wp.tid() + color_offset]
-    beg = base_index * color_nodes_per_element
-    end = beg + color_nodes_per_element
-    for tau_i in range(beg, end):
-        D = delassus_diagonal[tau_i]
-        cur_stress = local_stress[tau_i]
+    i = wp.tid()
+    color_beg = color_offsets[color] + i
+    color_end = color_offsets[color + 1]
 
-        apply_stress_delta(
-            tau_i,
-            D,
-            cur_stress,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            inv_mass_matrix,
-            velocities,
-        )
+    for color_offset in range(color_beg, color_end, launch_dim):
+        base_index = color_indices[color_offset]
+        beg = base_index * color_nodes_per_element
+        end = beg + color_nodes_per_element
+        for tau_i in range(beg, end):
+            D = delassus_diagonal[tau_i]
+            cur_stress = local_stress[tau_i]
+
+            apply_stress_delta(
+                tau_i,
+                D,
+                cur_stress,
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                inv_mass_matrix,
+                velocities,
+            )
 
 
 @wp.kernel
 def solve_local_stress_gs(
-    color_offset: int,
+    color: int,
+    launch_dim: int,
     color_nodes_per_element: int,
+    color_offsets: wp.array(dtype=int),
     color_indices: wp.array(dtype=int),
     yield_params: wp.array(dtype=YieldParamVec),
     compliance_mat_offsets: wp.array(dtype=int),
@@ -599,47 +608,53 @@ def solve_local_stress_gs(
     delta to particle velocities, using a coloring approach
     to avoid avoid race conditions.
     """
-    base_index = color_indices[wp.tid() + color_offset]
-    beg = base_index * color_nodes_per_element
-    end = beg + color_nodes_per_element
-    for tau_i in range(beg, end):
-        D = delassus_diagonal[tau_i]
-        local_strain = compute_local_strain(
-            tau_i,
-            compliance_mat_offsets,
-            compliance_mat_columns,
-            local_compliance_mat_values,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            local_strain_rhs,
-            velocities,
-            local_stress,
-        )
 
-        delta_stress = solve_local_stress(
-            tau_i,
-            D,
-            local_strain,
-            yield_params,
-            delassus_normal,
-            unilateral_strain_offset,
-            local_stress,
-        )
+    i = wp.tid()
+    color_beg = color_offsets[color] + i
+    color_end = color_offsets[color + 1]
 
-        apply_stress_delta(
-            tau_i,
-            D,
-            delta_stress,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            inv_mass_matrix,
-            velocities,
-        )
+    for color_offset in range(color_beg, color_end, launch_dim):
+        base_index = color_indices[color_offset]
+        beg = base_index * color_nodes_per_element
+        end = beg + color_nodes_per_element
+        for tau_i in range(beg, end):
+            D = delassus_diagonal[tau_i]
+            local_strain = compute_local_strain(
+                tau_i,
+                compliance_mat_offsets,
+                compliance_mat_columns,
+                local_compliance_mat_values,
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                local_strain_rhs,
+                velocities,
+                local_stress,
+            )
 
-        local_stress[tau_i] += delta_stress
-        delta_correction[tau_i] = delta_stress  # for residual evaluation
+            delta_stress = solve_local_stress(
+                tau_i,
+                D,
+                local_strain,
+                yield_params,
+                delassus_normal,
+                unilateral_strain_offset,
+                local_stress,
+            )
+
+            apply_stress_delta(
+                tau_i,
+                D,
+                delta_stress,
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                inv_mass_matrix,
+                velocities,
+            )
+
+            local_stress[tau_i] += delta_stress
+            delta_correction[tau_i] = delta_stress  # for residual evaluation
 
 
 @wp.kernel
@@ -1037,12 +1052,19 @@ def solve_rheology(
         )
 
     if gs:
+        device = velocity.device
+        color_block_count = device.sm_count * 4
+        color_block_dim = 64
+        color_launch_dim = color_block_count * color_block_dim
+
         apply_stress_launch = wp.launch(
             kernel=apply_stress_gs,
-            dim=1,
+            dim=color_launch_dim,
             inputs=[
-                0,  # color offset
+                0,  # color
+                color_launch_dim,
                 color_nodes_per_element,
+                color_offsets,
                 color_indices,
                 strain_mat.offsets,
                 strain_mat.columns,
@@ -1054,23 +1076,25 @@ def solve_rheology(
             outputs=[
                 velocity,
             ],
-            block_dim=64,
+            block_dim=color_block_dim,
+            max_blocks=color_block_count,
             record_cmd=True,
         )
 
         # Apply initial guess
-        for k in range(color_count):
-            apply_stress_launch.set_param_at_index(0, color_offsets[k])
-            apply_stress_launch.set_dim((int(color_offsets[k + 1] - color_offsets[k]),))
+        for color in range(color_count):
+            apply_stress_launch.set_param_at_index(0, color)
             apply_stress_launch.launch()
 
         # Solve kernel
         solve_local_launch = wp.launch(
             kernel=solve_local_stress_gs,
-            dim=1,
+            dim=color_launch_dim,
             inputs=[
-                0,  # color offset
+                0,  # color
+                color_launch_dim,
                 color_nodes_per_element,
+                color_offsets,
                 color_indices,
                 yield_params,
                 compliance_mat_offsets,
@@ -1090,7 +1114,8 @@ def solve_rheology(
                 local_stress,
                 delta_stress.array,
             ],
-            block_dim=64,
+            block_dim=color_block_dim,
+            max_blocks=color_block_count,
             record_cmd=True,
         )
 
@@ -1183,9 +1208,8 @@ def solve_rheology(
 
         # solve stress
         if gs:
-            for k in range(color_count):
-                solve_local_launch.set_param_at_index(0, color_offsets[k])
-                solve_local_launch.set_dim((int(color_offsets[k + 1] - color_offsets[k]),))
+            for color in range(color_count):
+                solve_local_launch.set_param_at_index(0, color)
                 solve_local_launch.launch()
         else:
             solve_local_launch.launch()
