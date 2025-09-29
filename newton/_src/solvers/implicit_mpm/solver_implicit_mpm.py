@@ -121,7 +121,7 @@ def integrate_velocity(
     u: fem.Field,
     velocities: wp.array(dtype=wp.vec3),
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
@@ -130,7 +130,7 @@ def integrate_velocity(
 
     vel_adv = wp.where(
         particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE,
-        particle_density[s.qp_index] * (vel_adv + dt * gravity),
+        particle_density[s.qp_index] * (vel_adv + dt * gravity[0]),
         _INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume

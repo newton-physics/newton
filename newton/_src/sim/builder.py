@@ -4402,9 +4402,16 @@ class ModelBuilder:
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
-            m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
+
+            # set gravity
+            m.gravity = wp.array(
+                [wp.vec3(*(g * self.gravity for g in self.up_vector))],
+                dtype=wp.vec3,
+                device=device,
+                requires_grad=requires_grad,
+            )
 
             return m
 

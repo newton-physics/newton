@@ -49,10 +49,12 @@ class Example:
 
         builder.add_ground_plane()
 
-        builder.gravity = wp.vec3(options.gravity)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(options.gravity)
 
         self.model = builder.finalize()
         self.model.particle_mu = options.friction_coeff
+        self.model.set_gravity(options.gravity)
 
         # Disable model's particle material parameters,
         # we want to read directly from MPM options instead

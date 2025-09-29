@@ -233,9 +233,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_worldid_out: wp.array(dtype=int),
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
-    hfield_geom_pair_in: int,
-    ncon_hfield_out: wp.array(dtype=int),  # kernel_analyzer: ignore
-    collision_hftri_index_out: wp.array(dtype=int),
     ncollision_out: wp.array(dtype=int),
 ):
     # See kernel solve_body_contact_positions for reference
@@ -246,12 +243,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     if tid == 0:
         ncon_out[0] = rigid_contact_count[0]
         ncollision_out[0] = 0
-
-    if tid < hfield_geom_pair_in * nworld_in:
-        ncon_hfield_out[tid] = 0
-
-    # Zero collision pair indices
-    collision_hftri_index_out[tid] = 0
 
     if tid >= rigid_contact_count[0]:
         return
@@ -1067,6 +1058,17 @@ def update_incoming_shape_xform_kernel(
 
 
 @wp.kernel
+def update_model_properties_kernel(
+    # Newton model properties
+    gravity_src: wp.array(dtype=wp.vec3),
+    # MuJoCo model properties
+    gravity_dst: wp.array(dtype=wp.vec3f),
+):
+    world_idx = wp.tid()
+    gravity_dst[world_idx] = gravity_src[0]
+
+
+@wp.kernel
 def update_geom_properties_kernel(
     shape_collision_radius: wp.array(dtype=float),
     shape_mu: wp.array(dtype=float),
@@ -1394,9 +1396,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.contact.worldid,
                 # Data to clear
                 self.mjw_data.nworld,
-                self.mjw_data.ncon_hfield.shape[1],
-                self.mjw_data.ncon_hfield.reshape(-1),
-                self.mjw_data.collision_hftri_index,
                 self.mjw_data.ncollision,
             ],
         )
@@ -1411,6 +1410,8 @@ class SolverMuJoCo(SolverBase):
             self.update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self.update_geom_properties()
+        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+            self.update_model_properties()
 
     @staticmethod
     def _data_is_mjwarp(data):
@@ -1870,7 +1871,7 @@ class SolverMuJoCo(SolverBase):
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = model.gravity
+        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
         spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
@@ -2360,9 +2361,10 @@ class SolverMuJoCo(SolverBase):
                 eq.active = eq_constraint_enabled[i]
                 eq.name1 = model.body_key[eq_constraint_body1[i]]
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
+                cns_relpose = wp.transform(*eq_constraint_relpose[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
-                eq.data[3:6] = wp.transform_get_translation(eq_constraint_relpose[i])
-                eq.data[6:10] = wp.transform_get_rotation(eq_constraint_relpose[i])
+                eq.data[3:6] = wp.transform_get_translation(cns_relpose)
+                eq.data[6:10] = wp.transform_get_rotation(cns_relpose)
                 eq.data[10] = eq_constraint_torquescale[i]
 
         assert len(spec.geoms) == colliding_shapes_per_env, (
@@ -2756,6 +2758,24 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
+    def update_model_properties(self):
+        """Update model properties including gravity in the MuJoCo model."""
+        if self.use_mujoco_cpu:
+            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+        else:
+            if hasattr(self, "mjw_data"):
+                wp.launch(
+                    kernel=update_model_properties_kernel,
+                    dim=self.mjw_data.nworld,
+                    inputs=[
+                        self.model.gravity,
+                    ],
+                    outputs=[
+                        self.mjw_model.opt.gravity,
+                    ],
+                    device=self.model.device,
+                )
 
     def render_mujoco_viewer(
         self,
