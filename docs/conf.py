@@ -159,7 +159,10 @@ html_theme_options = {
     "show_prev_next": False,
     "use_edit_page_button": False,
     "logo": {
-        "text": (f"🍏 Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>"),
+        "image_light": "_static/newton-logo-light.png",
+        "image_dark": "_static/newton-logo-dark.png",
+        "text": f"Newton Physics <span style='font-size: 0.8em; color: #888;'>({release})</span>",
+        "alt_text": "Newton Physics Logo",
     },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
