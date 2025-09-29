@@ -2040,8 +2040,8 @@ def sphere_plane_collision(
 
     return p_a_world, p_b_world, normal, distance
 
-def generate_handle_contact_pairs_kernel(enable_backward: bool):
 
+def generate_handle_contact_pairs_kernel(enable_backward: bool):
     @wp.kernel(module="unique", enable_backward=enable_backward)
     def handle_contact_pairs(
         body_q: wp.array(dtype=wp.transform),
@@ -2124,7 +2124,9 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             normal = -neg_normal
 
         elif geo_a.geo_type == GeoType.PLANE and geo_b.geo_type == GeoType.BOX:
-            p_b_world, p_a_world, neg_normal, distance, valid = box_plane_collision(geo_b, geo_a, point_id, edge_sdf_iter)
+            p_b_world, p_a_world, neg_normal, distance, valid = box_plane_collision(
+                geo_b, geo_a, point_id, edge_sdf_iter
+            )
             # Flip the normal since we flipped the arguments
             normal = -neg_normal
             if not valid:
@@ -2156,7 +2158,9 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             normal = -neg_normal
 
         elif geo_a.geo_type == GeoType.MESH and geo_b.geo_type == GeoType.BOX:
-            p_a_world, p_b_world, normal, distance = mesh_box_collision(geo_a, geo_b, point_id, shape_source_ptr, shape_a)
+            p_a_world, p_b_world, normal, distance = mesh_box_collision(
+                geo_a, geo_b, point_id, shape_source_ptr, shape_a
+            )
 
         elif geo_a.geo_type == GeoType.BOX and geo_b.geo_type == GeoType.MESH:
             p_a_world, p_b_world, normal, distance, valid = box_mesh_collision(
