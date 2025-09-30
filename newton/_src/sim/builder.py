@@ -642,9 +642,15 @@ class ModelBuilder:
             self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
-        # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
-        # these are used for computing forward kinematics e.g.:
-        # articulations are automatically 'closed' when calling finalize
+        """
+        Adds an articulation to the model.
+        An articulation is a set of contiguous joints from ``articulation_start[i]`` to ``articulation_start[i+1]``.
+        Some functions, such as forward kinematics :func:`newton.eval_fk`, are parallelized over articulations.
+        Articulations are automatically 'closed' when calling :meth:`~newton.ModelBuilder.finalize`.
+
+        Args:
+            key (str | None): The key of the articulation. If None, a default key will be created.
+        """
         self.articulation_start.append(self.joint_count)
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
         self.articulation_group.append(self.current_env_group)
