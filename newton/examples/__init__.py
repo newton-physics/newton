@@ -380,4 +380,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "init", "run", "test_body_state"]
+__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]

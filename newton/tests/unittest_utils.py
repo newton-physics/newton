@@ -246,6 +246,8 @@ def assert_np_equal(result: np.ndarray, expect: np.ndarray, tol=0.0):
 
 
 def most(x: np.ndarray, min_ratio: float = 0.8) -> bool:
+    if len(x) == 0:
+        return True
     return bool(np.sum(x > 0) / len(x) >= min_ratio)
 
 
