@@ -23,7 +23,7 @@ To convert between these two representations we use forward and inverse kinemati
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
 
 In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
-For example, :class:`newton.solvers.SolverMuJoCo` and :class:`newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverSemiImplicit` use maximal coordinates.
+For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit` use maximal coordinates.
 
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
