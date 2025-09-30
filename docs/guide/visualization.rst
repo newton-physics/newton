@@ -42,6 +42,22 @@ Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.Viewer
     * - ``Right Click``
       - Pick objects
 
+**Troubleshooting:**
+
+If you encounter an OpenGL context error on Linux with Wayland:
+
+.. code-block:: text
+
+    OpenGL.error.Error: Attempt to retrieve context when no valid context
+
+Set the PyOpenGL platform before running:
+
+.. code-block:: bash
+
+    export PYOPENGL_PLATFORM=glx
+
+This is a known issue when running OpenGL applications on Wayland display servers.
+
 Recording and Offline Viewers
 -----------------------------
 
