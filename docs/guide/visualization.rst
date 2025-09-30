@@ -51,12 +51,25 @@ Recording to File (ViewerFile)
 The ViewerFile backend records simulation data to JSON or binary files for later replay or analysis. 
 This is useful for capturing simulations for debugging, sharing results, or post-processing.
 
+**File formats:**
+
+- ``.json``: Human-readable JSON format (no additional dependencies)
+- ``.bin``: Binary CBOR2 format (more efficient, requires ``cbor2`` package)
+
+To use binary format, install the optional dependency:
+
+.. code-block:: bash
+
+    pip install cbor2
+
+**Recording a simulation:**
+
 .. code-block:: python
 
-    # Record to binary format (more efficient)
+    # Record to binary format (more efficient, requires cbor2)
     viewer = newton.viewer.ViewerFile("simulation.bin", auto_save=True, save_interval=100)
     
-    # Or record to JSON format (human-readable)
+    # Or record to JSON format (human-readable, no extra dependencies)
     viewer = newton.viewer.ViewerFile("simulation.json")
 
     viewer.set_model(model)
@@ -69,11 +82,36 @@ This is useful for capturing simulations for debugging, sharing results, or post
     # Close to save the recording
     viewer.close()
 
+**Loading and playing back recordings:**
+
+.. code-block:: python
+
+    # Load a recording for playback
+    recorder = newton.utils.RecorderModelAndState()
+    recorder.load_from_file("simulation.bin")
+
+    # Create model and state for playback
+    model = newton.Model()
+    state = newton.State()
+
+    # Restore the model from the recording
+    recorder.playback_model(model)
+
+    # Playback a specific frame (e.g., frame 10)
+    recorder.playback(state, frame_index=10)
+
+    # Use with any viewer to visualize
+    viewer = newton.viewer.ViewerGL()
+    viewer.set_model(model)
+    viewer.log_state(state)
+
+For a complete example with UI controls for playback, see ``newton/examples/example_replay_viewer.py``.
+
 Key parameters:
 
-- ``output_path``: Path to the output file (.json for JSON format, .bin for binary CBOR2 format)
-- ``auto_save``: If True, automatically save periodically during recording (default: True)
-- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: 100)
+- ``output_path``: Path to the output file (format determined by extension: .json or .bin)
+- ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
+- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
 
 Rendering to USD
 ~~~~~~~~~~~~~~~~
