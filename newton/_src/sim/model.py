@@ -39,9 +39,13 @@ class ModelAttributeAssignment(IntEnum):
     """
 
     MODEL = 0
+    """Model attributes are attached to the Model object."""
     STATE = 1
+    """State attributes are attached to the State object."""
     CONTROL = 2
+    """Control attributes are attached to the Control object."""
     CONTACT = 3
+    """Contact attributes are attached to the Contacts object."""
 
 
 class ModelAttributeFrequency(IntEnum):
@@ -50,14 +54,18 @@ class ModelAttributeFrequency(IntEnum):
     Defines the dimensional structure and indexing pattern for custom attributes.
     This determines how many elements an attribute array should have and how it
     should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
-    For instance, an attribute with frequency JOINT_DOF has one element per joint degree of freedom, BODY frequency translates to one element per body.
     """
 
     JOINT = 0
+    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
     JOINT_DOF = 1
+    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
     JOINT_COORD = 2
+    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
     BODY = 3
+    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
     SHAPE = 4
+    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
 
 
 @dataclass
@@ -106,14 +114,12 @@ class CustomAttribute:
         # scalars
         if d is wp.bool:
             return False
-        if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
-            return 0
-        return 0.0
+        return 0
 
-    def build_array(self, count: int, requires_grad: bool = False) -> wp.array:
+    def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
         """Build wp.array from count, dtype, default and overrides."""
         arr = [self.values.get(i, self.default) for i in range(count)]
-        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad)
+        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
 
 class Model:

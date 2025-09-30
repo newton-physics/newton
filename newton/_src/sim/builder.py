@@ -4492,7 +4492,7 @@ class ModelBuilder:
                 else:
                     continue
 
-                wp_arr = custom_attr.build_array(count, requires_grad)
+                wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 if not hasattr(m, var_name):
                     m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 
