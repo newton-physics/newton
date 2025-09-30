@@ -21,7 +21,7 @@ import warp as wp
 from warp.types import is_array
 
 from ..sim import Control, JointType, Model, State, eval_fk
-from ..sim.model import AttributeFrequency
+from ..sim.model import ModelAttributeFrequency
 
 
 @wp.kernel
@@ -399,61 +399,63 @@ class ArticulationView:
         self._frequency_indices = {}
 
         if len(selected_joint_ids) == 0:
-            self._frequency_slices[AttributeFrequency.JOINT] = slice(0, 0)
+            self._frequency_slices[ModelAttributeFrequency.JOINT] = slice(0, 0)
         else:
             if self.joints_contiguous:
-                self._frequency_slices[AttributeFrequency.JOINT] = slice(
+                self._frequency_slices[ModelAttributeFrequency.JOINT] = slice(
                     selected_joint_ids[0], selected_joint_ids[-1] + 1
                 )
             else:
-                self._frequency_indices[AttributeFrequency.JOINT] = wp.array(
+                self._frequency_indices[ModelAttributeFrequency.JOINT] = wp.array(
                     selected_joint_ids, dtype=int, device=self.device
                 )
 
         if len(selected_joint_dof_ids) == 0:
-            self._frequency_slices[AttributeFrequency.JOINT_DOF] = slice(0, 0)
+            self._frequency_slices[ModelAttributeFrequency.JOINT_DOF] = slice(0, 0)
         else:
             if self.joint_dofs_contiguous:
-                self._frequency_slices[AttributeFrequency.JOINT_DOF] = slice(
+                self._frequency_slices[ModelAttributeFrequency.JOINT_DOF] = slice(
                     selected_joint_dof_ids[0], selected_joint_dof_ids[-1] + 1
                 )
             else:
-                self._frequency_indices[AttributeFrequency.JOINT_DOF] = wp.array(
+                self._frequency_indices[ModelAttributeFrequency.JOINT_DOF] = wp.array(
                     selected_joint_dof_ids, dtype=int, device=self.device
                 )
 
         if len(selected_joint_coord_ids) == 0:
-            self._frequency_slices[AttributeFrequency.JOINT_COORD] = slice(0, 0)
+            self._frequency_slices[ModelAttributeFrequency.JOINT_COORD] = slice(0, 0)
         else:
             if self.joint_coords_contiguous:
-                self._frequency_slices[AttributeFrequency.JOINT_COORD] = slice(
+                self._frequency_slices[ModelAttributeFrequency.JOINT_COORD] = slice(
                     selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1
                 )
             else:
-                self._frequency_indices[AttributeFrequency.JOINT_COORD] = wp.array(
+                self._frequency_indices[ModelAttributeFrequency.JOINT_COORD] = wp.array(
                     selected_joint_coord_ids, dtype=int, device=self.device
                 )
 
         if len(selected_link_ids) == 0:
-            self._frequency_slices[AttributeFrequency.BODY] = slice(0, 0)
+            self._frequency_slices[ModelAttributeFrequency.BODY] = slice(0, 0)
         else:
             if self.links_contiguous:
-                self._frequency_slices[AttributeFrequency.BODY] = slice(selected_link_ids[0], selected_link_ids[-1] + 1)
+                self._frequency_slices[ModelAttributeFrequency.BODY] = slice(
+                    selected_link_ids[0], selected_link_ids[-1] + 1
+                )
             else:
-                self._frequency_indices[AttributeFrequency.BODY] = wp.array(
+                self._frequency_indices[ModelAttributeFrequency.BODY] = wp.array(
                     selected_link_ids, dtype=int, device=self.device
                 )
 
         if len(selected_shape_ids) == 0:
-            self._frequency_slices[AttributeFrequency.SHAPE] = slice(0, 0)
+            self._frequency_slices[ModelAttributeFrequency.SHAPE] = slice(0, 0)
         else:
             if self.shapes_contiguous:
                 # HACK: we need to skip leading static shapes
-                self._frequency_slices[AttributeFrequency.SHAPE] = slice(
+                self._frequency_slices[ModelAttributeFrequency.SHAPE] = slice(
                     selected_shape_ids[0] - envs_shape_start, selected_shape_ids[-1] + 1 - envs_shape_start
                 )
             else:
-                self._frequency_indices[AttributeFrequency.SHAPE] = wp.array(
+                self._frequency_indices[ModelAttributeFrequency.SHAPE] = wp.array(
                     selected_shape_ids, dtype=int, device=self.device
                 )
 
@@ -516,7 +518,7 @@ class ArticulationView:
         frequency = self.model.get_attribute_frequency(name)
 
         # HACK: trim leading and trailing static shapes
-        if frequency == AttributeFrequency.SHAPE:
+        if frequency == ModelAttributeFrequency.SHAPE:
             attrib = attrib[self._envs_shape_start : self._envs_shape_end]
 
         # reshape with batch dim at front

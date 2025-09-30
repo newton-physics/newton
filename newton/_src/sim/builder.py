@@ -55,7 +55,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
-from ..utils.schema_resolver import SchemaPlugin
+from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -63,38 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import AttributeAssignment, AttributeFrequency, Model
-
-
-@dataclass
-class CustomAttribute:
-    """
-    Represents a custom attribute definition for the ModelBuilder.
-
-    Attributes:
-        assignment: Assignment category (see AttributeAssignment enum)
-        frequency: Frequency category (see AttributeFrequency enum)
-        name: Variable name to expose on the Model
-        dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
-        default: Default value for the attribute
-        values: Dictionary mapping indices to specific values (overrides)
-    """
-
-    assignment: AttributeAssignment
-    frequency: AttributeFrequency
-    name: str
-    dtype: object
-    default: Any = None
-    values: dict[int, Any] | None = None
-
-    def __post_init__(self):
-        if self.values is None:
-            self.values = {}
-
-    def build_wp_array(self, count: int, requires_grad: bool = False) -> wp.array:
-        """Build wp.array from count, dtype, default and overrides."""
-        arr = [self.values.get(i, self.default) for i in range(count)]
-        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad)
+from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -519,43 +488,23 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, CustomAttribute] = {}
 
-    @staticmethod
-    def _default_for_dtype(d: object) -> Any:
-        """Get default value for dtype when not specified."""
-        # quaternions get identity quaternion
-        if d is wp.quat:
-            return wp.quat_identity()
-        # vectors default to zeros of their length
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            return np.zeros(
-                length,
-                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
-            )
-        # scalars
-        if d is wp.bool:
-            return False
-        if d in (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64):
-            return 0
-        return 0.0
-
     def add_custom_attribute(
         self,
         name: str,
-        frequency: AttributeFrequency,
+        frequency: ModelAttributeFrequency,
         default=None,
         dtype=None,
-        assignment: AttributeAssignment = AttributeAssignment.MODEL,
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ):
         """Define a custom per-entity attribute to be added to the Model.
 
         Args:
             name: Variable name to expose on the Model
-            frequency: AttributeFrequency enum value
+            frequency: ModelAttributeFrequency enum value
             default: Default value for the attribute. If None, will use dtype-specific default
                 (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
             dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
-            assignment: AttributeAssignment enum value determining where the attribute appears
+            assignment: ModelAttributeAssignment enum value determining where the attribute appears
         """
         if name in self.custom_attributes:
             # validate that specification matches exactly
@@ -567,10 +516,6 @@ class ModelBuilder:
                     f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
                 )
             return
-
-        # Use dtype-specific default if none provided
-        if default is None:
-            default = self._default_for_dtype(dtype if dtype is not None else wp.float32)
 
         self.custom_attributes[name] = CustomAttribute(
             assignment=assignment,
@@ -826,7 +771,7 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
-        schema_priority: list[SchemaPlugin] | None = None,
+        schema_resolvers: list[SchemaResolver] | None = None,
         collect_solver_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
@@ -854,9 +799,17 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_priority (list[SchemaPlugin]): Plugin instances in priority order. Default is
-                [NewtonPlugin()].
-            collect_solver_specific_attrs (bool): If True, solver-specific attributes are collected. Default is True.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
+                [SchemaResolverNewton()].
+            collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+                configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
+                (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
+                are authored in the USD but not strictly required to build the simulation. This is useful for
+                inspection, experimentation, or custom pipelines that read these values via
+                :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
+                properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
+                prevents parsing them. Default is ``True``.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -908,7 +861,7 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
-            schema_priority,
+            schema_resolvers,
             collect_solver_specific_attrs,
         )
 
@@ -4526,20 +4479,20 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency == AttributeFrequency.BODY:
+                if frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
-                elif frequency == AttributeFrequency.SHAPE:
+                elif frequency == ModelAttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif frequency == AttributeFrequency.JOINT:
+                elif frequency == ModelAttributeFrequency.JOINT:
                     count = m.joint_count
-                elif frequency == AttributeFrequency.JOINT_DOF:
+                elif frequency == ModelAttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif frequency == AttributeFrequency.JOINT_COORD:
+                elif frequency == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
                 else:
                     continue
 
-                wp_arr = custom_attr.build_wp_array(count, requires_grad)
+                wp_arr = custom_attr.build_array(count, requires_grad)
                 if not hasattr(m, var_name):
                     m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 

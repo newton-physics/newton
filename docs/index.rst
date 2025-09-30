@@ -25,6 +25,7 @@ Newton Physics
    
    Articulations <concepts/articulations>
    Conventions <concepts/conventions>
+   USD Parsing <concepts/USD>
 
 .. toctree::
    :maxdepth: 1

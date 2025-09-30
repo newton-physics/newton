@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..sim.model import AttributeAssignment, AttributeFrequency
+from ..sim.model import CustomAttribute, ModelAttributeAssignment, ModelAttributeFrequency
 
 try:
     from pxr import Usd
@@ -16,7 +16,7 @@ except ImportError:
 
 
 class PrimType(IntEnum):
-    """Enumeration of USD prim types that can be resolved by schema plugins."""
+    """Enumeration of USD prim types that can be resolved by schema resolvers."""
 
     SCENE = 0
     JOINT = 1
@@ -45,40 +45,35 @@ class Attribute:
 
 
 @dataclass
-class CustomAttributeSpec:
+class AttributePrimMap:
     """
-    Specification for a custom attribute discovered in USD.
+    Maps a custom attribute specification to its USD prim occurrences.
+
+    This class combines a CustomAttribute definition with a mapping of where
+    that attribute appears in the USD scene (prim paths to authored values).
 
     Attributes:
-        assignment: Assignment category (model, state, control, contact)
-        frequency: Frequency category (joint, joint_dof, joint_coord, body, shape)
-        name: Variable name
-        dtype: Inferred Warp dtype
-        default: Default value for the attribute
+        attribute: The custom attribute specification
         occurrences: Dictionary mapping prim paths to authored values
     """
 
-    assignment: AttributeAssignment
-    frequency: AttributeFrequency
-    name: str
-    dtype: object
-    default: Any = None
+    attribute: CustomAttribute
     occurrences: dict[str, Any] = field(default_factory=dict)
 
 
-class SchemaPlugin:
+class SchemaResolver:
     # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to exisiting Newton data.
     # PrimType -> variable -> list[Attribute]
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {}
 
-    # Name of the schema plugin
+    # Name of the schema resolver
     name: ClassVar[str] = ""
 
     # extra_attr_namespaces is a list of namespaces for extra attributes that are not in the mapping.
     extra_attr_namespaces: ClassVar[list[str]] = []
 
     def __init__(self) -> None:
-        # Precompute the full set of USD attribute names referenced by this plugin's mapping.
+        # Precompute the full set of USD attribute names referenced by this resolver's mapping.
         names: set[str] = set()
         try:
             mapping_items = self.mapping.items()
@@ -122,7 +117,7 @@ class SchemaPlugin:
         if prim is None:
             return {}
 
-        # Collect explicit attribute names defined in the plugin mapping (precomputed)
+        # Collect explicit attribute names defined in the resolver mapping (precomputed)
         prim_solver_attrs = (
             _collect_solver_mapped_attrs(prim, self._solver_attributes) if self._solver_attributes else {}
         )
@@ -152,7 +147,7 @@ def _get_attr(prim, name: str):
 
 
 def _collect_solver_mapped_attrs(prim, names: list[str]) -> dict[str, Any]:
-    """Collect solver-specific attributes authored on the prim that have direct mappings in the plugin mapping"""
+    """Collect solver-specific attributes authored on the prim that have direct mappings in the resolver mapping"""
     out = {}
     for n in names:
         v = _get_attr(prim, n)
@@ -176,7 +171,7 @@ def _collect_solver_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any
     return out
 
 
-class NewtonPlugin(SchemaPlugin):
+class SchemaResolverNewton(SchemaResolver):
     name: ClassVar[str] = "newton"
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
         PrimType.SCENE: {
@@ -248,7 +243,7 @@ class NewtonPlugin(SchemaPlugin):
     }
 
 
-class PhysxPlugin(SchemaPlugin):
+class SchemaResolverPhysx(SchemaResolver):
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
@@ -362,7 +357,7 @@ def _solref_to_damping(solref):
     return (2.0 * dampratio) / timeconst
 
 
-class MjcPlugin(SchemaPlugin):
+class SchemaResolverMjc(SchemaResolver):
     name: ClassVar[str] = "mjc"
 
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
@@ -431,39 +426,39 @@ class MjcPlugin(SchemaPlugin):
     }
 
 
-class Resolver:
-    def __init__(self, plugins: list[SchemaPlugin], collect_solver_attrs: bool = True):
+class _ResolverManager:
+    def __init__(self, resolvers: list[SchemaResolver], collect_solver_attrs: bool = True):
         """
-        Initialize resolver with plugin instances in priority order.
+        Initialize resolver with resolver instances in priority order.
 
         Args:
-            plugins: List of instantiated plugins in priority order
+            resolvers: List of instantiated resolvers in priority order
         """
-        # Use provided plugin instances directly
-        self.plugins = list(plugins) if plugins is not None else []
+        # Use provided resolver instances directly
+        self.resolvers = list(resolvers) if resolvers is not None else []
         self._collect_solver_attrs = bool(collect_solver_attrs)
 
         # Dictionary to accumulate solver-specific attributes as prims are encountered
-        # Pre-initialize maps for each configured plugin
-        self.solver_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {p.name: {} for p in self.plugins}
+        # Pre-initialize maps for each configured resolver
+        self.solver_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {r.name: {} for r in self.resolvers}
 
         # accumulator for special custom assignment attributes following the pattern:
         #   newton:assignment:frequency:variable_name
         # we store per-variable specs and occurrences by prim path.
-        self._custom_attributes: dict[str, CustomAttributeSpec] = {}
+        self._custom_attributes: dict[str, AttributePrimMap] = {}
 
-    def _collect_on_first_use(self, plugin: SchemaPlugin, prim) -> None:
-        """Collect and store solver-specific attributes for this plugin/prim on first use."""
+    def _collect_on_first_use(self, resolver: SchemaResolver, prim) -> None:
+        """Collect and store solver-specific attributes for this resolver/prim on first use."""
         if prim is None:
             return
         if not self._collect_solver_attrs:
             return
         prim_path = str(prim.GetPath())
-        if prim_path in self.solver_specific_attrs[plugin.name]:
+        if prim_path in self.solver_specific_attrs[resolver.name]:
             return
-        attrs = plugin.collect_prim_solver_attrs(prim)
+        attrs = resolver.collect_prim_solver_attrs(prim)
         if attrs:
-            self.solver_specific_attrs[plugin.name][prim_path] = attrs
+            self.solver_specific_attrs[resolver.name][prim_path] = attrs
 
         # also scan and accumulate custom assignment attributes from the
         # "newton" solver-specific attributes we just collected
@@ -471,7 +466,9 @@ class Resolver:
         if newton_attrs:
             self._accumulate_custom_attributes(prim_path, newton_attrs)
 
-    def _parse_custom_attr_name(self, name: str) -> tuple[AttributeAssignment, AttributeFrequency, str] | None:
+    def _parse_custom_attr_name(
+        self, name: str
+    ) -> tuple[ModelAttributeAssignment, ModelAttributeFrequency, str] | None:
         """Parse names like 'newton:assignment:frequency:variable_name'."""
         try:
             head, assignment, frequency, variable = name.split(":", 3)
@@ -481,8 +478,8 @@ class Resolver:
             return None
 
         try:
-            assignment_enum = AttributeAssignment[assignment.upper()]
-            frequency_enum = AttributeFrequency[frequency.upper()]
+            assignment_enum = ModelAttributeAssignment[assignment.upper()]
+            frequency_enum = ModelAttributeFrequency[frequency.upper()]
         except KeyError:
             return None
 
@@ -540,25 +537,26 @@ class Resolver:
             # Convert USD typed values (e.g., quatf) to Warp-friendly values
             converted_value = _usd_to_wp(value)
             assignment, frequency, variable = parsed
-            spec = self._custom_attributes.get(variable)
-            if spec is None:
+            prim_map = self._custom_attributes.get(variable)
+            if prim_map is None:
                 dtype = _infer_wp_dtype(converted_value)
-                spec = CustomAttributeSpec(
+                custom_attr = CustomAttribute(
                     assignment=assignment,
                     frequency=frequency,
                     name=variable,
                     dtype=dtype,
                 )
-                self._custom_attributes[variable] = spec
-            spec.occurrences[prim_path] = converted_value
+                prim_map = AttributePrimMap(attribute=custom_attr)
+                self._custom_attributes[variable] = prim_map
+            prim_map.occurrences[prim_path] = converted_value
 
     def get_value(self, prim, prim_type: PrimType, key: str, default: Any = None) -> Any:
         """
         Resolve value using engine priority, with layered fallbacks:
 
-        1) First authored value found in plugin order (highest priority first)
+        1) First authored value found in resolver order (highest priority first)
         2) If none authored, use the provided 'default' argument if not None
-        3) If still None, use the first non-None mapping default from plugins in priority order
+        3) If still None, use the first non-None mapping default from resolvers in priority order
 
         Args:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
@@ -570,13 +568,13 @@ class Resolver:
             Resolved value according to the precedence above.
         """
         # 1) Authored value by engine priority
-        for p in self.plugins:
-            got = p.get_value(prim, prim_type, key)
+        for r in self.resolvers:
+            got = r.get_value(prim, prim_type, key)
             if got is not None:
                 val, _usd_attr = got
                 if val is not None:
                     if self._collect_solver_attrs:
-                        self._collect_on_first_use(p, prim)
+                        self._collect_on_first_use(r, prim)
                     return val
 
         # 2) Caller-provided default, if any
@@ -584,8 +582,8 @@ class Resolver:
             return default
 
         # 3) Solver mapping defaults in priority order
-        for plugin in self.plugins:
-            specs = plugin.mapping.get(prim_type, {}).get(key, []) if hasattr(plugin, "mapping") else []
+        for resolver in self.resolvers:
+            specs = resolver.mapping.get(prim_type, {}).get(key, []) if hasattr(resolver, "mapping") else []
             for spec in specs:
                 d = getattr(spec, "default", None)
                 if d is not None:
@@ -616,14 +614,14 @@ class Resolver:
 
         if not self._collect_solver_attrs:
             return
-        for plugin in self.plugins:
-            # only collect if we haven't seen this prim for this plugin
-            if prim_path not in self.solver_specific_attrs[plugin.name]:
-                attrs = plugin.collect_prim_solver_attrs(prim)
+        for resolver in self.resolvers:
+            # only collect if we haven't seen this prim for this resolver
+            if prim_path not in self.solver_specific_attrs[resolver.name]:
+                attrs = resolver.collect_prim_solver_attrs(prim)
                 if attrs:
-                    self.solver_specific_attrs[plugin.name][prim_path] = attrs
+                    self.solver_specific_attrs[resolver.name][prim_path] = attrs
                     # accumulate custom attributes from newton attrs if available
-                    if plugin.name == "newton":
+                    if resolver.name == "newton":
                         self._accumulate_custom_attributes(prim_path, attrs)
 
     def get_solver_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
@@ -636,11 +634,11 @@ class Resolver:
         """
         return self.solver_specific_attrs.copy()
 
-    def get_custom_attributes(self) -> dict[str, CustomAttributeSpec]:
+    def get_custom_attributes(self) -> dict[str, AttributePrimMap]:
         """
         Get accumulated custom property specifications and occurrences.
 
         Returns:
-            Dictionary keyed by variable name with CustomAttributeSpec values.
+            Dictionary keyed by variable name with AttributePrimMap values.
         """
         return self._custom_attributes.copy()
