@@ -12,8 +12,9 @@ There are two types of parameterizations to describe the configuration of an art
 generalized coordinates and maximal coordinates.
 
 Generalized (sometimes also called "reduced") coordinates describe the configuration of an articulation in terms of joint positions and velocities.
-That means, if an articulation has three bodies connected by two revolute joints, the generalized coordinates will be a 2D vector, see the coordinates for joint positions :attr:`newton.State.joint_q` and joint velocities :attr:`newton.State.joint_qd`.
+That means, if an articulation has three bodies connected by two revolute joints, the articulation has two generalized coordinates corresponding to the two joint angles (:attr:`newton.State.joint_q`) and joint velocities (:attr:`newton.State.joint_qd`).
 See the table below for the number of generalized coordinates for each joint type.
+Note that for a floating-base articulation (which is connected to the world by a free joint), the generalized coordinates include the maximal coordinates of the base link, i.e. the 3D position and 4D orientation of the base link.
 
 Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
 Each rigid body has 7 degrees of freedom to describe its position (3D vector) and orientation (XYZW quaternion) in space, see :attr:`newton.State.body_q`,
@@ -27,7 +28,7 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
-.. code-block:: python
+.. testcode::
 
   builder = newton.ModelBuilder()
   tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
@@ -38,10 +39,10 @@ When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigi
   state = model.state()
 
   # The body poses (maximal coordinates) are initialized by the xform argument:
-  # model.body_q[0] == state.body_q[0] == tf
+  assert all(state.body_q.numpy()[0] == [*tf])
 
   # However, the generalized coordinates are empty:
-  # len(state.joint_q) == 0
+  assert state.joint_q is None
 
 In this setup, we have a body with a box shape that maximal-coordinate solvers can directly simulate
 given the initial body pose we defined above.
@@ -49,7 +50,7 @@ given the initial body pose we defined above.
 However, to be able to simulate the same scene using a generalized-coordinate solver, we need to add a free joint to connect the body to the world and make sure the system
 has the degrees of freedom in generalized coordinates (:attr:`newton.State.joint_q`) we need:
 
-.. code-block:: python
+.. testcode::
 
   builder = newton.ModelBuilder()
   tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
@@ -64,32 +65,32 @@ has the degrees of freedom in generalized coordinates (:attr:`newton.State.joint
   state = model.state()
 
   # The body poses (maximal coordinates) are initialized by the xform argument:
-  # model.body_q[0] == state.body_q[0] == tf
+  assert all(state.body_q.numpy()[0] == [*tf])
 
   # Now, the generalized coordinates are initialized by the free joint:
-  # len(state.joint_q) == 7
-  # state.joint_q == [*tf]
+  assert len(state.joint_q) == 7
+  assert all(state.joint_q.numpy() == [*tf])
 
 This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
 
 Let's consider another example where we create an articulation with a single revolute joint and initialize
 its joint angle to :math:`\pi/4` and joint velocity to 10.0:
 
-.. code-block:: python
+.. testcode::
 
   builder = newton.ModelBuilder()
   body = builder.add_body()
   builder.add_shape_box(body)  # add a shape to the body to add some inertia
-  builder.add_joint_revolute(body, wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)  # add a revolute joint to the body
-  builder.joint_q[-1:] = 0.5 * wp.pi
-  builder.joint_qd[-1:] = 10.0
+  builder.add_joint_revolute(parent=-1, child=body, axis=wp.vec3(0.0, 0.0, 1.0))  # add a revolute joint to the body
+  builder.joint_q[-1] = 0.5
+  builder.joint_qd[-1] = 10.0
 
   model = builder.finalize()
   state = model.state()
 
   # The generalized coordinates have been initialized by the revolute joint:
-  # len(state.joint_q) == 1
-  # state.joint_q == [0.5 * wp.pi]
+  assert all(state.joint_q.numpy() == [0.5])
+  assert all(state.joint_qd.numpy() == [10.0])
 
 While the generalized coordinates have been initialized by the values we set through the :attr:`newton.ModelBuilder.joint_q` and :attr:`newton.ModelBuilder.joint_qd` definitions,
 the body poses (maximal coordinates) are still initialized by the identity transform.
