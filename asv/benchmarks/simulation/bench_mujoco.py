@@ -19,7 +19,7 @@ import warp as wp
 wp.config.enable_backward = False
 wp.config.quiet = True
 
-from asv_runner.benchmarks.mark import skip_benchmark_if, SkipNotImplemented
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 from newton.examples.example_mujoco import Example
 
@@ -33,6 +33,7 @@ def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
 
 class _FastBenchmark:
     """Utility base class for fast benchmarks."""
+
     num_frames = None
     robot = None
     number = 1
@@ -84,6 +85,7 @@ class _FastBenchmark:
 
 class _KpiBenchmark:
     """Utility base class for KPI benchmarks."""
+
     param_names = ["num_envs"]
     num_frames = None
     params = None
