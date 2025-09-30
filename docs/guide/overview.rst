@@ -36,7 +36,7 @@ High-Level Architecture
 -----------------------
 
 .. mermaid::
-   :config: {"theme": "forest"}
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
 
    graph TD
    A[ModelBuilder] -->|builds| B[Model]
