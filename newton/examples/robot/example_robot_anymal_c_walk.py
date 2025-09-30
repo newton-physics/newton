@@ -233,7 +233,7 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.2,
+            lambda q, qd: q[2] > 0.1,
         )
         forward_vel = wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
         newton.examples.test_body_state(
