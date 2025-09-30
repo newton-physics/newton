@@ -3,6 +3,105 @@ Articulations
 
 Articulations are a way to represent a collection of rigid bodies that are connected by joints.
 
+.. _Articulation parameterization:
+
+Generalized and maximal coordinates
+-----------------------------------
+
+There are two types of parameterizations to describe the configuration of an articulation:
+generalized coordinates and maximal coordinates.
+
+Generalized (sometimes also called "reduced") coordinates describe the configuration of an articulation in terms of joint positions and velocities.
+That means, if an articulation has three bodies connected by two revolute joints, the generalized coordinates will be a 2D vector, see the coordinates for joint positions :attr:`newton.State.joint_q` and joint velocities :attr:`newton.State.joint_qd`.
+See the table below for the number of generalized coordinates for each joint type.
+
+Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
+Each rigid body has 7 degrees of freedom to describe its position (3D vector) and orientation (XYZW quaternion) in space, see :attr:`newton.State.body_q`,
+and 6 degrees of freedom to describe its velocity (3D vector for linear velocity and 3D vector for angular velocity) in space, see :attr:`newton.State.body_qd`.
+
+To convert between these two representations we use forward and inverse kinematics:
+forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
+
+In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
+For example, :class:`newton.solvers.SolverMuJoCo` and :class:`newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverSemiImplicit` use maximal coordinates.
+
+When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
+
+.. code-block:: python
+
+  builder = newton.ModelBuilder()
+  tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
+  body = builder.add_body(xform=tf)
+  builder.add_shape_box(body)  # add a shape to the body to add some inertia
+
+  model = builder.finalize()
+  state = model.state()
+
+  # The body poses (maximal coordinates) are initialized by the xform argument:
+  # model.body_q[0] == state.body_q[0] == tf
+
+  # However, the generalized coordinates are empty:
+  # len(state.joint_q) == 0
+
+In this setup, we have a body with a box shape that maximal-coordinate solvers can directly simulate
+given the initial body pose we defined above.
+
+However, to be able to simulate the same scene using a generalized-coordinate solver, we need to add a free joint to connect the body to the world and make sure the system
+has the degrees of freedom in generalized coordinates (:attr:`newton.State.joint_q`) we need:
+
+.. code-block:: python
+
+  builder = newton.ModelBuilder()
+  tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
+  body = builder.add_body(xform=tf)
+  builder.add_shape_box(body)  # add a shape to the body to add some inertia
+  builder.add_joint_free(body)  # add a free joint to connect the body to the world
+  # The free joint's coordinates (joint_q) are initialized by its child body's pose,
+  # so we do not need to specify them here
+  # builder.joint_q[-7:] = *tf
+
+  model = builder.finalize()
+  state = model.state()
+
+  # The body poses (maximal coordinates) are initialized by the xform argument:
+  # model.body_q[0] == state.body_q[0] == tf
+
+  # Now, the generalized coordinates are initialized by the free joint:
+  # len(state.joint_q) == 7
+  # state.joint_q == [*tf]
+
+This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
+
+Let's consider another example where we create an articulation with a single revolute joint and initialize
+its joint angle to :math:`\pi/4` and joint velocity to 10.0:
+
+.. code-block:: python
+
+  builder = newton.ModelBuilder()
+  body = builder.add_body()
+  builder.add_shape_box(body)  # add a shape to the body to add some inertia
+  builder.add_joint_revolute(body, wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)  # add a revolute joint to the body
+  builder.joint_q[-1:] = 0.5 * wp.pi
+  builder.joint_qd[-1:] = 10.0
+
+  model = builder.finalize()
+  state = model.state()
+
+  # The generalized coordinates have been initialized by the revolute joint:
+  # len(state.joint_q) == 1
+  # state.joint_q == [0.5 * wp.pi]
+
+While the generalized coordinates have been initialized by the values we set through the :attr:`newton.ModelBuilder.joint_q` and :attr:`newton.ModelBuilder.joint_qd` definitions,
+the body poses (maximal coordinates) are still initialized by the identity transform.
+
+In order to update the body poses (maximal coordinates), we need to use the forward kinematics function :func:`newton.eval_fk`:
+
+.. code-block:: python
+
+  newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+  
+Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
+
 .. _Joint types:
 
 Joint types
