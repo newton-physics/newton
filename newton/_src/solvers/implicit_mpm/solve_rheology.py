@@ -516,7 +516,6 @@ def solve_local_stress_jacobi(
 @wp.func
 def apply_stress_delta(
     tau_i: int,
-    D: vec6,
     delta_stress: vec6,
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
@@ -531,8 +530,8 @@ def apply_stress_delta(
 
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
-        delta_vel = inv_mass_matrix[u_i] * wp.cw_div(delta_stress, D) @ local_strain_mat_values[b]
-        velocities[u_i] += delta_vel
+        delta_impulse = delta_stress @ local_strain_mat_values[b]
+        velocities[u_i] += inv_mass_matrix[u_i] * delta_impulse
 
 
 @wp.kernel
@@ -561,8 +560,7 @@ def apply_stress_gs(
     color_end = color_offsets[color + 1]
 
     for color_offset in range(color_beg, color_end, launch_dim):
-        base_index = color_indices[color_offset]
-        beg = base_index * color_nodes_per_element
+        beg = color_indices[color_offset]
         end = beg + color_nodes_per_element
         for tau_i in range(beg, end):
             D = delassus_diagonal[tau_i]
@@ -570,8 +568,7 @@ def apply_stress_gs(
 
             apply_stress_delta(
                 tau_i,
-                D,
-                cur_stress,
+                wp.cw_div(cur_stress, D),
                 strain_mat_offsets,
                 strain_mat_columns,
                 local_strain_mat_values,
@@ -614,11 +611,9 @@ def solve_local_stress_gs(
     color_end = color_offsets[color + 1]
 
     for color_offset in range(color_beg, color_end, launch_dim):
-        base_index = color_indices[color_offset]
-        beg = base_index * color_nodes_per_element
+        beg = color_indices[color_offset]
         end = beg + color_nodes_per_element
         for tau_i in range(beg, end):
-            D = delassus_diagonal[tau_i]
             local_strain = compute_local_strain(
                 tau_i,
                 compliance_mat_offsets,
@@ -632,6 +627,7 @@ def solve_local_stress_gs(
                 local_stress,
             )
 
+            D = delassus_diagonal[tau_i]
             delta_stress = solve_local_stress(
                 tau_i,
                 D,
@@ -642,19 +638,18 @@ def solve_local_stress_gs(
                 local_stress,
             )
 
+            local_stress[tau_i] += delta_stress
+            delta_correction[tau_i] = delta_stress  # for residual evaluation
+
             apply_stress_delta(
                 tau_i,
-                D,
-                delta_stress,
+                wp.cw_div(delta_stress, D),
                 strain_mat_offsets,
                 strain_mat_columns,
                 local_strain_mat_values,
                 inv_mass_matrix,
                 velocities,
             )
-
-            local_stress[tau_i] += delta_stress
-            delta_correction[tau_i] = delta_stress  # for residual evaluation
 
 
 @wp.kernel
@@ -1053,7 +1048,7 @@ def solve_rheology(
 
     if gs:
         device = velocity.device
-        color_block_count = device.sm_count * 4
+        color_block_count = device.sm_count * 2
         color_block_dim = 64
         color_launch_dim = color_block_count * color_block_dim
 

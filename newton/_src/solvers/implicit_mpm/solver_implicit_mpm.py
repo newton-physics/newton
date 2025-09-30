@@ -508,6 +508,14 @@ def compliance_form(
     )
 
 
+@fem.integrand
+def world_position(
+    s: fem.Sample,
+    domain: fem.Domain,
+):
+    return domain(s)
+
+
 @dataclass
 class ImplicitMPMOptions:
     """Implicit MPM solver options."""
@@ -560,7 +568,9 @@ class ImplicitMPMOptions:
 class _ImplicitMPMScratchpad:
     """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
 
-    def __init__(self):
+    def __init__(self, grid: fem.Geometry, strain_basis_str: str):
+        self.grid = grid
+
         self.velocity_test = None
         self.velocity_trial = None
         self.fraction_test = None
@@ -571,7 +581,6 @@ class _ImplicitMPMScratchpad:
         self.fraction_field = None
         self.elastic_parameters_field = None
 
-        self.collider_velocity_field = None
         self.plastic_strain_delta_field = None
         self.elastic_strain_delta_field = None
         self.strain_yield_parameters_field = None
@@ -588,6 +597,7 @@ class _ImplicitMPMScratchpad:
 
         self.inv_mass_matrix = None
         self.collider_normal = None
+        self.collider_velocity = None
         self.collider_friction = None
         self.collider_adhesion = None
         self.collider_inv_mass_matrix = None
@@ -601,48 +611,14 @@ class _ImplicitMPMScratchpad:
         self.collider_total_volumes = None
         self.vel_node_volume = None
 
-    def create_function_spaces(
-        self,
-        geo_partition: fem.GeometryPartition,
-        strain_basis_str: str,
-        temporary_store: fem.TemporaryStore,
-    ):
-        """Create velocity and strain function spaces over the given geometry."""
-        self.domain = fem.Cells(geo_partition)
+        self.create_basis_spaces(grid, strain_basis_str)
 
-        self._create_velocity_function_space(temporary_store)
-        self._create_strain_function_space(strain_basis_str, temporary_store)
-
-    def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore):
-        """Create velocity and fraction spaces and their partition/restriction."""
-        domain = self.domain
-        grid = domain.geometry
+    def create_basis_spaces(self, grid: fem.Geometry, strain_basis_str: str):
+        """Define velocity and strain function spaces over the given geometry."""
 
         # Define function spaces: linear (Q1) for velocity and volume fraction,
         # zero or first order for pressure
-        velocity_basis = fem.make_polynomial_basis_space(grid, degree=1)
-
-        velocity_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
-
-        vel_space_partition = fem.make_space_partition(
-            space_topology=velocity_space.topology,
-            geometry_partition=domain.geometry_partition,
-            with_halo=False,
-            temporary_store=temporary_store,
-        )
-
-        vel_space_restriction = fem.make_space_restriction(
-            space_partition=vel_space_partition, domain=domain, temporary_store=temporary_store
-        )
-
-        self._velocity_basis = velocity_basis
-        self._velocity_space = velocity_space
-        self._vel_space_restriction = vel_space_restriction
-
-    def _create_strain_function_space(self, strain_basis_str: str, temporary_store: fem.TemporaryStore):
-        """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
-        domain = self.domain
-        grid = domain.geometry
+        self._velocity_basis = fem.make_polynomial_basis_space(grid, degree=1)
 
         if strain_basis_str not in ("P0", "Q1"):
             raise ValueError(f"Unsupported strain basis: {strain_basis_str}")
@@ -656,15 +632,63 @@ class _ImplicitMPMScratchpad:
             discontinuous=discontinuous,
         )
 
+        self._strain_basis = strain_basis
+
+    def create_function_spaces(
+        self,
+        geo_partition: fem.GeometryPartition,
+        temporary_store: fem.TemporaryStore,
+        limit_node_count: bool = False,
+    ):
+        """Create velocity and strain function spaces over the given geometry."""
+        self.domain = fem.Cells(geo_partition)
+
+        self._create_velocity_function_space(temporary_store)
+        self._create_strain_function_space(temporary_store)
+
+    def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore, limit_node_count: bool = False):
+        """Create velocity and fraction spaces and their partition/restriction."""
+        domain = self.domain
+
+        velocity_space = fem.make_collocated_function_space(self._velocity_basis, dtype=wp.vec3)
+
+        max_vel_node_count = (
+            2 * domain.element_count() if limit_node_count else -1
+        )  # vertex to cell ratio. could be more conservative
+
+        vel_space_partition = fem.make_space_partition(
+            space_topology=velocity_space.topology,
+            geometry_partition=domain.geometry_partition,
+            with_halo=False,
+            max_node_count=max_vel_node_count,
+            temporary_store=temporary_store,
+        )
+
+        vel_space_restriction = fem.make_space_restriction(
+            space_partition=vel_space_partition, domain=domain, temporary_store=temporary_store
+        )
+
+        self._velocity_space = velocity_space
+        self._vel_space_restriction = vel_space_restriction
+
+    def _create_strain_function_space(self, temporary_store: fem.TemporaryStore, limit_node_count: bool = False):
+        """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
+        domain = self.domain
+
         sym_strain_space = fem.make_collocated_function_space(
-            strain_basis,
+            self._strain_basis,
             dof_mapper=fem.SymmetricTensorMapper(dtype=wp.mat33, mapping=fem.SymmetricTensorMapper.Mapping.DB16),
+        )
+
+        max_strain_node_count = (
+            sym_strain_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if limit_node_count else -1
         )
 
         strain_space_partition = fem.make_space_partition(
             space_topology=sym_strain_space.topology,
             geometry_partition=domain.geometry_partition,
             with_halo=False,
+            max_node_count=max_strain_node_count,
             temporary_store=temporary_store,
         )
 
@@ -672,7 +696,6 @@ class _ImplicitMPMScratchpad:
             space_partition=strain_space_partition, domain=domain, temporary_store=temporary_store
         )
 
-        self._strain_basis = strain_basis
         self._sym_strain_space = sym_strain_space
         self._strain_space_restriction = strain_space_restriction
 
@@ -732,6 +755,7 @@ class _ImplicitMPMScratchpad:
 
         self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.collider_position_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
 
     def require_strain_space_fields(self):
@@ -796,9 +820,9 @@ class _ImplicitMPMScratchpad:
         strain_node_count = self._strain_space_restriction.space_partition.node_count()
 
         self.inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
-        self.node_positions = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=wp.vec3)
 
         self.collider_normal = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=wp.vec3)
+        self.collider_velocity = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=wp.vec3)
         self.collider_friction = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
         self.collider_adhesion = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
         self.collider_inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
@@ -825,8 +849,8 @@ class _ImplicitMPMScratchpad:
     def release_temporaries(self):
         """Release previously allocated temporaries to the store."""
         self.inv_mass_matrix.release()
-        self.node_positions.release()
         self.collider_normal.release()
+        self.collider_velocity.release()
         self.collider_friction.release()
         self.collider_adhesion.release()
         self.collider_inv_mass_matrix.release()
@@ -1128,8 +1152,8 @@ def pad_voxels(particle_q: wp.array(dtype=wp.vec3i), padded_q: wp.array4d(dtype=
 
 
 @wp.func
-def positive_mod3(x: int):
-    return (x % 3 + 3) % 3
+def _positive_modn(x: int, n: int):
+    return (x % n + n) % n
 
 
 def _allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
@@ -1151,6 +1175,32 @@ def _allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
         )
 
     return volume
+
+
+@wp.kernel
+def node_color(
+    space_node_indices: wp.array(dtype=int),
+    nodes_per_element: int,
+    stencil_size: int,
+    voxels: wp.array(dtype=wp.vec3i),
+    res: wp.vec3i,
+    colors: wp.array(dtype=int),
+    color_indices: wp.array(dtype=int),
+):
+    nid = wp.tid()
+    vid = space_node_indices[nid * nodes_per_element] // nodes_per_element
+
+    if voxels:
+        c = voxels[vid]
+    else:
+        c = fem.Grid3D.get_cell(res, vid)
+
+    colors[nid] = (
+        _positive_modn(c[0], stencil_size) * stencil_size * stencil_size
+        + _positive_modn(c[1], stencil_size) * stencil_size
+        + _positive_modn(c[2], stencil_size)
+    )
+    color_indices[nid] = nid * nodes_per_element
 
 
 _NULL_COLOR = 1 << 31 - 1  # color for null nodes. make sure it is sorted last
@@ -1175,6 +1225,20 @@ def compute_color_offsets(
 
     for k in range(count, max_color_count + 1):
         color_offsets[k] = current_sum
+
+
+@fem.integrand
+def mark_active_cells(
+    s: fem.Sample,
+    domain: fem.Domain,
+    positions: wp.array(dtype=wp.vec3),
+    active_cells: wp.array(dtype=int),
+):
+    x = positions[s.qp_index]
+    s_grid = fem.lookup(domain, x)
+
+    if s_grid.element_index != fem.NULL_ELEMENT_INDEX:
+        active_cells[s_grid.element_index] = 1
 
 
 class SolverImplicitMPM(SolverBase):
@@ -1270,6 +1334,7 @@ class SolverImplicitMPM(SolverBase):
         state.velocity_field = None
         state.impulse_field = None
         state.stress_field = None
+        state.collider_position_field = None
         state.collider_ids = None
 
     @override
@@ -1284,13 +1349,9 @@ class SolverImplicitMPM(SolverBase):
         model = self.model
 
         with wp.ScopedDevice(model.device):
-            if self.grid_type != "fixed":
-                self._rebuild_scratchpad(state_in.particle_q)
-
+            self._rebuild_scratchpad(state_in.particle_q)
             self._step_impl(state_in, state_out, dt, self._scratchpad)
-
-            if self.grid_type != "fixed":
-                self._scratchpad.release_temporaries()
+            self._scratchpad.release_temporaries()
 
     @override
     def notify_model_changed(self, flags: int):
@@ -1344,18 +1405,9 @@ class SolverImplicitMPM(SolverBase):
         nodal impulse density over the voxel volume. Collider ids can be
         retrieved from ``state.collider_ids`` if needed.
         """
-        x = state.velocity_field.space.node_positions()
 
-        collider_impulse = wp.zeros_like(state.impulse_field.dof_values)
         cell_volume = self.mpm_model.voxel_size**3
-        fem.utils.array_axpy(
-            y=collider_impulse,
-            x=state.impulse_field.dof_values,
-            alpha=-cell_volume,
-            beta=0.0,
-        )
-
-        return collider_impulse, x
+        return -cell_volume * state.impulse_field.dof_values
 
     def update_particle_frames(
         self,
@@ -1489,6 +1541,24 @@ class SolverImplicitMPM(SolverBase):
 
         return grid
 
+    def _create_geometry_partition(self, grid: fem.Geometry, positions: wp.array, max_cell_count: int):
+        """Create a geometry partition for the given positions."""
+
+        active_cells = wp.zeros(grid.cell_count(), dtype=int)
+        fem.interpolate(
+            mark_active_cells,
+            dim=positions.shape[0],
+            domain=fem.Cells(grid),
+            values={
+                "positions": positions,
+                "active_cells": active_cells,
+            },
+        )
+
+        return fem.ExplicitGeometryPartition(
+            grid, cell_mask=active_cells, max_cell_count=max_cell_count, max_side_count=0
+        )
+
     def _rebuild_scratchpad(self, positions: wp.array):
         """(Re)create function spaces and allocate per-step temporaries.
 
@@ -1496,12 +1566,17 @@ class SolverImplicitMPM(SolverBase):
         velocity and strain spaces as needed, configures collision data, and
         optionally computes a Gauss-Seidel coloring for the strain nodes.
         """
-        geo_partition = self._allocate_grid(
-            positions,
-            voxel_size=self.mpm_model.voxel_size,
-            temporary_store=self.temporary_store,
-            padding_voxels=self.grid_padding,
-        )
+
+        if self._scratchpad is None or self.grid_type != "fixed":
+            grid = self._allocate_grid(
+                positions,
+                voxel_size=self.mpm_model.voxel_size,
+                temporary_store=self.temporary_store,
+                padding_voxels=self.grid_padding,
+            )
+            self._scratchpad = _ImplicitMPMScratchpad(grid, strain_basis_str=self.strain_basis)
+        else:
+            grid = self._scratchpad.grid
 
         with wp.ScopedTimer(
             "Scratchpad",
@@ -1509,15 +1584,16 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            if self._scratchpad is None:
-                self._scratchpad = _ImplicitMPMScratchpad()
-                self._scratchpad.create_function_spaces(
-                    geo_partition, strain_basis_str=self.strain_basis, temporary_store=self.temporary_store
-                )
-            elif self.grid_type != "fixed":
-                self._scratchpad.create_function_spaces(
-                    geo_partition, strain_basis_str=self.strain_basis, temporary_store=self.temporary_store
-                )
+            if self.grid_type == "sparse":
+                max_cell_count = -1
+                geo_partition = grid
+            else:
+                max_cell_count = 50000
+                geo_partition = self._create_geometry_partition(grid, positions, max_cell_count)
+
+            self._scratchpad.create_function_spaces(
+                geo_partition, temporary_store=self.temporary_store, limit_node_count=max_cell_count >= 0
+            )
 
             has_compliant_colliders = self.mpm_model.min_collider_mass < _INFINITY
 
@@ -1576,7 +1652,7 @@ class SolverImplicitMPM(SolverBase):
                 )
 
         self._require_velocity_space_fields(state_out)
-        vel_node_count = scratch.velocity_test.space.node_count()
+        vel_node_count = scratch.velocity_test.space_partition.node_count()
 
         with wp.ScopedTimer(
             "Rasterize collider",
@@ -1584,7 +1660,13 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            scratch.collider_velocity_field.space.node_positions(out=scratch.node_positions.array)
+            state_out.collider_position_field.dof_values.fill_(wp.vec3(fem.types.OUTSIDE))
+            fem.interpolate(
+                world_position,
+                dest=fem.make_restriction(
+                    state_out.collider_position_field, space_restriction=scratch.velocity_test.space_restriction
+                ),
+            )
             wp.launch(
                 rasterize_collider,
                 dim=vel_node_count,
@@ -1592,9 +1674,9 @@ class SolverImplicitMPM(SolverBase):
                     self.mpm_model.collider,
                     self.mpm_model.voxel_size,
                     dt,
-                    scratch.node_positions.array,
+                    state_out.collider_position_field.dof_values,
                     scratch.collider_distance_field.dof_values,
-                    scratch.collider_velocity_field.dof_values,
+                    scratch.collider_velocity.array,
                     scratch.collider_normal.array,
                     scratch.collider_friction.array,
                     scratch.collider_adhesion.array,
@@ -1652,6 +1734,7 @@ class SolverImplicitMPM(SolverBase):
             )
 
             drag = mpm_model.air_drag * dt
+
             wp.launch(
                 free_velocity,
                 dim=vel_node_count,
@@ -1705,7 +1788,7 @@ class SolverImplicitMPM(SolverBase):
             scratch.collider_inv_mass_matrix.array.zero_()
 
         self._require_strain_space_fields(state_out)
-        strain_node_count = scratch.sym_strain_test.space.node_count()
+        strain_node_count = scratch.sym_strain_test.space_partition.node_count()
 
         if has_compliant_particles:
             with wp.ScopedTimer(
@@ -1913,7 +1996,7 @@ class SolverImplicitMPM(SolverBase):
                 scratch.collider_friction.array,
                 scratch.collider_adhesion.array,
                 scratch.collider_normal.array,
-                scratch.collider_velocity_field.dof_values,
+                scratch.collider_velocity.array,
                 scratch.collider_inv_mass_matrix.array,
                 state_out.impulse_field.dof_values,
                 color_offsets=scratch.color_offsets,
@@ -1997,6 +2080,7 @@ class SolverImplicitMPM(SolverBase):
         state_out.velocity_field = scratch.velocity_field
         state_out.impulse_field = scratch.impulse_field
         state_out.collider_ids = scratch.collider_ids
+        state_out.collider_position_field = scratch.collider_position_field
 
     def _require_strain_space_fields(self, state_out: newton.State):
         """Ensure strain-space fields exist and match current spaces."""
@@ -2040,6 +2124,8 @@ class SolverImplicitMPM(SolverBase):
             )
 
     def _max_colors(self):
+        if not self.coloring:
+            return 0
         return 27 if self.strain_basis == "Q1" else 8
 
     def _compute_coloring(
@@ -2055,104 +2141,48 @@ class SolverImplicitMPM(SolverBase):
         grid = space_partition.geo_partition.geometry
 
         nodes_per_element = space_partition.space_topology.MAX_NODES_PER_ELEMENT
-        is_dg = self.strain_basis != "Q1"
-        strain_node_count = space_partition.node_count()
+        is_dg = space_partition.space_topology.node_count() == nodes_per_element * grid.cell_count()
 
         if is_dg:
             # nodes in each element solved sequentially
-            colored_element_count = strain_node_count // nodes_per_element
-        else:
-            # color each node individually
-            colored_element_count = strain_node_count
-            nodes_per_element = 1
-
-        colors = fem.borrow_temporary(self.temporary_store, shape=colored_element_count * 2 + 1, dtype=int)
-        color_indices = scratch.color_indices
-
-        partition_arg = space_partition.partition_arg_value(colors.array.device)
-        if is_dg:
-
-            @fem.cache.dynamic_kernel(suffix=space_partition.name)
-            def node_color_8_stencil(
-                voxels: wp.array(dtype=wp.vec3i),
-                colors: wp.array(dtype=int),
-                color_indices: wp.array(dtype=int),
-                nodes_per_element: int,
-                partition_arg: space_partition.PartitionArg,
-            ):
-                pid = wp.tid()
-                nid = space_partition.partition_node_index(partition_arg, pid * nodes_per_element)
-                if nid == fem.types.NULL_NODE_INDEX:
-                    colors[pid] = _NULL_COLOR
-                    return
-
-                vid = nid // nodes_per_element
-                c = voxels[vid]
-                colors[pid] = ((c[0] & 1) << 2) + ((c[1] & 1) << 1) + (c[2] & 1)
-                color_indices[pid] = vid
-
+            stencil_size = 2
             if isinstance(grid, fem.Nanogrid):
                 voxels = grid._cell_ijk
+                res = wp.vec3i(0)
             else:
-                voxels = wp.array(
-                    np.stack(
-                        np.meshgrid(
-                            np.arange(grid.res[0]),
-                            np.arange(grid.res[1]),
-                            np.arange(grid.res[2]),
-                            indexing="ij",
-                        ),
-                        axis=-1,
-                    ).reshape(-1, 3),
-                    dtype=wp.vec3i,
-                )
-            wp.launch(
-                node_color_8_stencil,
-                dim=colored_element_count,
-                inputs=[voxels, colors.array, color_indices.array, nodes_per_element, partition_arg],
-            )
-
+                voxels = None
+                res = grid.res
         elif self.strain_basis == "Q1":
-
-            @fem.cache.dynamic_kernel(suffix=space_partition.name)
-            def node_color_27_stencil(
-                voxels: wp.array(dtype=wp.vec3i),
-                colors: wp.array(dtype=int),
-                color_indices: wp.array(dtype=int),
-                partition_arg: space_partition.PartitionArg,
-            ):
-                pid = wp.tid()
-                nid = space_partition.partition_node_index(partition_arg, pid)
-                if nid == fem.types.NULL_NODE_INDEX:
-                    colors[pid] = _NULL_COLOR
-                    return
-
-                c = voxels[nid]
-                colors[pid] = positive_mod3(c[0]) * 9 + positive_mod3(c[1]) * 3 + positive_mod3(c[2])
-                color_indices[pid] = pid
-
+            nodes_per_element = 1
+            stencil_size = 3
             if isinstance(grid, fem.Nanogrid):
                 voxels = grid._node_ijk
+                res = wp.vec3i(0)
             else:
-                voxels = wp.array(
-                    np.stack(
-                        np.meshgrid(
-                            np.arange(grid.res[0] + 1),
-                            np.arange(grid.res[1] + 1),
-                            np.arange(grid.res[2] + 1),
-                            indexing="ij",
-                        ),
-                        axis=-1,
-                    ).reshape(-1, 3),
-                    dtype=wp.vec3i,
-                )
-            wp.launch(
-                node_color_27_stencil,
-                dim=colored_element_count,
-                inputs=[voxels, colors.array, color_indices.array, partition_arg],
-            )
+                voxels = None
+                res = grid.res + wp.vec3i(1)
         else:
             raise RuntimeError("Unsupported strain basis for coloring")
+
+        strain_node_count = space_partition.node_count()
+        colored_element_count = strain_node_count // nodes_per_element
+        colors = fem.borrow_temporary(self.temporary_store, shape=colored_element_count * 2 + 1, dtype=int)
+        color_indices = scratch.color_indices
+        space_node_indices = space_partition.space_node_indices()
+
+        wp.launch(
+            node_color,
+            dim=colored_element_count,
+            inputs=[
+                space_node_indices,
+                nodes_per_element,
+                stencil_size,
+                voxels,
+                res,
+                colors.array,
+                color_indices.array,
+            ],
+        )
 
         wp.utils.radix_sort_pairs(
             keys=colors.array,
@@ -2171,7 +2201,6 @@ class SolverImplicitMPM(SolverBase):
             run_lengths=color_node_counts,
             run_count=color_count,
         )
-
         wp.launch(
             compute_color_offsets,
             dim=1,

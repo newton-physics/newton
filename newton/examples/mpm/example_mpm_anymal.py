@@ -157,7 +157,7 @@ class Example:
         mpm_options.tolerance = tolerance
         mpm_options.transfer_scheme = "pic"
         mpm_options.grid_type = grid_type
-        mpm_options.grid_padding = 5 if grid_type == "fixed" else 0
+        mpm_options.grid_padding = 50 if grid_type == "fixed" else 0
 
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
