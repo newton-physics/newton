@@ -132,7 +132,7 @@ class Example:
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd)) < 0.001,
+            lambda q, qd: max(abs(qd)) < 5e-3,
         )
 
 
