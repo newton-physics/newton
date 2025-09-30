@@ -34,16 +34,16 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
-def _find_nonfinite(obj: newton.State | newton.Contacts | newton.Model | newton.Control | None) -> list[str]:
-    """Helper function to check if all Warp array members of an object are finite."""
-    nonfinite_members = []
+def _find_nan(obj: newton.State | newton.Contacts | newton.Model | newton.Control | None) -> list[str]:
+    """Helper function to find any members of an object that contain NaN values."""
+    nan_members = []
     if obj is None:
-        return nonfinite_members
+        return nan_members
     for key, attr in obj.__dict__.items():
         if isinstance(attr, wp.array):
-            if not np.isfinite(attr.numpy()).all():
-                nonfinite_members.append(key)
-    return nonfinite_members
+            if np.isnan(attr.numpy()).any():
+                nan_members.append(key)
+    return nan_members
 
 
 def test_body_state(
@@ -181,21 +181,25 @@ def run(example, args):
     if args is not None and args.test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
-            nonfinite_members = _find_nonfinite(example.state_0)
-            if nonfinite_members:
-                raise ValueError(f"Non-finite members found in state_0: {nonfinite_members}")
+            nan_members = _find_nan(example.state_0)
+            if nan_members:
+                raise ValueError(f"NaN members found in state_0: {nan_members}")
         if hasattr(example, "state_1"):
-            nonfinite_members = _find_nonfinite(example.state_1)
-            if nonfinite_members:
-                raise ValueError(f"Non-finite members found in state_1: {nonfinite_members}")
+            nan_members = _find_nan(example.state_1)
+            if nan_members:
+                raise ValueError(f"NaN members found in state_1: {nan_members}")
         if hasattr(example, "model"):
-            nonfinite_members = _find_nonfinite(example.model)
-            if nonfinite_members:
-                raise ValueError(f"Non-finite members found in model: {nonfinite_members}")
+            nan_members = _find_nan(example.model)
+            if nan_members:
+                raise ValueError(f"NaN members found in model: {nan_members}")
         if hasattr(example, "control"):
-            nonfinite_members = _find_nonfinite(example.control)
-            if nonfinite_members:
-                raise ValueError(f"Non-finite members found in control: {nonfinite_members}")
+            nan_members = _find_nan(example.control)
+            if nan_members:
+                raise ValueError(f"NaN members found in control: {nan_members}")
+        if hasattr(example, "contacts"):
+            nan_members = _find_nan(example.contacts)
+            if nan_members:
+                raise ValueError(f"NaN members found in contacts: {nan_members}")
 
 
 def compute_env_offsets(
