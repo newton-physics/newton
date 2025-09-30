@@ -216,7 +216,7 @@ class Example:
         mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0])
 
         # setup solvers
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
         self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
         # simulation state
