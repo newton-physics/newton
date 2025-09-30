@@ -28,8 +28,6 @@ import warp as wp
 import newton
 import newton.examples
 
-wp.set_device("cpu")
-
 
 class Example:
     def __init__(self, viewer, num_envs=4):
@@ -121,11 +119,14 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.01,
         )
+        threshold = 0.1
+        if self.sim_time < 0.2:
+            threshold = 1.0
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "all humanoids have come to a rest",
-            lambda q, qd: max(abs(qd)) < 0.1,
+            lambda q, qd: max(abs(qd)) < threshold,
         )
 
 

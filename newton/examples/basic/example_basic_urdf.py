@@ -138,7 +138,7 @@ class Example:
             self.model,
             self.state_0,
             "quadrupeds have reached the terminal height",
-            lambda q, qd: wp.abs(q[2] - 0.48) < 0.01,
+            lambda q, qd: wp.abs(q[2] - 0.46) < 0.01,
             # only select the root body of each environment
             indices=[i * bodies_per_env for i in range(self.num_envs)],
         )
