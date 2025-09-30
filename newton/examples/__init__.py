@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.tests.unittest_utils import find_nan_members
 
 
 def get_source_directory() -> str:
@@ -32,18 +33,6 @@ def get_asset_directory() -> str:
 
 def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
-
-
-def _find_nan(obj: newton.State | newton.Contacts | newton.Model | newton.Control | None) -> list[str]:
-    """Helper function to find any members of an object that contain NaN values."""
-    nan_members = []
-    if obj is None:
-        return nan_members
-    for key, attr in obj.__dict__.items():
-        if isinstance(attr, wp.array):
-            if np.isnan(attr.numpy()).any():
-                nan_members.append(key)
-    return nan_members
 
 
 def test_body_state(
@@ -181,23 +170,23 @@ def run(example, args):
     if args is not None and args.test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
-            nan_members = _find_nan(example.state_0)
+            nan_members = find_nan_members(example.state_0)
             if nan_members:
                 raise ValueError(f"NaN members found in state_0: {nan_members}")
         if hasattr(example, "state_1"):
-            nan_members = _find_nan(example.state_1)
+            nan_members = find_nan_members(example.state_1)
             if nan_members:
                 raise ValueError(f"NaN members found in state_1: {nan_members}")
         if hasattr(example, "model"):
-            nan_members = _find_nan(example.model)
+            nan_members = find_nan_members(example.model)
             if nan_members:
                 raise ValueError(f"NaN members found in model: {nan_members}")
         if hasattr(example, "control"):
-            nan_members = _find_nan(example.control)
+            nan_members = find_nan_members(example.control)
             if nan_members:
                 raise ValueError(f"NaN members found in control: {nan_members}")
         if hasattr(example, "contacts"):
-            nan_members = _find_nan(example.contacts)
+            nan_members = find_nan_members(example.contacts)
             if nan_members:
                 raise ValueError(f"NaN members found in contacts: {nan_members}")
 
