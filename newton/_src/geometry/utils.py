@@ -35,7 +35,7 @@ from .types import (
 @wp.kernel
 def compute_obb_candidates(
     vertices: wp.array(dtype=wp.vec3),
-    base_axes: wp.mat33,
+    base_quat: wp.quat,
     num_angles_per_axis: int,
     volumes: wp.array(dtype=float),
     transforms: wp.array(dtype=wp.transform),
@@ -51,14 +51,18 @@ def compute_obb_candidates(
     if axis_idx >= 3:
         return
 
-    # Compute rotation angle
+    # Compute rotation angle around one of the principal axes (X=0, Y=1, Z=2)
     angle = float(angle_idx) * (2.0 * wp.pi) / float(num_angles_per_axis)
 
-    # Extract axis from base_axes matrix
-    axis = wp.vec3(base_axes[0, axis_idx], base_axes[1, axis_idx], base_axes[2, axis_idx])
+    # Select the standard basis vector for the current axis
+    local_axis = wp.vec3(0.0, 0.0, 0.0)
+    local_axis[axis_idx] = 1.0
 
-    # Create quaternion for this rotation
-    quat = wp.quat_from_axis_angle(axis, angle)
+    # Create incremental rotation around principal axis
+    incremental_quat = wp.quat_from_axis_angle(local_axis, angle)
+
+    # Compose rotations: first rotate into principal frame, then apply incremental rotation
+    quat = wp.mul(base_quat, incremental_quat)
 
     # Initialize bounds
     min_bounds = wp.vec3(1e10, 1e10, 1e10)
@@ -244,12 +248,15 @@ def compute_inertia_obb(
 
     principal_axes = eigenvectors
 
+    # Convert principal axes rotation matrix to quaternion
+    # The principal_axes matrix transforms from world to principal frame
+    base_quat = wp.quat_from_matrix(wp.mat33(principal_axes.T.flatten()))
+
     # Step 3: Warp kernel search
     num_candidates = 3 * num_angle_steps
 
     # Allocate arrays
     vertices_wp = wp.array(centered_vertices, dtype=wp.vec3)
-    base_axes_wp = wp.mat33(principal_axes.T.flatten())
     volumes = wp.zeros(num_candidates, dtype=float)
     transforms = wp.zeros(num_candidates, dtype=wp.transform)
     extents = wp.zeros(num_candidates, dtype=wp.vec3)
@@ -258,7 +265,7 @@ def compute_inertia_obb(
     wp.launch(
         compute_obb_candidates,
         dim=num_candidates,
-        inputs=[vertices_wp, base_axes_wp, num_angle_steps, volumes, transforms, extents],
+        inputs=[vertices_wp, base_quat, num_angle_steps, volumes, transforms, extents],
     )
 
     # Find minimum volume
