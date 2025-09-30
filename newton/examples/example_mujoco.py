@@ -60,11 +60,11 @@ ROBOT_CONFIGS = {
         "nconmax": 15,
         "ls_parallel": True,
     },
-    "cartpole": { # TODO: use the Lab version of cartpole and revert param value
+    "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 24, # 5
-        "nconmax": 6, # 5
+        "njmax": 24,  # 5
+        "nconmax": 6,  # 5
         "ls_parallel": False,
     },
     "ant": {
