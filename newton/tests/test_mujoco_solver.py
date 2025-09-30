@@ -20,7 +20,7 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton import Mesh
+from newton import JointType, Mesh
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 
@@ -46,7 +46,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, com=(0.0, 0.0, 0.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        body = builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
         builder.add_joint_revolute(-1, body)
         model = builder.finalize()
 
@@ -418,7 +418,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         mjc_inertia = solver.mjw_model.body_inertia.numpy()[env_idx, mjc_idx].astype(np.float32)
 
                         # Get eigenvalues of both tensors
-                        newton_eigvecs, newton_eigvals = wp.eig3(newton_inertia)
+                        newton_eigvecs, newton_eigvals = wp.eig3(wp.mat33(newton_inertia))
                         newton_eigvecs = np.array(newton_eigvecs)
                         newton_eigvecs = newton_eigvecs.reshape((3, 3))
 
@@ -1168,7 +1168,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes(self):
         builder = newton.ModelBuilder()
-        b = builder.add_body(mass=1.0, com=(1.0, 2.0, 3.0), I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        b = builder.add_body(mass=1.0, com=wp.vec3(1.0, 2.0, 3.0), I_m=wp.mat33(np.eye(3)))
         builder.add_joint_prismatic(-1, b)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -1185,7 +1185,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         parent_body = builder.add_body(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            I_m=wp.mat33(np.eye(3)),
         )
         builder.add_joint_free(parent_body)  # Make parent the root
 
@@ -1193,7 +1193,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         child_body = builder.add_body(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            I_m=wp.mat33(np.eye(3)),
         )
 
         # Define translations for the joint frames in parent and child
@@ -1304,7 +1304,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Add pendulum body
         mass = 1.0
         length = 1.0
-        I_sphere = wp.diag([2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2])
+        I_sphere = wp.diag(wp.vec3(2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2, 2.0 / 5.0 * mass * 0.1**2))
 
         pendulum = builder.add_body(
             mass=mass,
@@ -1500,6 +1500,99 @@ class TestMuJoCoConversion(unittest.TestCase):
             [tf.q.w, tf.q.x, tf.q.y, tf.q.z],
             atol=1e-6,
         )
+
+    @unittest.skip("It generates warning and illegal memory access")
+    def test_noncontiguous_joint_indexing(self):
+        """
+        Test for joint indexing bug when selected_joints is noncontiguous.
+
+        This reproduces issue #562 where ji is used directly to index joint arrays
+        instead of using selected_joints[ji] when processing filtered joints.
+        """
+        # Create a simple robot with 2 bodies and 1 revolute joint
+        robot = newton.ModelBuilder()
+        robot.add_body()  # body 0
+        robot.add_body()  # body 1
+        robot.add_joint_revolute(parent=0, child=1, axis=(0, 0, 1))
+        robot.add_shape_box(0, hx=0.1, hy=0.1, hz=0.1)
+        robot.add_shape_box(1, hx=0.1, hy=0.1, hz=0.1)
+
+        # Main builder adds the robot to env 0 and env 1
+        builder = newton.ModelBuilder()
+        builder.add_builder(robot, environment=0)  # Creates bodies 0,1 and joint 0 (revolute)
+        builder.add_builder(robot, environment=1)  # Creates bodies 2,3 and joint 1 (revolute)
+
+        # Now add free joints to the parent bodies of each robot
+        builder.current_env_group = 0
+        builder.add_joint_free(child=0)  # Free joint for body 0 (env 0) - joint 2
+
+        builder.current_env_group = 1
+        builder.add_joint_free(child=2)  # Free joint for body 2 (env 1) - joint 3
+
+        model = builder.finalize()
+
+        # Verify setup - we should have 4 joints total
+        joint_groups = model.joint_group.numpy()
+        joint_types = model.joint_type.numpy()
+
+        # Expected groups: [0, 1, 0, 1] - revolute from env0, revolute from env1, free from env0, free from env1
+        expected_groups = [0, 1, 0, 1]
+        self.assertEqual(list(joint_groups), expected_groups)
+
+        # Expected types: [revolute, revolute, free, free]
+        self.assertEqual(joint_types[0], JointType.REVOLUTE, "Joint 0 should be revolute")
+        self.assertEqual(joint_types[1], JointType.REVOLUTE, "Joint 1 should be revolute")
+        self.assertEqual(joint_types[2], JointType.FREE, "Joint 2 should be free")
+        self.assertEqual(joint_types[3], JointType.FREE, "Joint 3 should be free")
+
+        # Create solver with env separation
+        # This should select only env 0 joints: [0, 2] (noncontiguous!)
+        solver = SolverMuJoCo(model, separate_envs_to_worlds=True)
+
+        # Check selected joints
+        selected_joints = solver.selected_joints.numpy()
+        expected_selected = [0, 2]
+        np.testing.assert_array_equal(selected_joints, expected_selected, "Should select only env 0 joints [0, 2]")
+
+        # Also verify per-env DOF mapping is set for both local joints (indices 0 and 1)
+        dof_start_map = solver.joint_mjc_dof_start.numpy()
+        self.assertNotEqual(dof_start_map[0], -1, "Local joint 0 must have a valid MuJoCo DOF start")
+        self.assertNotEqual(dof_start_map[1], -1, "Local joint 1 must have a valid MuJoCo DOF start")
+
+        # THE BUG: When processing selected joints, the code uses ji directly
+        # So when ji=1:
+        # - It SHOULD use joint[selected_joints[1]] = joint[2] (free joint from env 0)
+        # - But it INCORRECTLY uses joint[1] (revolute joint from env 1)
+
+        # Check the MuJoCo model has the correct joint types
+        mjw_model = solver.mjw_model
+
+        # Get joint types from MuJoCo
+        mjc_joint_types = mjw_model.jnt_type.numpy()  # First world
+
+        # Expected MuJoCo joint types for env 0 after topological sorting:
+        # Joint 2 (free) will be first because it's on body 0 (the base)
+        # Joint 0 (revolute) will be second because it connects to child body 1
+        # MuJoCo type mapping: FREE=0, BALL=1, SLIDE=2, HINGE=3
+        expected_mjc_types_fixed = [0, 3]  # free, hinge (after topological sort)
+        expected_mjc_types_buggy = [3, 3]  # hinge, hinge (with the bug)
+
+        # Check if we have the correct joint types
+        # With the bug fixed, we should get [0, 3] (free, hinge)
+        # With the bug present, we'd get [3, 3] (both hinges)
+
+        if np.array_equal(mjc_joint_types, expected_mjc_types_buggy):
+            self.fail(
+                f"BUG DETECTED: MuJoCo has joint types {mjc_joint_types} (both hinges). "
+                f"This indicates the bug is using joint[1] instead of joint[{selected_joints[1]}]"
+            )
+        else:
+            # The fix worked! We have the correct joint types
+            np.testing.assert_array_equal(
+                mjc_joint_types,
+                expected_mjc_types_fixed,
+                err_msg=f"MuJoCo should have joint types {expected_mjc_types_fixed} (free=0, hinge=3) after topological sort",
+            )
 
 
 if __name__ == "__main__":

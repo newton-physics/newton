@@ -69,7 +69,7 @@ ROBOT_CONFIGS = {
     "go2": RobotConfig(
         asset_dir="unitree_go2",
         policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
-        asset_path="usd/go2.usd",
+        asset_path="usd/go2.usda",
         yaml_path="rl_policies/go2.yaml",
     ),
     "g1_29dof": RobotConfig(
@@ -250,7 +250,8 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -265,11 +266,14 @@ class Example:
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
+        self.model.set_gravity((0.0, 0.0, -9.81))
+
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
             ncon_per_env=30,
+            njmax=100,
         )
 
         # Initialize state objects

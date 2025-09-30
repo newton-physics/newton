@@ -1453,7 +1453,11 @@ class ModelBuilder:
 
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
+                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
                 for parent_shape in self.body_shapes[parent]:
+                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     # Ensure canonical order (smaller, larger) for consistent lookup
                     a, b = parent_shape, child_shape
                     if a > b:
@@ -2016,6 +2020,7 @@ class ModelBuilder:
         show_joint_keys=True,
         show_joint_types=True,
         plot_shapes=True,
+        show_shape_keys=True,
         show_shape_types=True,
         show_legend=True,
     ):
@@ -2029,6 +2034,7 @@ class ModelBuilder:
             show_joint_keys (bool): Whether to show the joint keys or indices
             show_joint_types (bool): Whether to show the joint types
             plot_shapes (bool): Whether to render the shapes connected to the rigid bodies
+            show_shape_keys (bool): Whether to show the shape keys or indices
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
@@ -2079,10 +2085,12 @@ class ModelBuilder:
             vertices = ["-1"] + [str(i) for i in range(self.body_count)]
         if plot_shapes:
             for i in range(self.shape_count):
-                shape_label = f"shape_{i}"
+                shape_label = []
+                if show_shape_keys:
+                    shape_label.append(self.shape_key[i])
                 if show_shape_types:
-                    shape_label += f"\n({shape_type_str(self.shape_type[i])})"
-                vertices.append(shape_label)
+                    shape_label.append(f"({shape_type_str(self.shape_type[i])})")
+                vertices.append("\n".join(shape_label))
         edges = []
         edge_labels = []
         for i in range(self.joint_count):
@@ -2505,13 +2513,11 @@ class ModelBuilder:
             scale = (1.0, 1.0, 1.0)
         self.shape_body.append(body)
         shape = self.shape_count
-        if body in self.body_shapes:
+        if cfg.has_shape_collision:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
                 self.shape_collision_filter_pairs.append((same_body_shape, shape))
-            self.body_shapes[body].append(shape)
-        else:
-            self.body_shapes[body] = [shape]
+        self.body_shapes[body].append(shape)
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
         self.shape_flags.append(cfg.flags)
@@ -2529,7 +2535,7 @@ class ModelBuilder:
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_group.append(self.current_env_group)
-        if cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
+        if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
@@ -4499,9 +4505,16 @@ class ModelBuilder:
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
-            m.gravity = np.array(self.up_vector, dtype=wp.float32) * self.gravity
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
+
+            # set gravity
+            m.gravity = wp.array(
+                [wp.vec3(*(g * self.gravity for g in self.up_vector))],
+                dtype=wp.vec3,
+                device=device,
+                requires_grad=requires_grad,
+            )
 
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead

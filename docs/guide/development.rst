@@ -13,8 +13,8 @@ To install Newton, see the :doc:`installation` guide.
 Python Dependency Management
 ----------------------------
 
-UV Lock File
-^^^^^^^^^^^^
+uv lockfile management
+^^^^^^^^^^^^^^^^^^^^^^
 
 When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile>`__
 (``uv.lock``) is used to resolve project dependencies into exact versions for reproducibility among different machines.
@@ -160,6 +160,21 @@ To automatically run pre-commit hooks with ``git commit``:
             pre-commit install
 
 The hooks can be uninstalled with ``pre-commit uninstall``.
+
+Using a local Warp installation with uv
+---------------------------------------
+
+Use the following steps to run Newton with a local build of Warp:
+
+.. code-block:: console
+
+    uv venv
+    source .venv/bin/activate
+    uv sync --extra dev
+    uv pip install -e "warp-lang @ ../warp"
+
+The Warp initialization message should then properly reflect the local Warp installation instead of the locked version,
+e.g. when running ``python -m newton.examples basic_pendulum``.
 
 Building the documentation
 --------------------------

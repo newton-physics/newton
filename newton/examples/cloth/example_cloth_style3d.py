@@ -21,7 +21,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import Mesh, ParticleFlags
-from newton._src.solvers.style3d import CollisionHandler
+from newton._src.solvers.style3d import Collision
 
 
 class Example:
@@ -124,12 +124,13 @@ class Example:
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
-        self.model.gravity = wp.vec3(0.0, 0.0, -9.81)
+        self.model.set_gravity((0.0, 0.0, -9.81))
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
-            collision_handler=CollisionHandler(self.model),
+            collision_handler=Collision(self.model),
+            # collision_handler = CollisionHandler(self.model),
         )
         self.solver.precompute(
             builder,

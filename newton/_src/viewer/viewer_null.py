@@ -65,7 +65,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         No-op implementation for logging mesh instances.
 
