@@ -31,6 +31,7 @@ import newton.examples
 from newton import Contacts
 from newton.selection import ArticulationView
 from newton.sensors import ContactSensor, populate_contacts
+from newton.tests.unittest_utils import find_nonfinite_members
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -150,7 +151,7 @@ class Example:
         # create articulation views
         # ===========================================================
         self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
-        self.hums = ArticulationView(
+        self.humanoids = ArticulationView(
             self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE]
         )
 
@@ -168,10 +169,10 @@ class Example:
             self.default_ant_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
 
             # default humanoid states
-            self.default_hum_root_transforms = wp.to_torch(self.hums.get_root_transforms(self.model)).clone()
-            self.default_hum_root_velocities = wp.to_torch(self.hums.get_root_velocities(self.model)).clone()
-            self.default_hum_dof_positions = wp.to_torch(self.hums.get_dof_positions(self.model)).clone()
-            self.default_hum_dof_velocities = wp.to_torch(self.hums.get_dof_velocities(self.model)).clone()
+            self.default_hum_root_transforms = wp.to_torch(self.humanoids.get_root_transforms(self.model)).clone()
+            self.default_hum_root_velocities = wp.to_torch(self.humanoids.get_root_velocities(self.model)).clone()
+            self.default_hum_dof_positions = wp.to_torch(self.humanoids.get_dof_positions(self.model)).clone()
+            self.default_hum_dof_velocities = wp.to_torch(self.humanoids.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
             all_indices = torch.arange(num_envs, dtype=torch.int32)
@@ -196,10 +197,10 @@ class Example:
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
             # default humanoid states
-            self.default_hum_root_transforms = wp.clone(self.hums.get_root_transforms(self.model))
-            self.default_hum_root_velocities = wp.clone(self.hums.get_root_velocities(self.model))
-            self.default_hum_dof_positions = wp.clone(self.hums.get_dof_positions(self.model))
-            self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
+            self.default_hum_root_transforms = wp.clone(self.humanoids.get_root_transforms(self.model))
+            self.default_hum_root_velocities = wp.clone(self.humanoids.get_root_velocities(self.model))
+            self.default_hum_dof_positions = wp.clone(self.humanoids.get_dof_positions(self.model))
+            self.default_hum_dof_velocities = wp.clone(self.humanoids.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
             self.mask_0 = wp.empty(num_envs, dtype=bool)
@@ -299,16 +300,18 @@ class Example:
         self.ants.set_dof_positions(self.state_0, self.default_ant_dof_positions, mask=mask)
         self.ants.set_dof_velocities(self.state_0, self.default_ant_dof_velocities, mask=mask)
 
-        self.hums.set_root_transforms(self.state_0, self.default_hum_root_transforms, mask=mask)
-        self.hums.set_root_velocities(self.state_0, self.default_hum_root_velocities, mask=mask)
-        self.hums.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
-        self.hums.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
+        self.humanoids.set_root_transforms(self.state_0, self.default_hum_root_transforms, mask=mask)
+        self.humanoids.set_root_velocities(self.state_0, self.default_hum_root_velocities, mask=mask)
+        self.humanoids.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
+        self.humanoids.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
 
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
 
     def test(self):
-        pass
+        assert len(find_nonfinite_members(self.torso_all_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.arm_ground_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.foot_arm_contact_sensor)) == 0
 
     def render(self):
         with wp.ScopedTimer("render", active=False):

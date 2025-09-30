@@ -265,6 +265,18 @@ def find_nan_members(obj: Any | None) -> list[str]:
     return nan_members
 
 
+def find_nonfinite_members(obj: Any | None) -> list[str]:
+    """Helper function to find any Warp array members of an object that contain non-finite values."""
+    nonfinite_members = []
+    if obj is None:
+        return nonfinite_members
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if not np.isfinite(attr.numpy()).all():
+                nonfinite_members.append(key)
+    return nonfinite_members
+
+
 # if check_output is True any output to stdout will be treated as an error
 def create_test_func(func, device, check_output, **kwargs):
     # pass args to func

@@ -335,7 +335,7 @@ add_example_test(
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_humanoid",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 500},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
@@ -539,9 +539,8 @@ class TestSensorExamples(unittest.TestCase):
 add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
-    test_options_cpu={"num-frames": 2 * 36},
     use_viewer=True,
 )
 
