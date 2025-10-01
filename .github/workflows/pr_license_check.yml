@@ -1,0 +1,26 @@
+name: License Check
+permissions:
+  contents: read
+  pull-requests: read
+
+on:
+  merge_group:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+
+# Cancels in-progress runs of this workflow for the same pull request,
+# but allows parallel runs for pushes to the main branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Check License Header
+        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c
