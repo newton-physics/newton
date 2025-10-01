@@ -53,7 +53,7 @@ def loss_kernel(com: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
     vx = com[tid][0]
     vy = com[tid][1]
     vz = com[tid][2]
-    delta = wp.sqrt(vx * vx) + wp.sqrt(vy * vy) - vz
+    delta = wp.abs(vx) + wp.abs(vy) - vz
 
     wp.atomic_add(loss, 0, delta)
 
