@@ -276,8 +276,8 @@ class Example:
         self.solver = Example.create_solver(
             self.model,
             robot,
-            env,
             use_mujoco_cpu,
+            env,
             solver,
             integrator,
             solver_iteration,
@@ -372,8 +372,8 @@ class Example:
     def create_solver(
         model,
         robot,
-        env,
         use_mujoco_cpu,
+        env="None",
         solver=None,
         integrator=None,
         solver_iteration=None,
