@@ -527,8 +527,6 @@ class ImplicitMPMOptions:
     """Tolerance for the rheology solver."""
     voxel_size: float = 0.1
     """Size of the grid voxels."""
-    grid_padding: int = 0
-    """Number of empty cells to add around particles."""
     strain_basis: str = "P0"
     """Strain basis functions. May be one of P0, Q1"""
     solver: str = "gauss-seidel"
@@ -537,6 +535,10 @@ class ImplicitMPMOptions:
     # grid
     grid_type: str = "sparse"
     """Type of grid to use. May be one of sparse, dense, fixed."""
+    grid_padding: int = 0
+    """Number of empty cells to add around particles when allocating the grid."""
+    max_active_cell_count: int = -1
+    """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
     transfer_scheme: str = "apic"
     """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
 
@@ -638,23 +640,24 @@ class _ImplicitMPMScratchpad:
         self,
         geo_partition: fem.GeometryPartition,
         temporary_store: fem.TemporaryStore,
-        limit_node_count: bool = False,
+        max_cell_count: int = -1,
     ):
         """Create velocity and strain function spaces over the given geometry."""
         self.domain = fem.Cells(geo_partition)
 
-        self._create_velocity_function_space(temporary_store)
-        self._create_strain_function_space(temporary_store)
+        self._create_velocity_function_space(temporary_store, max_cell_count)
+        self._create_strain_function_space(temporary_store, max_cell_count)
 
-    def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore, limit_node_count: bool = False):
+    def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
         """Create velocity and fraction spaces and their partition/restriction."""
         domain = self.domain
 
         velocity_space = fem.make_collocated_function_space(self._velocity_basis, dtype=wp.vec3)
 
+        # overly conservative
         max_vel_node_count = (
-            2 * domain.element_count() if limit_node_count else -1
-        )  # vertex to cell ratio. could be more conservative
+            velocity_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
+        )
 
         vel_space_partition = fem.make_space_partition(
             space_topology=velocity_space.topology,
@@ -671,7 +674,7 @@ class _ImplicitMPMScratchpad:
         self._velocity_space = velocity_space
         self._vel_space_restriction = vel_space_restriction
 
-    def _create_strain_function_space(self, temporary_store: fem.TemporaryStore, limit_node_count: bool = False):
+    def _create_strain_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
         """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
         domain = self.domain
 
@@ -681,7 +684,7 @@ class _ImplicitMPMScratchpad:
         )
 
         max_strain_node_count = (
-            sym_strain_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if limit_node_count else -1
+            sym_strain_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
         )
 
         strain_space_partition = fem.make_space_partition(
@@ -1285,6 +1288,7 @@ class SolverImplicitMPM(SolverBase):
         self.grid_type = options.grid_type
         self.coloring = options.solver == "gauss-seidel"
         self.apic = options.transfer_scheme == "apic"
+        self.max_active_cell_count = options.max_active_cell_count
 
         self.temporary_store = fem.TemporaryStore()
         self._scratchpad = None
@@ -1494,7 +1498,10 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            if self.grid_type == "dense":
+            if self.grid_type == "sparse":
+                volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
+                grid = fem.Nanogrid(volume, temporary_store=temporary_store)
+            else:
                 # Compute bounds and transfer to host
                 device = positions.device
                 if device.is_cuda:
@@ -1535,16 +1542,14 @@ class SolverImplicitMPM(SolverBase):
                     bounds_hi=wp.vec3(grid_max * voxel_size),
                     res=wp.vec3i((grid_max - grid_min).astype(int)),
                 )
-            else:
-                volume = _allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
-                grid = fem.Nanogrid(volume, temporary_store=temporary_store)
 
         return grid
 
     def _create_geometry_partition(self, grid: fem.Geometry, positions: wp.array, max_cell_count: int):
         """Create a geometry partition for the given positions."""
 
-        active_cells = wp.zeros(grid.cell_count(), dtype=int)
+        active_cells = fem.borrow_temporary(self.temporary_store, shape=grid.cell_count(), dtype=int)
+        active_cells.zero_()
         fem.interpolate(
             mark_active_cells,
             dim=positions.shape[0],
@@ -1556,7 +1561,11 @@ class SolverImplicitMPM(SolverBase):
         )
 
         return fem.ExplicitGeometryPartition(
-            grid, cell_mask=active_cells, max_cell_count=max_cell_count, max_side_count=0
+            grid,
+            cell_mask=active_cells,
+            max_cell_count=max_cell_count,
+            max_side_count=0,
+            temporary_store=self.temporary_store,
         )
 
     def _rebuild_scratchpad(self, positions: wp.array):
@@ -1588,11 +1597,11 @@ class SolverImplicitMPM(SolverBase):
                 max_cell_count = -1
                 geo_partition = grid
             else:
-                max_cell_count = 50000
+                max_cell_count = self.max_active_cell_count
                 geo_partition = self._create_geometry_partition(grid, positions, max_cell_count)
 
             self._scratchpad.create_function_spaces(
-                geo_partition, temporary_store=self.temporary_store, limit_node_count=max_cell_count >= 0
+                geo_partition, temporary_store=self.temporary_store, max_cell_count=max_cell_count
             )
 
             has_compliant_colliders = self.mpm_model.min_collider_mass < _INFINITY

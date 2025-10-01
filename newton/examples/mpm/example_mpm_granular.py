@@ -238,6 +238,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
     parser.add_argument("--grid-padding", "-gp", type=int, default=0)
+    parser.add_argument("--max-active-cell-count", "-mac", type=int, default=-1)
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
