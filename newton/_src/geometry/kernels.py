@@ -1337,7 +1337,7 @@ def create_geo_data(
     if (
         geo_data.geo_type == GeoType.SPHERE
         or geo_data.geo_type == GeoType.CAPSULE
-        or geo_data.geo_type == GeoType.CYLINDER
+        # or geo_data.geo_type == GeoType.CYLINDER # Cylinder does not have an effective radius - it can't be represented as a minkowski sum between some geometry and a sphere
         or geo_data.geo_type == GeoType.CONE
     ):
         geo_data.radius_eff = geo_data.geo_scale[0]

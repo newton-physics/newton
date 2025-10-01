@@ -3,7 +3,7 @@ name: GPU Benchmarks
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: g6e.xlarge
+  AWS_INSTANCE_TYPE: g6e.2xlarge
   AWS_VOLUME_SIZE: 64
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
