@@ -17,6 +17,7 @@
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -570,8 +571,8 @@ class ImplicitMPMOptions:
 class _ImplicitMPMScratchpad:
     """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
 
-    def __init__(self, grid: fem.Geometry, strain_basis_str: str):
-        self.grid = grid
+    def __init__(self):
+        self.grid = None
 
         self.velocity_test = None
         self.velocity_trial = None
@@ -613,10 +614,10 @@ class _ImplicitMPMScratchpad:
         self.collider_total_volumes = None
         self.vel_node_volume = None
 
-        self.create_basis_spaces(grid, strain_basis_str)
-
     def create_basis_spaces(self, grid: fem.Geometry, strain_basis_str: str):
         """Define velocity and strain function spaces over the given geometry."""
+
+        self.grid = grid
 
         # Define function spaces: linear (Q1) for velocity and volume fraction,
         # zero or first order for pressure
@@ -666,7 +667,6 @@ class _ImplicitMPMScratchpad:
             max_node_count=max_vel_node_count,
             temporary_store=temporary_store,
         )
-
         vel_space_restriction = fem.make_space_restriction(
             space_partition=vel_space_partition, domain=domain, temporary_store=temporary_store
         )
@@ -756,10 +756,10 @@ class _ImplicitMPMScratchpad:
             self.collider_quadrature._domain = domain
             self.background_impulse_field.domain = domain
 
-        self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+        self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
         self.collider_position_field = velocity_space.make_field(space_partition=vel_space_partition)
-        self.collider_ids = wp.empty(velocity_space.node_count(), dtype=int)
+        self.collider_ids = wp.empty(vel_space_partition.node_count(), dtype=int)
 
     def require_strain_space_fields(self):
         """Ensure strain-space fields exist and match current spaces."""
@@ -1080,19 +1080,6 @@ class ImplicitMPMModel:
 
         self.notify_collider_changed()
 
-    def state(self):
-        """
-        Create and return a new :class:`State` object for this model.
-
-        The returned state is initialized with the initial configuration from the model description.
-
-        Returns:
-            State: The state object, enriched with MPM-specific attributes
-        """
-        state = self.model.state()
-        SolverImplicitMPM.enrich_state(state)
-        return state
-
 
 @wp.kernel
 def compute_bounds(
@@ -1244,6 +1231,22 @@ def mark_active_cells(
         active_cells[s_grid.element_index] = 1
 
 
+@wp.kernel
+def scatter_field_dof_values(
+    space_node_indices: wp.array(dtype=int),
+    src: wp.array(dtype=Any),
+    dest: wp.array(dtype=Any),
+):
+    nid = wp.tid()
+
+    if nid != fem.types.NULL_NODE_INDEX:
+        dest[space_node_indices[nid]] = src[nid]
+
+
+wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=wp.vec3), "dest": wp.array(dtype=wp.vec3)})
+wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=vec6), "dest": wp.array(dtype=vec6)})
+
+
 class SolverImplicitMPM(SolverBase):
     """Implicit MPM solver.
 
@@ -1291,7 +1294,6 @@ class SolverImplicitMPM(SolverBase):
         self.max_active_cell_count = options.max_active_cell_count
 
         self.temporary_store = fem.TemporaryStore()
-        self._scratchpad = None
 
         self._use_cuda_graph = False
         if self.model.device.is_cuda:
@@ -1304,13 +1306,11 @@ class SolverImplicitMPM(SolverBase):
         self._enable_timers = False
         self._timers_use_nvtx = False
 
-        if self.grid_type == "fixed":
+        with wp.ScopedDevice(model.device):
+            self._scratchpad = _ImplicitMPMScratchpad()
             self._rebuild_scratchpad(model.particle_q)
-            self._scratchpad.require_velocity_space_fields(self.mpm_model.min_young_modulus < _INFINITY)
-            self._scratchpad.require_strain_space_fields()
 
-    @staticmethod
-    def enrich_state(state: newton.State):
+    def enrich_state(self, state: newton.State):
         """Allocate additional per-particle and per-step fields used by the solver.
 
         Adds velocity gradient, elastic and plastic deformation storage, and
@@ -1335,11 +1335,14 @@ class SolverImplicitMPM(SolverBase):
         state.particle_transform = wp.full(state.particle_qd.shape[0], value=identity, dtype=wp.mat33, device=device)
         """Overall deformation gradient, for grain-based rendering"""
 
-        state.velocity_field = None
-        state.impulse_field = None
-        state.stress_field = None
-        state.collider_position_field = None
-        state.collider_ids = None
+        # Store a few additional fields that are necessary for warmstarting, two-way coupling (collect_collider_impulses)
+        # or grain-based rendering
+
+        state.ws_impulse_field = None
+        state.ws_stress_field = None
+        with wp.ScopedDevice(self.model.device):
+            self._require_velocity_space_fields(state)
+            self._require_strain_space_fields(state)
 
     @override
     def step(
@@ -1402,16 +1405,21 @@ class SolverImplicitMPM(SolverBase):
             # Restore previous max query dist
             self.mpm_model.collider.query_max_dist = prev_max_dist
 
-    def collect_collider_impulses(self, state: newton.State):
+    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
 
-        The impulses are returned in world units, integrating the internal
-        nodal impulse density over the voxel volume. Collider ids can be
-        retrieved from ``state.collider_ids`` if needed.
+        Returns a tuple of 3 arrays:
+            - Impulse values in world units.
+            - Collider positions in world units.
+            - Collider ids.
         """
 
         cell_volume = self.mpm_model.voxel_size**3
-        return -cell_volume * state.impulse_field.dof_values
+        return (
+            -cell_volume * state.impulse_field.dof_values,
+            state.collider_position_field.dof_values,
+            state.collider_ids,
+        )
 
     def update_particle_frames(
         self,
@@ -1576,16 +1584,16 @@ class SolverImplicitMPM(SolverBase):
         optionally computes a Gauss-Seidel coloring for the strain nodes.
         """
 
-        if self._scratchpad is None or self.grid_type != "fixed":
+        grid = self._scratchpad.grid
+        if grid is None or self.grid_type != "fixed":
+            # Rebuild grid
             grid = self._allocate_grid(
                 positions,
                 voxel_size=self.mpm_model.voxel_size,
                 temporary_store=self.temporary_store,
                 padding_voxels=self.grid_padding,
             )
-            self._scratchpad = _ImplicitMPMScratchpad(grid, strain_basis_str=self.strain_basis)
-        else:
-            grid = self._scratchpad.grid
+            self._scratchpad.create_basis_spaces(grid, strain_basis_str=self.strain_basis)
 
         with wp.ScopedTimer(
             "Scratchpad",
@@ -1600,6 +1608,7 @@ class SolverImplicitMPM(SolverBase):
                 max_cell_count = self.max_active_cell_count
                 geo_partition = self._create_geometry_partition(grid, positions, max_cell_count)
 
+            # Rebuild space partitions and fields from active cells
             self._scratchpad.create_function_spaces(
                 geo_partition, temporary_store=self.temporary_store, max_cell_count=max_cell_count
             )
@@ -2016,6 +2025,14 @@ class SolverImplicitMPM(SolverBase):
                 use_graph=self._use_cuda_graph,
             )
 
+        with wp.ScopedTimer(
+            "Save warmstart",
+            active=self._enable_timers,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=not self._timers_use_nvtx,
+        ):
+            self._save_for_next_warmstart(state_out)
+
         if has_compliant_particles:
             delta_strain = scratch.int_symmetric_strain.array
             wp.launch(
@@ -2086,17 +2103,30 @@ class SolverImplicitMPM(SolverBase):
         has_compliant_particles = self.mpm_model.min_young_modulus < _INFINITY
         scratch.require_velocity_space_fields(has_compliant_particles)
 
+        # Necessary fields for two-way coupling and grains rendering
+        # Re-generated at each step, defined on space partition
         state_out.velocity_field = scratch.velocity_field
         state_out.impulse_field = scratch.impulse_field
         state_out.collider_ids = scratch.collider_ids
         state_out.collider_position_field = scratch.collider_position_field
+
+        # Impulse warmstarting, defined at space level
+        velocity_space = scratch.velocity_test.space
+        if state_out.ws_impulse_field is None or state_out.ws_impulse_field.geometry != velocity_space.geometry:
+            state_out.ws_impulse_field = velocity_space.make_field()
 
     def _require_strain_space_fields(self, state_out: newton.State):
         """Ensure strain-space fields exist and match current spaces."""
         scratch = self._scratchpad
         scratch.require_strain_space_fields()
 
+        # Re-generated at each step, defined on space partition
         state_out.stress_field = scratch.stress_field
+
+        # Stress warmstarting, define at space level
+        sym_strain_space = scratch.sym_strain_test.space
+        if state_out.ws_stress_field is None or state_out.ws_stress_field.geometry != sym_strain_space.geometry:
+            state_out.ws_stress_field = sym_strain_space.make_field()
 
     def _warmstart_fields(self, state_in: newton.State, state_out: newton.State):
         """Interpolate previous grid fields into the current grid layout.
@@ -2109,28 +2139,48 @@ class SolverImplicitMPM(SolverBase):
         domain = scratch.velocity_test.domain
 
         # Interpolate previous impulse
-        if state_in.impulse_field is not None and state_in.impulse_field is not state_out.impulse_field:
-            prev_impulse_field = fem.NonconformingField(
-                domain, state_in.impulse_field, background=scratch.background_impulse_field
-            )
-            fem.interpolate(
-                prev_impulse_field,
-                dest=fem.make_restriction(
-                    state_out.impulse_field, space_restriction=scratch.velocity_test.space_restriction
-                ),
-            )
+        prev_impulse_field = fem.NonconformingField(
+            domain, state_in.ws_impulse_field, background=scratch.background_impulse_field
+        )
+        fem.interpolate(
+            prev_impulse_field,
+            dest=fem.make_restriction(
+                state_out.impulse_field, space_restriction=scratch.velocity_test.space_restriction
+            ),
+        )
 
         # Interpolate previous stress
-        if state_in.stress_field is not None and state_in.stress_field is not state_out.stress_field:
-            prev_stress_field = fem.NonconformingField(
-                domain, state_in.stress_field, background=scratch.background_stress_field
-            )
-            fem.interpolate(
-                prev_stress_field,
-                dest=fem.make_restriction(
-                    state_out.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
-                ),
-            )
+        prev_stress_field = fem.NonconformingField(
+            domain, state_in.ws_stress_field, background=scratch.background_stress_field
+        )
+        fem.interpolate(
+            prev_stress_field,
+            dest=fem.make_restriction(
+                state_out.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
+            ),
+        )
+
+    def _save_for_next_warmstart(self, state_out: newton.State):
+        state_out.ws_impulse_field.dof_values.zero_()
+        wp.launch(
+            scatter_field_dof_values,
+            dim=state_out.impulse_field.space_partition.node_count(),
+            inputs=[
+                state_out.impulse_field.space_partition.space_node_indices(),
+                state_out.impulse_field.dof_values,
+                state_out.ws_impulse_field.dof_values,
+            ],
+        )
+        state_out.ws_stress_field.dof_values.zero_()
+        wp.launch(
+            scatter_field_dof_values,
+            dim=state_out.stress_field.space_partition.node_count(),
+            inputs=[
+                state_out.stress_field.space_partition.space_node_indices(),
+                state_out.stress_field.dof_values,
+                state_out.ws_stress_field.dof_values,
+            ],
+        )
 
     def _max_colors(self):
         if not self.coloring:

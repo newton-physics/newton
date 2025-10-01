@@ -1048,7 +1048,10 @@ def solve_rheology(
 
     if gs:
         device = velocity.device
-        color_block_count = device.sm_count * 2
+        if device.is_cuda:
+            color_block_count = device.sm_count * 2
+        else:
+            color_block_count = 1
         color_block_dim = 64
         color_launch_dim = color_block_count * color_block_dim
 
@@ -1256,7 +1259,9 @@ def solve_rheology(
 
         device = delta_stress.array.device
         if device.is_capturing:
+            gc.disable()
             wp.capture_while(condition, do_iteration_with_condition)
+            gc.enable()
         else:
             gc.disable()
             with wp.ScopedCapture(force_module_load=False) as capture:
