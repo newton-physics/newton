@@ -178,7 +178,7 @@ class SchemaResolverNewton(SchemaResolver):
             "time_step": [Attribute("newton:timeStep", 0.002)],
             "max_solver_iterations": [Attribute("newton:maxSolverIterations", 5)],
             "enable_gravity": [Attribute("newton:enableGravity", True)],
-            "contact_margin": [Attribute("newton:contactMargin", 0.0)],
+            "rigid_contact_margin": [Attribute("newton:rigidContactMargin", 0.0)],
         },
         PrimType.JOINT: {
             "armature": [Attribute("newton:armature", 1.0e-2)],
@@ -207,7 +207,7 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.SHAPE: {
             "mesh_hull_vertex_limit": [Attribute("newton:hullVertexLimit", -1)],
             # Use ShapeConfig.thickness default for contact margin
-            "contact_margin": [Attribute("newton:contactMargin", 1.0e-5)],
+            "rigid_contact_margin": [Attribute("newton:rigidContactMargin", 1.0e-5)],
         },
         PrimType.BODY: {
             "rigid_body_linear_damping": [Attribute("newton:damping", 0.0)],
@@ -276,7 +276,7 @@ class SchemaResolverPhysx(SchemaResolver):
             ],
             "max_solver_iterations": [Attribute("physxScene:maxVelocityIterationCount", 255)],
             "enable_gravity": [Attribute("physxRigidBody:disableGravity", False, lambda value: not value)],
-            "contact_margin": [Attribute("physxScene:contactOffset", 0.0)],
+            "rigid_contact_margin": [Attribute("physxScene:contactOffset", 0.0)],
         },
         PrimType.JOINT: {
             "armature": [Attribute("physxJoint:armature", 0.0)],
@@ -312,7 +312,7 @@ class SchemaResolverPhysx(SchemaResolver):
             # Mesh hull vertex limit
             "mesh_hull_vertex_limit": [Attribute("physxConvexHullCollision:hullVertexLimit", 64)],
             # Collision contact offset
-            "contact_margin": [Attribute("physxCollision:contactOffset", float("-inf"))],
+            "rigid_contact_margin": [Attribute("physxCollision:contactOffset", float("-inf"))],
         },
         PrimType.MATERIAL: {
             "stiffness": [Attribute("physxMaterial:compliantContactStiffness", 0.0)],
@@ -365,7 +365,7 @@ class SchemaResolverMjc(SchemaResolver):
             "time_step": [Attribute("mjc:option:timestep", 0.002)],
             "max_solver_iterations": [Attribute("mjc:option:iterations", 100)],
             "enable_gravity": [Attribute("mjc:flag:gravity", True)],
-            "contact_margin": [Attribute("mjc:option:o_margin", 0.0)],
+            "rigid_contact_margin": [Attribute("mjc:option:o_margin", 0.0)],
         },
         PrimType.JOINT: {
             "armature": [Attribute("mjc:armature", 0.0)],
