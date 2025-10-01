@@ -16,6 +16,7 @@
 import unittest
 
 import numpy as np
+import warp as wp
 
 from newton._src.geometry.utils import compute_inertia_obb, compute_pca_obb
 from newton.tests.unittest_utils import assert_np_equal
@@ -128,6 +129,34 @@ class TestOBB(unittest.TestCase):
         # Centers should be at origin
         assert_np_equal(np.array(tf_pca[0:3]), np.zeros(3), tol=1e-4)
         assert_np_equal(np.array(tf_inertia[0:3]), np.zeros(3), tol=1e-4)
+
+        # Test orientation: verify OBB axes are orthogonal and properly aligned
+        quat_inertia = np.array(tf_inertia[3:7])  # [x, y, z, w]
+        quat_wp = wp.quat(*quat_inertia)
+
+        # Compute the OBB axes by rotating the standard basis vectors
+        x_axis = np.array(wp.quat_rotate(quat_wp, wp.vec3(1.0, 0.0, 0.0)))
+        y_axis = np.array(wp.quat_rotate(quat_wp, wp.vec3(0.0, 1.0, 0.0)))
+        z_axis = np.array(wp.quat_rotate(quat_wp, wp.vec3(0.0, 0.0, 1.0)))
+
+        # Verify axes are orthonormal
+        self.assertAlmostEqual(np.linalg.norm(x_axis), 1.0, delta=1e-6)
+        self.assertAlmostEqual(np.linalg.norm(y_axis), 1.0, delta=1e-6)
+        self.assertAlmostEqual(np.linalg.norm(z_axis), 1.0, delta=1e-6)
+        self.assertAlmostEqual(np.dot(x_axis, y_axis), 0.0, delta=1e-6)
+        self.assertAlmostEqual(np.dot(y_axis, z_axis), 0.0, delta=1e-6)
+        self.assertAlmostEqual(np.dot(z_axis, x_axis), 0.0, delta=1e-6)
+
+        # For a box rotated 45° around Z, one axis should align with Z, two in XY plane
+        # Check that one axis has significant Z component and two lie mostly in XY plane
+        z_components = [abs(x_axis[2]), abs(y_axis[2]), abs(z_axis[2])]
+        max_z = max(z_components)
+        min_z = min(z_components)
+
+        # One axis should be nearly aligned with Z (z-component ≈ 1)
+        self.assertGreater(max_z, 0.9, "One OBB axis should align with global Z")
+        # Two axes should be in XY plane (z-component ≈ 0)
+        self.assertLess(min_z, 0.1, "Two OBB axes should be in XY plane")
 
     def test_comparable_volumes(self):
         """Test that both methods produce reasonable OBB volumes."""

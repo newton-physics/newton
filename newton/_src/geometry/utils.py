@@ -32,24 +32,17 @@ from .types import (
 
 
 # Warp kernel for inertia-based OBB computation
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_obb_candidates(
     vertices: wp.array(dtype=wp.vec3),
     base_quat: wp.quat,
-    num_angles_per_axis: int,
-    volumes: wp.array(dtype=float),
-    transforms: wp.array(dtype=wp.transform),
-    extents: wp.array(dtype=wp.vec3),
+    volumes: wp.array2d(dtype=float),
+    transforms: wp.array2d(dtype=wp.transform),
+    extents: wp.array2d(dtype=wp.vec3),
 ):
     """Compute OBB candidates for different rotations around principal axes."""
-    tid = wp.tid()
-
-    # Decode which axis and angle this thread handles
-    axis_idx = tid // num_angles_per_axis
-    angle_idx = tid % num_angles_per_axis
-
-    if axis_idx >= 3:
-        return
+    angle_idx, axis_idx = wp.tid()
+    num_angles_per_axis = volumes.shape[0]
 
     # Compute rotation angle around one of the principal axes (X=0, Y=1, Z=2)
     angle = float(angle_idx) * (2.0 * wp.pi) / float(num_angles_per_axis)
@@ -62,7 +55,7 @@ def compute_obb_candidates(
     incremental_quat = wp.quat_from_axis_angle(local_axis, angle)
 
     # Compose rotations: first rotate into principal frame, then apply incremental rotation
-    quat = wp.mul(base_quat, incremental_quat)
+    quat = base_quat * incremental_quat
 
     # Initialize bounds
     min_bounds = wp.vec3(1e10, 1e10, 1e10)
@@ -84,9 +77,9 @@ def compute_obb_candidates(
     world_center = wp.quat_rotate_inv(quat, center)
 
     # Store results
-    volumes[tid] = volume
-    extents[tid] = box_extents
-    transforms[tid] = wp.transform(world_center, wp.quat_inverse(quat))
+    volumes[angle_idx, axis_idx] = volume
+    extents[angle_idx, axis_idx] = box_extents
+    transforms[angle_idx, axis_idx] = wp.transform(world_center, wp.quat_inverse(quat))
 
 
 def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
@@ -220,7 +213,7 @@ def compute_inertia_obb(
     hull_indices = hull_faces.flatten()
 
     # Step 2: Compute mesh inertia
-    mass, com, inertia_tensor, volume = compute_mesh_inertia(
+    _mass, com, inertia_tensor, _volume = compute_mesh_inertia(
         density=1.0,  # Unit density
         vertices=hull_vertices.tolist(),
         indices=hull_indices.tolist(),
@@ -253,28 +246,26 @@ def compute_inertia_obb(
     base_quat = wp.quat_from_matrix(wp.mat33(principal_axes.T.flatten()))
 
     # Step 3: Warp kernel search
-    num_candidates = 3 * num_angle_steps
-
-    # Allocate arrays
+    # Allocate 2D arrays: (num_angle_steps, 3 axes)
     vertices_wp = wp.array(centered_vertices, dtype=wp.vec3)
-    volumes = wp.zeros(num_candidates, dtype=float)
-    transforms = wp.zeros(num_candidates, dtype=wp.transform)
-    extents = wp.zeros(num_candidates, dtype=wp.vec3)
+    volumes = wp.zeros((num_angle_steps, 3), dtype=float)
+    transforms = wp.zeros((num_angle_steps, 3), dtype=wp.transform)
+    extents = wp.zeros((num_angle_steps, 3), dtype=wp.vec3)
 
-    # Launch kernel
+    # Launch kernel with 2D dimensions
     wp.launch(
         compute_obb_candidates,
-        dim=num_candidates,
-        inputs=[vertices_wp, base_quat, num_angle_steps, volumes, transforms, extents],
+        dim=(num_angle_steps, 3),
+        inputs=[vertices_wp, base_quat, volumes, transforms, extents],
     )
 
     # Find minimum volume
     volumes_host = volumes.numpy()
-    best_idx_host = np.argmin(volumes_host)
+    best_idx = np.unravel_index(np.argmin(volumes_host), volumes_host.shape)
 
     # Get results
-    best_transform = transforms.numpy()[best_idx_host]
-    best_extents = extents.numpy()[best_idx_host]
+    best_transform = transforms.numpy()[best_idx]
+    best_extents = extents.numpy()[best_idx]
 
     # Adjust transform to account for original center
     best_transform[0:3] += center
