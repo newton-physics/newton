@@ -312,7 +312,7 @@ if __name__ == "__main__":
         "--bear_path",
         type=str,
         default=os.path.join(newton.examples.get_asset_directory(), "bear.usd"),
-        help="Path to the output USD file.",
+        help="Path to the input USD asset file.",
     )
 
     # Parse arguments and initialize viewer
