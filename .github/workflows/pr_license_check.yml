@@ -1,11 +1,11 @@
 name: License Check
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 on:
   merge_group:
-  pull_request_target:
+  pull_request:
     branches:
       - main
       - "release-*"
