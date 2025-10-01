@@ -147,16 +147,27 @@ class TestOBB(unittest.TestCase):
         self.assertAlmostEqual(np.dot(y_axis, z_axis), 0.0, delta=1e-6)
         self.assertAlmostEqual(np.dot(z_axis, x_axis), 0.0, delta=1e-6)
 
-        # For a box rotated 45° around Z, one axis should align with Z, two in XY plane
-        # Check that one axis has significant Z component and two lie mostly in XY plane
-        z_components = [abs(x_axis[2]), abs(y_axis[2]), abs(z_axis[2])]
-        max_z = max(z_components)
-        min_z = min(z_components)
+        # For a box rotated 45° around Z:
+        # - One axis aligns with Z: z ≈ ±1, x ≈ 0, y ≈ 0
+        # - Two axes in XY plane at 45°: z ≈ 0, x,y ≈ ±0.707
 
-        # One axis should be nearly aligned with Z (z-component ≈ 1)
-        self.assertGreater(max_z, 0.9, "One OBB axis should align with global Z")
-        # Two axes should be in XY plane (z-component ≈ 0)
-        self.assertLess(min_z, 0.1, "Two OBB axes should be in XY plane")
+        axes = [x_axis, y_axis, z_axis]
+
+        # Count axes aligned with Z
+        num_z_aligned = sum(
+            1 for axis in axes if abs(abs(axis[2]) - 1.0) < 0.1 and abs(axis[0]) < 0.1 and abs(axis[1]) < 0.1
+        )
+
+        # Count axes in XY plane with 45° rotation (x,y components ≈ ±0.707)
+        num_xy_at_45deg = sum(
+            1
+            for axis in axes
+            if abs(axis[2]) < 0.1 and abs(abs(axis[0]) - 0.707) < 0.1 and abs(abs(axis[1]) - 0.707) < 0.1
+        )
+
+        # Exactly one axis should align with Z, two should be in XY plane at 45°
+        self.assertEqual(num_z_aligned, 1, "Exactly one OBB axis should align with global Z")
+        self.assertEqual(num_xy_at_45deg, 2, "Exactly two OBB axes should be in XY plane at 45° angle")
 
     def test_comparable_volumes(self):
         """Test that both methods produce reasonable OBB volumes."""
