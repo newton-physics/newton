@@ -2157,7 +2157,7 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             # Flip the normal since we flipped the arguments
             normal = -neg_normal
 
-             # Check if this contact point is valid (primitive function returns wp.inf for invalid contacts)
+            # Check if this contact point is valid (primitive function returns wp.inf for invalid contacts)
             if distance >= 1.0e5:  # Use a reasonable threshold instead of exact wp.inf comparison
                 return
 
