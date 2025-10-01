@@ -29,21 +29,19 @@ import math
 import os
 
 import numpy as np
-from pxr import Gf, Usd, UsdGeom
-
 import warp as wp
 import warp.optim
+from pxr import Gf, Usd, UsdGeom
 
 import newton
 import newton.examples
 
-
 PHASE_COUNT = 8
-PHASE_STEP = wp.constant((2.0 * math.pi) / PHASE_COUNT)
-PHASE_FREQ = wp.constant(5.0)
-ACTIVATION_STRENGTH = wp.constant(0.3)
+PHASE_STEP = (2.0 * math.pi) / PHASE_COUNT
+PHASE_FREQ = 5.0
+ACTIVATION_STRENGTH = 0.3
 
-TILE_TETS = wp.constant(8)
+TILE_TETS = 8
 TILE_THREADS = 64
 
 DEFAULT_BEAR_PATH = os.path.join(newton.examples.get_asset_directory(), "bear.usd")  # Path to input bear asset
@@ -159,7 +157,7 @@ class Example:
         mu = 0.7
 
         scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(ke=ke, kf=kf, kd=kd, mu=mu))
-        
+
         # finalize model
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = scene.finalize(requires_grad=True)
@@ -297,7 +295,7 @@ class Example:
         # draw bear training run
         for i in range(self.sim_steps + 1):
             state = self.states[i * self.sim_substeps]
-            
+
             self.viewer.begin_frame(self.frame * self.frame_dt)
             self.viewer.log_state(state)
             self.viewer.end_frame()
