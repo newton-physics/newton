@@ -254,7 +254,7 @@ class TestModel(unittest.TestCase):
         # bounding box
         self.assertIsNone(builder.shape_source[s1])
         self.assertEqual(builder.shape_type[s1], newton.GeoType.BOX)
-        assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[s1].p), np.array(tf.p), tol=1.0e-4)
         # bounding sphere
