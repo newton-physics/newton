@@ -262,12 +262,12 @@ def create_parser():
     parser.add_argument(
         "--viewer",
         type=str,
-        default="gl",
+        default="usd",
         choices=["gl", "usd", "rerun", "null"],
         help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
-        "--output-path", type=str, default=None, help="Path to the output USD file (required for usd viewer)."
+        "--output-path", type=str, default="output.usd", help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
     parser.add_argument(
