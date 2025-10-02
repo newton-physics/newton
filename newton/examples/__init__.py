@@ -162,7 +162,9 @@ def run(example, args):
         with wp.ScopedTimer("render", active=False):
             example.render()
 
-    if args is not None and args.test and hasattr(example, "test"):
+    if args is not None and args.test:
+        if not hasattr(example, "test"):
+            raise ValueError("Example does not have a test method")
         example.test()
 
     example.viewer.close()
