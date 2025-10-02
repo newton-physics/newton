@@ -184,6 +184,9 @@ class Example:
 
         self.time += 1.0 / 60.0
 
+    def test(self):
+        pass
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
