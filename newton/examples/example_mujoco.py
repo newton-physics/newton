@@ -278,15 +278,15 @@ class Example:
         self.solver = Example.create_solver(
             self.model,
             robot,
-            use_mujoco_cpu,
-            env,
-            solver,
-            integrator,
-            solver_iteration,
-            ls_iteration,
-            njmax,
-            nconmax,
-            ls_parallel,
+            use_mujoco_cpu=use_mujoco_cpu,
+            env=env,
+            solver=solver,
+            integrator=integrator,
+            solver_iteration=solver_iteration,
+            ls_iteration=ls_iteration,
+            njmax=njmax,
+            nconmax=nconmax,
+            ls_parallel=ls_parallel,
         )
 
         if stage_path and not headless:
