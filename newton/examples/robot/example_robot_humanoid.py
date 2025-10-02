@@ -113,7 +113,21 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.01,
+        )
+        threshold = 0.1
+        if self.sim_time < 0.2:
+            threshold = 1.0
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all humanoids have come to a rest",
+            lambda q, qd: max(abs(qd)) < threshold,
+        )
 
 
 if __name__ == "__main__":
@@ -124,4 +138,4 @@ if __name__ == "__main__":
 
     example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
