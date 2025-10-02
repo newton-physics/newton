@@ -20,6 +20,8 @@ import os
 import numpy as np
 import warp as wp
 
+from ..core.types import override
+
 try:
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 except ImportError:
@@ -43,6 +45,34 @@ def _compute_segment_xform(pos0, pos1):
     return (mid, Gf.Quath(rot.GetQuat()), scale)
 
 
+def _usd_add_xform(prim):
+    prim = UsdGeom.Xform(prim)
+    prim.ClearXformOpOrder()
+
+    prim.AddTranslateOp()
+    prim.AddOrientOp()
+    prim.AddScaleOp()
+
+
+def _usd_set_xform(
+    xform,
+    pos: tuple | None = None,
+    rot: tuple | None = None,
+    scale: tuple | None = None,
+    time: float = 0.0,
+):
+    xform = UsdGeom.Xform(xform)
+
+    xform_ops = xform.GetOrderedXformOps()
+
+    if pos is not None:
+        xform_ops[0].Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])), time)
+    if rot is not None:
+        xform_ops[1].Set(Gf.Quatf(float(rot[3]), float(rot[0]), float(rot[1]), float(rot[2])), time)
+    if scale is not None:
+        xform_ops[2].Set(Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2])), time)
+
+
 class ViewerUSD(ViewerBase):
     """
     USD viewer backend for Newton physics simulations.
@@ -52,7 +82,7 @@ class ViewerUSD(ViewerBase):
     and visualization of simulation data.
     """
 
-    def __init__(self, output_path, fps=60, up_axis="Z", num_frames=None):
+    def __init__(self, output_path, fps=60, up_axis="Z", num_frames=100, scaling=1.0):
         """
         Initialize the USD viewer backend for Newton physics simulations.
 
@@ -60,7 +90,8 @@ class ViewerUSD(ViewerBase):
             output_path (str): Path to the output USD file.
             fps (int, optional): Frames per second for time sampling. Default is 60.
             up_axis (str, optional): USD up axis, either 'Y' or 'Z'. Default is 'Z'.
-            num_frames (int, optional): Maximum number of frames to record. If None, recording is unlimited.
+            num_frames (int, optional): Maximum number of frames to record. Default is 100. If None, recording is unlimited.
+            scaling (float, optional): Uniform scaling applied to the scene root. Default is 1.0.
 
         Raises:
             ImportError: If the usd-core package is not installed.
@@ -80,7 +111,23 @@ class ViewerUSD(ViewerBase):
         self.stage.SetFramesPerSecond(fps)
         self.stage.SetStartTimeCode(0)
 
-        UsdGeom.SetStageUpAxis(self.stage, UsdGeom.Tokens.z)
+        axis_token = {
+            "X": UsdGeom.Tokens.x,
+            "Y": UsdGeom.Tokens.y,
+            "Z": UsdGeom.Tokens.z,
+        }.get(self.up_axis.strip().upper())
+
+        UsdGeom.SetStageUpAxis(self.stage, axis_token)
+        UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
+
+        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+
+        # apply root scaling
+        self.root.ClearXformOpOrder()
+        s = self.root.AddScaleOp()
+        s.Set(Gf.Vec3d(float(scaling), float(scaling), float(scaling)), 0.0)
+
+        self.stage.SetDefaultPrim(self.root.GetPrim())
 
         # Track meshes and instancers
         self._meshes = {}  # mesh_name -> prototype_path
@@ -93,6 +140,7 @@ class ViewerUSD(ViewerBase):
 
         self.set_model(None)
 
+    @override
     def begin_frame(self, time):
         """
         Begin a new frame at the given simulation time.
@@ -108,6 +156,7 @@ class ViewerUSD(ViewerBase):
         if self._frame_index > self.stage.GetEndTimeCode():
             self.stage.SetEndTimeCode(self._frame_index)
 
+    @override
     def end_frame(self):
         """
         End the current frame.
@@ -116,6 +165,7 @@ class ViewerUSD(ViewerBase):
         """
         pass
 
+    @override
     def is_running(self):
         """
         Check if the viewer is still running.
@@ -127,6 +177,7 @@ class ViewerUSD(ViewerBase):
             return self._frame_count < self.num_frames
         return True
 
+    @override
     def close(self):
         """
         Finalize and save the USD stage.
@@ -139,13 +190,21 @@ class ViewerUSD(ViewerBase):
         if self.output_path:
             print(f"USD output saved in: {os.path.abspath(self.output_path)}")
 
+    def _get_path(self, name):
+        # Handle both absolute and relative paths correctly
+        if name.startswith("/"):
+            return "/root" + name
+        else:
+            return "/root/" + name
+
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -170,9 +229,9 @@ class ViewerUSD(ViewerBase):
         indices_np = indices.numpy().astype(np.uint32)
 
         if name not in self._meshes:
-            self._ensure_scopes_for_path(self.stage, name)
+            self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
-            mesh_prim = UsdGeom.Mesh.Define(self.stage, name)
+            mesh_prim = UsdGeom.Mesh.Define(self.stage, self._get_path(name))
 
             # setup topology once (do not set every frame)
             face_vertex_counts = [3] * (len(indices_np) // 3)
@@ -197,9 +256,67 @@ class ViewerUSD(ViewerBase):
             pass
 
         # how to hide the prototype mesh but not the instances in USD?
-        # mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
+        mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
+    # log a set of instances as individual mesh prims, slower but makes it easier
+    # to do post-editing of instance materials etc. default for Newton shapes
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        """
+        Log a batch of mesh instances for rendering.
+
+        Args:
+            name (str): Unique name for the instancer.
+            mesh (str): Name of the base mesh.
+            xforms: Array of transforms.
+            scales: Array of scales.
+            colors: Array of colors.
+            materials: Array of materials.
+            hidden: Whether the instances are hidden.
+        """
+        # Get prototype path
+        if mesh not in self._meshes:
+            msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
+            raise RuntimeError(msg)
+
+        self._ensure_scopes_for_path(self.stage, self._get_path(name) + "/scope")
+
+        if xforms:
+            xforms = xforms.numpy()
+
+        if scales:
+            scales = scales.numpy()
+        else:
+            scales = np.ones((len(xforms), 3), dtype=np.float32)
+
+        if colors:
+            colors = colors.numpy()
+
+        for i in range(len(xforms)):
+            instance_path = self._get_path(name) + f"/instance_{i}"
+            instance = self.stage.GetPrimAtPath(instance_path)
+
+            if not instance:
+                instance = self.stage.DefinePrim(instance_path)
+                instance.GetReferences().AddInternalReference(self._get_path(mesh))
+
+                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited" if not hidden else "invisible")
+                _usd_add_xform(instance)
+
+            # update transform
+            if xforms is not None:
+                pos = xforms[i][:3]
+                rot = xforms[i][3:7]
+
+                _usd_set_xform(instance, pos, rot, scales[i], self._frame_index)
+
+            # update color
+            if colors is not None:
+                displayColor = UsdGeom.PrimvarsAPI(instance).GetPrimvar("displayColor")
+                displayColor.Set(colors[i], self._frame_index)
+
+    # log a set of instances as a point instancer, faster but less flexible
+    def log_instances_point_instancer(self, name, mesh, xforms, scales, colors, materials):
         """
         Create or update a PointInstancer for mesh instances.
 
@@ -223,9 +340,9 @@ class ViewerUSD(ViewerBase):
 
         # Create instancer if it doesn't exist
         if name not in self._instancers:
-            self._ensure_scopes_for_path(self.stage, name)
+            self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
-            instancer = UsdGeom.PointInstancer.Define(self.stage, name)
+            instancer = UsdGeom.PointInstancer.Define(self.stage, self._get_path(name))
             instancer.CreateIdsAttr().Set(list(range(num_instances)))
             instancer.CreateProtoIndicesAttr().Set([0] * num_instances)
             UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
@@ -233,7 +350,7 @@ class ViewerUSD(ViewerBase):
             )
 
             # Set the prototype relationship
-            instancer.GetPrototypesRel().AddTarget(mesh)
+            instancer.GetPrototypesRel().AddTarget(self._get_path(mesh))
 
             self._instancers[name] = instancer
 
@@ -286,6 +403,7 @@ class ViewerUSD(ViewerBase):
                 displayColor.SetIndices(indices, self._frame_index)
 
     # Abstract methods that need basic implementations
+    @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """Debug helper to add a line list as a set of capsules
 
@@ -298,9 +416,9 @@ class ViewerUSD(ViewerBase):
         """
 
         if name not in self._instancers:
-            self._ensure_scopes_for_path(self.stage, name)
+            self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
-            instancer = UsdGeom.PointInstancer.Define(self.stage, name)
+            instancer = UsdGeom.PointInstancer.Define(self.stage, self._get_path(name))
 
             # define nested capsule prim
             instancer_capsule = UsdGeom.Capsule.Define(self.stage, instancer.GetPath().AppendChild("capsule"))
@@ -359,6 +477,7 @@ class ViewerUSD(ViewerBase):
 
         instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
+    @override
     def log_points(self, name, points, radii, colors, hidden=False):
         if np.isscalar(radii):
             radius_interp = "constant"
@@ -372,10 +491,11 @@ class ViewerUSD(ViewerBase):
         else:
             color_interp = "vertex"
 
-        instancer = UsdGeom.Points.Get(self.stage, name)
+        path = self._get_path(name)
+        instancer = UsdGeom.Points.Get(self.stage, path)
         if not instancer:
-            self._ensure_scopes_for_path(self.stage, name)
-            instancer = UsdGeom.Points.Define(self.stage, name)
+            self._ensure_scopes_for_path(self.stage, path)
+            instancer = UsdGeom.Points.Define(self.stage, path)
 
             UsdGeom.Primvar(instancer.GetWidthsAttr()).SetInterpolation(radius_interp)
             UsdGeom.Primvar(instancer.GetDisplayColorAttr()).SetInterpolation(color_interp)
@@ -403,6 +523,7 @@ class ViewerUSD(ViewerBase):
         instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
         return instancer.GetPath()
 
+    @override
     def log_array(self, name, array):
         """
         Log array data (not implemented for USD backend).
@@ -411,6 +532,7 @@ class ViewerUSD(ViewerBase):
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         Log scalar value (not implemented for USD backend).
