@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+from typing import override
 
 import numpy as np
 import warp as wp
@@ -138,6 +139,7 @@ class ViewerUSD(ViewerBase):
 
         self.set_model(None)
 
+    @override
     def begin_frame(self, time):
         """
         Begin a new frame at the given simulation time.
@@ -153,6 +155,7 @@ class ViewerUSD(ViewerBase):
         if self._frame_index > self.stage.GetEndTimeCode():
             self.stage.SetEndTimeCode(self._frame_index)
 
+    @override
     def end_frame(self):
         """
         End the current frame.
@@ -161,6 +164,7 @@ class ViewerUSD(ViewerBase):
         """
         pass
 
+    @override
     def is_running(self):
         """
         Check if the viewer is still running.
@@ -172,6 +176,7 @@ class ViewerUSD(ViewerBase):
             return self._frame_count < self.num_frames
         return True
 
+    @override
     def close(self):
         """
         Finalize and save the USD stage.
@@ -191,13 +196,14 @@ class ViewerUSD(ViewerBase):
         else:
             return "/root/" + name
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -253,7 +259,20 @@ class ViewerUSD(ViewerBase):
 
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
-    def log_instances(self, name, mesh, xform, scale, color, material):
+    @override
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        """
+        Log a batch of mesh instances for rendering.
+
+        Args:
+            name (str): Unique name for the instancer.
+            mesh (str): Name of the base mesh.
+            xforms: Array of transforms.
+            scales: Array of scales.
+            colors: Array of colors.
+            materials: Array of materials.
+            hidden: Whether the instances are hidden.
+        """
         # Get prototype path
         if mesh not in self._meshes:
             msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
@@ -261,18 +280,18 @@ class ViewerUSD(ViewerBase):
 
         self._ensure_scopes_for_path(self.stage, self._get_path(name) + "/scope")
 
-        if xform:
-            xform = xform.numpy()
+        if xforms:
+            xforms = xforms.numpy()
 
-        if scale:
-            scale = scale.numpy()
+        if scales:
+            scales = scales.numpy()
         else:
-            scale = np.ones((len(xform), 3), dtype=np.float32)
+            scales = np.ones((len(xforms), 3), dtype=np.float32)
 
-        if color:
-            color = color.numpy()
+        if colors:
+            colors = colors.numpy()
 
-        for i in range(len(xform)):
+        for i in range(len(xforms)):
             instance_path = self._get_path(name) + f"/instance_{i}"
             instance = self.stage.GetPrimAtPath(instance_path)
 
@@ -280,20 +299,20 @@ class ViewerUSD(ViewerBase):
                 instance = self.stage.DefinePrim(instance_path)
                 instance.GetReferences().AddInternalReference(self._get_path(mesh))
 
-                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited")
+                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited" if not hidden else "invisible")
                 _usd_add_xform(instance)
 
             # update transform
-            if xform is not None:
-                pos = xform[i][:3]
-                rot = xform[i][3:7]
+            if xforms is not None:
+                pos = xforms[i][:3]
+                rot = xforms[i][3:7]
 
-                _usd_set_xform(instance, pos, rot, scale[i], self._frame_index)
+                _usd_set_xform(instance, pos, rot, scales[i], self._frame_index)
 
             # update color
-            if color is not None:
+            if colors is not None:
                 displayColor = UsdGeom.PrimvarsAPI(instance).GetPrimvar("displayColor")
-                displayColor.Set(color[i], self._frame_index)
+                displayColor.Set(colors[i], self._frame_index)
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(self, name, mesh, xforms, scales, colors, materials):
@@ -383,6 +402,7 @@ class ViewerUSD(ViewerBase):
                 displayColor.SetIndices(indices, self._frame_index)
 
     # Abstract methods that need basic implementations
+    @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """Debug helper to add a line list as a set of capsules
 
@@ -456,6 +476,7 @@ class ViewerUSD(ViewerBase):
 
         instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
+    @override
     def log_points(self, name, points, radii, colors, hidden=False):
         if np.isscalar(radii):
             radius_interp = "constant"
@@ -501,6 +522,7 @@ class ViewerUSD(ViewerBase):
         instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
         return instancer.GetPath()
 
+    @override
     def log_array(self, name, array):
         """
         Log array data (not implemented for USD backend).
@@ -509,6 +531,7 @@ class ViewerUSD(ViewerBase):
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         Log scalar value (not implemented for USD backend).

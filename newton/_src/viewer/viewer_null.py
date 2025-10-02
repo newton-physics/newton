@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+from typing import override
+
 import warp as wp
 
 from .viewer import ViewerBase
@@ -41,13 +43,14 @@ class ViewerNull(ViewerBase):
         self.num_frames = num_frames
         self.frame_count = 0
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -76,6 +79,7 @@ class ViewerNull(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            hidden: Whether the instances are hidden.
         """
         pass
 
