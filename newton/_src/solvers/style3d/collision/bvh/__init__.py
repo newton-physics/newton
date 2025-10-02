@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Entry point for running examples via 'python -m newton.examples <example_name>'."""
+from .bvh import BvhAabb, BvhEdge, BvhTri
 
-from . import main
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "BvhAabb",
+    "BvhEdge",
+    "BvhTri",
+]

@@ -4,10 +4,10 @@
 Newton Physics Documentation
 ============================
 
-.. image:: /_static/newton-logo.jpg
-   :alt: Newton Physics Engine Logo
+.. image:: /_static/newton-banner.jpg
+   :alt: Newton Physics Engine Banner
    :align: center
-   :class: newton-logo
+   :class: newton-banner
 
 .. raw:: html
     

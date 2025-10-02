@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
 import warp as wp
 
 from newton import Contacts, Model, State
-
-from ..vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
-from ..vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 
 ########################################################################################################################
 ################################################    Collision Handler   ################################################
@@ -76,7 +77,12 @@ def hessian_multiply_kernel(
 
 
 class CollisionHandler:
-    """Handles collision detection and response for cloth simulation."""
+    """Handles collision detection and response for cloth simulation.
+    Note:
+        This class is currently deprecated. Its functionality has been migrated
+        to the `Collision` class. The code is kept temporarily for comparison
+        and experimentation with new approaches.
+    """
 
     def __init__(
         self,
@@ -113,6 +119,9 @@ class CollisionHandler:
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `k` >= 1, collision detection is applied before every `k` VBD iterations.
         """
+        warnings.warn(
+            "CollisionHandler is deprecated. Use `Collision` instead.", category=DeprecationWarning, stacklevel=2
+        )
         if self_contact_margin < self_contact_radius:
             raise ValueError(
                 "self_contact_margin is smaller than self_contact_radius, this will result in missing contacts and cause instability.\n"
