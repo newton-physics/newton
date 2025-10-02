@@ -97,9 +97,6 @@ class ViewerBase:
     def begin_frame(self, time):
         self.time = time
 
-    def is_paused(self):
-        return False
-
     def log_state(self, state):
         """Render the Newton model."""
 
@@ -364,7 +361,7 @@ class ViewerBase:
 
     def log_gizmo(
         self,
-        gid,
+        name,
         transform,
     ):
         # Optional: for interactive viewers
@@ -376,8 +373,8 @@ class ViewerBase:
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
