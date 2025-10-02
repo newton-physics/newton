@@ -102,7 +102,11 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        newton.examples.test_particle_state(
+            self.state_0,
+            "all particles are above the ground",
+            lambda q, qd: q[2] > -0.05,
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -216,4 +220,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer, args)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
