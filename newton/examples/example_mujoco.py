@@ -35,7 +35,6 @@ import newton
 import newton.examples
 import newton.utils
 
-
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
