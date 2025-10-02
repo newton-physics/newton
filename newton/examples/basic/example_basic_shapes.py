@@ -52,23 +52,17 @@ class Example:
 
         # SPHERE
         self.sphere_pos = wp.vec3(0.0, -2.0, drop_z)
-        body_sphere = builder.add_body(
-            xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), key="sphere"
-        )
+        body_sphere = builder.add_body(xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), key="sphere")
         builder.add_shape_sphere(body_sphere, radius=0.5)
 
         # CAPSULE
         self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)
-        body_capsule = builder.add_body(
-            xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), key="capsule"
-        )
+        body_capsule = builder.add_body(xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), key="capsule")
         builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
 
         # CYLINDER
         self.cylinder_pos = wp.vec3(0.0, -4.0, drop_z)
-        body_cylinder = builder.add_body(
-            xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), key="cylinder"
-        )
+        body_cylinder = builder.add_body(xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), key="cylinder")
         builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
 
         # BOX
@@ -91,9 +85,7 @@ class Example:
         demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
 
         self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
-        body_mesh = builder.add_body(
-            xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh"
-        )
+        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         # finalize model

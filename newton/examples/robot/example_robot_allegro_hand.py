@@ -30,6 +30,7 @@
 
 import re
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -120,6 +121,7 @@ class Example:
         self.model = builder.finalize()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
+        self.initial_env_positions = self.model.body_q.numpy()[:: allegro_hand.body_count, :3].copy()
 
         self.env_time = wp.zeros(self.num_envs, dtype=wp.float32)
 
@@ -196,12 +198,18 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.9,
-        )
+        num_bodies_per_env = self.model.body_count // self.num_envs
+        for i in range(self.num_envs):
+            env_pos = wp.vec3(*self.initial_env_positions[i])
+            env_lower = env_pos - wp.vec3(0.5, 0.5, 0.5)
+            env_upper = env_pos + wp.vec3(0.5, 0.5, 0.5)
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                f"all bodies from environment {i} are close to the initial position",
+                lambda q, qd: newton.utils.vec_inside_limits(q.p, env_lower, env_upper),  # noqa: B023
+                indices=np.arange(num_bodies_per_env, dtype=np.int32) + i * num_bodies_per_env,
+            )
 
 
 if __name__ == "__main__":
