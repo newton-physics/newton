@@ -164,7 +164,7 @@ def run(example, args):
 
     if args is not None and args.test:
         if not hasattr(example, "test"):
-            raise ValueError("Example does not have a test method")
+            raise NotImplementedError("Example does not have a test method")
         example.test()
 
     example.viewer.close()
