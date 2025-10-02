@@ -371,7 +371,8 @@ class Example:
     def create_solver(
         model,
         robot,
-        use_mujoco_cpu,
+        *,
+        use_mujoco_cpu=False,
         env="None",
         solver=None,
         integrator=None,
