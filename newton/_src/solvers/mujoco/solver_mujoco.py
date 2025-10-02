@@ -336,6 +336,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 def convert_mj_coords_to_warp_kernel(
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
+    qact: wp.array2d(dtype=wp.float32),
     joints_per_env: int,
     up_axis: int,
     joint_type: wp.array(dtype=wp.int32),
@@ -345,6 +346,7 @@ def convert_mj_coords_to_warp_kernel(
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
+    joint_act: wp.array(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
@@ -383,6 +385,14 @@ def convert_mj_coords_to_warp_kernel(
         joint_qd[wqd_i + 3] = w[0]
         joint_qd[wqd_i + 4] = w[1]
         joint_qd[wqd_i + 5] = w[2]
+
+        joint_act[wqd_i + 0] = qact[worldid, q_i + 0]
+        joint_act[wqd_i + 1] = qact[worldid, q_i + 1]
+        joint_act[wqd_i + 2] = qact[worldid, q_i + 2]
+        joint_act[wqd_i + 3] = qact[worldid, q_i + 3]
+        joint_act[wqd_i + 4] = qact[worldid, q_i + 4]
+        joint_act[wqd_i + 5] = qact[worldid, q_i + 5]
+
     elif type == JointType.BALL:
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -398,6 +408,8 @@ def convert_mj_coords_to_warp_kernel(
         for i in range(3):
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
+            # convert act components
+            joint_act[wqd_i + i] = qact[worldid, qd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -406,12 +418,15 @@ def convert_mj_coords_to_warp_kernel(
         for i in range(axis_count):
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
+            # convert act components
+            joint_act[wqd_i + i] = qact[worldid, qd_i + i]
 
 
 @wp.kernel
 def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
+    joint_act: wp.array(dtype=wp.float32),
     joints_per_env: int,
     up_axis: int,
     joint_type: wp.array(dtype=wp.int32),
@@ -421,6 +436,7 @@ def convert_warp_coords_to_mj_kernel(
     # outputs
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
+    qact: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
 
@@ -460,6 +476,13 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 4] = w[1]
         qvel[worldid, qd_i + 5] = w[2]
 
+        qact[worldid, qd_i + 0] = joint_act[wqd_i + 0]
+        qact[worldid, qd_i + 1] = joint_act[wqd_i + 1]
+        qact[worldid, qd_i + 2] = joint_act[wqd_i + 2]
+        qact[worldid, qd_i + 3] = joint_act[wqd_i + 3]
+        qact[worldid, qd_i + 4] = joint_act[wqd_i + 4]
+        qact[worldid, qd_i + 5] = joint_act[wqd_i + 5]
+
     elif type == JointType.BALL:
         # change quaternion order from xyzw to wxyz
         qpos[worldid, q_i + 0] = joint_q[wq_i + 1]
@@ -469,6 +492,8 @@ def convert_warp_coords_to_mj_kernel(
         for i in range(3):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
+            # convert act components
+            qact[worldid, qd_i + i] = joint_act[wqd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -477,6 +502,8 @@ def convert_warp_coords_to_mj_kernel(
         for i in range(axis_count):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
+            # convert act components
+            qact[worldid, qd_i + i] = joint_act[wqd_i + i]
 
 
 @wp.kernel
@@ -1499,18 +1526,22 @@ class SolverMuJoCo(SolverBase):
             # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
+            qact = mj_data.qact
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
             qpos = wp.empty((1, model.joint_coord_count), dtype=wp.float32, device=model.device)
             qvel = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
+            qact = wp.empty((1, model.joint_dof_count), dtype=wp.float32, device=model.device)
             nworld = 1
         if state is None:
             joint_q = model.joint_q
             joint_qd = model.joint_qd
+            joint_act = model.joint_act
         else:
             joint_q = state.joint_q
             joint_qd = state.joint_qd
+            joint_act = state.joint_act
         joints_per_env = model.joint_count // nworld
         wp.launch(
             convert_warp_coords_to_mj_kernel,
@@ -1518,6 +1549,7 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 joint_q,
                 joint_qd,
+                joint_act,
                 joints_per_env,
                 model.up_axis,
                 model.joint_type,
@@ -1525,12 +1557,13 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
             ],
-            outputs=[qpos, qvel],
+            outputs=[qpos, qvel, qact],
             device=model.device,
         )
         if not is_mjwarp:
             mj_data.qpos[:] = qpos.numpy().flatten()[: len(mj_data.qpos)]
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
+            mj_data.qfrc_actuator[:] = qact.numpy().flatten()[: len(mj_data.qfrc_actuator)]
 
     def update_newton_state(
         self,
@@ -1544,6 +1577,7 @@ class SolverMuJoCo(SolverBase):
             # we have an MjWarp Data object
             qpos = mj_data.qpos
             qvel = mj_data.qvel
+            qact = mj_data.qfrc_actuator
             nworld = mj_data.nworld
 
             xpos = mj_data.xpos
@@ -1552,6 +1586,7 @@ class SolverMuJoCo(SolverBase):
             # we have an MjData object from Mujoco
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
+            qact = wp.array([mj_data.qfrc_actuator], dtype=wp.float32, device=model.device)
             nworld = 1
 
             xpos = wp.array([mj_data.xpos], dtype=wp.vec3, device=model.device)
@@ -1563,6 +1598,7 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 qpos,
                 qvel,
+                qact,
                 joints_per_env,
                 int(model.up_axis),
                 model.joint_type,
@@ -1570,7 +1606,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
             ],
-            outputs=[state.joint_q, state.joint_qd],
+            outputs=[state.joint_q, state.joint_qd, state.joint_act],
             device=model.device,
         )
 
