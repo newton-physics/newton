@@ -351,7 +351,7 @@ class Example:
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
-        custom_setup_fn = ROBOT_CONFIGS[env].get("setup_builder", None)
+        custom_setup_fn = ROBOT_CONFIGS.get(env, {}).get("setup_builder", None)
         if custom_setup_fn is not None:
             custom_setup_fn(articulation_builder)
 
@@ -389,8 +389,8 @@ class Example:
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
 
-        njmax += ROBOT_CONFIGS[env].get("njmax", 0)
-        nconmax += ROBOT_CONFIGS[env].get("nconmax", 0)
+        njmax += ROBOT_CONFIGS.get(env, {}).get("njmax", 0)
+        nconmax += ROBOT_CONFIGS.get(env, {}).get("nconmax", 0)
 
         return newton.solvers.SolverMuJoCo(
             model,
