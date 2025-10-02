@@ -35,6 +35,7 @@ import newton
 import newton.examples
 import newton.utils
 
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -79,11 +80,9 @@ ROBOT_CONFIGS = {
         "ls_parallel": True,
     },
     "kitchen": {
-        "solver": "newton",
-        "integrator": "euler",
+        "setup_builder": lambda x: _setup_kitchen(x),
         "njmax": 3800,
         "nconmax": 900,
-        "ls_parallel": True,
     },
 }
 
@@ -353,8 +352,9 @@ class Example:
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
-        if env == "kitchen":
-            _setup_kitchen(articulation_builder)
+        custom_setup_fn = ROBOT_CONFIGS[env].get("setup_builder", None)
+        if custom_setup_fn is not None:
+            custom_setup_fn(articulation_builder)
 
         builder = newton.ModelBuilder()
         builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
@@ -390,9 +390,8 @@ class Example:
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
 
-        if env == "kitchen":
-            njmax += ROBOT_CONFIGS[env]["njmax"]
-            nconmax += ROBOT_CONFIGS[env]["nconmax"]
+        njmax += ROBOT_CONFIGS[env].get("njmax", 0)
+        nconmax += ROBOT_CONFIGS[env].get("nconmax", 0)
 
         return newton.solvers.SolverMuJoCo(
             model,
