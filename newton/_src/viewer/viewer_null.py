@@ -14,10 +14,9 @@
 # limitations under the License.
 
 
-from typing import override
-
 import warp as wp
 
+from ..core.types import override
 from .viewer import ViewerBase
 
 

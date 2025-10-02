@@ -14,11 +14,11 @@
 # limitations under the License.
 
 import subprocess
-from typing import override
 
 import numpy as np
 import warp as wp
 
+from ..core.types import override
 from .viewer import ViewerBase
 
 try:

@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import time
-from typing import override
 
 import numpy as np
 import warp as wp
@@ -25,6 +24,7 @@ import newton as nt
 from newton.selection import ArticulationView
 from newton.utils import create_sphere_mesh
 
+from ..core.types import override
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL

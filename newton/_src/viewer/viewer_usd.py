@@ -16,10 +16,11 @@
 from __future__ import annotations
 
 import os
-from typing import override
 
 import numpy as np
 import warp as wp
+
+from ..core.types import override
 
 try:
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
