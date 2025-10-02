@@ -316,7 +316,7 @@ def parse_urdf(
             m = static_link_mass
             # cube with side length 0.5
             I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(default_shape_density * np.eye(3))
+            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
