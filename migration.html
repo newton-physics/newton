@@ -1,0 +1,901 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>warp.sim Migration Guide &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="_static/documentation_options.js?v=360bc84d"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'migration';</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Newton Integrations" href="integrations/index.html" />
+    <link rel="prev" title="Frequently Asked Questions (FAQ)" href="faq.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.1.3)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts/conventions.html">Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="faq.html">FAQ</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis"><code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> Migration Guide</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="warp-sim-migration-guide">
+<h1><code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> Migration Guide<a class="headerlink" href="#warp-sim-migration-guide" title="Link to this heading">#</a></h1>
+<p>This guide is designed for users seeking to migrate their applications from <code class="docutils literal notranslate"><span class="pre">warp.sim</span></code> to Newton.</p>
+<section id="solvers">
+<h2>Solvers<a class="headerlink" href="#solvers" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.FeatherstoneIntegrator" title="(in Warp v1.9.1)"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.FeatherstoneIntegrator</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverFeatherstone</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.SemiImplicitIntegrator" title="(in Warp v1.9.1)"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.SemiImplicitIntegrator</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverSemiImplicit</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.VBDIntegrator" title="(in Warp v1.9.1)"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.VBDIntegrator</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.solvers.SolverVBD.html#newton.solvers.SolverVBD" title="newton.solvers.SolverVBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverVBD</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.XPBDIntegrator" title="(in Warp v1.9.1)"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.XPBDIntegrator</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverXPBD</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">integrator.simulate(self.model,</span> <span class="pre">self.state0,</span> <span class="pre">self.state1,</span> <span class="pre">self.dt,</span> <span class="pre">None)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">solver.step(self.state0,</span> <span class="pre">self.state1,</span> <span class="pre">self.control,</span> <span class="pre">None,</span> <span class="pre">self.dt)</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="importers">
+<h2>Importers<a class="headerlink" href="#importers" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.parse_urdf" title="(in Warp v1.9.1)"><code class="xref py py-func docutils literal notranslate"><span class="pre">warp.sim.parse_urdf()</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_urdf" title="newton.ModelBuilder.add_urdf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_urdf()</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.parse_mjcf" title="(in Warp v1.9.1)"><code class="xref py py-func docutils literal notranslate"><span class="pre">warp.sim.parse_mjcf()</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_mjcf" title="newton.ModelBuilder.add_mjcf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_mjcf()</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.parse_usd" title="(in Warp v1.9.1)"><code class="xref py py-func docutils literal notranslate"><span class="pre">warp.sim.parse_usd()</span></code></a></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://nvidia.github.io/warp/modules/sim.html#warp.sim.resolve_usd_from_url" title="(in Warp v1.9.1)"><code class="xref py py-func docutils literal notranslate"><span class="pre">warp.sim.resolve_usd_from_url()</span></code></a></p></td>
+<td><p><code class="xref py py-func docutils literal notranslate"><span class="pre">newton._src.utils.import_usd.resolve_usd_from_url()</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The joint-specific arguments to the importers have been removed.
+Instead, you can set the default joint properties on a <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder</span></code></a> instance in the <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.default_joint_cfg</span></code> attribute.
+For example, <code class="docutils literal notranslate"><span class="pre">limit_lower</span></code> is now defined using <code class="docutils literal notranslate"><span class="pre">builder.default_joint_cfg.limit_lower</span></code>, where <code class="docutils literal notranslate"><span class="pre">builder</span></code> is an instance of <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder</span></code></a>.</p>
+<p>Similarly, the shape contact parameters have been removed from the importers.
+Instead, you can set the default contact parameters on a <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder</span></code></a> instance in the <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.default_shape_cfg</span></code> object before loading the asset.
+For example, <code class="docutils literal notranslate"><span class="pre">ke</span></code> is now defined using <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg.ke</span></code>, where <code class="docutils literal notranslate"><span class="pre">builder</span></code> is an instance of <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder</span></code></a>.</p>
+<p>The MJCF and URDF importers both have an <code class="docutils literal notranslate"><span class="pre">up_axis</span></code> argument that defaults to +Z.
+All importers will rotate the asset now to match the builder’s <code class="docutils literal notranslate"><span class="pre">up_axis</span></code> (instead of overwriting the <code class="docutils literal notranslate"><span class="pre">up_axis</span></code> in the builder, as was the case previously for the USD importer).</p>
+<p>The MJCF importer from Warp sim only uses the <code class="docutils literal notranslate"><span class="pre">geom_density</span></code> defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the <code class="docutils literal notranslate"><span class="pre">density</span></code> argument to <code class="docutils literal notranslate"><span class="pre">wp.sim.parse_mjcf</span></code>). The Newton MJCF importer now considers the <code class="docutils literal notranslate"><span class="pre">geom_density</span></code> for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.</p>
+</section>
+<section id="model">
+<h2><code class="docutils literal notranslate"><span class="pre">Model</span></code><a class="headerlink" href="#model" title="Link to this heading">#</a></h2>
+<p><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ShapeGeometry.is_solid</span></code> now is of dtype <code class="docutils literal notranslate"><span class="pre">bool</span></code> instead of <code class="docutils literal notranslate"><span class="pre">wp.uint8</span></code>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">Model.ground</span></code> attribute and the special ground collision handling have been removed. Instead, you need to manually add a ground plane via <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_ground_plane" title="newton.ModelBuilder.add_ground_plane"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_ground_plane()</span></code></a>.</p>
+<p>The attributes related to joint axes now have the same dimension as the joint dofs, which is <a class="reference internal" href="api/_generated/newton.Model.html#newton.Model.joint_dof_count" title="newton.Model.joint_dof_count"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_dof_count</span></code></a>.
+The <code class="docutils literal notranslate"><span class="pre">Model.joint_axis</span></code> attribute has been removed since it now equals <a class="reference internal" href="api/_generated/newton.Model.html#newton.Model.joint_qd_start" title="newton.Model.joint_qd_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_qd_start</span></code></a>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_geo_src</span></code></p></td>
+<td><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_source</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_geo</span></code></p></td>
+<td><p>Removed <code class="docutils literal notranslate"><span class="pre">ShapeGeometry</span></code> struct</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_geo.type</span></code>, <code class="docutils literal notranslate"><span class="pre">Model.shape_geo.scale</span></code>, etc.</p></td>
+<td><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_type</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_scale</span></code>, etc.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_geo.source</span></code></p></td>
+<td><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_source_ptr</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_materials</span></code></p></td>
+<td><p>Removed <code class="docutils literal notranslate"><span class="pre">ShapeMaterial</span></code> struct</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Model.shape_materials.ke</span></code>, <code class="docutils literal notranslate"><span class="pre">Model.shape_materials.kd</span></code>, etc.</p></td>
+<td><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_material_ke</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_material_kd</span></code>, etc.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="forward-and-inverse-kinematics">
+<h2>Forward and Inverse Kinematics<a class="headerlink" href="#forward-and-inverse-kinematics" title="Link to this heading">#</a></h2>
+<p>The signatures of the <a class="reference internal" href="api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_fk()</span></code></a> and <a class="reference internal" href="api/_generated/newton.eval_ik.html#newton.eval_ik" title="newton.eval_ik"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_ik()</span></code></a> functions have been slightly modified to make the mask argument optional:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">eval_fk(model,</span> <span class="pre">joint_q,</span> <span class="pre">joint_qd,</span> <span class="pre">mask,</span> <span class="pre">state)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">eval_fk(model,</span> <span class="pre">joint_q,</span> <span class="pre">joint_qd,</span> <span class="pre">state,</span> <span class="pre">mask=None)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">eval_ik(model,</span> <span class="pre">state,</span> <span class="pre">joint_q,</span> <span class="pre">joint_qd)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">eval_ik(model,</span> <span class="pre">state,</span> <span class="pre">joint_q,</span> <span class="pre">joint_qd,</span> <span class="pre">mask=None)</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="control">
+<h2><code class="docutils literal notranslate"><span class="pre">Control</span></code><a class="headerlink" href="#control" title="Link to this heading">#</a></h2>
+<p>The <a class="reference internal" href="api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Control</span></code></a> class now has a <a class="reference internal" href="api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Control.joint_f</span></code></a> attribute which encodes the generalized force (torque) input to the joints.
+In order to match the MuJoCo convention, <a class="reference internal" href="api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a> now includes the dofs of the free joints as well, so its dimension is <a class="reference internal" href="api/_generated/newton.Model.html#newton.Model.joint_dof_count" title="newton.Model.joint_dof_count"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_dof_count</span></code></a>.
+The control mode <code class="docutils literal notranslate"><span class="pre">JOINT_MODE_FORCE</span></code> has been removed, since it is now realized by setting <code class="xref py py-attr docutils literal notranslate"><span class="pre">Control.joint_f</span></code> instead of <code class="docutils literal notranslate"><span class="pre">joint_act</span></code>.
+To disable joint target control for a dof, use <code class="docutils literal notranslate"><span class="pre">JointMode.NONE</span></code>.</p>
+<p>The <a class="reference internal" href="api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Control</span></code></a> class now has a <a class="reference internal" href="api/_generated/newton.Control.html#newton.Control.joint_target" title="newton.Control.joint_target"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Control.joint_target</span></code></a> attribute (in place of the previous <code class="docutils literal notranslate"><span class="pre">joint_act</span></code> attribute) that encodes either the position or the velocity target for the control,
+depending on the control mode selected for the joint dof.
+Using joints with zero stiffness (<a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.target_ke" title="newton.ModelBuilder.JointDofConfig.target_ke"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder.JointDofConfig.target_ke</span></code></a>) and damping (<a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig.target_kd" title="newton.ModelBuilder.JointDofConfig.target_kd"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder.JointDofConfig.target_kd</span></code></a>) will disable the target control.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference internal" href="api/_generated/newton.Control.html#newton.Control.joint_target" title="newton.Control.joint_target"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Control.joint_target</span></code></a> is likely a temporary attribute and may be removed in a future release in favor of a more general actuation interface.</p>
+</div>
+</section>
+<section id="modelbuilder">
+<h2><code class="docutils literal notranslate"><span class="pre">ModelBuilder</span></code><a class="headerlink" href="#modelbuilder" title="Link to this heading">#</a></h2>
+<p>The default up axis of the builder is now Z instead of Y.</p>
+<p>Analogously, the geometry types plane, capsule, cylinder, and cone now have their up axis set to the Z axis instead of Y by default.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_body(origin=...,</span> <span class="pre">m=...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_body(xform=...,</span> <span class="pre">mass=...)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder._add_shape()</span></code></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape" title="newton.ModelBuilder.add_shape"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_shape()</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_*(pos=...,</span> <span class="pre">rot=...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_*(xform=...)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_*(...,</span> <span class="pre">ke=...,</span> <span class="pre">ka=...,</span> <span class="pre">...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_*(cfg=ShapeConfig(ke=...,</span> <span class="pre">ka=...,</span> <span class="pre">...))</span></code>
+see <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder.ShapeConfig</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint_*(...,</span> <span class="pre">target=...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint_*(...,</span> <span class="pre">action=...)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder(up_vector=(0,</span> <span class="pre">1,</span> <span class="pre">0))</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ModelBuilder(up_axis=&quot;Y&quot;)</span></code> or <code class="docutils literal notranslate"><span class="pre">ModelBuilder(up_axis=Axis.Y)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JointAxis</span></code></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig" title="newton.ModelBuilder.JointDofConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder.JointDofConfig</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>It is now possible to set the up axis of the builder using the <code class="xref py py-attr docutils literal notranslate"><span class="pre">up_axis</span></code> attribute,
+which can be defined from any value compatible with the <code class="xref py py-obj docutils literal notranslate"><span class="pre">AxisType</span></code> alias.
+<a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.up_vector" title="newton.ModelBuilder.up_vector"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.up_vector</span></code></a> is now a read-only property computed from <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.up_axis</span></code>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint_*()</span></code> functions now use <code class="docutils literal notranslate"><span class="pre">None</span></code> as default args values to be filled in by the <code class="docutils literal notranslate"><span class="pre">ModelBuilder.default_joint_*</span></code> attributes.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint*()</span></code> methods no longer accept <code class="docutils literal notranslate"><span class="pre">linear_compliance</span></code> and <code class="docutils literal notranslate"><span class="pre">angular_compliance</span></code> arguments
+and the <code class="docutils literal notranslate"><span class="pre">Model</span></code> no longer stores them as attributes.
+Instead, you can pass them as arguments to the <a class="reference internal" href="api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.SolverXPBD</span></code></a> constructor. Note that now these values
+apply to all joints and cannot be set individually per joint anymore. So far we have not found applications that require
+per-joint compliance settings and have decided to remove this feature for memory efficiency.</p>
+<p>The <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_free" title="newton.ModelBuilder.add_joint_free"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_joint_free()</span></code></a> method now initializes the positional dofs of the free joint with the child body’s transform (<code class="docutils literal notranslate"><span class="pre">body_q</span></code>).</p>
+<p>The universal and compound joints have been removed in favor of the more general D6 joint.</p>
+</section>
+<section id="renderers">
+<h2>Renderers<a class="headerlink" href="#renderers" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.render.UsdRenderer</span></code></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.viewer.ViewerUSD</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.sim.render.OpenGLRenderer</span></code></p></td>
+<td><p><a class="reference internal" href="api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.viewer.ViewerGL</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solvers">Solvers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#importers">Importers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model"><code class="docutils literal notranslate"><span class="pre">Model</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#forward-and-inverse-kinematics">Forward and Inverse Kinematics</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#control"><code class="docutils literal notranslate"><span class="pre">Control</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#modelbuilder"><code class="docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#renderers">Renderers</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
