@@ -14,7 +14,7 @@ There are two types of parameterizations to describe the configuration of an art
 generalized coordinates and maximal coordinates.
 
 Generalized (sometimes also called "reduced") coordinates describe the configuration of an articulation in terms of joint positions and velocities.
-That means, if an articulation has three bodies connected by two revolute joints, the articulation has two generalized coordinates corresponding to the two joint angles (:attr:`newton.State.joint_q`) and joint velocities (:attr:`newton.State.joint_qd`).
+For example, a double-pendulum articulation (two links serially attached to world by revolute joints) has two generalized coordinates corresponding to the two joint angles (:attr:`newton.State.joint_q`) and joint velocities (:attr:`newton.State.joint_qd`).
 See the table below for the number of generalized coordinates for each joint type.
 Note that for a floating-base articulation (which is connected to the world by a free joint), the generalized coordinates include the maximal coordinates of the base link, i.e. the 3D position and 4D orientation of the base link.
 
@@ -27,13 +27,16 @@ forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to 
 
 In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
 For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit` use maximal coordinates.
+Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
 
-Let's consider an example where we create an articulation with a single revolute joint and initialize
+To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
 
 .. testcode::
 
   builder = newton.ModelBuilder()
+  # create an articulation with a single revolute joint
+  # (articulations are closed automatically by ModelBuilder.finalize())
   builder.add_articulation()
   body = builder.add_body()
   builder.add_shape_box(body)  # add a shape to the body to add some inertia
@@ -49,7 +52,7 @@ its joint angle to 0.5 and joint velocity to 10.0:
   assert all(state.joint_qd.numpy() == [10.0])
 
 While the generalized coordinates have been initialized by the values we set through the :attr:`newton.ModelBuilder.joint_q` and :attr:`newton.ModelBuilder.joint_qd` definitions,
-the body poses (maximal coordinates) are still initialized by the identity transform.
+the body poses (maximal coordinates) are still initialized by the identity transform (since we did not provide a ``xform`` argument to the :meth:`newton.ModelBuilder.add_body` call, it defaults to the identity transform).
 This is not a problem for generalized-coordinate solvers, as they do not use the body poses (maximal coordinates) to represent the state of the articulation but only the generalized coordinates.
 
 In order to update the body poses (maximal coordinates), we need to use the forward kinematics function :func:`newton.eval_fk`:

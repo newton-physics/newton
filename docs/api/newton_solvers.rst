@@ -2,6 +2,34 @@ newton.solvers
 ==============
 
 Solvers are used to integrate the dynamics of a Newton model.
+The typical workflow is to construct a :class:`~newton.Model` and a :class:`~newton.State` object, then use a solver to advance the state forward in time
+via the :meth:`~newton.solvers.SolverBase.step` method:
+
+.. mermaid::
+  :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+  flowchart LR
+      subgraph Input["Input Data"]
+          M[newton.Model]
+          S[newton.State]
+          C[newton.Control]
+          K[newton.Contacts]
+          DT[Time step dt]
+      end
+
+      STEP["solver.step()"]
+
+      subgraph Output["Output Data"]
+          SO["newton.State (updated)"]
+      end
+
+      %% Connections
+      M --> STEP
+      S --> STEP
+      C --> STEP
+      K --> STEP
+      DT --> STEP
+      STEP --> SO
 
 Supported Features
 ------------------
@@ -12,7 +40,7 @@ Supported Features
    :stub-columns: 0
 
    * - Solver
-     - Integration
+     - :abbr:`Integration (Available methods for integrating the dynamics)`
      - Rigid bodies
      - :ref:`Articulations <Articulations>`
      - :abbr:`Rigid contacts (Are contacts between rigid bodies simulated?)`
