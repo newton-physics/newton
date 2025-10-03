@@ -932,7 +932,9 @@ def parse_usd(
         gravity_enabled = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True)
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="contact_margin", default=None)
+        contact_margin = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None
+        )
         if contact_margin is not None:
             builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
@@ -1686,6 +1688,7 @@ def parse_usd(
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
+        "path_original_body_map": path_original_body_map,
     }
 
 
