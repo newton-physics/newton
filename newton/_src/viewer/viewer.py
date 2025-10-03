@@ -377,6 +377,7 @@ class ViewerBase:
         uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
+        face_varying_uv=False,
     ):
         pass
 
