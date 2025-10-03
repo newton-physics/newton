@@ -72,6 +72,8 @@ class SolverFeatherstone(SolverBase):
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
+    This solver uses the routines from :class:`~newton.solvers.SolverSemiImplicit` to simulate particles, cloth, and soft bodies.
+
     Example
     -------
 

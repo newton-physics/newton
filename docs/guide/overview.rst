@@ -20,7 +20,7 @@ Key Features
 ------------
 
 * **GPU-accelerated**: Leverages NVIDIA Warp for fast, scalable simulation.
-* **Multiple solver implementations** - XPBD, VBD, Mujoco, Featherstone, Euler
+* **Multiple solver implementations** - XPBD, VBD, MuJoCo, Featherstone, Euler
 * **Modular design** - Easily extendable with new solvers and components
 * **Differentiable**: Supports differentiable simulation for machine learning and optimization.
 * **Rich Import/Export**: Load models from URDF, MJCF, USD, and more.
@@ -36,13 +36,14 @@ High-Level Architecture
 -----------------------
 
 .. mermaid::
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
 
    graph TD
    A[ModelBuilder] -->|builds| B[Model]
    B --> C[State]
    C --> D[Solver]
    D --> C
-   B --> F[Renderer]
+   B --> F[Viewer]
    C --> F
    G[Importer] --> A
    I[Application] --> A
@@ -52,7 +53,7 @@ High-Level Architecture
 - **Model**: Encapsulates the physical structure, parameters, and configuration.
 - **State**: Represents the dynamic state (positions, velocities, etc.).
 - **Solver**: Advances the simulation by integrating physics.
-- **Renderer**: Visualizes the simulation in real-time or offline.
+- **Viewer**: Visualizes the simulation in real-time or offline.
 - **Importer**: Loads models from external formats (URDF, MJCF, USD).
 
 Quick Links
