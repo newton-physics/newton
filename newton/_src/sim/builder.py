@@ -417,6 +417,7 @@ class ModelBuilder:
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_act = []
         self.joint_f = []
 
         self.joint_type = []
@@ -1101,6 +1102,7 @@ class ModelBuilder:
             "joint_dof_mode",
             "joint_key",
             "joint_qd",
+            "joint_act",
             "joint_f",
             "joint_target",
             "joint_limit_lower",
@@ -1336,6 +1338,7 @@ class ModelBuilder:
             self.joint_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
+            self.joint_act.append(0.0)
             self.joint_f.append(0.0)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
@@ -2084,6 +2087,7 @@ class ModelBuilder:
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "act": self.joint_act[qd_start : qd_start + qd_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
@@ -2277,6 +2281,7 @@ class ModelBuilder:
         self.joint_child.clear()
         self.joint_q.clear()
         self.joint_qd.clear()
+        self.joint_act.clear()
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
         self.joint_enabled.clear()
@@ -4331,6 +4336,7 @@ class ModelBuilder:
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_dof_mode = wp.array(self.joint_dof_mode, dtype=wp.int32)
             m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
