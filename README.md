@@ -385,8 +385,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_walker.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_walker.jpg" alt="DiffSim Walker">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_quadruped.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_quadruped.jpg" alt="DiffSim Quadruped">
       </a>
     </td>
   </tr>
@@ -398,7 +398,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples diffsim_walker</code>
+      <code>uv run -m newton.examples diffsim_quadruped</code>
     </td>
   </tr>
 </table>

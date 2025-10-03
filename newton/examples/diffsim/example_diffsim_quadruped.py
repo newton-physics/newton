@@ -14,12 +14,12 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Walker
+# Example Diffsim Quadruped
 #
 # Trains a tetrahedral mesh quadruped to run. Feeds 8 time-varying input
 # phases as inputs into a single-layer fully connected network with a tanh
 # activation function. Interprets the output of the network as tet
-# activations, which are fed into newton's soft mesh model. This is
+# activations, which are fed into Newton's soft mesh model. This is
 # simulated forward in time and then evaluated based on the center of mass
 # momentum of the mesh.
 #
@@ -35,6 +35,8 @@ from pxr import Gf, Usd, UsdGeom
 
 import newton
 import newton.examples
+from newton.tests.unittest_utils import most
+
 
 PHASE_COUNT = 8
 PHASE_STEP = (2.0 * math.pi) / PHASE_COUNT
@@ -53,7 +55,7 @@ def loss_kernel(com: wp.array(dtype=wp.vec3), loss: wp.array(dtype=float)):
     vx = com[tid][0]
     vy = com[tid][1]
     vz = com[tid][2]
-    delta = wp.abs(vx) + wp.abs(vy) - vz
+    delta = wp.abs(vy) + wp.abs(vz) - vx
 
     wp.atomic_add(loss, 0, delta)
 
@@ -95,13 +97,13 @@ def network(
 
 
 class Example:
-    def __init__(self, viewer, verbose=False, sim_steps=300, bear_path=DEFAULT_BEAR_PATH):
+    def __init__(self, viewer, verbose=False):
         # setup simulation parameters first
         fps = 60
         self.frame = 0
         self.frame_dt = 1.0 / fps
 
-        self.sim_steps = sim_steps
+        self.sim_steps = 300
         self.sim_substeps = 80
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
@@ -117,23 +119,19 @@ class Example:
         self.viewer = viewer
 
         # load bear asset
-        asset_stage = Usd.Stage.Open(bear_path)
+        asset_stage = Usd.Stage.Open(DEFAULT_BEAR_PATH)
 
-        geom = UsdGeom.Mesh(asset_stage.GetPrimAtPath("/root/bear"))
+        geom = UsdGeom.Mesh(asset_stage.GetPrimAtPath("/root/bear/bear"))
         points = geom.GetPointsAttr().Get()
-
-        xform = Gf.Matrix4f(geom.ComputeLocalToWorldTransform(0.0))
-        for i in range(len(points)):
-            points[i] = xform.Transform(points[i])
 
         self.points = [wp.vec3(point) for point in points]
         self.tet_indices = geom.GetPrim().GetAttribute("tetraIndices").Get()
 
         # create sim model
-        scene = newton.ModelBuilder(up_axis=newton.Axis.Y)
+        scene = newton.ModelBuilder()
 
         scene.add_soft_mesh(
-            pos=wp.vec3(0.0, 0.5, 0.0),
+            pos=wp.vec3(0.0, 0.0, 0.5),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
@@ -172,7 +170,7 @@ class Example:
         for _i in range(self.sim_steps * self.sim_substeps + 1):
             self.states.append(self.model.state(requires_grad=True))
 
-        # intitialize control and one-shot contacts (valid for simple collisions against constant plane)
+        # initialize control and one-shot contacts (valid for simple collisions against constant plane)
         self.control = self.model.control()
         self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
 
@@ -197,6 +195,7 @@ class Example:
 
         # optimization
         self.loss = wp.zeros(1, dtype=float, requires_grad=True)
+        self.loss_history = []
         self.coms = []
         for _i in range(self.sim_steps):
             self.coms.append(wp.zeros(1, dtype=wp.vec3, requires_grad=True))
@@ -204,7 +203,7 @@ class Example:
 
         # rendering
         self.viewer.set_model(self.model)
-        self.viewer.set_camera(pos=wp.vec3(30.0, 10.0, 20.0), pitch=-10.0, yaw=200.0)
+        self.viewer.set_camera(pos=wp.vec3(25.0, -20.0, 10.0), pitch=-20.0, yaw=130.0)
 
         # capture forward/backward passes
         self.capture()
@@ -267,7 +266,7 @@ class Example:
         wp.launch(loss_kernel, dim=1, inputs=[self.coms[frame], self.loss], outputs=[])
 
     def step(self):
-        if self.graph is not None:
+        if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.forward_backward()
@@ -275,9 +274,10 @@ class Example:
         # optimization
         self.optimizer.step([self.weights.grad.flatten()])
 
+        loss = self.loss.numpy()
         if self.verbose:
-            loss = self.loss.numpy()
             print(f"Iteration {self.train_iter}: {loss}")
+        self.loss_history.append(loss[0])
 
         # reset sim
         self.sim_time = 0.0
@@ -292,7 +292,7 @@ class Example:
         self.train_iter += 1
 
     def render(self):
-        # draw bear training run
+        # draw training run
         for i in range(self.sim_steps + 1):
             state = self.states[i * self.sim_substeps]
 
@@ -302,29 +302,20 @@ class Example:
 
             self.frame += 1
 
+    def test(self):
+        assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
+
 
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
     parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
-    parser.add_argument("--sim_steps", type=int, default=300, help="Total number of steps per training iteration.")
-    parser.add_argument(
-        "--bear_path",
-        type=str,
-        default=os.path.join(newton.examples.get_asset_directory(), "bear.usd"),
-        help="Path to the input USD asset file.",
-    )
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
     # Create example
-    example = Example(
-        viewer,
-        verbose=args.verbose,
-        sim_steps=args.sim_steps,
-        bear_path=args.bear_path,
-    )
+    example = Example(viewer, verbose=args.verbose)
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)
