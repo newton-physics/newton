@@ -535,8 +535,8 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_quadruped",
     devices=test_devices,
-    test_options={"num_frames": 4 * 60},  # train_iters * sim_steps
-    test_options_cpu={"num_frames": 10},
+    test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 

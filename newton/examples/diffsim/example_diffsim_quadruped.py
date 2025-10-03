@@ -31,12 +31,11 @@ import os
 import numpy as np
 import warp as wp
 import warp.optim
-from pxr import Gf, Usd, UsdGeom
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
 from newton.tests.unittest_utils import most
-
 
 PHASE_COUNT = 8
 PHASE_STEP = (2.0 * math.pi) / PHASE_COUNT
