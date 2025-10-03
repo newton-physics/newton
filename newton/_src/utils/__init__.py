@@ -19,6 +19,12 @@ import warp as wp
 from warp.context import assert_conditional_graph_support
 
 from .download_assets import clear_git_cache, download_asset
+from .schema_resolver import (
+    SchemaResolver,
+    SchemaResolverMjc,
+    SchemaResolverNewton,
+    SchemaResolverPhysx,
+)
 from .topology import topological_sort
 
 
@@ -233,6 +239,10 @@ def check_conditional_graph_support():
 
 
 __all__ = [
+    "SchemaResolver",
+    "SchemaResolverMjc",
+    "SchemaResolverNewton",
+    "SchemaResolverPhysx",
     "boltzmann",
     "check_conditional_graph_support",
     "clear_git_cache",

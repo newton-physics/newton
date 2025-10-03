@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -54,6 +55,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -61,7 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model
+from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -483,6 +485,213 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+        # Custom attributes (user-defined per-frequency arrays)
+        self.custom_attributes: dict[str, CustomAttribute] = {}
+
+    def add_custom_attribute(
+        self,
+        name: str,
+        frequency: ModelAttributeFrequency,
+        default=None,
+        dtype=None,
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
+    ):
+        """Define a custom per-entity attribute to be added to the Model.
+
+        Args:
+            name: Variable name to expose on the Model
+            frequency: ModelAttributeFrequency enum value
+            default: Default value for the attribute. If None, will use dtype-specific default
+                (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
+            assignment: ModelAttributeAssignment enum value determining where the attribute appears
+        """
+        if name in self.custom_attributes:
+            # validate that specification matches exactly
+            existing = self.custom_attributes[name]
+            # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
+            target_dtype = dtype if dtype is not None else existing.dtype
+            if existing.frequency != frequency or existing.dtype != target_dtype or existing.assignment != assignment:
+                raise ValueError(
+                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
+                )
+            return
+
+        self.custom_attributes[name] = CustomAttribute(
+            assignment=assignment,
+            frequency=frequency,
+            name=name,
+            dtype=dtype if dtype is not None else wp.float32,
+            default=default,
+        )
+
+    def _process_custom_attributes(
+        self,
+        entity_index: int,
+        frequency: ModelAttributeFrequency,
+        custom_attrs: dict[str, Any],
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
+    ) -> None:
+        """Process custom attributes from kwargs and assign them to an entity.
+
+        Args:
+            entity_index: Index of the entity (body, shape, joint, etc.)
+            frequency: Frequency type for the custom attributes
+            custom_attrs: Dictionary of custom attribute names to values
+            assignment: Assignment category for the attributes
+        """
+        for attr_name, value in custom_attrs.items():
+            # Infer dtype from the value
+            if isinstance(value, bool):
+                dtype = wp.bool
+            elif isinstance(value, str):
+                # For strings, we'll store them as int32 indices into a string table
+                # For now, just skip strings as they're not directly supported by warp arrays
+                print(f"Warning: String attribute '{attr_name}' with value '{value}' is not supported. Skipping.")
+                continue
+            elif isinstance(value, int):
+                dtype = wp.int32
+            elif isinstance(value, float):
+                dtype = wp.float32
+            elif hasattr(value, "__len__") and not isinstance(value, str):
+                # Handle vector types (but exclude strings which also have __len__)
+                if len(value) == 2:
+                    dtype = wp.vec2
+                elif len(value) == 3:
+                    dtype = wp.vec3
+                elif len(value) == 4:
+                    # Could be vec4 or quat - assume vec4 for now
+                    dtype = wp.vec4
+                else:
+                    dtype = wp.float32  # fallback
+            else:
+                dtype = wp.float32  # fallback for unknown types
+
+            # Ensure the custom attribute is defined
+            if attr_name not in self.custom_attributes:
+                self.add_custom_attribute(name=attr_name, frequency=frequency, dtype=dtype, assignment=assignment)
+
+            # Set the value for this specific entity
+            custom_attr = self.custom_attributes[attr_name]
+            if custom_attr.values is None:
+                custom_attr.values = {}
+            custom_attr.values[entity_index] = value
+
+    def _process_joint_custom_attributes(
+        self,
+        joint_index: int,
+        custom_attrs: dict[str, Any],
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
+    ) -> None:
+        """Process custom attributes from kwargs for joints, supporting multiple frequencies.
+
+        Joint attributes can have different frequencies based on prefixes:
+        - No prefix: JOINT frequency with one value per joint
+        - 'dof_' prefix: JOINT_DOF frequency requiring list with length equal to joint DOF count
+        - 'coord_' prefix: JOINT_COORD frequency requiring list with length equal to joint coordinate count
+
+        For DOF and COORD attributes:
+        - Values must always be provided as lists
+        - List length must exactly match the joint's DOF or coordinate count
+        - DOF count determined by linear_axes plus angular_axes specified during joint creation
+        - For vector types, provide list of vector values
+
+        Args:
+            joint_index: Index of the joint
+            custom_attrs: Dictionary of custom attribute names to values
+            assignment: Assignment category for the attributes
+        """
+
+        # Separate attributes by frequency based on prefixes
+        joint_attrs = {}  # JOINT frequency
+        dof_attrs = {}  # JOINT_DOF frequency
+        coord_attrs = {}  # JOINT_COORD frequency
+
+        for attr_name, value in custom_attrs.items():
+            if attr_name.startswith("dof_"):
+                # Keep the full attribute name as provided by user
+                dof_attrs[attr_name] = value
+            elif attr_name.startswith("coord_"):
+                # Keep the full attribute name as provided by user
+                coord_attrs[attr_name] = value
+            else:
+                # Default to JOINT frequency
+                joint_attrs[attr_name] = value
+
+        # Process JOINT frequency attributes (one per joint)
+        if joint_attrs:
+            self._process_custom_attributes(
+                entity_index=joint_index,
+                frequency=ModelAttributeFrequency.JOINT,
+                custom_attrs=joint_attrs,
+                assignment=assignment,
+            )
+
+        # Process JOINT_DOF frequency attributes (one per DOF)
+        if dof_attrs:
+            # Get DOF range for this joint
+            dof_start = self.joint_qd_start[joint_index]
+            if joint_index + 1 < len(self.joint_qd_start):
+                dof_end = self.joint_qd_start[joint_index + 1]
+            else:
+                dof_end = self.joint_dof_count
+
+            dof_count = dof_end - dof_start
+
+            for attr_name, value in dof_attrs.items():
+                # DOF attributes must always be lists
+                if not isinstance(value, list | tuple):
+                    raise ValueError(
+                        f"DOF attribute '{attr_name}' must be a list with length equal to joint DOF count ({dof_count})"
+                    )
+
+                if len(value) != dof_count:
+                    raise ValueError(
+                        f"DOF attribute '{attr_name}' has {len(value)} values but joint has {dof_count} DOFs"
+                    )
+
+                # Apply each value to its corresponding DOF
+                for i, dof_value in enumerate(value):
+                    single_attr = {attr_name: dof_value}
+                    self._process_custom_attributes(
+                        entity_index=dof_start + i,
+                        frequency=ModelAttributeFrequency.JOINT_DOF,
+                        custom_attrs=single_attr,
+                        assignment=assignment,
+                    )
+
+        # Process JOINT_COORD frequency attributes (one per coordinate)
+        if coord_attrs:
+            # Get coordinate range for this joint
+            coord_start = self.joint_q_start[joint_index]
+            if joint_index + 1 < len(self.joint_q_start):
+                coord_end = self.joint_q_start[joint_index + 1]
+            else:
+                coord_end = self.joint_coord_count
+
+            coord_count = coord_end - coord_start
+
+            for attr_name, value in coord_attrs.items():
+                # COORD attributes must always be lists
+                if not isinstance(value, list | tuple):
+                    raise ValueError(
+                        f"COORD attribute '{attr_name}' must be a list with length equal to joint coordinate count ({coord_count})"
+                    )
+
+                if len(value) != coord_count:
+                    raise ValueError(
+                        f"COORD attribute '{attr_name}' has {len(value)} values but joint has {coord_count} coordinates"
+                    )
+
+                # Apply each value to its corresponding coordinate
+                for i, coord_value in enumerate(value):
+                    single_attr = {attr_name: coord_value}
+                    self._process_custom_attributes(
+                        entity_index=coord_start + i,
+                        frequency=ModelAttributeFrequency.JOINT_COORD,
+                        custom_attrs=single_attr,
+                        assignment=assignment,
+                    )
 
     @property
     def up_vector(self) -> Vec3:
@@ -730,6 +939,8 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        schema_resolvers: list[SchemaResolver] | None = None,
+        collect_solver_specific_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -756,6 +967,17 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
+                [SchemaResolverNewton()].
+            collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+                configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
+                (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
+                are authored in the USD but not strictly required to build the simulation. This is useful for
+                inspection, experimentation, or custom pipelines that read these values via
+                :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
+                properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
+                prevents parsing them. Default is ``True``.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -807,6 +1029,8 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
+            schema_resolvers,
+            collect_solver_specific_attrs,
         )
 
     def add_mjcf(
@@ -1184,6 +1408,7 @@ class ModelBuilder:
         I_m: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
+        **kwargs,
     ) -> int:
         """Adds a rigid body to the model.
 
@@ -1194,6 +1419,8 @@ class ModelBuilder:
             I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
+            **kwargs: Additional custom attributes to assign to this body. Each keyword argument
+                creates a custom attribute with BODY frequency applied to this specific body.
 
         Returns:
             The index of the body in the model.
@@ -1238,6 +1465,16 @@ class ModelBuilder:
         self.body_key.append(key or f"body_{body_id}")
         self.body_shapes[body_id] = []
         self.body_group.append(self.current_env_group)
+
+        # Process custom attributes from kwargs
+        if kwargs:
+            self._process_custom_attributes(
+                entity_index=body_id,
+                frequency=ModelAttributeFrequency.BODY,
+                custom_attrs=kwargs,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
+
         return body_id
 
     # region joints
@@ -1254,6 +1491,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
+        **kwargs,
     ) -> int:
         """
         Generic method to add any type of joint to this ModelBuilder.
@@ -1269,6 +1507,13 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
+            **kwargs: Additional custom attributes to assign to this joint. Supports different frequencies:
+                - No prefix: JOINT frequency with one scalar value applied to the joint
+                - 'dof_' prefix: JOINT_DOF frequency requiring a list of values, one per DOF
+                  List length must equal total DOF count determined by linear_axes plus angular_axes
+                  For vector types, provide a list of vector values
+                - 'coord_' prefix: JOINT_COORD frequency requiring a list of values, one per coordinate
+                  List length must equal joint coordinate count
 
         Returns:
             The index of the added joint.
@@ -1361,7 +1606,15 @@ class ModelBuilder:
                         a, b = b, a
                     self.shape_collision_filter_pairs.append((a, b))
 
-        return self.joint_count - 1
+        joint_index = self.joint_count - 1
+
+        # Process custom attributes from kwargs
+        if kwargs:
+            self._process_joint_custom_attributes(
+                joint_index=joint_index, custom_attrs=kwargs, assignment=ModelAttributeAssignment.MODEL
+            )
+
+        return joint_index
 
     def add_joint_revolute(
         self,
@@ -1385,6 +1638,7 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
+        **kwargs,
     ) -> int:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
 
@@ -1445,6 +1699,7 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
+            **kwargs,
         )
 
     def add_joint_prismatic(
@@ -1726,6 +1981,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
+        **kwargs,
     ) -> int:
         """Adds a generic joint with custom linear and angular axes. The number of axes determines the number of degrees of freedom of the joint.
 
@@ -1761,6 +2017,7 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
+            **kwargs,
         )
 
     def add_equality_constraint(
@@ -2382,6 +2639,7 @@ class ModelBuilder:
         src: SDF | Mesh | Any | None = None,
         is_static: bool = False,
         key: str | None = None,
+        **kwargs,
     ) -> int:
         """Adds a generic collision shape to the model.
 
@@ -2396,6 +2654,8 @@ class ModelBuilder:
             src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
+            **kwargs: Additional custom attributes to assign to this shape. Each keyword argument
+                creates a custom attribute with SHAPE frequency applied to this specific shape.
 
         Returns:
             int: The index of the newly added shape.
@@ -2442,6 +2702,16 @@ class ModelBuilder:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
+
+        # Process custom attributes from kwargs
+        if kwargs:
+            self._process_custom_attributes(
+                entity_index=shape,
+                frequency=ModelAttributeFrequency.SHAPE,
+                custom_attrs=kwargs,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
+
         return shape
 
     def add_shape_plane(
@@ -2526,6 +2796,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
+        **kwargs,
     ) -> int:
         """Adds a sphere collision shape to a body.
 
@@ -2543,14 +2814,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale: Any = wp.vec3(radius, 0.0, 0.0)
-        return self.add_shape(
-            body=body,
-            type=GeoType.SPHERE,
-            xform=xform,
-            cfg=cfg,
-            scale=scale,
-            key=key,
-        )
+        return self.add_shape(body=body, type=GeoType.SPHERE, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
 
     def add_shape_box(
         self,
@@ -2561,6 +2825,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
+        **kwargs,
     ) -> int:
         """Adds a box collision shape to a body.
 
@@ -2574,6 +2839,8 @@ class ModelBuilder:
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            **kwargs: Additional custom attributes to assign to this shape. Each keyword argument
+                creates a custom attribute with SHAPE frequency applied to this specific shape.
 
         Returns:
             int: The index of the newly added shape.
@@ -2582,14 +2849,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale = wp.vec3(hx, hy, hz)
-        return self.add_shape(
-            body=body,
-            type=GeoType.BOX,
-            xform=xform,
-            cfg=cfg,
-            scale=scale,
-            key=key,
-        )
+        return self.add_shape(body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
 
     def add_shape_capsule(
         self,
@@ -2599,6 +2859,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
+        **kwargs,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
@@ -2624,14 +2885,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
-        return self.add_shape(
-            body=body,
-            type=GeoType.CAPSULE,
-            xform=xform,
-            cfg=cfg,
-            scale=scale,
-            key=key,
-        )
+        return self.add_shape(body=body, type=GeoType.CAPSULE, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
 
     def add_shape_cylinder(
         self,
@@ -4412,6 +4666,33 @@ class ModelBuilder:
                 device=device,
                 requires_grad=requires_grad,
             )
+
+            # Add custom attributes onto the model (with lazy evaluation)
+            # Early return if no custom attributes exist to avoid overhead
+            if not self.custom_attributes:
+                return m
+
+            # Process custom attributes
+            for var_name, custom_attr in self.custom_attributes.items():
+                frequency = custom_attr.frequency
+
+                # determine count by frequency
+                if frequency == ModelAttributeFrequency.BODY:
+                    count = m.body_count
+                elif frequency == ModelAttributeFrequency.SHAPE:
+                    count = m.shape_count
+                elif frequency == ModelAttributeFrequency.JOINT:
+                    count = m.joint_count
+                elif frequency == ModelAttributeFrequency.JOINT_DOF:
+                    count = m.joint_dof_count
+                elif frequency == ModelAttributeFrequency.JOINT_COORD:
+                    count = m.joint_coord_count
+                else:
+                    continue
+
+                wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
+                if not hasattr(m, var_name):
+                    m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 
             return m
 
