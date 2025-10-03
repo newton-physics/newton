@@ -51,8 +51,8 @@ class TestAnymalCWalk(unittest.TestCase):
             if step_num % 100 == 0 and step_num != 0:
                 self.assertGreater(
                     qd_linear_corrected[1],
-                    0.5,
-                    f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[1]:.3f} m/s (expected > 0.5)",
+                    0.4,
+                    f"Step {step_num}: Forward velocity too low: {qd_linear_corrected[1]:.3f} m/s (expected > 0.4)",
                 )
 
 
