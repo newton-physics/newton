@@ -57,6 +57,7 @@ class Example:
             collapse_fixed_joints=True,
             enable_self_collisions=False,
             hide_collision_shapes=True,
+            skip_mesh_approximation=True,
         )
 
         for i in range(6, g1.joint_dof_count):
@@ -129,7 +130,18 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all body velocities are small",
+            lambda q, qd: max(abs(qd)) < 0.001,
+        )
 
 
 if __name__ == "__main__":
@@ -140,4 +152,4 @@ if __name__ == "__main__":
 
     example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

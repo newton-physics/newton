@@ -24,6 +24,7 @@ import newton as nt
 from newton.selection import ArticulationView
 from newton.utils import create_sphere_mesh
 
+from ..core.types import override
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -163,6 +164,7 @@ class ViewerGL(ViewerBase):
 
         self._point_mesh.update(points, indices, normals, uvs)
 
+    @override
     def log_gizmo(
         self,
         name,
@@ -171,6 +173,7 @@ class ViewerGL(ViewerBase):
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
 
+    @override
     def set_model(self, model):
         """
         Set the Newton model to visualize.
@@ -186,18 +189,20 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
+    @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         self.camera.pos = pos
         self.camera.pitch = pitch
         self.camera.yaw = yaw
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -227,6 +232,7 @@ class ViewerGL(ViewerBase):
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         Log a batch of mesh instances for rendering.
@@ -238,6 +244,7 @@ class ViewerGL(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
+            hidden: Whether the instances are hidden.
         """
         if mesh not in self.objects:
             raise RuntimeError(f"Path {mesh} not found")
@@ -256,6 +263,7 @@ class ViewerGL(ViewerBase):
 
         self.objects[name].hidden = hidden
 
+    @override
     def log_lines(
         self,
         name,
@@ -273,6 +281,7 @@ class ViewerGL(ViewerBase):
             starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
             ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
             colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            width: The width of the lines (float)
             hidden (bool): Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
@@ -312,6 +321,7 @@ class ViewerGL(ViewerBase):
 
         self.lines[name].update(starts, ends, colors)
 
+    @override
     def log_points(self, name, points, radii, colors, hidden=False):
         """
         Log a batch of points for rendering as spheres.
@@ -332,18 +342,21 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
+    @override
     def log_array(self, name, array):
         """
         Log a generic array for visualization (not implemented).
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         Log a scalar value for visualization (not implemented).
         """
         pass
 
+    @override
     def log_state(self, state):
         """
         Cache the simulation state for UI panels and call parent log_state.
@@ -389,6 +402,7 @@ class ViewerGL(ViewerBase):
         # Render the line
         self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
+    @override
     def begin_frame(self, time):
         """
         Begin a new frame (calls parent implementation).
@@ -399,6 +413,7 @@ class ViewerGL(ViewerBase):
         super().begin_frame(time)
         self._gizmo_log = {}
 
+    @override
     def end_frame(self):
         """
         Finish rendering the current frame and process window events.
@@ -412,6 +427,7 @@ class ViewerGL(ViewerBase):
         """
         self._update()
 
+    @override
     def apply_forces(self, state):
         """
         Apply viewer-driven forces (picking, wind) to the model.
@@ -459,6 +475,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
+    @override
     def is_running(self) -> bool:
         """
         Check if the viewer is still running.
@@ -468,6 +485,7 @@ class ViewerGL(ViewerBase):
         """
         return not self.renderer.has_exit()
 
+    @override
     def is_paused(self) -> bool:
         """
         Check if the simulation is paused.
@@ -477,6 +495,7 @@ class ViewerGL(ViewerBase):
         """
         return self._paused
 
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
@@ -503,6 +522,7 @@ class ViewerGL(ViewerBase):
         """
         self.renderer.set_vsync(enabled)
 
+    @override
     def is_key_down(self, key):
         """
         Check if a key is currently pressed.

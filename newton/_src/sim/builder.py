@@ -54,7 +54,7 @@ from ..geometry import (
     transform_inertia,
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
-from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -3216,7 +3216,7 @@ class ModelBuilder:
                 mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
-                tf, scale = compute_obb(vertices)
+                tf, scale = compute_inertia_obb(vertices)
                 self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
                 self.shape_scale[shape] = scale

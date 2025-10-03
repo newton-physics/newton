@@ -24,6 +24,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -243,6 +244,37 @@ def assert_np_equal(result: np.ndarray, expect: np.ndarray, tol=0.0):
     else:
         # TODO: Get all tests working with strict=True
         np.testing.assert_array_equal(result, expect)
+
+
+def most(x: np.ndarray, min_ratio: float = 0.8) -> bool:
+    """Helper function to check if most elements of an array are greater than 0 (or True)."""
+    if len(x) == 0:
+        return True
+    return bool(np.sum(x > 0) / len(x) >= min_ratio)
+
+
+def find_nan_members(obj: Any | None) -> list[str]:
+    """Helper function to find any Warp array members of an object that contain NaN values."""
+    nan_members = []
+    if obj is None:
+        return nan_members
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if np.isnan(attr.numpy()).any():
+                nan_members.append(key)
+    return nan_members
+
+
+def find_nonfinite_members(obj: Any | None) -> list[str]:
+    """Helper function to find any Warp array members of an object that contain non-finite values."""
+    nonfinite_members = []
+    if obj is None:
+        return nonfinite_members
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if not np.isfinite(attr.numpy()).all():
+                nonfinite_members.append(key)
+    return nonfinite_members
 
 
 # if check_output is True any output to stdout will be treated as an error
