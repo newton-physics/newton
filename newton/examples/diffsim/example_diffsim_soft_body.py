@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example FEM Bounce
+# Example Diffsim Soft Body
 #
 # Shows how to use Newton to optimize for the material parameters of a soft body,
 # such that it bounces off the wall and floor in order to hit a target.
@@ -32,6 +32,7 @@ import warp.optim
 
 import newton
 import newton.examples
+from newton.tests.unittest_utils import most
 
 
 @wp.kernel
@@ -93,7 +94,7 @@ class Example:
         self.com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, requires_grad=True)
         self.pos_error = wp.zeros(1, dtype=wp.float32, requires_grad=True)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-        self.losses = []
+        self.loss_history = []
 
         # setup rendering
         self.viewer = viewer
@@ -294,7 +295,7 @@ class Example:
             outputs=(self.material_params,),
         )
 
-        self.losses.append(self.loss.numpy()[0])
+        self.loss_history.append(self.loss.numpy()[0])
 
         # clear grads for next iteration
         self.tape.zero()
@@ -323,7 +324,8 @@ class Example:
         )
 
     def test(self):
-        pass
+        assert all(np.array(self.loss_history) < 0.8)
+        assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
 
     def render(self):
         if self.frame > 0 and self.train_iter % 10 != 0:
@@ -349,7 +351,7 @@ class Example:
                 f"/traj_{self.train_iter - 1}",
                 wp.array(traj_verts[0:-1], dtype=wp.vec3),
                 wp.array(traj_verts[1:], dtype=wp.vec3),
-                wp.render.bourke_color_map(0.0, self.losses[0], self.losses[-1]),
+                wp.render.bourke_color_map(0.0, self.loss_history[0], self.loss_history[-1]),
             )
             self.viewer.end_frame()
 
@@ -374,4 +376,4 @@ if __name__ == "__main__":
     example = Example(viewer, material_behavior=args.material_behavior, verbose=args.verbose)
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

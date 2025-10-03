@@ -410,7 +410,12 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
 
 
 if __name__ == "__main__":
@@ -469,4 +474,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
     # Run using standard example loop
-    newton.examples.run(example)
+    newton.examples.run(example, args)
