@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Solvers are used to integrate the dynamics of a Newton model.
+"""
+
 # solver types
 from ._src.solvers import (
     SolverBase,

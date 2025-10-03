@@ -1,3 +1,5 @@
+.. _Articulations:
+
 Articulations
 =============
 
@@ -17,8 +19,8 @@ See the table below for the number of generalized coordinates for each joint typ
 Note that for a floating-base articulation (which is connected to the world by a free joint), the generalized coordinates include the maximal coordinates of the base link, i.e. the 3D position and 4D orientation of the base link.
 
 Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
-Each rigid body has 7 degrees of freedom to describe its position (3D vector) and orientation (XYZW quaternion) in space, see :attr:`newton.State.body_q`,
-and 6 degrees of freedom to describe its velocity (3D vector for linear velocity and 3D vector for angular velocity) in space, see :attr:`newton.State.body_qd`.
+Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
+and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 
 To convert between these two representations we use forward and inverse kinematics:
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
