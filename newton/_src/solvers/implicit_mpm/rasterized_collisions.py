@@ -405,7 +405,7 @@ def allot_collider_mass(
 
     collider_total_volumes.zero_()
     fem.interpolate(
-        collider_total_volumes,
+        collider_volumes,
         quadrature=collider_quadrature,
         values={
             "collider": collider,

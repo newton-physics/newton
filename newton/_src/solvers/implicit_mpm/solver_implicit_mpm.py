@@ -1649,6 +1649,9 @@ class SolverImplicitMPM(SolverBase):
         has_compliant_colliders = mpm_model.min_collider_mass < _INFINITY
         has_hardening = mpm_model.max_hardening > 0.0
 
+        prev_impulse_field = state_in.impulse_field
+        prev_stress_field = state_in.stress_field
+
         # Bin particles to grid cells
         with wp.ScopedTimer(
             "Bin particles",
@@ -1794,7 +1797,7 @@ class SolverImplicitMPM(SolverBase):
                 rigidity_matrix = build_rigidity_matrix(
                     voxel_size=self.mpm_model.voxel_size,
                     node_volumes=scratch.vel_node_volume.array,
-                    node_positions=scratch.node_positions.array,
+                    node_positions=state_out.collider_position_field.dof_values,
                     collider=self.mpm_model.collider,
                     collider_ids=state_out.collider_ids,
                     collider_coms=self.mpm_model.collider_coms,
@@ -1988,7 +1991,7 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            self._warmstart_fields(state_in, state_out)
+            self._warmstart_fields(prev_impulse_field, prev_stress_field)
 
         with wp.ScopedTimer(
             "Strain solve",
@@ -2128,7 +2131,7 @@ class SolverImplicitMPM(SolverBase):
         if state_out.ws_stress_field is None or state_out.ws_stress_field.geometry != sym_strain_space.geometry:
             state_out.ws_stress_field = sym_strain_space.make_field()
 
-    def _warmstart_fields(self, state_in: newton.State, state_out: newton.State):
+    def _warmstart_fields(self, prev_impulse_field: fem.Field, prev_stress_field: fem.Field):
         """Interpolate previous grid fields into the current grid layout.
 
         Transfers impulse and stress fields from the previous grid to the new
@@ -2140,23 +2143,21 @@ class SolverImplicitMPM(SolverBase):
 
         # Interpolate previous impulse
         prev_impulse_field = fem.NonconformingField(
-            domain, state_in.ws_impulse_field, background=scratch.background_impulse_field
+            domain, prev_impulse_field, background=scratch.background_impulse_field
         )
         fem.interpolate(
             prev_impulse_field,
-            dest=fem.make_restriction(
-                state_out.impulse_field, space_restriction=scratch.velocity_test.space_restriction
-            ),
+            dest=fem.make_restriction(scratch.impulse_field, space_restriction=scratch.velocity_test.space_restriction),
         )
 
         # Interpolate previous stress
         prev_stress_field = fem.NonconformingField(
-            domain, state_in.ws_stress_field, background=scratch.background_stress_field
+            domain, prev_stress_field, background=scratch.background_stress_field
         )
         fem.interpolate(
             prev_stress_field,
             dest=fem.make_restriction(
-                state_out.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
+                scratch.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
             ),
         )
 

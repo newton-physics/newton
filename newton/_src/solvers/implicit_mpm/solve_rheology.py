@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common definitions for types and constants."""
-
 import gc
 import math
 from typing import Any
@@ -1162,7 +1160,7 @@ def solve_rheology(
 
     # Collider contacts
 
-    if rigidity_mat is None:
+    if rigidity_mat is not None:
         prev_collider_velocity = fem.borrow_temporary_like(collider_velocities, temporary_store)
         wp.copy(dest=prev_collider_velocity.array, src=collider_velocities)
 
