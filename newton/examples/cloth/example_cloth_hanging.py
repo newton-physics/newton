@@ -19,7 +19,7 @@
 # This simulation demonstrates a simple cloth hanging behavior. A planar cloth
 # mesh is fixed on one side and hangs under gravity, colliding with the ground.
 #
-# Command: python -m newton.examples cloth_hanging (--solver [euler, style3d, xpbd, vbd])
+# Command: python -m newton.examples cloth_hanging (--solver [semi_implicit, style3d, xpbd, vbd])
 #
 ###########################################################################
 
@@ -47,7 +47,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             self.sim_substeps = 32
         elif self.solver_type == "style3d":
             self.sim_substeps = 2
@@ -64,7 +64,7 @@ class Example:
         else:
             builder = newton.ModelBuilder()
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             ground_cfg = builder.default_shape_cfg.copy()
             ground_cfg.ke = 1.0e2
             ground_cfg.kd = 5.0e1
@@ -89,7 +89,7 @@ class Example:
         }
 
         solver_params = {}
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
@@ -130,7 +130,7 @@ class Example:
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
         elif self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
@@ -218,7 +218,7 @@ if __name__ == "__main__":
         "--solver",
         help="Type of solver",
         type=str,
-        choices=["euler", "style3d", "xpbd", "vbd"],
+        choices=["semi_implicit", "style3d", "xpbd", "vbd"],
         default="vbd",
     )
     parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")

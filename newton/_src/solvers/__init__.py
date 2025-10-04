@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .euler import SolverSemiImplicit
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
 from .mujoco import SolverMuJoCo
+from .semi_implicit import SolverSemiImplicit
 from .solver import SolverBase
 from .style3d import SolverStyle3D
 from .vbd import SolverVBD
