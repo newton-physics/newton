@@ -165,7 +165,7 @@ def update_collider_coms(
 class Example:
     def __init__(self, viewer):
         # setup simulation parameters first
-        self.fps = 200
+        self.fps = 250
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 1
@@ -208,7 +208,7 @@ class Example:
         # generate a few shapes with varying types and sizes
         # boxes
         # boxes = [(0.45, 0.35, 0.25)]  # (hx, hy, hz)
-        boxes = [(0.45, 0.35, 0.25), (0.25, 0.25, 0.25), (0.5, 0.2, 0.2)]  # (hx, hy, hz)
+        boxes = [(0.45, 0.35, 0.25), (0.25, 0.25, 0.25), (0.6, 0.2, 0.2)]  # (hx, hy, hz)
         for box in boxes:
             (hx, hy, hz) = box
 
@@ -376,6 +376,7 @@ class Example:
 
         self.ref_q = wp.clone(self.state_0.body_q)
         self._update_collider_mesh(self.state_0)
+        self.collect_collider_impulses()
 
         self.particle_render_colors = wp.full(
             self.sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=self.sand_model.device
@@ -394,7 +395,27 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.state_0.body_f.assign(self.sand_body_forces)
+
+            # self.sand_body_forces.zero_()
+            wp.launch(
+                compute_body_forces,
+                dim=self.collider_impulse_ids.shape[0],
+                inputs=[
+                    self.frame_dt,
+                    self.collider_impulse_ids,
+                    self.collider_impulses,
+                    self.collider_impulse_pos,
+                    self.collider_body_id,
+                    self.state_0.body_q,
+                    self.model.body_com,
+                    self.state_0.body_f,
+                ],
+            )
+            self.sand_body_forces.assign(self.state_0.body_f)
+            # wp.assign(self.state_0.body_f, self.sand_body_forces)
+            print(self.state_0.body_f)
+
+            # self.state_0.body_f.assign(self.sand_body_forces)
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
@@ -404,7 +425,11 @@ class Example:
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-        
+
+    def collect_collider_impulses(self):
+        self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
+            self.mpm_solver.collect_collider_impulses(self.sand_state_0)
+        )
 
     def simulate_sand(self):
         # one MPM step per frame (no collider setup for now)
@@ -412,27 +437,9 @@ class Example:
 
         self.mpm_solver.step(self.sand_state_0, self.sand_state_0, contacts=None, control=None, dt=self.frame_dt)
 
-        collider_impulses, collider_impulse_pos, collider_ids = self.mpm_solver.collect_collider_impulses(
-            self.sand_state_0
-        )
+        self.collect_collider_impulses()
 
-        body_impulses = collider_impulses.numpy()[collider_ids.numpy() == 0]
-
-        self.sand_body_forces.zero_()
-        wp.launch(
-            compute_body_forces,
-            dim=collider_ids.shape[0],
-            inputs=[
-                self.frame_dt,
-                collider_ids,
-                collider_impulses,
-                collider_impulse_pos,
-                self.collider_body_id,
-                self.state_0.body_q,
-                self.model.body_com,
-                self.sand_body_forces,
-            ],
-        )
+        # body_impulses = collider_impulses.numpy()[collider_ids.numpy() == 0]
 
         # print(self.state_0.body_q)
         # delta_qd = wp.zeros_like(self.state_0.body_qd)
@@ -457,13 +464,11 @@ class Example:
         # )
         # self.state_0.body_qd += delta_qd
 
-
-        print(np.sum(body_impulses) / self.frame_dt)
-        print(self.model.gravity * self.model.body_mass.numpy()[0])
-        print(self.sand_body_forces.numpy())
+        # print(np.sum(body_impulses) / self.frame_dt)
+        # print(self.model.gravity * self.model.body_mass.numpy()[0])
+        # print(self.sand_body_forces.numpy())
 
     def step(self):
-
         self.ref_q.assign(self.state_0.body_q)
 
         if self.graph:
@@ -501,8 +506,6 @@ class Example:
         self.viewer.end_frame()
 
     def _update_collider_mesh(self, state_next):
-
-
         wp.launch(
             update_collider_coms,
             dim=self.collider_body_id.shape[0],
