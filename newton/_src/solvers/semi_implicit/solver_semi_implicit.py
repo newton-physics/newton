@@ -39,7 +39,7 @@ from .kernels_particle import (
 
 
 class SolverSemiImplicit(SolverBase):
-    """A semi-implicit integrator using symplectic Euler
+    """A semi-implicit integrator using symplectic Euler.
 
     After constructing `Model` and `State` objects this time-integrator
     may be used to advance the simulation state forward in time.
@@ -73,10 +73,9 @@ class SolverSemiImplicit(SolverBase):
         joint_attach_kd: float = 1.0e2,
         enable_tri_contact: bool = True,
     ):
-        """Create a new Euler solver.
-
+        """
         Args:
-            model (Model): Model to use by this solver.
+            model (Model): the model to be simulated.
             angular_damping (float, optional): Angular damping factor to be used in rigid body integration. Defaults to 0.05.
             friction_smoothing (float, optional): Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
             joint_attach_ke (float, optional): Joint attachment spring stiffness. Defaults to 1.0e4.
