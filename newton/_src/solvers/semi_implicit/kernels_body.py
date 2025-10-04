@@ -31,7 +31,7 @@ from ...sim import (
 
 
 @wp.func
-def eval_joint_force(
+def joint_force(
     q: float,
     qd: float,
     act: float,
@@ -189,7 +189,7 @@ def eval_body_joints(
 
         f_total = axis_p * (
             -joint_f[qd_start]
-            - eval_joint_force(
+            - joint_force(
                 q,
                 qd,
                 act,
@@ -227,7 +227,7 @@ def eval_body_joints(
 
         t_total = axis_p * (
             -joint_f[qd_start]
-            - eval_joint_force(
+            - joint_force(
                 q,
                 qd,
                 act,
@@ -266,7 +266,7 @@ def eval_body_joints(
 
             f_total += axis_0 * (
                 -joint_f[qd_start]
-                - eval_joint_force(
+                - joint_force(
                     q0,
                     qd0,
                     joint_target[qd_start + 0],
@@ -290,7 +290,7 @@ def eval_body_joints(
 
             f_total += axis_1 * (
                 -joint_f[qd_start + 1]
-                - eval_joint_force(
+                - joint_force(
                     q1,
                     qd1,
                     joint_target[qd_start + 1],
@@ -314,7 +314,7 @@ def eval_body_joints(
 
             f_total += axis_2 * (
                 -joint_f[qd_start + 2]
-                - eval_joint_force(
+                - joint_force(
                     q2,
                     qd2,
                     joint_target[qd_start + 2],
@@ -358,7 +358,7 @@ def eval_body_joints(
 
             t_total = axis_p * (
                 -joint_f[qdi_start]
-                - eval_joint_force(
+                - joint_force(
                     q,
                     qd,
                     joint_target[i_0],
@@ -404,7 +404,7 @@ def eval_body_joints(
 
             t_total += axis_0 * (
                 -joint_f[qdi_start]
-                - eval_joint_force(
+                - joint_force(
                     angles[0],
                     wp.dot(axis_0, w_err),
                     joint_target[i_0],
@@ -419,7 +419,7 @@ def eval_body_joints(
             )
             t_total += axis_1 * (
                 -joint_f[qdi_start + 1]
-                - eval_joint_force(
+                - joint_force(
                     angles[1],
                     wp.dot(axis_1, w_err),
                     joint_target[i_1],
@@ -434,7 +434,7 @@ def eval_body_joints(
             )
 
             # last axis (fixed)
-            t_total += axis_2 * -eval_joint_force(
+            t_total += axis_2 * -joint_force(
                 angles[2],
                 wp.dot(axis_2, w_err),
                 0.0,
@@ -472,7 +472,7 @@ def eval_body_joints(
 
             t_total += axis_0 * (
                 -joint_f[qdi_start]
-                - eval_joint_force(
+                - joint_force(
                     angles[0],
                     wp.dot(axis_0, w_err),
                     joint_target[i_0],
@@ -487,7 +487,7 @@ def eval_body_joints(
             )
             t_total += axis_1 * (
                 -joint_f[qdi_start + 1]
-                - eval_joint_force(
+                - joint_force(
                     angles[1],
                     wp.dot(axis_1, w_err),
                     joint_target[i_1],
@@ -502,7 +502,7 @@ def eval_body_joints(
             )
             t_total += axis_2 * (
                 -joint_f[qdi_start + 2]
-                - eval_joint_force(
+                - joint_force(
                     angles[2],
                     wp.dot(axis_2, w_err),
                     joint_target[i_2],
