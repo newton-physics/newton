@@ -27,6 +27,9 @@ from .kernels_contact import (
     eval_particle_contact_forces,
     eval_triangle_contact_forces,
 )
+from .kernels_muscle import (
+    eval_muscle_forces,
+)
 from .kernels_particle import (
     eval_bending_forces,
     eval_spring_forces,

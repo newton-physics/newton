@@ -19,7 +19,7 @@ from ...sim import Control, Model, State
 
 
 @wp.func
-def compute_muscle_force(
+def muscle_force(
     i: int,
     body_X_s: wp.array(dtype=wp.transform),
     body_v_s: wp.array(dtype=wp.spatial_vector),
@@ -74,7 +74,7 @@ def eval_muscle(
     activation = muscle_activation[tid]
 
     for i in range(m_start, m_end):
-        compute_muscle_force(i, body_X_s, body_v_s, body_com, muscle_links, muscle_points, activation, body_f_s)
+        muscle_force(i, body_X_s, body_v_s, body_com, muscle_links, muscle_points, activation, body_f_s)
 
 
 def eval_muscle_forces(model: Model, state: State, control: Control, body_f: wp.array):
