@@ -70,9 +70,10 @@ torch-cu12 = [
 # Development and Testing
 # Contains all w/o torch, plus development debugging dependencies
 dev = [
-    "newton[examples]",      # includes examples, which pulls in sim and visualization
-    "tqdm>=4.67.1",          # for progress bars
+    "newton[examples]", # includes examples, which pulls in sim and visualization
+    "tqdm>=4.67.1", # for progress bars
     "coverage[toml]>=7.8.0", # for code coverage testing
+    "psutil>=7.1.0",
 ]
 
 # Documentation dependencies
