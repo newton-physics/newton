@@ -81,6 +81,11 @@ ROBOT_CONFIGS = {
         "nconmax": 50,
         "ls_parallel": True,
     },
+    "kitchen": {
+        "setup_builder": lambda x: _setup_kitchen(x),
+        "njmax": 3800,
+        "nconmax": 900,
+    },
 }
 
 
@@ -212,10 +217,23 @@ def _setup_quadruped(articulation_builder):
     return root_dofs
 
 
+def _setup_kitchen(articulation_builder):
+    asset_path = newton.utils.download_asset("kitchen")
+    asset_file = str(asset_path / "mjcf" / "kitchen.xml")
+    articulation_builder.add_mjcf(
+        asset_file,
+        collapse_fixed_joints=True,
+    )
+
+    # Change pose of the robot to minimize overlap
+    articulation_builder.joint_q[:2] = [1.5, -1.5]
+
+
 class Example:
     def __init__(
         self,
         robot="humanoid",
+        env="None",
         stage_path=None,
         num_envs=1,
         use_cuda_graph=True,
@@ -252,7 +270,7 @@ class Example:
             stage_path = "example_" + robot + ".usd"
 
         if builder is None:
-            builder = Example.create_model_builder(robot, num_envs, randomize, self.seed)
+            builder = Example.create_model_builder(robot, num_envs, env, randomize, self.seed)
 
         # finalize model
         self.model = builder.finalize()
@@ -260,14 +278,15 @@ class Example:
         self.solver = Example.create_solver(
             self.model,
             robot,
-            use_mujoco_cpu,
-            solver,
-            integrator,
-            solver_iteration,
-            ls_iteration,
-            njmax,
-            nconmax,
-            ls_parallel,
+            use_mujoco_cpu=use_mujoco_cpu,
+            env=env,
+            solver=solver,
+            integrator=integrator,
+            solver_iteration=solver_iteration,
+            ls_iteration=ls_iteration,
+            njmax=njmax,
+            nconmax=nconmax,
+            ls_parallel=ls_parallel,
         )
 
         if stage_path and not headless:
@@ -323,7 +342,7 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, num_envs, randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(robot, num_envs, env="None", randomize=False, seed=123) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -342,6 +361,10 @@ class Example:
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
+        custom_setup_fn = ROBOT_CONFIGS.get(env, {}).get("setup_builder", None)
+        if custom_setup_fn is not None:
+            custom_setup_fn(articulation_builder)
+
         builder = newton.ModelBuilder()
         builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
         if randomize:
@@ -358,7 +381,9 @@ class Example:
     def create_solver(
         model,
         robot,
-        use_mujoco_cpu,
+        *,
+        use_mujoco_cpu=False,
+        env="None",
         solver=None,
         integrator=None,
         solver_iteration=None,
@@ -374,6 +399,9 @@ class Example:
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
+
+        njmax += ROBOT_CONFIGS.get(env, {}).get("njmax", 0)
+        nconmax += ROBOT_CONFIGS.get(env, {}).get("nconmax", 0)
 
         return newton.solvers.SolverMuJoCo(
             model,
@@ -393,6 +421,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
+    parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
@@ -447,6 +476,7 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(
             robot=args.robot,
+            env=args.env,
             stage_path=args.stage_path,
             num_envs=args.num_envs,
             use_cuda_graph=args.use_cuda_graph,
