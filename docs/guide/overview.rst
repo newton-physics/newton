@@ -20,7 +20,7 @@ Key Features
 ------------
 
 * **GPU-accelerated**: Leverages NVIDIA Warp for fast, scalable simulation.
-* **Multiple solver implementations** - XPBD, VBD, Mujoco, Featherstone, Euler
+* **Multiple solver implementations** - XPBD, VBD, Mujoco, Featherstone, SemiImplicit
 * **Modular design** - Easily extendable with new solvers and components
 * **Differentiable**: Supports differentiable simulation for machine learning and optimization.
 * **Rich Import/Export**: Load models from URDF, MJCF, USD, and more.

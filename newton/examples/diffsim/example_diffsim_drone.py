@@ -535,7 +535,7 @@ class Example:
         self.seed = wp.zeros(1, dtype=int)
         self.rollout_costs = wp.zeros(self.rollout_count, dtype=float, requires_grad=True)
 
-        # Use the Euler integrator for stepping through the simulation.
+        # Use the SemiImplicit integrator for stepping through the simulation.
         self.solver_rollouts = newton.solvers.SolverSemiImplicit(self.rollouts.model)
         self.solver_drone = newton.solvers.SolverSemiImplicit(self.drone.model)
 

@@ -17,7 +17,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State, eval_fk
-from ..euler.kernels import (
+from ..semi_implicit.kernels import (
     eval_bending_forces,
     eval_muscle_forces,
     eval_particle_body_contact_forces,
@@ -26,7 +26,7 @@ from ..euler.kernels import (
     eval_tetrahedral_forces,
     eval_triangle_forces,
 )
-from ..euler.particles import eval_particle_forces
+from ..semi_implicit.particles import eval_particle_forces
 from ..solver import SolverBase
 from .kernels import (
     compute_com_transforms,

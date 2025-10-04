@@ -906,7 +906,7 @@ class ClothSim:
 
 
 def compute_current_angles(model, state):
-    """Compute current angles consistent with both add_edges() in model.py and bending angle computation in integrators (XPBD, VBD, Euler)"""
+    """Compute current angles consistent with both add_edges() in model.py and bending angle computation in integrators (XPBD, VBD, SemiImplicit)"""
     angles = []
     for i, j, k, l in model.edge_indices.numpy():
         x3 = state.particle_q.numpy()[k]  # edge start

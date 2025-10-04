@@ -21,7 +21,7 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
 )
-from ..euler.kernels import eval_joint_force
+from ..semi_implicit.kernels import eval_joint_force
 
 
 @wp.kernel
