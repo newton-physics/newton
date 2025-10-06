@@ -43,7 +43,6 @@ Supported Features
      - :abbr:`Integration (Available methods for integrating the dynamics)`
      - Rigid bodies
      - :ref:`Articulations <Articulations>`
-     - :abbr:`Rigid contacts (Are contacts between rigid bodies simulated?)`
      - Particles
      - Cloth
      - Soft bodies
@@ -52,12 +51,10 @@ Supported Features
      - ✅
      - ✅ generalized coordinates
      - ✅
-     - ✅
      - 🟨 no self-collision
      - ✅
    * - :class:`~newton.solvers.SolverImplicitMPM`
      - Implicit
-     - ❌
      - ❌
      - ❌
      - ✅
@@ -65,9 +62,8 @@ Supported Features
      - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
      - Explicit, Semi-implicit, Implicit
-     - ✅
-     - ✅ generalized coordinates
      - ✅ (uses its own collision pipeline from MuJoCo/mujoco_warp by default, unless ``use_mujoco_contacts`` is set to False)
+     - ✅ generalized coordinates
      - ❌
      - ❌
      - ❌
@@ -76,12 +72,10 @@ Supported Features
      - ✅
      - ✅ maximal coordinates
      - ✅
-     - ✅
      - 🟨 no self-collision
      - ✅
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
-     - ❌
      - ❌
      - ❌
      - ✅
@@ -91,7 +85,6 @@ Supported Features
      - Implicit
      - ❌
      - ❌
-     - ❌
      - ✅
      - ✅
      - ❌
@@ -99,7 +92,6 @@ Supported Features
      - Implicit
      - ✅
      - ✅ maximal coordinates
-     - ✅
      - ✅
      - 🟨 no self-collision
      - 🟨 experimental
