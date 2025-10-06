@@ -78,9 +78,6 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     elif joint_type == JointType.FIXED:
         dof_count = 0
         coord_count = 0
-    elif joint_type == JointType.CABLE:
-        dof_count = 1
-        coord_count = 1
     return dof_count, coord_count
 
 

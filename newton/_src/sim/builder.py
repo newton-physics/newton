@@ -1767,8 +1767,10 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        target_ke: float | None = None,
-        target_kd: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -1778,19 +1780,21 @@ class ModelBuilder:
         A cable joint couples two attachment frames on connected bodies.
         Solver support: currently only :class:`newton.solvers.SolverVBD`.
 
-        In VBD the joint enforces both:
-        - Stretch/shear: pulls the two attachment points together (zero rest separation) with
-          ideally infinite stiffness; currently a large internal value is used.
-        - Bend/twist: penalizes relative rotation between the two attachment frames with an
-          isotropic angular stiffness ``bend_ke`` taken from ``target_ke``.
+        The joint enforces both:
+        - Stretch (1 linear DOF): Scalar distance constraint between attachment points.
+          User can specify ``stretch_stiffness``/``stretch_damping``. Defaults to 1.0e9 (high stiffness).
+        - Bend/twist (1 angular DOF): Penalizes relative rotation between attachment frames.
+          Specify with ``bend_stiffness``/``bend_damping``.
 
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
             parent_xform (Transform): Joint frame in the parent body (translation = attachment point).
             child_xform (Transform): Joint frame in the child body (translation = attachment point).
-            target_ke: Base angular stiffness ("bend_ke"). If None, uses default.
-            target_kd: Damping for cable stretch. If None, uses default value.
+            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
+            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9 (high stiffness for AVBD).
+            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -1799,10 +1803,15 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        ax = ModelBuilder.JointDofConfig(
-            target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
-            target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
-        )
+        # Angular DOF (bend/twist)
+        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_kd = 0.0 if bend_damping is None else bend_damping
+        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+
+        # Linear DOF (stretch)
+        se_ke = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        se_kd = 0.0 if stretch_damping is None else stretch_damping
+        ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
 
         return self.add_joint(
             JointType.CABLE,
@@ -1810,7 +1819,8 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            angular_axes=[ax],
+            linear_axes=[ax_lin],
+            angular_axes=[ax_ang],
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -3045,15 +3055,17 @@ class ModelBuilder:
         quaternions: list[Quat],
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
-        stiffness: float | None = None,
-        damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
         key: str | None = None,
     ) -> tuple[list[int], list[int]]:
         """Creates a rod composed of multiple capsule bodies connected by cable joints.
 
         Builds a chain of capsule bodies from centerline points and orientations. Each segment is a
         capsule aligned by the corresponding quaternion, and adjacent capsules are connected by cable
-        joints that apply bend/twist stiffness derived from ``stiffness``.
+        joints that apply bend/twist stiffness derived from ``bend_stiffness``.
 
         Args:
             positions: World-space centerline points. Must have exactly ``len(quaternions) + 1`` elements.
@@ -3061,8 +3073,10 @@ class ModelBuilder:
                 capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
             radius: The radius of the capsule shapes.
             cfg: The shape configuration for the capsules. If None, uses default_shape_cfg.
-            stiffness: Bend/twist stiffness for the cable joints. If None, uses ``default_joint_cfg.target_ke``.
-            damping: Damping parameter passed to the cable joint. If None, uses ``default_joint_cfg.target_kd``.
+            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
+            bend_damping: Damping parameter passed to the cable joint. If None, defaults to 0.0.
+            stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9 (high stiffness for AVBD).
+            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
             key: Optional key prefix for naming bodies, shapes, and joints.
 
         Returns:
@@ -3076,9 +3090,12 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Apply defaults using existing joint configuration
-        stiffness = stiffness if stiffness is not None else self.default_joint_cfg.target_ke
-        damping = damping if damping is not None else self.default_joint_cfg.target_kd
+        # Bend defaults: 0.0 (users must explicitly set for bending resistance)
+        bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_damping = 0.0 if bend_damping is None else bend_damping
+        # Stretch defaults: high stiffness for AVBD
+        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Input validation
         num_segments = len(quaternions)
@@ -3146,8 +3163,10 @@ class ModelBuilder:
                     child=child_body,
                     parent_xform=parent_xform,
                     child_xform=child_xform,
-                    target_ke=stiffness,
-                    target_kd=damping,
+                    bend_stiffness=bend_stiffness,
+                    bend_damping=bend_damping,
+                    stretch_stiffness=stretch_stiffness,
+                    stretch_damping=stretch_damping,
                     key=joint_key,
                     collision_filter_parent=True,
                     enabled=True,

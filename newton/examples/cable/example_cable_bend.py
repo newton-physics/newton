@@ -130,13 +130,18 @@ class Example:
         self.cable_length = 5.0
         cable_radius = 0.01
 
-        initial_stiffness = 1.0e-1
-        stiffness_scale = 100
+        initial_bend_stiffness = 1.0e-1
+        bend_stiffness_scale = 100
 
         self.viewer = viewer
 
         # Create builder for the simulation
         builder = newton.ModelBuilder()
+
+        # Set default material properties BEFORE adding any shapes
+        builder.default_shape_cfg.ke = 1.0e2  # Contact stiffness
+        builder.default_shape_cfg.kd = 1.0e1  # Contact damping
+        builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
         kinematic_body_indices = []
 
@@ -144,7 +149,7 @@ class Example:
         self.num_cables = 6
 
         # Create 6 cables in a row along the y-axis, centered around origin
-        stiffness = initial_stiffness
+        bend_stiffness = initial_bend_stiffness
         for i in range(self.num_cables):
             # Center cables around origin: -5, -3, -1, 1, 3, 5
             y_pos = (i - (self.num_cables - 1) / 2) * y_separation
@@ -152,11 +157,11 @@ class Example:
             # First 3 are untwisted, next 3 are twisted
             if i < 3:
                 initial_twist = 0.0
-                stiffness = initial_stiffness * stiffness_scale**i
+                bend_stiffness = initial_bend_stiffness * bend_stiffness_scale**i
 
             else:
                 initial_twist = np.pi / 2
-                stiffness = initial_stiffness * stiffness_scale ** (i - 3)
+                bend_stiffness = initial_bend_stiffness * bend_stiffness_scale ** (i - 3)
 
             # Center cable in X direction: start at -half_length
             start_x = -self.cable_length / 2.0
@@ -172,8 +177,10 @@ class Example:
                 positions=cable_points,
                 quaternions=cable_edge_q,
                 radius=cable_radius,
-                stiffness=stiffness,
-                damping=0.0,
+                bend_stiffness=bend_stiffness,
+                bend_damping=0.0,
+                stretch_stiffness=1.0e9,
+                stretch_damping=0.0,
                 key=f"cable_{i}",
             )
 
@@ -183,7 +190,7 @@ class Example:
             builder.body_inv_mass[first_body] = 0.0
             kinematic_body_indices.append(first_body)
 
-            stiffness *= stiffness_scale
+            bend_stiffness *= bend_stiffness_scale
 
         # Create array of kinematic body indices
         self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
@@ -197,13 +204,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Set collision contact parameters
-        self.model.soft_contact_ke = 1.0e2  # Contact spring stiffness
-        self.model.soft_contact_kd = 1.0e1  # Contact damping
-        self.model.soft_contact_mu = 1.0  # Contact friction coefficient
-        self.model.soft_contact_restitution = 0.0  # Restitution
-
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
+        self.solver = newton.solvers.SolverAVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -321,6 +322,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
+    viewer._paused = True
 
     # Create example and run
     example = Example(viewer)

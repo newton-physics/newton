@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .avbd import SolverAVBD
 from .euler import SolverSemiImplicit
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
@@ -24,6 +25,7 @@ from .vbd import SolverVBD
 from .xpbd import SolverXPBD
 
 __all__ = [
+    "SolverAVBD",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",

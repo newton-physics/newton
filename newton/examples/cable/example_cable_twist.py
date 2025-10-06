@@ -184,13 +184,20 @@ class Example:
         # Create builder for the simulation
         builder = newton.ModelBuilder()
 
+        # Set default material properties BEFORE adding any shapes
+        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness (softer for cable flexibility)
+        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+        builder.default_shape_cfg.mu = 1.0e1  # Friction coefficient
+
         kinematic_body_indices = []
 
         # Build 6 cables: same zigzag route pattern, starts spaced along Y
         y_separation = 3.0
         num_cables = 6
-        initial_stiffness = 1.0e1
-        stiffness_scale = 10.0
+
+        stretch_stiffness = 1.0e6
+        initial_bend_stiffness = 1.0e1
+        bend_stiffness_scale = 10.0
         start_z_pos = 1.0
         self.cable_bodies_list = []
         self.first_bodies = []
@@ -200,10 +207,10 @@ class Example:
             # Right group (3..5): pre-twisted, increasing stiffness left-to-right
             if i < 3:
                 initial_twist = 0.0
-                stiffness = initial_stiffness * (stiffness_scale**i)
+                bend_stiffness = initial_bend_stiffness * (bend_stiffness_scale**i)
             else:
                 initial_twist = self.total_twist
-                stiffness = initial_stiffness * (stiffness_scale ** (i - 3))
+                bend_stiffness = initial_bend_stiffness * (bend_stiffness_scale ** (i - 3))
 
             # Place all cables parallel along X, spaced along Y
             y_pos = (i - (num_cables - 1) / 2.0) * y_separation
@@ -220,8 +227,10 @@ class Example:
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
-                stiffness=stiffness,
-                damping=10.0,
+                bend_stiffness=bend_stiffness,
+                bend_damping=1.0e-4,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=1.0e-4,
                 key=f"cable_{i}",
             )
 
@@ -247,13 +256,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Set collision contact parameters (softer for cable flexibility)
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e2
-        self.model.soft_contact_mu = 1.0
-        self.model.soft_contact_restitution = 0.0
-
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
+        self.solver = newton.solvers.SolverAVBD(self.model, iterations=self.sim_iterations, friction_epsilon=0.1)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

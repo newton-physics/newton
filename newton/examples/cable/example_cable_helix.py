@@ -130,21 +130,28 @@ class Example:
 
         builder = newton.ModelBuilder()
 
+        # Set default material properties BEFORE adding any shapes
+        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
+        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+        builder.default_shape_cfg.mu = 1.0e2  # Frictionless
+
         y_separation = 5.0
         num_cables = 6
-        initial_stiffness = 5.0e2
-        stiffness_scale = 10.0
+
+        stretch_stiffness = 1.0e18
+        initial_bend_stiffness = 5.0e2
+        bend_stiffness_scale = 10.0
 
         # Build 6 helix cables side-by-side along Y
         for i in range(num_cables):
             if i < 3:
                 # Left group: untwisted with increasing stiffness
                 twist_angle = 0.0
-                stiffness = initial_stiffness * (stiffness_scale ** (i))
+                bend_stiffness = initial_bend_stiffness * (bend_stiffness_scale ** (i))
             else:
                 # Right group: same total twist for all three, applied gradually per segment
                 twist_angle = float(self.total_twist)
-                stiffness = initial_stiffness * (stiffness_scale ** (i - 3))
+                bend_stiffness = initial_bend_stiffness * (bend_stiffness_scale ** (i - 3))
 
             y_pos = (i - (num_cables - 1) / 2.0) * y_separation
             start_pos = wp.vec3(0.0, y_pos, 0.5)
@@ -162,8 +169,10 @@ class Example:
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
-                stiffness=stiffness,
-                damping=5.0,
+                bend_stiffness=bend_stiffness,
+                bend_damping=1.0e-4,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=1.0e-4,
                 key=f"helix_{i}",
             )
 
@@ -176,14 +185,8 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Contact parameters tuned for cables
-        self.model.soft_contact_ke = 1.0e3
-        self.model.soft_contact_kd = 1.0e3
-        self.model.soft_contact_mu = 0.0
-        self.model.soft_contact_restitution = 0.0
-
         # Solver
-        self.solver = newton.solvers.SolverVBD(
+        self.solver = newton.solvers.SolverAVBD(
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.1,
