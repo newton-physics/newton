@@ -70,6 +70,7 @@ def update_collider_meshes(
     shape_body_id: wp.array(dtype=int),
     body_q_cur: wp.array(dtype=wp.transform),
     body_q_next: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
     dt: float,
     body_f: wp.array(dtype=wp.spatial_vector),
     body_inv_inertia: wp.array(dtype=wp.mat33),
@@ -112,10 +113,17 @@ def update_collider_meshes(
     #     dt,
     # )
 
-    cur_p = wp.transform_point(body_q_cur[body_id], p)  # res.points[cv] + dt * res.velocities[cv]
     next_p = wp.transform_point(body_q_next[body_id], p)
-    res.velocities[cv] = (next_p - cur_p) / dt - delta_v
-    res.points[cv] = cur_p
+
+    vel = wp.spatial_top(body_qd[body_id]) + wp.cross(
+        wp.spatial_bottom(body_qd[body_id]), wp.quat_rotate(r, p - body_coms[body_id])
+    )
+    res.velocities[cv] = vel - delta_v
+    res.points[cv] = next_p
+
+    # cur_p = wp.transform_point(body_q_cur[body_id], p)  # res.points[cv] + dt * res.velocities[cv]
+    # res.velocities[cv] = (next_p - cur_p) / dt - delta_v * IR
+    # res.points[cv] = cur_p
 
 
 @wp.kernel
@@ -165,10 +173,10 @@ def update_collider_coms(
 class Example:
     def __init__(self, viewer):
         # setup simulation parameters first
-        self.fps = 250
+        self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 1
+        self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -208,7 +216,7 @@ class Example:
         # generate a few shapes with varying types and sizes
         # boxes
         # boxes = [(0.45, 0.35, 0.25)]  # (hx, hy, hz)
-        boxes = [(0.45, 0.35, 0.25), (0.25, 0.25, 0.25), (0.6, 0.2, 0.2)]  # (hx, hy, hz)
+        boxes = [(0.25, 0.35, 0.25), (0.25, 0.25, 0.25), (0.3, 0.2, 0.2), (0.25, 0.35, 0.25), (0.25, 0.25, 0.25), (0.3, 0.2, 0.2)]  # (hx, hy, hz)
         for box in boxes:
             (hx, hy, hz) = box
 
@@ -218,7 +226,7 @@ class Example:
             z_index += 1
             body = builder.add_body(
                 xform=wp.transform(p=wp.vec3(float(ox), float(oy), pz), q=wp.normalize(wp.quatf(0.0, 0.0, 0.0, 1.0))),
-                mass=1000.0,
+                mass=75.0,
             )
             shape_id = builder.add_shape_box(body, hx=float(hx), hy=float(hy), hz=float(hz))
             # shape_id = builder.add_shape_capsule(body, radius=0.5 * hx, half_height=hz)
@@ -512,6 +520,7 @@ class Example:
             inputs=[
                 self.collider_body_id,
                 state_next.body_q,
+                # self.ref_q,
                 self.model.body_inv_inertia,
                 self.model.body_com,
                 self.mpm_solver.mpm_model.collider_inv_inertia,
@@ -530,6 +539,7 @@ class Example:
                 self.model.shape_body,
                 self.ref_q,
                 state_next.body_q,
+                state_next.body_qd,
                 self.frame_dt,
                 self.sand_body_forces,
                 self.model.body_inv_inertia,
