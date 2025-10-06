@@ -398,7 +398,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples diffsim_quadruped</code>
+      <code>uv run -m newton.examples diffsim_bear</code>
     </td>
   </tr>
 </table>
