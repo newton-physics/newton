@@ -14,9 +14,9 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Diffsim Quadruped
+# Example Diffsim Bear
 #
-# Trains a tetrahedral mesh quadruped to run. Feeds 8 time-varying input
+# Trains a tetrahedral mesh bear to run. Feeds 8 time-varying input
 # phases as inputs into a single-layer fully connected network with a tanh
 # activation function. Interprets the output of the network as tet
 # activations, which are fed into Newton's soft mesh model. This is
