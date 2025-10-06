@@ -540,7 +540,7 @@ class ImplicitMPMOptions:
     yield_stress: float = 0.0
     """Yield stress for the plasticity model. (Pa)"""
     hardening: float = 0.0
-    """Hardening factor for the plasticity model (Mulltiplier for det(Fp))."""
+    """Hardening factor for the plasticity model (Multiplier for det(Fp))."""
     critical_fraction: float = 0.0
     """Fraction for particles under which the yield surface collapses."""
 

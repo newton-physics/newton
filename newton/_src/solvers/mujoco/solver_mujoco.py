@@ -2001,7 +2001,7 @@ class SolverMuJoCo(SolverBase):
         body_name_counts = {}
         joint_names = {}
 
-        # number of shapes which are replicated per env (exludes singular static shapes from a negative group)
+        # number of shapes which are replicated per env (excludes singular static shapes from a negative group)
         shape_range_len = 0
 
         if separate_envs_to_worlds:
