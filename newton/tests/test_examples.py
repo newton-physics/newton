@@ -535,7 +535,7 @@ add_example_test(
     TestDiffSimExamples,
     name="diffsim.example_diffsim_bear",
     devices=test_devices,
-    test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options={"usd_required": True, "num-frames": 4 * 60},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
