@@ -132,8 +132,8 @@ def write_module_page(mod_name: str) -> None:
 
     lines: list[str] = [title, underline, ""]
 
-    # Short module docstring (first paragraph) if available
-    doc = (module.__doc__ or "").strip().split("\n\n")[0].strip()
+    # Module docstring if available
+    doc = (module.__doc__ or "").strip()
     if doc:
         lines.extend([doc, ""])
 
