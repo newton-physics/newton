@@ -19,6 +19,7 @@ import os
 import sys
 
 import numpy as np
+import numpy.typing as npt
 import warp as wp
 
 from newton.utils import create_sphere_mesh
@@ -922,7 +923,7 @@ class RendererGL:
             self.app.platform_event_loop.step(0.001)  # 1ms app polling latency
             self.window.dispatch_events()
 
-    def render(self, camera, objects, lines=None):
+    def render(self, camera, objects, lines=None, return_frame: bool = False) -> npt.NDArray[np.uint8] | None:
         gl = RendererGL.gl
         self._make_current()
 
@@ -991,6 +992,21 @@ class RendererGL:
                 gl.GL_NEAREST,
             )
 
+        # -----------------------------------
+        # Read back frame buffer if requested
+        # -----------------------------------
+
+        frame: npt.NDArray[np.uint8] | None = None
+
+        if return_frame:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
+            buffer = (gl.GLubyte * (4 * self._screen_width * self._screen_height))()
+            gl.glReadPixels(0, 0, self._screen_width, self._screen_height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, buffer)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+            frame = np.frombuffer(buffer, dtype=np.uint8).reshape((self._screen_height, self._screen_width, 4))
+            frame = np.flipud(frame)
+
         # ------------------------------------------------------------------
         # Draw resolved texture to the screen
         # ------------------------------------------------------------------
@@ -1017,6 +1033,8 @@ class RendererGL:
 
         err = gl.glGetError()
         assert err == gl.GL_NO_ERROR, hex(err)
+
+        return frame
 
     def present(self):
         if not self.headless:

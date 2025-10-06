@@ -18,6 +18,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import numpy.typing as npt
 import warp as wp
 
 import newton as nt
@@ -53,7 +54,7 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
-    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
+    def __init__(self, width=1920, height=1080, vsync=False, headless=False, save_frame: bool = False):
         """
         Initialize the OpenGL viewer and UI.
 
@@ -62,6 +63,7 @@ class ViewerGL(ViewerBase):
             height (int): Window height in pixels.
             vsync (bool): Enable vertical sync.
             headless (bool): Run in headless mode (no window).
+            save_frame (bool): If True, store internally the last rendered frame.
         """
         super().__init__()
 
@@ -126,6 +128,10 @@ class ViewerGL(ViewerBase):
         # UI callback system - organized by position
         # positions: "side", "stats", "free"
         self._ui_callbacks = {"side": [], "stats": [], "free": []}
+
+        # Buffer to store the last rendered frame
+        self._save_frame = save_frame
+        self._frame = np.empty(0, dtype=np.uint8)
 
         self.set_model(None)
 
@@ -425,7 +431,7 @@ class ViewerGL(ViewerBase):
         destroyed results in a crash (access violation).  Therefore we check
         whether an exit was requested and early-out before touching GL if so.
         """
-        self._update()
+        return self._update()
 
     @override
     def apply_forces(self, state):
@@ -459,7 +465,10 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines)
+        frame = self.renderer.render(self.camera, self.objects, self.lines, return_frame=self._save_frame)
+
+        if self._save_frame:
+            self._frame = frame
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
@@ -474,6 +483,19 @@ class ViewerGL(ViewerBase):
             self.ui.render()
 
         self.renderer.present()
+
+    def get_frame(self) -> npt.NDArray[np.uint8]:
+        """
+        Get the last rendered frame as a numpy array.
+
+        Returns:
+            np.ndarray: The last rendered frame in RGBA format.
+        """
+
+        if not self._save_frame:
+            raise RuntimeError("Frame saving is not enabled. Initialize with `save_frame=True`.")
+
+        return self._frame
 
     @override
     def is_running(self) -> bool:
