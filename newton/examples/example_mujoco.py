@@ -26,6 +26,9 @@
 # - Fix the use-mujoco-cpu option (currently crashes)
 ###########################################################################
 
+
+import time
+
 import numpy as np
 import warp as wp
 
@@ -39,36 +42,36 @@ ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 100,
-        "nconmax": 50,
-        "ls_parallel": False,
+        "njmax": 80,
+        "nconmax": 25,
+        "ls_parallel": True,
     },
     "g1": {
         "solver": "newton",
-        "integrator": "euler",
-        "njmax": 400,
-        "nconmax": 150,
+        "integrator": "implicit",
+        "njmax": 210,
+        "nconmax": 35,
         "ls_parallel": True,
     },
     "h1": {
         "solver": "newton",
-        "integrator": "euler",
-        "njmax": 400,
-        "nconmax": 150,
+        "integrator": "implicit",
+        "njmax": 65,
+        "nconmax": 15,
         "ls_parallel": True,
     },
-    "cartpole": {
+    "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 50,
-        "nconmax": 50,
-        "ls_parallel": True,
+        "njmax": 24,  # 5
+        "nconmax": 6,  # 5
+        "ls_parallel": False,
     },
     "ant": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 50,
-        "nconmax": 50,
+        "njmax": 38,
+        "nconmax": 15,
         "ls_parallel": True,
     },
     "quadruped": {
@@ -77,6 +80,11 @@ ROBOT_CONFIGS = {
         "njmax": 75,
         "nconmax": 50,
         "ls_parallel": True,
+    },
+    "kitchen": {
+        "setup_builder": lambda x: _setup_kitchen(x),
+        "njmax": 3800,
+        "nconmax": 900,
     },
 }
 
@@ -96,43 +104,63 @@ def _setup_humanoid(articulation_builder):
 
 
 def _setup_g1(articulation_builder):
+    articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+        limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+    )
+    articulation_builder.default_shape_cfg.ke = 5.0e4
+    articulation_builder.default_shape_cfg.kd = 5.0e2
+    articulation_builder.default_shape_cfg.kf = 1.0e3
+    articulation_builder.default_shape_cfg.mu = 0.75
+
     asset_path = newton.utils.download_asset("unitree_g1")
 
-    articulation_builder.add_mjcf(
-        str(asset_path / "mjcf" / "g1_29dof_with_hand_rev_1_0.xml"),
+    articulation_builder.add_usd(
+        str(asset_path / "usd" / "g1_isaac.usd"),
+        xform=wp.transform(wp.vec3(0, 0, 0.8)),
         collapse_fixed_joints=True,
-        up_axis="Z",
         enable_self_collisions=False,
+        hide_collision_shapes=True,
     )
-    simplified_meshes = {}
-    meshes = articulation_builder.shape_source
-    for i, m in enumerate(meshes):
-        if m is None:
-            continue
-        hash_m = hash(m)
-        if hash_m in simplified_meshes:
-            articulation_builder.shape_source[i] = simplified_meshes[hash_m]
-        else:
-            simplified = newton.geometry.remesh_mesh(m, visualize=False, method="convex_hull", recompute_inertia=False)
-            articulation_builder.shape_source[i] = simplified
-            simplified_meshes[hash_m] = simplified
+
+    for i in range(6, articulation_builder.joint_dof_count):
+        articulation_builder.joint_target_ke[i] = 1000.0
+        articulation_builder.joint_target_kd[i] = 5.0
+
+    # approximate meshes for faster collision detection
+    articulation_builder.approximate_meshes("bounding_box")
+
     root_dofs = 7
 
     return root_dofs
 
 
 def _setup_h1(articulation_builder):
-    articulation_builder.default_shape_cfg.density = 100.0
-    articulation_builder.default_joint_cfg.armature = 0.1
-    articulation_builder.default_body_armature = 0.1
+    articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+        limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+    )
+    articulation_builder.default_shape_cfg.ke = 5.0e4
+    articulation_builder.default_shape_cfg.kd = 5.0e2
+    articulation_builder.default_shape_cfg.kf = 1.0e3
+    articulation_builder.default_shape_cfg.mu = 0.75
 
     asset_path = newton.utils.download_asset("unitree_h1")
-    articulation_builder.add_mjcf(
-        str(asset_path / "mjcf" / "h1_with_hand.xml"),
-        collapse_fixed_joints=True,
-        up_axis="Z",
+    asset_file = str(asset_path / "usd" / "h1_minimal.usda")
+    articulation_builder.add_usd(
+        asset_file,
+        ignore_paths=["/GroundPlane"],
+        collapse_fixed_joints=False,
         enable_self_collisions=False,
+        load_non_physics_prims=True,
+        hide_collision_shapes=True,
     )
+    # approximate meshes for faster collision detection
+    articulation_builder.approximate_meshes("bounding_box")
+
+    for i in range(len(articulation_builder.joint_dof_mode)):
+        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        articulation_builder.joint_target_ke[i] = 150
+        articulation_builder.joint_target_kd[i] = 5
+
     root_dofs = 7
 
     return root_dofs
@@ -143,12 +171,13 @@ def _setup_cartpole(articulation_builder):
     articulation_builder.default_joint_cfg.armature = 0.1
     articulation_builder.default_body_armature = 0.1
 
-    articulation_builder.add_urdf(
-        newton.examples.get_asset("cartpole.urdf"),
-        floating=False,
+    articulation_builder.add_usd(
+        newton.examples.get_asset("cartpole.usda"),
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )
+    # set initial joint positions
+    articulation_builder.joint_q[-3:] = [0.0, 0.3, 0.0]
 
     # Setting root pose
     root_dofs = 1
@@ -188,10 +217,23 @@ def _setup_quadruped(articulation_builder):
     return root_dofs
 
 
+def _setup_kitchen(articulation_builder):
+    asset_path = newton.utils.download_asset("kitchen")
+    asset_file = str(asset_path / "mjcf" / "kitchen.xml")
+    articulation_builder.add_mjcf(
+        asset_file,
+        collapse_fixed_joints=True,
+    )
+
+    # Change pose of the robot to minimize overlap
+    articulation_builder.joint_q[:2] = [1.5, -1.5]
+
+
 class Example:
     def __init__(
         self,
         robot="humanoid",
+        env="None",
         stage_path=None,
         num_envs=1,
         use_cuda_graph=True,
@@ -210,6 +252,7 @@ class Example:
     ):
         fps = 600
         self.sim_time = 0.0
+        self.benchmark_time = 0.0
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 10
         self.contacts = None
@@ -227,7 +270,7 @@ class Example:
             stage_path = "example_" + robot + ".usd"
 
         if builder is None:
-            builder = Example.create_model_builder(robot, num_envs, randomize, self.seed)
+            builder = Example.create_model_builder(robot, num_envs, env, randomize, self.seed)
 
         # finalize model
         self.model = builder.finalize()
@@ -235,14 +278,15 @@ class Example:
         self.solver = Example.create_solver(
             self.model,
             robot,
-            use_mujoco_cpu,
-            solver,
-            integrator,
-            solver_iteration,
-            ls_iteration,
-            njmax,
-            nconmax,
-            ls_parallel,
+            use_mujoco_cpu=use_mujoco_cpu,
+            env=env,
+            solver=solver,
+            integrator=integrator,
+            solver_iteration=solver_iteration,
+            ls_iteration=ls_iteration,
+            njmax=njmax,
+            nconmax=nconmax,
+            ls_parallel=ls_parallel,
         )
 
         if stage_path and not headless:
@@ -277,10 +321,16 @@ class Example:
             joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
             wp.copy(self.control.joint_target, joint_target)
 
+        wp.synchronize_device()
+        start_time = time.time()
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
+        wp.synchronize_device()
+        end_time = time.time()
+
+        self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
 
     def render(self):
@@ -292,7 +342,7 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, num_envs, randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(robot, num_envs, env="None", randomize=False, seed=123) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -311,6 +361,10 @@ class Example:
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
+        custom_setup_fn = ROBOT_CONFIGS.get(env, {}).get("setup_builder", None)
+        if custom_setup_fn is not None:
+            custom_setup_fn(articulation_builder)
+
         builder = newton.ModelBuilder()
         builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
         if randomize:
@@ -327,7 +381,9 @@ class Example:
     def create_solver(
         model,
         robot,
-        use_mujoco_cpu,
+        *,
+        use_mujoco_cpu=False,
+        env="None",
         solver=None,
         integrator=None,
         solver_iteration=None,
@@ -343,6 +399,9 @@ class Example:
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
+
+        njmax += ROBOT_CONFIGS.get(env, {}).get("njmax", 0)
+        nconmax += ROBOT_CONFIGS.get(env, {}).get("nconmax", 0)
 
         return newton.solvers.SolverMuJoCo(
             model,
@@ -362,6 +421,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
+    parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
@@ -380,12 +440,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--headless", default=False, action=argparse.BooleanOptionalAction, help="Run the simulation in headless mode."
-    )
-    parser.add_argument(
-        "--show-mujoco-viewer",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Toggle MuJoCo viewer next to Newton renderer when SolverMuJoCo is active.",
     )
 
     parser.add_argument(
@@ -410,7 +464,7 @@ if __name__ == "__main__":
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
     parser.add_argument(
-        "--ls-parallel", default=True, action=argparse.BooleanOptionalAction, help="Use parallel line search."
+        "--ls-parallel", default=None, action=argparse.BooleanOptionalAction, help="Use parallel line search."
     )
 
     args = parser.parse_known_args()[0]
@@ -422,6 +476,7 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(
             robot=args.robot,
+            env=args.env,
             stage_path=args.stage_path,
             num_envs=args.num_envs,
             use_cuda_graph=args.use_cuda_graph,
@@ -482,24 +537,6 @@ if __name__ == "__main__":
         print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
         print("=" * TOTAL_WIDTH + "\n")
 
-        show_mujoco_viewer = args.show_mujoco_viewer and example.use_mujoco_cpu
-        if show_mujoco_viewer:
-            import mujoco
-            import mujoco.viewer
-            import mujoco_warp
-
-            mjm, mjd = example.solver.mj_model, example.solver.mj_data
-            m, d = example.solver.mjw_model, example.solver.mjw_data
-            viewer = mujoco.viewer.launch_passive(mjm, mjd)
-
         for _ in range(args.num_frames):
             example.step()
             example.render()
-
-            if show_mujoco_viewer:
-                if not example.solver.use_mujoco_cpu:
-                    mujoco_warp.get_data_into(mjd, mjm, d)
-                viewer.sync()
-
-        if example.renderer:
-            example.renderer.save()

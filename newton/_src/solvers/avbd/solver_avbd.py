@@ -331,7 +331,7 @@ def cable_get_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest:
 @wp.kernel
 def forward_step_rigid_bodies(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     body_q_prev: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -351,7 +351,7 @@ def forward_step_rigid_bodies(
 
     Args:
         dt: Time step
-        gravity: Gravity vector (world frame)
+        gravity: Gravity vector array (world frame)
         body_q_prev: Previous body transforms (output, for velocity computation)
         body_q: Current body transforms (input/output)
         body_qd: Current body velocities (spatial vectors)

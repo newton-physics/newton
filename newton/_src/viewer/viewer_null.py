@@ -16,6 +16,7 @@
 
 import warp as wp
 
+from ..core.types import override
 from .viewer import ViewerBase
 
 
@@ -41,13 +42,14 @@ class ViewerNull(ViewerBase):
         self.num_frames = num_frames
         self.frame_count = 0
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -65,7 +67,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         No-op implementation for logging mesh instances.
 
@@ -76,6 +78,7 @@ class ViewerNull(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            hidden: Whether the instances are hidden.
         """
         pass
 

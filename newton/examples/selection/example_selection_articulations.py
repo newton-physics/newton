@@ -116,7 +116,7 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_env=50)
 
         self.viewer = viewer
 
@@ -284,6 +284,14 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.01,
+        )
+
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
@@ -298,4 +306,4 @@ if __name__ == "__main__":
 
     example = Example(viewer, num_envs=args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

@@ -24,6 +24,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -245,6 +246,37 @@ def assert_np_equal(result: np.ndarray, expect: np.ndarray, tol=0.0):
         np.testing.assert_array_equal(result, expect)
 
 
+def most(x: np.ndarray, min_ratio: float = 0.8) -> bool:
+    """Helper function to check if most elements of an array are greater than 0 (or True)."""
+    if len(x) == 0:
+        return True
+    return bool(np.sum(x > 0) / len(x) >= min_ratio)
+
+
+def find_nan_members(obj: Any | None) -> list[str]:
+    """Helper function to find any Warp array members of an object that contain NaN values."""
+    nan_members = []
+    if obj is None:
+        return nan_members
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if np.isnan(attr.numpy()).any():
+                nan_members.append(key)
+    return nan_members
+
+
+def find_nonfinite_members(obj: Any | None) -> list[str]:
+    """Helper function to find any Warp array members of an object that contain non-finite values."""
+    nonfinite_members = []
+    if obj is None:
+        return nonfinite_members
+    for key, attr in obj.__dict__.items():
+        if isinstance(attr, wp.array):
+            if not np.isfinite(attr.numpy()).all():
+                nonfinite_members.append(key)
+    return nonfinite_members
+
+
 # if check_output is True any output to stdout will be treated as an error
 def create_test_func(func, device, check_output, **kwargs):
     # pass args to func
@@ -370,24 +402,25 @@ def write_junit_results(
     )
 
     for test_data in test_records:
-        test = test_data[0]
-        test_duration = test_data[1]
-        test_status = test_data[2]
+        test_classname = test_data[0]
+        test_methodname = test_data[1]
+        test_duration = test_data[2]
+        test_status = test_data[3]
 
         test_case = ET.SubElement(
-            root, "testcase", classname=test.__class__.__name__, name=test._testMethodName, time=f"{test_duration:.3f}"
+            root, "testcase", classname=test_classname, name=test_methodname, time=f"{test_duration:.3f}"
         )
 
         if test_status == "FAIL":
-            failure = ET.SubElement(test_case, "failure", message=str(test_data[3]))
-            failure.text = str(test_data[4])  # Stacktrace
+            failure = ET.SubElement(test_case, "failure", message=str(test_data[4]))
+            failure.text = str(test_data[5])  # Stacktrace
         elif test_status == "ERROR":
             error = ET.SubElement(test_case, "error")
-            error.text = str(test_data[4])  # Stacktrace
+            error.text = str(test_data[5])  # Stacktrace
         elif test_status == "SKIP":
             skip = ET.SubElement(test_case, "skipped")
             # Set the skip reason
-            skip.set("message", str(test_data[3]))
+            skip.set("message", str(test_data[4]))
 
     tree = ET.ElementTree(root)
 
@@ -419,7 +452,7 @@ class ParallelJunitTestResult(unittest.TextTestResult):
 
     def _record_test(self, test, code, message=None, details=None):
         duration = round((time.perf_counter_ns() - self.start_time) * 1e-9, 3)  # [s]
-        self.test_record.append((test, duration, code, message, details))
+        self.test_record.append((test.__class__.__name__, test._testMethodName, duration, code, message, details))
 
     def addSuccess(self, test):
         super(unittest.TextTestResult, self).addSuccess(test)

@@ -187,4 +187,5 @@ __all__ = [
     "Vec3",
     "Vec4",
     "flag_to_int",
+    "override",
 ]

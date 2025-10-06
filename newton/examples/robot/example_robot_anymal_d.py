@@ -84,7 +84,12 @@ class Example:
 
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, cone=mujoco.mjtCone.mjCONE_ELLIPTIC, impratio=100, iterations=100, ls_iterations=50
+            self.model,
+            cone=mujoco.mjtCone.mjCONE_ELLIPTIC,
+            impratio=100,
+            iterations=100,
+            ls_iterations=50,
+            ncon_per_env=20,
         )
 
         self.state_0 = self.model.state()
@@ -134,7 +139,18 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > -0.006,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body velocities are small",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
 
 
 if __name__ == "__main__":
@@ -145,4 +161,4 @@ if __name__ == "__main__":
 
     example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
