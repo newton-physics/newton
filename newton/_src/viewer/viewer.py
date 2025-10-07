@@ -44,7 +44,7 @@ class ViewerBase:
         # maps from geometry hash -> mesh path
         self._geometry_cache: dict[str, str] = {}
 
-        # line vertices for contact vizualization
+        # line vertices for contact visualization
         self._contact_points0 = None
         self._contact_points1 = None
 
