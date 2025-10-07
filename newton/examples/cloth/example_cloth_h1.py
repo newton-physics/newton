@@ -13,6 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+###########################################################################
+# Example cloth H1 (cloth-robot interaction)
+#
+# The H1 robot in a jacket waves hello to us, powered by the Style3D solver
+# for cloth and driven by an IkSolver for robot kinematics.
+#
+# Demonstrates how to leverage interpolated robot kinematics within the
+# collision processing pipeline and feed the results to the cloth solver.
+#
+# Command: python -m newton.examples cloth_h1
+#
+###########################################################################
 
 import numpy as np
 import warp as wp
