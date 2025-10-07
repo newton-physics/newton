@@ -528,51 +528,21 @@ class ModelBuilder:
     def _process_custom_attributes(
         self,
         entity_index: int,
-        frequency: ModelAttributeFrequency,
         custom_attrs: dict[str, Any],
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ) -> None:
         """Process custom attributes from kwargs and assign them to an entity.
 
         Args:
             entity_index: Index of the entity (body, shape, joint, etc.)
-            frequency: Frequency type for the custom attributes
             custom_attrs: Dictionary of custom attribute names to values
-            assignment: Assignment category for the attributes
         """
         for attr_name, value in custom_attrs.items():
-            # Infer dtype from the value
-            if isinstance(value, bool):
-                dtype = wp.bool
-            elif isinstance(value, str):
-                # For strings, we'll store them as int32 indices into a string table
-                # For now, just skip strings as they're not directly supported by warp arrays
-                print(f"Warning: String attribute '{attr_name}' with value '{value}' is not supported. Skipping.")
-                continue
-            elif isinstance(value, int):
-                dtype = wp.int32
-            elif isinstance(value, float):
-                dtype = wp.float32
-            elif hasattr(value, "__len__") and not isinstance(value, str):
-                # Handle vector types (but exclude strings which also have __len__)
-                if len(value) == 2:
-                    dtype = wp.vec2
-                elif len(value) == 3:
-                    dtype = wp.vec3
-                elif len(value) == 4:
-                    # Could be vec4 or quat - assume vec4 for now
-                    dtype = wp.vec4
-                else:
-                    dtype = wp.float32  # fallback
-            else:
-                dtype = wp.float32  # fallback for unknown types
-
             # Ensure the custom attribute is defined
-            if attr_name not in self.custom_attributes:
+            custom_attr = self.custom_attributes.get(attr_name)
+            if custom_attr is None:
                 raise AttributeError(f"Custom attribute '{attr_name}' is not defined")
 
             # Set the value for this specific entity
-            custom_attr = self.custom_attributes[attr_name]
             if custom_attr.values is None:
                 custom_attr.values = {}
             custom_attr.values[entity_index] = value
@@ -622,9 +592,7 @@ class ModelBuilder:
         if joint_attrs:
             self._process_custom_attributes(
                 entity_index=joint_index,
-                frequency=ModelAttributeFrequency.JOINT,
                 custom_attrs=joint_attrs,
-                assignment=assignment,
             )
 
         # Process JOINT_DOF frequency attributes (one per DOF)
@@ -655,9 +623,7 @@ class ModelBuilder:
                     single_attr = {attr_name: dof_value}
                     self._process_custom_attributes(
                         entity_index=dof_start + i,
-                        frequency=ModelAttributeFrequency.JOINT_DOF,
                         custom_attrs=single_attr,
-                        assignment=assignment,
                     )
 
         # Process JOINT_COORD frequency attributes (one per coordinate)
@@ -688,9 +654,7 @@ class ModelBuilder:
                     single_attr = {attr_name: coord_value}
                     self._process_custom_attributes(
                         entity_index=coord_start + i,
-                        frequency=ModelAttributeFrequency.JOINT_COORD,
                         custom_attrs=single_attr,
-                        assignment=assignment,
                     )
 
     @property
@@ -1476,9 +1440,7 @@ class ModelBuilder:
         if kwargs:
             self._process_custom_attributes(
                 entity_index=body_id,
-                frequency=ModelAttributeFrequency.BODY,
                 custom_attrs=kwargs,
-                assignment=ModelAttributeAssignment.MODEL,
             )
 
         return body_id
@@ -2713,9 +2675,7 @@ class ModelBuilder:
         if kwargs:
             self._process_custom_attributes(
                 entity_index=shape,
-                frequency=ModelAttributeFrequency.SHAPE,
                 custom_attrs=kwargs,
-                assignment=ModelAttributeAssignment.MODEL,
             )
 
         return shape
