@@ -39,7 +39,6 @@ class Example:
 
         self.viewer = viewer
         self.frame_index = 0
-        # self.viewer._paused = True
 
         # ------------------------------------------------------------------
         # Build a single H1 (fixed base for stability) + ground
@@ -110,12 +109,6 @@ class Example:
         # ------------------------------------------------------------------
         body_q_np = self.state.body_q.numpy()
         self.ee_tfs = [wp.transform(*body_q_np[link_idx]) for _, link_idx in self.ee]
-
-        # A-pose
-        # wp.transform_set_translation(self.ee_tfs[0], wp.vec3(0.0,  1.2,  0.0))
-        # wp.transform_set_translation(self.ee_tfs[1], wp.vec3(0.0, -1.2, -0.0))
-        # wp.transform_set_rotation(self.ee_tfs[0], wp.quat(-0.1, 0.5,  0.4, 0.75))
-        # wp.transform_set_rotation(self.ee_tfs[1], wp.quat( 0.1, 0.5, -0.4, 0.75))
 
         # ------------------------------------------------------------------
         # IK setup (single problem)
@@ -225,7 +218,7 @@ class Example:
     def simulate(self):
         self.ik_solver.solve(iterations=self.ik_iters)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
-        # return
+
         self.body_q_1.assign(self.state.body_q)
         self.cloth_solver.rebuild_bvh(self.state)
         for ii in range(self.sim_substeps):
@@ -261,9 +254,6 @@ class Example:
             [wp.quat(0.58, -0.35, 0.29, 0.68), wp.quat(0.00, 0.00, 0.00, 0.00)],  # key 0
             [wp.quat(-0.09, 0.46, 0.03, 0.88), wp.quat(-0.09, 0.48, 0.01, 0.87)],  # key 1
         ]
-        # print(f"pos[0] = {wp.transform_get_translation(self.ee_tfs[0])}, rot[0] = {wp.transform_get_rotation(self.ee_tfs[0])}")
-        # print(f"pos[1] = {wp.transform_get_translation(self.ee_tfs[1])}, rot[1] = {wp.transform_get_rotation(self.ee_tfs[1])}")
-        # return
         if self.sim_time < key_time[0]:
             """Raise hands"""
             rot_lerp_ratio = wp.clamp(0.3 * self.sim_time / key_time[0], 0.0, 1.0)
@@ -318,15 +308,7 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-
-        # Register gizmos (the viewer will draw & mutate transforms in-place)
-        # for (name, _), tf in zip(self.ee, self.ee_tfs, strict=False):
-        #     self.viewer.log_gizmo(f"target_{name}", tf)
-
-        # Visualize the current articulated state
-        # newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
         self.viewer.log_state(self.state)
-
         self.viewer.end_frame()
         wp.synchronize()
 
@@ -334,7 +316,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
-    # parser.set_defaults(num_frames=601, viewer="usd", output_path="example_cloth_h1.usd")
+    parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer)
-    newton.examples.run(example)
+    newton.examples.run(example, args)
