@@ -327,7 +327,8 @@ def parse_urdf(
 
     for urdf_link in urdf_links:
         name = urdf_link.get("name")
-        assert name is not None, "Link has no name"
+        if name is None:
+            raise ValueError("Link has no name")
         link = builder.add_body(key=name)
 
         # add ourselves to the index
