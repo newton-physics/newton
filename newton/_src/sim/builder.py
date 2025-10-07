@@ -680,7 +680,6 @@ class ModelBuilder:
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
             source (str): The filename of the URDF file to parse.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
             floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
