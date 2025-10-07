@@ -596,8 +596,6 @@ class _ImplicitMPMScratchpad:
         self.color_indices = None
         self.color_nodes_per_element = 1
 
-        self.collider_quadrature = None
-
         self.inv_mass_matrix = None
         self.collider_normal = None
         self.collider_velocity = None
@@ -612,7 +610,7 @@ class _ImplicitMPMScratchpad:
         self.int_symmetric_strain = None
 
         self.collider_total_volumes = None
-        self.vel_node_volume = None
+        self.collider_vel_node_volume = None
 
     def create_basis_spaces(self, grid: fem.Geometry, strain_basis_str: str):
         """Define velocity and strain function spaces over the given geometry."""
@@ -732,12 +730,6 @@ class _ImplicitMPMScratchpad:
                 elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
                 self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
 
-            collider_quadrature_order = self._sym_strain_space.degree + 1
-            self.collider_quadrature = fem.RegularQuadrature(
-                domain=domain,
-                order=collider_quadrature_order,
-                family=fem.Polynomial.LOBATTO_GAUSS_LEGENDRE,
-            )
             self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
         else:
             self.velocity_test.rebind(velocity_space, vel_space_restriction)
@@ -753,7 +745,6 @@ class _ImplicitMPMScratchpad:
                 elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
                 self.elastic_parameters_field.rebind(elastic_parameters_space, vel_space_partition)
 
-            self.collider_quadrature._domain = domain
             self.background_impulse_field.domain = domain
 
         self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
@@ -843,7 +834,7 @@ class _ImplicitMPMScratchpad:
 
         if has_compliant_bodies:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
-            self.vel_node_volume = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
+            self.collider_vel_node_volume = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
 
         if max_colors > 0:
             self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
@@ -864,9 +855,9 @@ class _ImplicitMPMScratchpad:
             self.strain_node_volume.release()
             self.strain_node_collider_volume.release()
 
-        if self.vel_node_volume is not None:
+        if self.collider_vel_node_volume is not None:
             self.collider_total_volumes.release()
-            self.vel_node_volume.release()
+            self.collider_vel_node_volume.release()
 
         if self.color_indices is not None:
             self.color_indices.release()
@@ -1641,7 +1632,8 @@ class SolverImplicitMPM(SolverBase):
         updates, and particle advection.
         """
         domain = scratch.domain
-        inv_cell_volume = 1.0 / self.mpm_model.voxel_size**3
+        cell_volume = self.mpm_model.voxel_size**3
+        inv_cell_volume = 1.0 / cell_volume
 
         model = self.model
         mpm_model = self.mpm_model
@@ -1687,6 +1679,13 @@ class SolverImplicitMPM(SolverBase):
                 dest=fem.make_restriction(
                     state_out.collider_position_field, space_restriction=scratch.velocity_test.space_restriction
                 ),
+            )
+            fem.integrate(
+                integrate_fraction,
+                fields={"phi": scratch.fraction_test},
+                values={"inv_cell_volume": inv_cell_volume},
+                assembly="nodal",
+                output=scratch.collider_vel_node_volume.array,
             )
             wp.launch(
                 rasterize_collider,
@@ -1777,26 +1776,18 @@ class SolverImplicitMPM(SolverBase):
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=not self._timers_use_nvtx,
             ):
-                fem.integrate(
-                    integrate_fraction,
-                    fields={"phi": scratch.fraction_test},
-                    values={"inv_cell_volume": inv_cell_volume},
-                    output=scratch.vel_node_volume.array,
-                )
-
                 allot_collider_mass(
-                    voxel_size=self.mpm_model.voxel_size,
-                    node_volumes=scratch.vel_node_volume.array,
+                    cell_volume=cell_volume,
+                    node_volumes=scratch.collider_vel_node_volume.array,
                     collider=self.mpm_model.collider,
-                    collider_quadrature=scratch.collider_quadrature,
                     collider_ids=state_out.collider_ids,
                     collider_total_volumes=scratch.collider_total_volumes.array,
                     collider_inv_mass_matrix=scratch.collider_inv_mass_matrix.array,
                 )
 
                 rigidity_matrix = build_rigidity_matrix(
-                    voxel_size=self.mpm_model.voxel_size,
-                    node_volumes=scratch.vel_node_volume.array,
+                    cell_volume=cell_volume,
+                    node_volumes=scratch.collider_vel_node_volume.array,
                     node_positions=state_out.collider_position_field.dof_values,
                     collider=self.mpm_model.collider,
                     collider_ids=state_out.collider_ids,
@@ -1938,9 +1929,9 @@ class SolverImplicitMPM(SolverBase):
                     values={"inv_cell_volume": inv_cell_volume},
                     output=scratch.strain_node_volume.array,
                 )
+
                 fem.integrate(
                     integrate_collider_fraction,
-                    quadrature=scratch.collider_quadrature,
                     fields={
                         "phi": scratch.divergence_test,
                         "sdf": scratch.collider_distance_field,

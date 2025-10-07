@@ -345,10 +345,14 @@ class Example:
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Options()
         mpm_options.voxel_size = voxel_size
-        mpm_options.tolerance = 1.0e-8
-        mpm_options.grid_type = "sparse"
+        mpm_options.tolerance = 1.0e-6
+        mpm_options.grid_type = "fixed"
+        mpm_options.grid_padding = 20
+        mpm_options.max_active_cell_count = 1 << 15
+
         mpm_options.strain_basis = "P0"
-        mpm_options.max_iterations = 250
+        mpm_options.max_iterations = 50
+        mpm_options.critical_fraction = 0.0
 
         mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
 
@@ -357,8 +361,7 @@ class Example:
             colliders=self.collider_meshes,
             collider_masses=[body_masses[body_id] for body_id in collider_body_id],
             collider_friction=[0.5 for _ in collider_body_id],
-            collider_adhesion=[1.0e5 for _ in collider_body_id],
-            # collider_thicknesses=[0.1 for _ in collider_body_id],
+            collider_adhesion=[0.0 for _ in collider_body_id],
         )
         self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
@@ -384,6 +387,10 @@ class Example:
 
         self.ref_q = wp.clone(self.state_0.body_q)
         self._update_collider_mesh(self.state_0)
+
+        self.collider_impulses = None
+        self.collider_impulse_pos = None
+        self.collider_impulse_ids = None
         self.collect_collider_impulses()
 
         self.particle_render_colors = wp.full(
@@ -393,7 +400,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if False and wp.get_device().is_cuda:
+        if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -401,6 +408,8 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        self.ref_q.assign(self.state_0.body_q)
+
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -421,8 +430,6 @@ class Example:
             )
             self.sand_body_forces.assign(self.state_0.body_f)
             # wp.assign(self.state_0.body_f, self.sand_body_forces)
-            print(self.state_0.body_f)
-
             # self.state_0.body_f.assign(self.sand_body_forces)
 
             # apply forces to the model
@@ -434,10 +441,20 @@ class Example:
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+        self.simulate_sand()
+
     def collect_collider_impulses(self):
-        self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
-            self.mpm_solver.collect_collider_impulses(self.sand_state_0)
-        )
+        if self.collider_impulses is None:
+            self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
+                self.mpm_solver.collect_collider_impulses(self.sand_state_0)
+            )
+        else:
+            collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
+                self.sand_state_0
+            )
+            self.collider_impulses.assign(collider_impulses)
+            self.collider_impulse_pos.assign(collider_impulse_pos)
+            self.collider_impulse_ids.assign(collider_impulse_ids)
 
     def simulate_sand(self):
         # one MPM step per frame (no collider setup for now)
@@ -477,14 +494,10 @@ class Example:
         # print(self.sand_body_forces.numpy())
 
     def step(self):
-        self.ref_q.assign(self.state_0.body_q)
-
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
-
-        self.simulate_sand()
 
         self.sim_time += self.frame_dt
 
