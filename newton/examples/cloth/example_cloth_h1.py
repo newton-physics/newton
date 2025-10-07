@@ -304,7 +304,13 @@ class Example:
         self.frame_index += 1
 
     def test(self):
-        pass
+        p_lower = wp.vec3(-0.5, -0.2, 0.8)
+        p_upper = wp.vec3(0.5, 0.2, 1.8)
+        newton.examples.test_particle_state(
+            self.state,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
