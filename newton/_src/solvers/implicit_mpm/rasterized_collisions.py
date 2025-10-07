@@ -270,9 +270,9 @@ def rasterize_collider(
     i = wp.tid()
     x = node_positions[i]
 
-    if x[0] == fem.types.OUTSIDE:
+    if x[0] == fem.OUTSIDE:
         bc_active = False
-        sdf = fem.types.OUTSIDE
+        sdf = fem.OUTSIDE
     else:
         sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider)
         bc_active = collision_is_active(sdf, voxel_size)

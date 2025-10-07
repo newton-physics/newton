@@ -1230,7 +1230,7 @@ def scatter_field_dof_values(
 ):
     nid = wp.tid()
 
-    if nid != fem.types.NULL_NODE_INDEX:
+    if nid != fem.NULL_NODE_INDEX:
         dest[space_node_indices[nid]] = src[nid]
 
 
@@ -1673,7 +1673,7 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            state_out.collider_position_field.dof_values.fill_(wp.vec3(fem.types.OUTSIDE))
+            state_out.collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
             fem.interpolate(
                 world_position,
                 dest=fem.make_restriction(
