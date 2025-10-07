@@ -569,7 +569,7 @@ class ModelBuilder:
 
             # Ensure the custom attribute is defined
             if attr_name not in self.custom_attributes:
-                self.add_custom_attribute(name=attr_name, frequency=frequency, dtype=dtype, assignment=assignment)
+                raise AttributeError(f"Custom attribute '{attr_name}' is not defined")
 
             # Set the value for this specific entity
             custom_attr = self.custom_attributes[attr_name]
