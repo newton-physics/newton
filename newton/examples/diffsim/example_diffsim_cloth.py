@@ -28,6 +28,7 @@
 ###########################################################################
 import numpy as np
 import warp as wp
+import warp.render
 
 import newton
 import newton.examples

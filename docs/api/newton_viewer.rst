@@ -9,7 +9,6 @@ newton.viewer
    :toctree: _generated
    :nosignatures:
 
-   RecorderImGuiManager
    ViewerFile
    ViewerGL
    ViewerNull
