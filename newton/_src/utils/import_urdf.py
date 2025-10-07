@@ -298,22 +298,24 @@ def parse_urdf(
 
     # topological sorting of joints because the FK function will resolve body transforms
     # in joint order and needs the parent link transform to be resolved before the child
-    if joint_ordering is not None:
-        joint_edges = [(joint["parent"], joint["child"]) for joint in joints]
-        sorted_joint_ids = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
-        sorted_joints = [joints[i] for i in sorted_joint_ids]
-    else:
-        sorted_joints = joints
+    urdf_links = []
+    sorted_joints = []
+    if len(joints) > 0:
+        if joint_ordering is not None:
+            joint_edges = [(joint["parent"], joint["child"]) for joint in joints]
+            sorted_joint_ids = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
+            sorted_joints = [joints[i] for i in sorted_joint_ids]
+        else:
+            sorted_joints = joints
 
-    if bodies_follow_joint_ordering:
-        body_order: list[str] = [sorted_joints[0]["parent"]] + [joint["child"] for joint in sorted_joints]
-        urdf_links = []
-        for body in body_order:
-            urdf_link = root.find(f"link[@name='{body}']")
-            if urdf_link is None:
-                raise ValueError(f"Link {body} not found in URDF")
-            urdf_links.append(urdf_link)
-    else:
+        if bodies_follow_joint_ordering:
+            body_order: list[str] = [sorted_joints[0]["parent"]] + [joint["child"] for joint in sorted_joints]
+            for body in body_order:
+                urdf_link = root.find(f"link[@name='{body}']")
+                if urdf_link is None:
+                    raise ValueError(f"Link {body} not found in URDF")
+                urdf_links.append(urdf_link)
+    if len(urdf_links) == 0:
         urdf_links = root.findall("link")
 
     # add links and shapes
