@@ -296,16 +296,15 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.1,
         )
-        if self.sim_time > 1.0:
-            forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -0.5, -0.5)
-            forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.8, 0.5, 0.5)
-            newton.examples.test_body_state(
-                self.model,
-                self.state_0,
-                "the robot is moving forward and not falling",
-                lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
-                indices=[0],
-            )
+        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.5, -0.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.5, 0.5, 0.5)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "the robot is moving forward and not falling",
+            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            indices=[0],
+        )
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
