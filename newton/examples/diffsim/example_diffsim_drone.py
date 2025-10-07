@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Drone
+# Example Diffsim Drone
 #
 # A drone and its 4 propellers is simulated with the goal of reaching
 # different targets via model-predictive control (MPC) that continuously
@@ -36,8 +36,9 @@ import newton.examples
 # TODO: These should be imported from a public API once available
 # For now, implementing locally.
 from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
+from newton.tests.unittest_utils import most
 
-DEFAULT_DRONE_PATH = os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd")  # Path to input drone asset
+DEFAULT_DRONE_PATH = newton.examples.get_asset("crazyflie.usd")  # Path to input drone asset
 
 
 @wp.struct
@@ -534,12 +535,13 @@ class Example:
 
         self.seed = wp.zeros(1, dtype=int)
         self.rollout_costs = wp.zeros(self.rollout_count, dtype=float, requires_grad=True)
+        self.cost_history = []
 
         # Use the Euler integrator for stepping through the simulation.
         self.solver_rollouts = newton.solvers.SolverSemiImplicit(self.rollouts.model)
         self.solver_drone = newton.solvers.SolverSemiImplicit(self.drone.model)
 
-        self.optimizer = wp.optim.SGD(
+        self.optimizer = warp.optim.SGD(
             [self.rollouts.trajectories.flatten()],
             lr=1e-2,
             nesterov=False,
@@ -749,9 +751,12 @@ class Example:
 
         loss = np.min(self.rollout_costs.numpy())
         print(f"[{(self.frame + 1):3d}/{self.sim_steps}] loss={loss:.8f}")
+        self.cost_history.append(loss)
 
     def test(self):
-        pass
+        assert all(np.array(self.cost_history) < 2.0)
+        assert most(np.diff(self.cost_history) < 0.0, min_ratio=0.6)
+        assert all(np.diff(self.cost_history) < 1e-2)
 
     def render(self):
         self.viewer.begin_frame(self.frame * self.frame_dt)
@@ -818,4 +823,4 @@ if __name__ == "__main__":
     )
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

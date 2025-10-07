@@ -228,6 +228,22 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.1,
+        )
+        forward_vel = wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "the robot is moving forward and not falling",
+            lambda q, qd: newton.utils.vec_allclose(qd, forward_vel, rtol=0.1, atol=0.15),
+            indices=[0],
+        )
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -235,4 +251,4 @@ if __name__ == "__main__":
 
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

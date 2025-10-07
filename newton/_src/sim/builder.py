@@ -54,7 +54,7 @@ from ..geometry import (
     transform_inertia,
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
-from ..geometry.utils import RemeshingMethod, compute_obb, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -683,9 +683,15 @@ class ModelBuilder:
             self.add_builder(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None):
-        # an articulation is a set of contiguous bodies bodies from articulation_start[i] to articulation_start[i+1]
-        # these are used for computing forward kinematics e.g.:
-        # articulations are automatically 'closed' when calling finalize
+        """
+        Adds an articulation to the model.
+        An articulation is a set of contiguous joints from ``articulation_start[i]`` to ``articulation_start[i+1]``.
+        Some functions, such as forward kinematics :func:`newton.eval_fk`, are parallelized over articulations.
+        Articulations are automatically 'closed' when calling :meth:`~newton.ModelBuilder.finalize`.
+
+        Args:
+            key (str | None): The key of the articulation. If None, a default key will be created.
+        """
         self.articulation_start.append(self.joint_count)
         self.articulation_key.append(key or f"articulation_{self.articulation_count}")
         self.articulation_group.append(self.current_env_group)
@@ -3018,7 +3024,7 @@ class ModelBuilder:
                 mesh: Mesh = self.shape_source[shape]
                 scale = self.shape_scale[shape]
                 vertices = mesh.vertices * np.array([*scale])
-                tf, scale = compute_obb(vertices)
+                tf, scale = compute_inertia_obb(vertices)
                 self.shape_type[shape] = GeoType.BOX
                 self.shape_source[shape] = None
                 self.shape_scale[shape] = scale
