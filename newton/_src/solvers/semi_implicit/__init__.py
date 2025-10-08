@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .solver_euler import SolverSemiImplicit
+from .solver_semi_implicit import SolverSemiImplicit
 
 __all__ = [
     "SolverSemiImplicit",
