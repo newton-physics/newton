@@ -385,7 +385,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future diffsim example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_bear.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_bear.jpg" alt="DiffSim Quadruped">
+      </a>
     </td>
   </tr>
   <tr>
@@ -396,7 +398,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <!-- Future diffsim example -->
+      <code>uv run -m newton.examples diffsim_bear</code>
     </td>
   </tr>
 </table>
