@@ -32,7 +32,7 @@ from ..semi_implicit.kernels_particle import (
     eval_triangle_forces,
 )
 from ..solver import SolverBase
-from .kernels import (
+from .kernels_body import (
     compute_com_transforms,
     compute_spatial_inertia,
     create_inertia_matrix_cholesky_kernel,
