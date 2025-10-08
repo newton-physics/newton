@@ -2409,7 +2409,7 @@ def vertex_triangle_collision_detection_kernel(
         u2 = pos[t2]
         u3 = pos[t3]
 
-        closest_p, bary, feature_type = triangle_closest_point(u1, u2, u3, v)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
 
         dist = wp.length(closest_p - v)
 
@@ -2506,7 +2506,7 @@ def vertex_triangle_collision_detection_no_triangle_buffers_kernel(
         u2 = pos[t2]
         u3 = pos[t3]
 
-        closest_p, bary, feature_type = triangle_closest_point(u1, u2, u3, v)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
 
         dist = wp.length(closest_p - v)
 

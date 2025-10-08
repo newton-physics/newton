@@ -83,8 +83,8 @@ class Example:
 
     def gui(self, ui):
         ui.text("Custom UI text")
-        changed, self.time = ui.slider_float("Time", self.time, 0.0, 100.0)
-        changed, self.spacing = ui.slider_float("Spacing", self.spacing, 0.0, 10.0)
+        _changed, self.time = ui.slider_float("Time", self.time, 0.0, 100.0)
+        _changed, self.spacing = ui.slider_float("Spacing", self.spacing, 0.0, 10.0)
 
     def step(self):
         pass
