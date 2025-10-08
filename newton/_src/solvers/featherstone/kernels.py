@@ -21,7 +21,7 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
 )
-from ..euler.kernels import eval_joint_force
+from ..semi_implicit.kernels_body import joint_force
 
 
 @wp.kernel
@@ -401,7 +401,7 @@ def jcalc_tau(
             target_kd = joint_target_kd[j]
             mode = joint_dof_mode[j]
 
-            drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
+            drive_f = joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]

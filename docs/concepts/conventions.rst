@@ -81,7 +81,7 @@ Newton Conventions
 **Newton** follows the standard physics engine convention for most solvers, 
 aligning with Isaac Lab's approach, but with one important exception:
 
-* **Standard Newton solvers** (XPBD, Euler, SolverMuJoCo etc.)  
+* **Standard Newton solvers** (XPBD, SemiImplicit, SolverMuJoCo etc.)  
   Newton's :attr:`State.body_qd` stores **both** linear and angular velocities 
   in the world frame. The linear velocity represents the COM velocity in world 
   coordinates, while the angular velocity is also expressed in world coordinates.
