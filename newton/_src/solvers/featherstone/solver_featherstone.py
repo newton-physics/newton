@@ -21,6 +21,7 @@ from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
     eval_particle_contact_forces,
+    eval_triangle_contact_forces,
 )
 from ..semi_implicit.kernels_muscle import (
     eval_muscle_forces,
@@ -100,6 +101,7 @@ class SolverFeatherstone(SolverBase):
         friction_smoothing: float = 1.0,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
+        enable_tri_contact: bool = True,
     ):
         """
         Args:
@@ -109,6 +111,7 @@ class SolverFeatherstone(SolverBase):
             friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
             use_tile_gemm (bool, optional): Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
             fuse_cholesky (bool, optional): Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            enable_tri_contact (bool, optional): Enable triangle contact. Defaults to True.
         """
         super().__init__(model)
 
@@ -117,6 +120,7 @@ class SolverFeatherstone(SolverBase):
         self.friction_smoothing = friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
+        self.enable_tri_contact = enable_tri_contact
 
         self._step = 0
 
@@ -328,6 +332,10 @@ class SolverFeatherstone(SolverBase):
 
             # particle-particle interactions
             eval_particle_contact_forces(model, state_in, particle_f)
+
+            # triangle/triangle contacts
+            if self.enable_tri_contact:
+                eval_triangle_contact_forces(model, state_in, particle_f)
 
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=True)
