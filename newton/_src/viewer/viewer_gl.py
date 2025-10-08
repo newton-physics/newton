@@ -15,11 +15,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import time
 
 import numpy as np
-import numpy.typing as npt
 import warp as wp
+import warp.render.render_opengl
 
 import newton as nt
 from newton.selection import ArticulationView
@@ -54,7 +55,7 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
-    def __init__(self, width=1920, height=1080, vsync=False, headless=False, save_frame: bool = False):
+    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
         """
         Initialize the OpenGL viewer and UI.
 
@@ -63,7 +64,6 @@ class ViewerGL(ViewerBase):
             height (int): Window height in pixels.
             vsync (bool): Enable vertical sync.
             headless (bool): Run in headless mode (no window).
-            save_frame (bool): If True, store internally the last rendered frame.
         """
         super().__init__()
 
@@ -129,9 +129,9 @@ class ViewerGL(ViewerBase):
         # positions: "side", "stats", "free"
         self._ui_callbacks = {"side": [], "stats": [], "free": []}
 
-        # Buffer to store the last rendered frame
-        self._save_frame = save_frame
-        self._frame = np.empty(0, dtype=np.uint8)
+        # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
+        self._pbo = None
+        self._wp_pbo = None
 
         self.set_model(None)
 
@@ -465,10 +465,7 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        frame = self.renderer.render(self.camera, self.objects, self.lines, return_frame=self._save_frame)
-
-        if self._save_frame:
-            self._frame = frame
+        self.renderer.render(self.camera, self.objects, self.lines)
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
@@ -484,18 +481,82 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
-    def get_frame(self) -> npt.NDArray[np.uint8]:
+    def get_frame(self, target_image: wp.array | None = None) -> wp.array:
         """
-        Get the last rendered frame as a numpy array.
+        Retrieve the last rendered frame.
+
+        This method uses OpenGL Pixel Buffer Objects (PBO) and CUDA interoperability
+        to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
+
+        Args:
+            target_image (wp.array, optional):
+                Optional pre-allocated Warp array with shape `(height, width, 3)`
+                and dtype `wp.uint8`. If `None`, a new array will be created.
 
         Returns:
-            np.ndarray: The last rendered frame in RGBA format.
+            wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
+                and dtype `wp.uint8`. Origin is top-left (OpenGL's bottom-left is flipped).
         """
 
-        if not self._save_frame:
-            raise RuntimeError("Frame saving is not enabled. Initialize with `save_frame=True`.")
+        gl = RendererGL.gl
+        w, h = self.renderer._screen_width, self.renderer._screen_height
 
-        return self._frame
+        # Lazy initialization of PBO (Pixel Buffer Object).
+        if self._pbo is None:
+            pbo_id = (gl.GLuint * 1)()
+            gl.glGenBuffers(1, pbo_id)
+            self._pbo = pbo_id[0]
+
+            # Allocate PBO storage.
+            gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+            gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, gl.GLsizeiptr(w * h * 3), None, gl.GL_STREAM_READ)
+            gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
+
+            # Register with CUDA.
+            self._wp_pbo = wp.RegisteredGLBuffer(
+                gl_buffer_id=int(self._pbo),
+                device=self.device,
+                flags=wp.RegisteredGLBuffer.READ_ONLY,
+            )
+
+            # Set alignment once.
+            gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+
+        # GPU-to-GPU readback into PBO.
+        assert self.renderer._frame_fbo is not None
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+        gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+        # Map PBO buffer and copy using RGB kernel.
+        assert self._wp_pbo is not None
+        buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+
+        if target_image is None:
+            target_image = wp.empty(
+                shape=(h, w, 3),
+                dtype=wp.uint8,  # pyright: ignore[reportArgumentType]
+                device=self.device,
+            )
+
+        if target_image.shape != (h, w, 3):
+            raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+
+        # Launch the RGB kernel.
+        wp.launch(
+            warp.render.render_opengl.copy_rgb_frame_uint8,
+            dim=(w, h),
+            inputs=[buf, w, h],
+            outputs=[target_image],
+            device=self.device,
+        )
+
+        # Unmap the PBO buffer.
+        self._wp_pbo.unmap()
+
+        return target_image
 
     @override
     def is_running(self) -> bool:
