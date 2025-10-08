@@ -24,22 +24,23 @@ class RecorderImGuiManager(ImGuiManager):
 
     This class provides a graphical user interface for controlling simulation playback,
     including pausing, resuming, scrubbing through frames, and saving/loading recordings.
-    It also manages the visualization of contact points and updates the renderer
+    It also manages the visualization of contact points and updates the viewer
     according to the selected frame.
     """
 
-    def __init__(self, renderer, recorder, example, window_pos=(10, 10), window_size=(300, 120)):
+    def __init__(self, viewer, recorder, example, window_pos=(10, 10), window_size=(300, 120)):
         """
         Initialize the RecorderImGuiManager.
 
         Args:
-            renderer: The renderer instance used for visualization.
+            viewer: The viewer instance (must have a renderer attribute).
             recorder: The recorder object that stores simulation history.
             example: The simulation example object (must have .paused and .frame_dt attributes).
             window_pos (tuple, optional): The (x, y) position of the ImGui window. Defaults to (10, 10).
             window_size (tuple, optional): The (width, height) of the ImGui window. Defaults to (300, 120).
         """
-        super().__init__(renderer)
+        super().__init__(viewer.renderer)
+        self.viewer = viewer
         if not self.is_available:
             return
 
@@ -59,7 +60,7 @@ class RecorderImGuiManager(ImGuiManager):
         """
         for i in range(self.num_point_clouds_rendered):
             # use size 1 as size 0 seems to do nothing
-            self.renderer.render_points(f"contact_points{i}", wp.empty(1, dtype=wp.vec3), radius=1e-2)
+            self.viewer.renderer.render_points(f"contact_points{i}", wp.empty(1, dtype=wp.vec3), radius=1e-2)
         self.num_point_clouds_rendered = 0
 
     def _update_frame(self, frame_id):
@@ -73,13 +74,13 @@ class RecorderImGuiManager(ImGuiManager):
         if self.example.paused:
             transforms, point_clouds = self.recorder.playback(self.selected_frame)
             if transforms:
-                self.renderer.update_body_transforms(transforms)
+                self.viewer.renderer.update_body_transforms(transforms)
 
             self._clear_contact_points()
             if point_clouds:
                 for i, pc in enumerate(point_clouds):
-                    self.renderer.render_points(
-                        f"contact_points{i}", pc, radius=1e-2, colors=self.renderer.get_new_color(i)
+                    self.viewer.renderer.render_points(
+                        f"contact_points{i}", pc, radius=1e-2, colors=self.viewer.renderer.get_new_color(i)
                     )
                 self.num_point_clouds_rendered = len(point_clouds)
 

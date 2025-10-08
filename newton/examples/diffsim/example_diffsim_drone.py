@@ -29,6 +29,7 @@ import os
 import numpy as np
 import warp as wp
 import warp.optim
+import warp.render
 
 import newton
 import newton.examples
