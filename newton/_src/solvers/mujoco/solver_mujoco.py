@@ -103,6 +103,13 @@ def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
         return pos
 
 
+# Precomputed rotation quaternions for axis conversion
+# X-up to Z-up: Rotate 90 degrees around Y-axis
+CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
+# Y-up to Z-up: Rotate 90 degrees around X-axis
+CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+
+
 @wp.func
 def convert_up_axis_quat(rot: wp.quat, up_axis: int):
     """
@@ -116,11 +123,9 @@ def convert_up_axis_quat(rot: wp.quat, up_axis: int):
         Converted rotation quaternion
     """
     if up_axis == 0:  # X-up to Z-up: Rotate 90 degrees around Y-axis
-        rot_x2z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
-        return rot_x2z * rot
+        return CONVERT_ROT_X2Z * rot
     elif up_axis == 1:  # Y-up to Z-up: Rotate 90 degrees around X-axis
-        rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-        return rot_y2z * rot
+        return CONVERT_ROT_Y2Z * rot
     else:  # Z-up: no conversion needed
         return rot
 
