@@ -235,8 +235,8 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.1,
         )
-        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.5, -0.5, -0.5)
-        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.5, 0.5, 0.5)
+        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -0.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.8, 0.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
