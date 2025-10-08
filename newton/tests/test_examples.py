@@ -531,6 +531,15 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestDiffSimExamples,
+    name="diffsim.example_diffsim_bear",
+    devices=test_devices,
+    test_options={"usd_required": True, "num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options_cpu={"num-frames": 2, "sim-steps": 10},
+    use_viewer=True,
+)
+
 
 class TestSensorExamples(unittest.TestCase):
     pass
