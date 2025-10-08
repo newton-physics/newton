@@ -100,7 +100,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 2e4
     builder.default_shape_cfg.kd = 500.0
-    # !!! disable friction for Euler integrators
+    # !!! disable friction for SemiImplicit integrators
     builder.default_shape_cfg.kf = 0.0
 
     expected_end_positions = []

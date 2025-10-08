@@ -26,6 +26,7 @@
 ###########################################################################
 import numpy as np
 import warp as wp
+import warp.render
 
 import newton
 import newton.examples
@@ -114,7 +115,7 @@ class Example:
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = scene.finalize(requires_grad=True)
 
-        # Use the Euler integrator for stepping through the simulation.
+        # Use the SemiImplicit integrator for stepping through the simulation.
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
         # allocate sim states for trajectory (control and contacts are not used in this example)
