@@ -20,7 +20,6 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
-from newton._src.solvers.mujoco.solver_mujoco import convert_up_axis_quat
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 wp.config.quiet = True
@@ -205,7 +204,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
         initial_pos = wp.vec3(0.0, 1.0, 0.0)  # Position above ground in Y direction
     else:  # Z-axis (default)
         initial_pos = wp.vec3(0.0, 0.0, 1.0)  # Position above ground in Z direction
-    
+
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
     builder.add_joint_free(b)
     builder.add_shape_sphere(
@@ -220,13 +219,13 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
     # Verify that static shapes (ground plane) have the correct orientation for the up-axis
     shape_bodies = model.shape_body.numpy()
     shape_transforms = model.shape_transform.numpy()
-    
+
     # Find the ground plane shape(s) which should be static (shape_body == -1)
-    for i, (shape_body, shape_transform_arr) in enumerate(zip(shape_bodies, shape_transforms)):
+    for i, (shape_body, shape_transform_arr) in enumerate(zip(shape_bodies, shape_transforms, strict=False)):
         if shape_body == -1:  # static shape (ground plane)
             # Convert the numpy array to a proper transform object
             shape_transform = wp.transform(*shape_transform_arr)
-            
+
             # The ground plane should be oriented such that its normal aligns with the up-axis
             # For up_axis X, Y, Z the normals should be (1,0,0), (0,1,0), (0,0,1) respectively
             expected_normal = wp.vec3(0.0, 0.0, 0.0)
@@ -236,15 +235,19 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
                 expected_normal = wp.vec3(0.0, 1.0, 0.0)
             else:  # Z-axis
                 expected_normal = wp.vec3(0.0, 0.0, 1.0)
-            
+
             # Apply the rotation to the default local Z-axis (0,0,1) to get the actual normal
             local_z_axis = wp.vec3(0.0, 0.0, 1.0)
             actual_normal = wp.quat_rotate(shape_transform.q, local_z_axis)
-            
+
             # Check that the normal aligns with the expected up-axis
             for j in range(3):  # x, y, z components
-                test.assertAlmostEqual(actual_normal[j], expected_normal[j], delta=1e-5,
-                                    msg=f"Ground plane normal mismatch for up_axis {up_axis} at component {j}, shape {i}")
+                test.assertAlmostEqual(
+                    actual_normal[j],
+                    expected_normal[j],
+                    delta=1e-5,
+                    msg=f"Ground plane normal mismatch for up_axis {up_axis} at component {j}, shape {i}",
+                )
 
     solver = solver_fn(model)
     state_0, state_1 = model.state(), model.state()
@@ -270,7 +273,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
 
     # For up-axis, the sphere should end up at the appropriate coordinate near the ground
     body_q = state_0.body_q.numpy()
-    
+
     # Check final position based on up-axis
     if up_axis == newton.Axis.X:
         # In X-up, gravity pulls in -X direction, so sphere should end up at around X=0.1 (radius above ground at X=0)
@@ -281,7 +284,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
     else:  # Z-axis
         # In Z-up, gravity pulls in -Z direction, so sphere should end up at around Z=0.1 (radius above ground at Z=0)
         expected_pos = wp.vec3(0.0, 0.0, 0.1)
-    
+
     assert_np_equal(body_q[0, :3], np.array(expected_pos), tol=2e-1)
     expected_quat = wp.quat_identity()
     assert_np_equal(body_q[0, 3:], np.array(expected_quat), tol=1e-1)
