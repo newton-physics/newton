@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from .avbd import SolverAVBD
-from .euler import SolverSemiImplicit
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
