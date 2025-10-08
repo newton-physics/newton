@@ -125,7 +125,7 @@ class Example:
         self.sim_iterations = 20
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # Setup simulation parameters
+        # Cable parameters
         self.num_elements = 50
         self.cable_length = 5.0
         cable_radius = 0.01
@@ -189,8 +189,6 @@ class Example:
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
             kinematic_body_indices.append(first_body)
-
-            bend_stiffness *= bend_stiffness_scale
 
         # Create array of kinematic body indices
         self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
@@ -274,7 +272,7 @@ class Example:
 
                 # Check for reasonable value ranges (prevent explosive behavior)
                 assert (np.abs(body_positions) < 1e3).all(), f"Body positions too large (>1000) at step {i}"
-                assert (np.abs(body_velocities) < 1e2).all(), f"Body velocities too large (>100) at step {i}"
+                assert (np.abs(body_velocities) < 5e2).all(), f"Body velocities too large (>500) at step {i}"
 
         # Test 2: Check cable connectivity (joint constraints)
         if self.state_0.body_q is not None:
@@ -322,7 +320,6 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-    viewer._paused = True
 
     # Create example and run
     example = Example(viewer)

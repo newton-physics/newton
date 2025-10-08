@@ -3065,6 +3065,7 @@ class ModelBuilder:
         bend_damping: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        closed: bool = False,
         key: str | None = None,
     ) -> tuple[list[int], list[int]]:
         """Creates a rod composed of multiple capsule bodies connected by cable joints.
@@ -3083,12 +3084,13 @@ class ModelBuilder:
             bend_damping: Damping parameter passed to the cable joint. If None, defaults to 0.0.
             stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9 (high stiffness for AVBD).
             stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
+            closed: If True, adds a closing joint connecting the last segment back to the first, forming a closed loop (e.g., ring, rubber band). If False, creates an open chain. Defaults to False.
             key: Optional key prefix for naming bodies, shapes, and joints.
 
         Returns:
             A tuple (body_indices, joint_indices) where:
                 - body_indices: List of created body indices (length = num_segments)
-                - joint_indices: List of created cable joint indices (length = num_segments - 1)
+                - joint_indices: List of created cable joint indices (length = num_segments - 1 if open, num_segments if closed)
 
         Raises:
             ValueError: If positions and quaternions have incompatible lengths.
@@ -3114,6 +3116,7 @@ class ModelBuilder:
         link_bodies = []
         link_joints = []
 
+        # Create all bodies first
         for i in range(num_segments):
             p0 = positions[i]
             p1 = positions[i + 1]
@@ -3147,37 +3150,43 @@ class ModelBuilder:
             )
             link_bodies.append(child_body)
 
-            # Connect adjacent bodies with cable joints
-            if i > 0:
-                parent_body = link_bodies[i - 1]
+        # Create joints connecting consecutive segments
+        # For open chains: num_segments - 1 joints
+        # For closed loops: num_segments joints (including closing joint)
+        num_joints = num_segments if closed else num_segments - 1
+        for i in range(num_joints):
+            parent_idx = i
+            child_idx = (i + 1) % num_segments  # Wraps around for closing joint when closed
 
-                # Parent anchor at previous segment end (+Z offset by its length)
-                prev_segment_length = wp.length(positions[i] - positions[i - 1])
+            parent_body = link_bodies[parent_idx]
+            child_body = link_bodies[child_idx]
 
-                # Parent end: full capsule length from parent start point
-                parent_xform = wp.transform_identity()
-                parent_xform.p = wp.vec3(0.0, 0.0, prev_segment_length)
+            # Parent anchor at segment end
+            segment_length = wp.length(positions[child_idx] - positions[parent_idx])
+            parent_xform = wp.transform_identity()
+            parent_xform.p = wp.vec3(0.0, 0.0, segment_length)
 
-                # Child anchor at current segment start (body origin)
-                child_xform = wp.transform_identity()
-                child_xform.p = wp.vec3(0.0, 0.0, 0.0)
+            # Child anchor at segment start
+            child_xform = wp.transform_identity()
+            child_xform.p = wp.vec3(0.0, 0.0, 0.0)
 
-                joint_key = f"{key}_cable_{i}" if key else None
+            # Joint key: numbered 1 through num_joints
+            joint_key = f"{key}_cable_{i + 1}" if key else None
 
-                joint = self.add_joint_cable(
-                    parent=parent_body,
-                    child=child_body,
-                    parent_xform=parent_xform,
-                    child_xform=child_xform,
-                    bend_stiffness=bend_stiffness,
-                    bend_damping=bend_damping,
-                    stretch_stiffness=stretch_stiffness,
-                    stretch_damping=stretch_damping,
-                    key=joint_key,
-                    collision_filter_parent=True,
-                    enabled=True,
-                )
-                link_joints.append(joint)
+            joint = self.add_joint_cable(
+                parent=parent_body,
+                child=child_body,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                key=joint_key,
+                collision_filter_parent=True,
+                enabled=True,
+            )
+            link_joints.append(joint)
 
         return link_bodies, link_joints
 

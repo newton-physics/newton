@@ -246,6 +246,7 @@ add_example_test(TestCableExamples, name="cable.example_cable_bend", devices=tes
 add_example_test(TestCableExamples, name="cable.example_cable_twist", devices=test_devices, use_viewer=True)
 add_example_test(TestCableExamples, name="cable.example_cable_helix", devices=test_devices, use_viewer=True)
 add_example_test(TestCableExamples, name="cable.example_cable_pile", devices=test_devices, use_viewer=True)
+add_example_test(TestCableExamples, name="cable.example_cable_bundles", devices=test_devices, use_viewer=True)
 
 
 class TestClothExamples(unittest.TestCase):

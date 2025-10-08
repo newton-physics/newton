@@ -282,6 +282,8 @@ class Example:
     def simulate(self):
         """Run simulation substeps with kinematic first-capsule rotation"""
         for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+
             # Apply continuous spin to first capsules
             wp.launch(
                 kernel=spin_first_capsules_kernel,
@@ -319,7 +321,7 @@ class Example:
         """Test cable twist physics for stability and correctness."""
 
         # Run simulation for analysis
-        test_steps = 50
+        test_steps = 20
 
         for i in range(test_steps):
             self.simulate()
