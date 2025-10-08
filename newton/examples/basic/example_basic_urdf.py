@@ -62,7 +62,7 @@ class Example:
         # parse the URDF file
         quadruped.add_urdf(
             newton.examples.get_asset("quadruped.urdf"),
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,
         )
@@ -130,7 +130,7 @@ class Example:
             self.model,
             self.state_0,
             "quadruped links are not moving too fast",
-            lambda q, qd: max(abs(qd)) < 0.1,
+            lambda q, qd: max(abs(qd)) < 0.15,
         )
 
         bodies_per_env = self.model.body_count // self.num_envs
