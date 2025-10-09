@@ -1109,7 +1109,7 @@ class ViewerGL(ViewerBase):
             # Articulation Pattern Input
             imgui.text("Articulation Pattern:")
             imgui.push_item_width(200)
-            changed, state["selected_articulation_pattern"] = imgui.input_text(
+            _changed, state["selected_articulation_pattern"] = imgui.input_text(
                 "##pattern", state["selected_articulation_pattern"]
             )
             imgui.pop_item_width()
@@ -1437,7 +1437,7 @@ class ViewerGL(ViewerBase):
                 # Use slider for numeric values with fixed width
                 imgui.push_item_width(150)
                 slider_id = f"##{attribute_name}_{i}"
-                changed, new_val = imgui.slider_float(slider_id, current_sliders[i], slider_min, slider_max, "%.6f")
+                _changed, _new_val = imgui.slider_float(slider_id, current_sliders[i], slider_min, slider_max, "%.6f")
                 imgui.pop_item_width()
                 # if changed:
                 #     current_sliders[i] = new_val
