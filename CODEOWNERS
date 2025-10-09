@@ -3,9 +3,6 @@
 # Each line is a file pattern followed by one or more owners.
 # Order is important; the last matching pattern takes precedence.
 
-# Default owner for everything not explicitly assigned
-* @eric-heiden
-
 # Solvers module assignments
 newton/_src/solvers/vbd/ @AnkaChan
 newton/_src/solvers/mujoco/ @adenzler-nvidia
