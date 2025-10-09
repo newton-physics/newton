@@ -24,6 +24,8 @@ newton/utils.py @mmacklin
 
 # Sim folder
 newton/_src/sim/ @eric-heiden
+newton/_src/core/ @eric-heiden
+newton/_src/utils/ @eric-heiden
 
 # Geometry module
 newton/_src/geometry/ @nvtw
