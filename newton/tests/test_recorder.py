@@ -404,6 +404,7 @@ add_function_test(
     "test_model_and_state_recorder_binary",
     test_model_and_state_recorder_binary,
     devices=devices,
+    check_output=False,  # Ignore "Please install 'psutil'" UserWarning
 )
 
 if __name__ == "__main__":
