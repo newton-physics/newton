@@ -26,7 +26,7 @@
 from __future__ import annotations
 
 import time
-from functools import lru_cache, partial
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -36,48 +36,6 @@ import newton
 import newton.examples
 import newton.ik as ik
 import newton.utils
-
-
-@lru_cache(maxsize=64)
-def _roberts_root(dim: int) -> float:
-    x = 1.5
-    for _ in range(20):
-        f = x ** (dim + 1) - x - 1.0
-        df = (dim + 1) * x**dim - 1.0
-        x_next = x - f / df
-        if abs(x_next - x) < 1.0e-12:
-            break
-        x = x_next
-    return x
-
-
-# Warp kernel to select the best seed based on cost
-@wp.kernel
-def _pick_best(costs: wp.array(dtype=wp.float32), n_seeds: int, best: wp.array(dtype=wp.int32)):
-    q = wp.tid()
-    base = q * n_seeds
-    best_cost = float(1.0e30)
-    best_seed = int(0)
-    for s in range(n_seeds):
-        c = costs[base + s]
-        if c < best_cost:
-            best_cost, best_seed = c, s
-    best[q] = best_seed
-
-
-# Warp kernel to gather the winning joint configurations
-@wp.kernel
-def _scatter_winner(
-    src: wp.array2d(dtype=wp.float32),
-    winners: wp.array2d(dtype=wp.float32),
-    best: wp.array(dtype=wp.int32),
-    n_seeds: int,
-    n_coords: int,
-):
-    q = wp.tid()
-    src_idx = q * n_seeds + best[q]
-    for d in range(n_coords):
-        winners[q, d] = src[src_idx, d]
 
 
 class Example:
@@ -119,11 +77,6 @@ class Example:
         model = franka.finalize(requires_grad=False)
         return model
 
-    def _roberts_sequence(self, n: int, dim: int) -> np.ndarray:
-        r = _roberts_root(dim)
-        basis = 1.0 - 1.0 / r ** (1 + np.arange(dim))
-        return ((np.arange(n)[:, None] * basis) % 1.0).astype(np.float32)
-
     def _random_solutions(self, n: int) -> np.ndarray:
         lower = self.model.joint_limit_lower.numpy()[: self.n_coords]
         upper = self.model.joint_limit_upper.numpy()[: self.n_coords]
@@ -134,22 +87,18 @@ class Example:
         q[:, mask] = 0.0
         return q.astype(np.float32)
 
-    def _build_ik_solver(self, max_problems: int):
-        n_residuals = len(self.ee_links) * 6 + self.n_coords
-        zero_pos = [wp.zeros(max_problems, dtype=wp.vec3) for _ in self.ee_links]
-        zero_rot = [wp.zeros(max_problems, dtype=wp.vec4) for _ in self.ee_links]
+    def _build_ik_solver(self, n_problems: int):
+        zero_pos = [wp.zeros(n_problems, dtype=wp.vec3) for _ in self.ee_links]
+        zero_rot = [wp.zeros(n_problems, dtype=wp.vec4) for _ in self.ee_links]
         objectives = []
         for ee, link in enumerate(self.ee_links):
-            objectives.append(ik.IKPositionObjective(link, wp.vec3(), zero_pos[ee], max_problems, n_residuals, ee * 3))
+            objectives.append(ik.IKPositionObjective(link, wp.vec3(), zero_pos[ee]))
         for ee, link in enumerate(self.ee_links):
             objectives.append(
                 ik.IKRotationObjective(
                     link,
                     wp.quat_identity(),
                     zero_rot[ee],
-                    max_problems,
-                    n_residuals,
-                    len(self.ee_links) * 3 + ee * 3,
                     canonicalize_quat_err=False,
                 )
             )
@@ -157,17 +106,15 @@ class Example:
             ik.IKJointLimitObjective(
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
-                max_problems,
-                n_residuals,
-                len(self.ee_links) * 6,
-                1.0,
+                weight=1.0,
             )
         )
-        q0 = wp.zeros((max_problems, self.n_coords), dtype=wp.float32)
         solver = ik.IKSolver(
             self.model,
-            q0,
+            n_problems,
             objectives,
+            sampler=ik.IKSampler.ROBERTS,
+            n_seeds=self.seeds,
             lambda_factor=self.lambda_factor,
             jacobian_mode=ik.IKJacobianMode.ANALYTIC,
         )
@@ -221,17 +168,9 @@ class Example:
         success = (pos_err < self.pos_thresh_m) & (rot_err < self.ori_thresh_rad)
         return pos_err, rot_err, success
 
-    def _capture_batch_graph(self, solver, batch: int, winners_d, best_d):
-        if not self.use_cuda_graph:
-            return None
+    def _capture_batch_graph(self, solver, seeds_d, winners_d):
         with wp.ScopedCapture() as cap:
-            solver.solve(self.iterations, self.step_size)
-            wp.launch(_pick_best, dim=batch, inputs=[solver.costs, self.seeds, best_d])
-            wp.launch(
-                _scatter_winner,
-                dim=batch,
-                inputs=[solver.joint_q, winners_d, best_d, self.seeds, self.n_coords],
-            )
+            solver.step(seeds_d, winners_d, iterations=self.iterations, step_size=self.step_size)
         return cap.graph
 
     def run_benchmark(self):
@@ -239,28 +178,19 @@ class Example:
         Executes the main benchmark logic by iterating through batch sizes.
         """
         for batch in self.batch_sizes:
-            max_problems = batch * self.seeds
-            solver, pos_obj, rot_obj = self._build_ik_solver(max_problems)
+            solver, pos_obj, rot_obj = self._build_ik_solver(batch)
 
             # Prepare device arrays for the full batch
             winners_d = wp.zeros((batch, self.n_coords), dtype=wp.float32)
-            best_d = wp.zeros(batch, dtype=wp.int32)
+            seeds_in_d = wp.zeros((batch, self.n_coords), dtype=wp.float32)
 
             # Capture CUDA graph for the full batch operation
-            solve_graph = self._capture_batch_graph(solver, batch, winners_d, best_d)
+            if self.use_cuda_graph:
+                solve_graph = self._capture_batch_graph(solver, seeds_in_d, winners_d)
 
             # Prepare host data (ground truth and initial seeds)
             q_gt = self._random_solutions(batch)
             tgt_p, tgt_r = self._fk_targets(q_gt)
-            span = (
-                self.model.joint_limit_upper.numpy()[: self.n_coords]
-                - self.model.joint_limit_lower.numpy()[: self.n_coords]
-            )
-            base = (
-                self._roberts_sequence(self.seeds, self.n_coords) * span
-                + self.model.joint_limit_lower.numpy()[: self.n_coords]
-            ).astype(np.float32)
-            starts = np.tile(base, (batch, 1))
 
             times = []
             for _ in range(self.repeats):
@@ -271,26 +201,20 @@ class Example:
 
                 # Set targets for all problems in the batch
                 for ee in range(len(self.ee_names)):
-                    target_pos = np.repeat(tgt_p[:, ee], self.seeds, axis=0)
-                    pos_obj[ee].set_target_positions(wp.array(target_pos, dtype=wp.vec3))
+                    pos_obj[ee].set_target_positions(
+                        wp.array(tgt_p[:, ee].astype(np.float32, copy=False), dtype=wp.vec3)
+                    )
+                    rot_obj[ee].set_target_rotations(
+                        wp.array(tgt_r[:, ee].astype(np.float32, copy=False), dtype=wp.vec4)
+                    )
 
-                    target_rot = np.repeat(tgt_r[:, ee], self.seeds, axis=0)
-                    rot_obj[ee].set_target_rotations(wp.array(target_rot, dtype=wp.vec4))
-
-                # Set initial joint configurations for all seeds
-                wp.copy(solver.joint_q, wp.array(starts, dtype=wp.float32))
+                solver.reset()
 
                 # Run the solver
                 if self.use_cuda_graph and solve_graph is not None:
                     wp.capture_launch(solve_graph)
                 else:
-                    solver.solve(self.iterations, self.step_size)
-                    wp.launch(_pick_best, dim=batch, inputs=[solver.costs, self.seeds, best_d])
-                    wp.launch(
-                        _scatter_winner,
-                        dim=batch,
-                        inputs=[solver.joint_q, winners_d, best_d, self.seeds, self.n_coords],
-                    )
+                    solver.step(seeds_in_d, winners_d, iterations=self.iterations, step_size=self.step_size)
 
                 wp.synchronize_device()
                 times.append(time.perf_counter() - t0)
