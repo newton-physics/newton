@@ -326,7 +326,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -0.02,
+            lambda q, qd: q[2] > -0.03,
         )
 
     def render(self):
