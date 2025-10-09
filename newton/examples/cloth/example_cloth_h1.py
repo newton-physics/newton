@@ -316,8 +316,8 @@ class Example:
         self.frame_index += 1
 
     def test(self):
-        p_lower = wp.vec3(-0.5, -0.2, 0.8)
-        p_upper = wp.vec3(0.5, 0.2, 1.8)
+        p_lower = wp.vec3(-0.3, -0.8, 0.8)
+        p_upper = wp.vec3(0.5, 0.8, 1.8)
         newton.examples.test_particle_state(
             self.state,
             "particles are within a reasonable volume",
