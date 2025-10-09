@@ -202,6 +202,21 @@ class KpiHumanoid(_KpiBenchmark):
     ls_iteration = 15
 
 
+class FastAllegro(_FastBenchmark):
+    num_frames = 50
+    robot = "allegro"
+    repeat = 8
+    num_envs = 256
+
+
+class KpiAllegro(_KpiBenchmark):
+    params = [4096, 8192]
+    num_frames = 100
+    robot = "allegro"
+    samples = 4
+    ls_iteration = 10
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -213,11 +228,13 @@ if __name__ == "__main__":
         "FastG1": FastG1,
         "FastH1": FastH1,
         "FastHumanoid": FastHumanoid,
+        "FastAllegro": FastAllegro,
         "KpiAnt": KpiAnt,
         "KpiCartpole": KpiCartpole,
         "KpiG1": KpiG1,
         "KpiH1": KpiH1,
         "KpiHumanoid": KpiHumanoid,
+        "KpiAllegro": KpiAllegro,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
