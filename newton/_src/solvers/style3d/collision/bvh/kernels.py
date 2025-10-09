@@ -172,7 +172,7 @@ def triangle_vs_point_kernel(
         if ignore_self_hits and vertex_adjacent_to_triangle(vid, t1, t2, t3):
             continue
 
-        closest_p, bary, feature_type = triangle_closest_point(tri_pos[t1], tri_pos[t2], tri_pos[t3], x0)
+        closest_p, _bary, _feature_type = triangle_closest_point(tri_pos[t1], tri_pos[t2], tri_pos[t3], x0)
 
         dist = wp.length(closest_p - x0)
 
