@@ -20,8 +20,8 @@ Key Features
 ------------
 
 * **GPU-accelerated**: Leverages NVIDIA Warp for fast, scalable simulation.
-* **Multiple solver implementations** - XPBD, VBD, MuJoCo, Featherstone, Euler
-* **Modular design** - Easily extendable with new solvers and components
+* **Multiple solver implementations**: XPBD, VBD, MuJoCo, Featherstone, SemiImplicit.
+* **Modular design**: Easily extendable with new solvers and components.
 * **Differentiable**: Supports differentiable simulation for machine learning and optimization.
 * **Rich Import/Export**: Load models from URDF, MJCF, USD, and more.
 * **Open Source**: Maintained by Disney Research, Google DeepMind, and NVIDIA.
