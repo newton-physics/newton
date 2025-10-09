@@ -144,10 +144,8 @@ class Example:
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
 
-            def toggle_follow_cam(imgui):
-                changed, self.follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
-                if changed:
-                    self.follow_cam = self.follow_cam
+             def toggle_follow_cam(imgui):
+                 changed, self.follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
 
             self.viewer.register_ui_callback(toggle_follow_cam, position="side")
 
