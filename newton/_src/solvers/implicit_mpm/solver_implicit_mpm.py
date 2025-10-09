@@ -381,7 +381,7 @@ def project_particle_strain(
     if compliance <= _EPSILON:
         return wp.identity(n=3, dtype=float)
 
-    U, xi, V = wp.svd3(F)
+    _U, xi, _V = wp.svd3(F)
 
     if wp.min(xi) < MIN_PRINCIPAL_STRAIN or wp.max(xi) > MAX_PRINCIPAL_STRAIN:
         return F_prev  # non-recoverable, discard update
@@ -466,7 +466,7 @@ def strain_rhs(
 ):
     F_prev = elastic_strains[s.qp_index]
 
-    U_prev, xi_prev, V_prev = wp.svd3(F_prev)
+    U_prev, xi_prev, _V_prev = wp.svd3(F_prev)
 
     _compliance, _poisson, damping = extract_elastic_parameters(elastic_parameters(s))
 

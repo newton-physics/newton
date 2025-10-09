@@ -950,7 +950,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
 
     p = pos[v]
 
-    closest_p, bary, feature_type = triangle_closest_point(a, b, c, p)
+    closest_p, bary, _feature_type = triangle_closest_point(a, b, c, p)
 
     diff = p - closest_p
     dis = wp.length(diff)
@@ -1039,7 +1039,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
     p = pos[v]
 
-    closest_p, bary, feature_type = triangle_closest_point(a, b, c, p)
+    closest_p, bary, _feature_type = triangle_closest_point(a, b, c, p)
 
     diff = p - closest_p
     dis = wp.length(diff)
@@ -1274,7 +1274,7 @@ def compute_particle_conservative_bound(
             particle_index,
         )
     ):
-        tri_index, vertex_order = get_vertex_adjacent_face_id_order(
+        tri_index, _vertex_order = get_vertex_adjacent_face_id_order(
             adjacency,
             particle_index,
             i_adj_tri,

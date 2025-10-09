@@ -727,7 +727,7 @@ def validate_and_correct_inertia_kernel(
         was_corrected = True
     else:
         # Use eigendecomposition for proper validation
-        eigvecs, eigvals = wp.eig3(inertia)
+        _eigvecs, eigvals = wp.eig3(inertia)
 
         # Sort eigenvalues to get principal moments (I1 <= I2 <= I3)
         I1, I2, I3 = eigvals[0], eigvals[1], eigvals[2]
