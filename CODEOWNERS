@@ -1,0 +1,44 @@
+# CODEOWNERS file for Newton Physics
+# This file defines code ownership for different parts of the repository.
+# Each line is a file pattern followed by one or more owners.
+# Order is important; the last matching pattern takes precedence.
+
+# Default owner for everything not explicitly assigned
+* @eric-heiden
+
+# Solvers module assignments
+newton/_src/solvers/vbd/ @AnkaChan
+newton/_src/solvers/mujoco/ @adenzler-nvidia
+newton/_src/solvers/mpm/ @gdaviet
+newton/_src/solvers/implicit_mpm/ @gdaviet
+newton/_src/solvers/style3d/ @WenchaoHuang
+
+# Sim folder
+newton/_src/sim/ @eric-heiden
+
+# Geometry module
+newton/_src/geometry/ @nvtw
+newton/geometry.py @nvtw
+
+# Viewer module
+newton/_src/viewer/ @mmacklin
+newton/viewer.py @mmacklin
+
+# Contact sensors
+newton/_src/sensors/contact_sensor.py @camevor
+newton/sensors.py @camevor
+
+# Importers (URDF, MJCF, USD)
+newton/_src/utils/import_urdf.py @eric-heiden
+newton/_src/utils/import_mjcf.py @eric-heiden
+newton/_src/utils/import_usd.py @eric-heiden
+
+# MPM related examples
+newton/examples/mpm/ @gdaviet
+
+# Style3D related examples and components
+newton/examples/cloth/example_cloth_style3d.py @WenchaoHuang
+newton/_src/sim/style3d/ @WenchaoHuang
+
+# Benchmarks
+asv/benchmarks/ @shi-eric @Kenny-Vilella
