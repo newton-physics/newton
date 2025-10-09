@@ -9,21 +9,30 @@ newton/_src/solvers/mujoco/ @adenzler-nvidia
 newton/_src/solvers/mpm/ @gdaviet
 newton/_src/solvers/implicit_mpm/ @gdaviet
 newton/_src/solvers/style3d/ @WenchaoHuang
+newton/_src/solvers/xpbd/ @eric-heiden
+newton/_src/solvers/featherstone/ @eric-heiden
+
+# User-facing API
+newton/__init__.py @mmacklin
+newton/sensors.py @mmacklin
+newton/solvers.py @mmacklin
+newton/sim.py @mmacklin
+newton/geometry.py @mmacklin
+newton/viewer.py @mmacklin
+newton/ik.py @mmacklin
+newton/utils.py @mmacklin
 
 # Sim folder
 newton/_src/sim/ @eric-heiden
 
 # Geometry module
 newton/_src/geometry/ @nvtw
-newton/geometry.py @nvtw
 
 # Viewer module
 newton/_src/viewer/ @mmacklin
-newton/viewer.py @mmacklin
 
 # Contact sensors
 newton/_src/sensors/contact_sensor.py @camevor
-newton/sensors.py @camevor
 
 # Importers (URDF, MJCF, USD)
 newton/_src/utils/import_urdf.py @eric-heiden
@@ -36,6 +45,12 @@ newton/examples/mpm/ @gdaviet
 # Style3D related examples and components
 newton/examples/cloth/example_cloth_style3d.py @WenchaoHuang
 newton/_src/sim/style3d/ @WenchaoHuang
+
+# Selection API
+newton/_src/selection/ @nvlukasz
+
+# IK module
+newton/_src/ik/ @dylanturpin
 
 # Benchmarks
 asv/benchmarks/ @shi-eric @Kenny-Vilella
