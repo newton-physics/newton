@@ -84,7 +84,7 @@ ROBOT_CONFIGS = {
     "allegro": {
         "solver": "newton",
         "integrator": "euler",
-        "njmax": 40,
+        "njmax": 60,
         "nconmax": 35,
         "ls_parallel": True,
     },
