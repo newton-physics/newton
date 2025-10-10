@@ -17,8 +17,6 @@ import ctypes
 import io
 import os
 import sys
-from types import ModuleType
-from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import warp as wp
@@ -32,10 +30,6 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
-
-if TYPE_CHECKING:
-    from pyglet import gl
-
 
 ENABLE_CUDA_INTEROP = True
 ENABLE_GL_CHECKS = False
@@ -777,8 +771,7 @@ class MeshInstancerGL:
 
 
 class RendererGL:
-    # Class-level variable to hold the imported module
-    gl: ClassVar["ModuleType | type[gl]"] = None  # pyright: ignore[reportAssignmentType, reportInvalidTypeForm]
+    gl = None  # Class-level variable to hold the imported module
 
     @classmethod
     def initialize_gl(cls):
