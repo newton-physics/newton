@@ -161,8 +161,11 @@ class ModelBuilder:
         """The thickness of the shape."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
-        collision_group: int = -1
-        """The collision group ID for the shape. Defaults to -1."""
+        collision_group: int = 1
+        """The collision group ID for the shape. Defaults to 1.
+        Positive values indicate groups that only collide with themselves (and with negative groups).
+        Negative values indicate groups that collide with everything except their negative counterpart.
+        Zero indicates no collisions."""
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
         has_shape_collision: bool = True
@@ -1984,6 +1987,8 @@ class ModelBuilder:
                 return "sdf"
             if type == GeoType.PLANE:
                 return "plane"
+            if type == GeoType.CONVEX_HULL:
+                return "convex_hull"
             if type == GeoType.NONE:
                 return "none"
             return "unknown"
@@ -2793,6 +2798,41 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             src=sdf,
+            key=key,
+        )
+
+    def add_shape_convex_hull(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        mesh: Mesh | None = None,
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a convex hull collision shape to a body.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the convex hull in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            mesh (Mesh | None): The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
+            scale (Vec3 | None): The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        return self.add_shape(
+            body=body,
+            type=GeoType.CONVEX_HULL,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=mesh,
             key=key,
         )
 
@@ -4067,7 +4107,9 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def finalize(
+        self, device: Devicelike | None = None, requires_grad: bool = False, build_shape_contact_pairs: bool = True
+    ) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
@@ -4078,6 +4120,8 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            build_shape_contact_pairs: If True, builds static shape contact pairs for collision detection.
+                Set to False when using dynamic broad phase (BroadPhaseMode.NXN, SAP, or EXPLICIT with custom pairs) to skip this expensive computation.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -4161,6 +4205,7 @@ class ModelBuilder:
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_group = wp.array(self.shape_group, dtype=wp.int32)
+            m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
 
@@ -4174,7 +4219,6 @@ class ModelBuilder:
             )
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
-            m.shape_collision_group = self.shape_collision_group
 
             # ---------------------
             # springs
@@ -4407,8 +4451,18 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
 
-            self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
+            # Build shape contact pairs if requested (can skip for dynamic broad phase)
+            if build_shape_contact_pairs:
+                self.find_shape_contact_pairs(m)
+                m.rigid_contact_max = count_rigid_contact_points(m)
+            else:
+                # Skip expensive pair computation - will use dynamic broad phase
+                m.shape_contact_pairs = None
+                m.shape_contact_pair_count = 0
+                # Use conservative estimate for rigid_contact_max
+                # Assumption is that each shape can collide with up to 30 other shapes
+                # and each contact can have up to 5 contact points
+                m.rigid_contact_max = m.shape_count * 30 * 5
 
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction

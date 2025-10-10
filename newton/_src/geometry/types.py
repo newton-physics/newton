@@ -60,7 +60,10 @@ class GeoType(enum.IntEnum):
     CONE = 9
     """Cone."""
 
-    NONE = 10
+    CONVEX_HULL = 10
+    """Convex hull."""
+
+    NONE = 11
     """No geometry (placeholder)."""
 
 

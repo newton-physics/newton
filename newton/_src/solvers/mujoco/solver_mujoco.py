@@ -283,12 +283,22 @@ def convert_newton_contacts_to_mjwarp_kernel(
     world_geom_b = to_mjc_geom_index[shape_b]
     geoms = wp.vec2i(world_geom_a[1], world_geom_b[1])
 
-    # See kernel update_body_mass_ipos_kernel, line below:
-    #     worldid = wp.tid() // bodies_per_env
-    # which uses the same strategy to determine the world id
+    # Determine world ID from the shapes
+    # Static shapes have world_id = -1 (sentinel), so we need to get it from the non-static shape
+    # If both are non-static, they should have the same world ID (contacts don't cross environments)
     worldid = world_geom_a[0]
     if worldid < 0:
         worldid = world_geom_b[0]
+
+    # If we still have -1, both shapes are static (shouldn't happen in practice, but handle it)
+    if worldid < 0:
+        # Fall back to inferring from body index
+        if body_a >= 0:
+            worldid = body_a // bodies_per_env
+        elif body_b >= 0:
+            worldid = body_b // bodies_per_env
+        else:
+            worldid = 0  # Last resort - use world 0
 
     margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
         geom_condim,
@@ -1026,6 +1036,7 @@ def update_incoming_shape_xform_kernel(
     shape_group: wp.array(dtype=wp.int32),
     shape_transform: wp.array(dtype=wp.transform),
     shape_range_len: int,
+    first_env_shape_base: int,
     geom_pos: wp.array(dtype=wp.vec3),
     geom_quat: wp.array(dtype=wp.quat),
     # output
@@ -1034,16 +1045,31 @@ def update_incoming_shape_xform_kernel(
     shape_incoming_xform: wp.array(dtype=wp.transform),
 ):
     env_idx, geom_idx = wp.tid()
-    template_shape_idx = geom_to_shape_idx[geom_idx]
-    if template_shape_idx < 0:
+    template_or_static_idx = geom_to_shape_idx[geom_idx]
+    if template_or_static_idx < 0:
         return
-    if shape_group[template_shape_idx] < 0:
-        # this is a static shape that is used in all environments
-        global_shape_idx = template_shape_idx
+
+    # Check if this is a static shape by looking up its group
+    # For static shapes, template_or_static_idx is the absolute Newton shape index
+    # For non-static shapes, template_or_static_idx is 0-based offset from first env's first shape
+    is_static = shape_group[template_or_static_idx] < 0
+
+    if is_static:
+        # Static shape - same Newton shape index but exists in all MuJoCo worlds
+        # Since geom fields are replicated across worlds, we can't store a single mapping
+        # The world ID needs to be determined from the non-static shape in the contact pair
+        # So we store -1 as a sentinel to indicate "world ID unknown, infer from partner"
+        global_shape_idx = template_or_static_idx
+        if env_idx == 0:
+            # Use -1 as world ID sentinel for static shapes
+            full_shape_mapping[global_shape_idx] = wp.vec2i(-1, geom_idx)
     else:
-        global_shape_idx = env_idx * shape_range_len + template_shape_idx
-    full_shape_mapping[global_shape_idx] = wp.vec2i(env_idx, geom_idx)
-    reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
+        # Non-static shape - compute the absolute Newton shape index for this environment
+        # template_or_static_idx is 0-based offset within first_group shapes
+        # global_shape_idx = first_env_shape_base + template_idx + env_idx * shape_range_len
+        global_shape_idx = first_env_shape_base + template_or_static_idx + env_idx * shape_range_len
+        full_shape_mapping[global_shape_idx] = wp.vec2i(env_idx, geom_idx)
+        reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
     # Update incoming shape transforms
     # compute the difference between the original shape transform
     # and the transform after applying the joint child transform
@@ -1678,13 +1704,20 @@ class SolverMuJoCo(SolverBase):
         # find graph coloring of collision filter pairs
         num_shapes = len(selected_shapes)
         shape_a, shape_b = np.triu_indices(num_shapes, k=1)
-        cgroup = [model.shape_collision_group[i] for i in selected_shapes]
+        # Convert to numpy array if needed before indexing
+        selected_shapes_np = selected_shapes.numpy() if hasattr(selected_shapes, "numpy") else selected_shapes
+        shape_collision_group_np = (
+            model.shape_collision_group.numpy()
+            if hasattr(model.shape_collision_group, "numpy")
+            else model.shape_collision_group
+        )
+        cgroup = [shape_collision_group_np[i] for i in selected_shapes_np]
         # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
             for i, j in zip(shape_a, shape_b, strict=True)
             if (
-                (selected_shapes[i], selected_shapes[j]) not in model.shape_collision_filter_pairs
+                (selected_shapes_np[i], selected_shapes_np[j]) not in model.shape_collision_filter_pairs
                 and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
             )
         ]
@@ -1698,13 +1731,13 @@ class SolverMuJoCo(SolverBase):
             num_colors = 0
             for group in color_groups:
                 num_colors += 1
-                shape_color[selected_shapes[group]] = num_colors
+                shape_color[selected_shapes_np[group]] = num_colors
             if visualize_graph:
                 plot_graph(
                     vertices=np.arange(num_shapes),
                     edges=graph_edges,
-                    node_labels=[shape_keys[i] for i in selected_shapes] if shape_keys is not None else None,
-                    node_colors=[shape_color[i] for i in selected_shapes],
+                    node_labels=[shape_keys[i] for i in selected_shapes_np] if shape_keys is not None else None,
+                    node_colors=[shape_color[i] for i in selected_shapes_np],
                 )
 
         return shape_color
@@ -2019,6 +2052,8 @@ class SolverMuJoCo(SolverBase):
             selected_joints = np.where((joint_group == first_group) | (joint_group < 0))[0]
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
+            first_group = 0
+            shape_range_len = model.shape_count
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
@@ -2419,8 +2454,28 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
             # build the geom index mappings now that we have the actual indices
+            # geom_to_shape_idx maps from MuJoCo geom index to absolute Newton shape index
+            # We need to convert to template-relative indices for the kernel to work correctly
+            # Template-relative index = position within non-static shapes of first_group
             geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
-            fill_arr_from_dict(geom_to_shape_idx_np, geom_to_shape_idx)
+
+            # Find the minimum shape index for the first non-static group to use as the base
+            first_env_shapes = np.where(shape_group == first_group)[0]
+            if len(first_env_shapes) > 0:
+                first_env_shape_base = np.min(first_env_shapes)
+            else:
+                first_env_shape_base = 0
+
+            for geom_idx, abs_shape_idx in geom_to_shape_idx.items():
+                if shape_group[abs_shape_idx] < 0:
+                    # Static shape - use absolute index
+                    geom_to_shape_idx_np[geom_idx] = abs_shape_idx
+                else:
+                    # Non-static shape - convert to template-relative index
+                    # This is the offset from the first shape of the first environment
+                    template_idx = abs_shape_idx - first_env_shape_base
+                    geom_to_shape_idx_np[geom_idx] = template_idx
+
             geom_to_shape_idx_wp = wp.array(geom_to_shape_idx_np, dtype=wp.int32)
 
             # use the actual number of geoms from the MuJoCo model
@@ -2445,6 +2500,7 @@ class SolverMuJoCo(SolverBase):
                         self.model.shape_group,
                         self.model.shape_transform,
                         shape_range_len,
+                        first_env_shape_base,
                         self.mjw_model.geom_pos[0],
                         self.mjw_model.geom_quat[0],
                     ],

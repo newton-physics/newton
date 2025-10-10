@@ -169,7 +169,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         self.assertEqual(body_groups[3], 1)  # Second robot link1
 
         # Verify collision groups are preserved
-        collision_groups = model.shape_collision_group
+        collision_groups = model.shape_collision_group.numpy()
         self.assertEqual(collision_groups[0], -1)  # Ground plane
         self.assertEqual(collision_groups[1], 1)  # First robot box
         self.assertEqual(collision_groups[2], 2)  # First robot capsule

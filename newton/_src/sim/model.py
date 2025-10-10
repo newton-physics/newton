@@ -135,8 +135,8 @@ class Model:
         self.shape_filter = None
         """Shape filter group, shape [shape_count], int."""
 
-        self.shape_collision_group = []
-        """Collision group of each shape, shape [shape_count], int."""
+        self.shape_collision_group = None
+        """Collision group of each shape, shape [shape_count], int. -1 collides with all, positive values only collide with same group or -1, 0 means no collision."""
         self.shape_collision_filter_pairs = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None

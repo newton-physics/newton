@@ -1089,7 +1089,7 @@ def parse_usd(
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
                 scale = parse_scale(prim)
-                collision_group = -1
+                collision_group = 1  # Default to 1 (shapes in same group collide with each other)
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
                     if cgroup_name not in collision_group_ids:
