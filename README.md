@@ -221,6 +221,18 @@ uv sync --extra examples
       <code>uv run -m newton.examples cloth_style3d</code>
     </td>
   </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_h1.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_h1.jpg" alt="Cloth H1">
+      </a>
+    </td>
+  </tr>
+ <tr>
+    <td align="center">
+      <code>uv run -m newton.examples cloth_h1</code>
+    </td>
+ </tr>
 </table>
 
 ## Inverse Kinematics Examples
@@ -385,7 +397,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future diffsim example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/diffsim/example_diffsim_bear.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_diffsim_bear.jpg" alt="DiffSim Quadruped">
+      </a>
     </td>
   </tr>
   <tr>
@@ -396,7 +410,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples diffsim_soft_body</code>
     </td>
     <td align="center">
-      <!-- Future diffsim example -->
+      <code>uv run -m newton.examples diffsim_bear</code>
     </td>
   </tr>
 </table>
