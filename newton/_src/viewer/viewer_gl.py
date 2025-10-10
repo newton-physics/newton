@@ -431,7 +431,7 @@ class ViewerGL(ViewerBase):
         destroyed results in a crash (access violation).  Therefore we check
         whether an exit was requested and early-out before touching GL if so.
         """
-        return self._update()
+        self._update()
 
     @override
     def apply_forces(self, state):
