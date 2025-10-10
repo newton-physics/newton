@@ -277,6 +277,14 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
+    name="cloth.example_cloth_h1",
+    devices=cuda_test_devices,
+    test_options={},
+    test_options_cuda={"num-frames": 32},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=cuda_test_devices,
     test_options={"num-frames": 50},
