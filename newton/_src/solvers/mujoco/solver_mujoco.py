@@ -1176,16 +1176,20 @@ def update_geom_properties_kernel(
     pos = tf.p
     quat = tf.q
 
-    # Apply up-axis conversion for position
-    converted_pos = convert_up_axis_pos(pos, up_axis)
+    # Apply up-axis conversion for position only for static geoms
+    converted_pos = pos
+    shape_is_static = shape_body[shape_idx] == -1
+    if shape_is_static:
+        converted_pos = convert_up_axis_pos(pos, up_axis)
 
     # Apply up-axis conversion for orientation only for static geoms (shape_body == -1)
-    shape_is_static = shape_body[shape_idx] == -1
     converted_quat = quat
     if shape_is_static:
         converted_quat = convert_up_axis_quat(quat, up_axis)
 
+    # Apply up-axis conversion to ensure static shape orientations are correct
     geom_pos[worldid, geom_idx] = converted_pos
+    # Convert quaternion from xyzw (Warp format) to wxyz (MuJoCo format)
     geom_quat[worldid, geom_idx] = wp.quatf(converted_quat.w, converted_quat.x, converted_quat.y, converted_quat.z)
 
 
