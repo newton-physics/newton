@@ -83,6 +83,53 @@ def make_frame(a: wp.vec3):
     # fmt: on
 
 
+@wp.func
+def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
+    """
+    Convert position coordinates based on the up-axis convention.
+
+    Args:
+        pos: Input position vector
+        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted position vector
+    """
+    if up_axis == 0:  # X-up to Z-up: (x, y, z) -> (-z, y, x)
+        return wp.vec3(-pos[2], pos[1], pos[0])
+    elif up_axis == 1:  # Y-up to Z-up: (x, y, z) -> (x, -z, y)
+        return wp.vec3(pos[0], -pos[2], pos[1])
+    else:  # Z-up: no conversion needed
+        return pos
+
+
+# Precomputed rotation quaternions for axis conversion
+# X-up to Z-up: Rotate 90 degrees around Y-axis
+CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi * 0.5)
+# Y-up to Z-up: Rotate 90 degrees around X-axis
+CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+
+
+@wp.func
+def convert_up_axis_quat(rot: wp.quat, up_axis: int):
+    """
+    Convert quaternion rotation based on the up-axis convention.
+
+    Args:
+        rot: Input rotation quaternion (xyzw format)
+        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted rotation quaternion
+    """
+    if up_axis == 0:  # X-up to Z-up: Rotate 90 degrees around Y-axis
+        return CONVERT_ROT_X2Z * rot
+    elif up_axis == 1:  # Y-up to Z-up: Rotate 90 degrees around X-axis
+        return CONVERT_ROT_Y2Z * rot
+    else:  # Z-up: no conversion needed
+        return rot
+
+
 # Define vec5 as a 5-element vector of float32, matching MuJoCo's convention
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
 
@@ -822,10 +869,7 @@ def update_body_mass_ipos_kernel(
         return
 
     # update COM position
-    if up_axis == 1:
-        body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
-    else:
-        body_ipos[worldid, mjc_idx] = body_com[tid]
+    body_ipos[worldid, mjc_idx] = convert_up_axis_pos(body_com[tid], up_axis)
 
     # update mass
     body_mass_out[worldid, mjc_idx] = body_mass[tid]
@@ -1081,6 +1125,8 @@ def update_geom_properties_kernel(
     torsional_friction: float,
     rolling_friction: float,
     contact_stiffness_time_const: float,
+    up_axis: int,
+    shape_body: wp.array(dtype=int),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1129,8 +1175,22 @@ def update_geom_properties_kernel(
     tf = incoming_xform * tf
     pos = tf.p
     quat = tf.q
-    geom_pos[worldid, geom_idx] = pos
-    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+
+    # Apply up-axis conversion for position only for static geoms
+    converted_pos = pos
+    shape_is_static = shape_body[shape_idx] == -1
+    if shape_is_static:
+        converted_pos = convert_up_axis_pos(pos, up_axis)
+
+    # Apply up-axis conversion for orientation only for static geoms (shape_body == -1)
+    converted_quat = quat
+    if shape_is_static:
+        converted_quat = convert_up_axis_quat(quat, up_axis)
+
+    # Apply up-axis conversion to ensure static shape orientations are correct
+    geom_pos[worldid, geom_idx] = converted_pos
+    # Convert quaternion from xyzw (Warp format) to wxyz (MuJoCo format)
+    geom_quat[worldid, geom_idx] = wp.quatf(converted_quat.w, converted_quat.x, converted_quat.y, converted_quat.z)
 
 
 class SolverMuJoCo(SolverBase):
@@ -1871,7 +1931,18 @@ class SolverMuJoCo(SolverBase):
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
+        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system
+        # (MuJoCo always uses Z-up) 
+        original_gravity = model.gravity.numpy()[0]
+        if model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
+            # Gravity along X-axis in Newton becomes gravity along Z-axis in MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
+        elif model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
+            # Gravity along Y-axis in Newton becomes gravity along Z-axis in MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
+        else:  # Z-up: no conversion needed
+            converted_gravity = original_gravity
+        spec.option.gravity = converted_gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
@@ -2747,6 +2818,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
                 self.contact_stiffness_time_const,
+                self.model.up_axis,  # Add up_axis parameter
+                self.model.shape_body,  # Add shape_body parameter
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
@@ -2761,15 +2834,27 @@ class SolverMuJoCo(SolverBase):
 
     def update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
+        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system (Z-up)
+        original_gravity = self.model.gravity.numpy()[0]
+        if self.model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
+        elif self.model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
+        else:  # Z-up: no conversion needed
+            converted_gravity = original_gravity
+            
         if self.use_mujoco_cpu:
-            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+            self.mj_model.opt.gravity[:] = converted_gravity
         else:
             if hasattr(self, "mjw_data"):
+                # For GPU, we need to update the kernel that handles gravity to perform the conversion
+                # Create a temporary array with the converted gravity
+                temp_gravity = wp.array([converted_gravity], dtype=wp.vec3, device=self.model.device)
                 wp.launch(
                     kernel=update_model_properties_kernel,
                     dim=self.mjw_data.nworld,
                     inputs=[
-                        self.model.gravity,
+                        temp_gravity,
                     ],
                     outputs=[
                         self.mjw_model.opt.gravity,
