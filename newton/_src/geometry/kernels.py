@@ -1025,41 +1025,43 @@ def broadphase_collision_pairs(
     if rigid_a == -1:
         X_ws_a = shape_transform[shape_a]
     else:
-        X_ws_a = wp.transform_multiply(body_q[rigid_a], shape_transform[shape_a])
+        X_ws_a = body_q[rigid_a] * shape_transform[shape_a]
     rigid_b = shape_body[shape_b]
     if rigid_b == -1:
         X_ws_b = shape_transform[shape_b]
     else:
-        X_ws_b = wp.transform_multiply(body_q[rigid_b], shape_transform[shape_b])
+        X_ws_b = body_q[rigid_b] * shape_transform[shape_b]
 
     type_a = shape_type[shape_a]
     type_b = shape_type[shape_b]
-    # unique ordering of shape pairs (swap when types are equal or A > B)
-    if not (type_a) < (type_b):
-        tmp_shape = shape_a
+    # ensure unique ordering of shape pairs
+    if type_a > type_b:
+        shape_tmp = shape_a
         shape_a = shape_b
-        shape_b = tmp_shape
-        tmp_type = type_a
-        type_a = type_b
-        type_b = tmp_type
-        tmp_X = X_ws_a
-        X_ws_a = X_ws_b
-        X_ws_b = tmp_X
+        shape_b = shape_tmp
 
-    p_a = wp.transform_get_translation(X_ws_a)
+        type_tmp = type_a
+        type_a = type_b
+        type_b = type_tmp
+
+        X_tmp = X_ws_a
+        X_ws_a = X_ws_b
+        X_ws_b = X_tmp
+
+    p_b = wp.transform_get_translation(X_ws_b)
+    r_b = shape_radius[shape_b]
     if type_a == GeoType.PLANE and type_b == GeoType.PLANE:
         return
     if type_a == GeoType.PLANE:
-        query_b = wp.transform_point(wp.transform_inverse(X_ws_b), p_a)
-        scale = shape_scale[shape_b]
+        query_b = wp.transform_point(wp.transform_inverse(X_ws_a), p_b)
+        scale = shape_scale[shape_a]
         closest = closest_point_plane(scale[0], scale[1], query_b)
         d = wp.length(query_b - closest)
-        r_a = shape_radius[shape_a]
-        if d > r_a + rigid_contact_margin:
+        if d > r_b + rigid_contact_margin:
             return
     else:
-        p_b = wp.transform_get_translation(X_ws_b)
-        d = wp.length(p_a - p_b) * 0.5 - 0.1
+        p_a = wp.transform_get_translation(X_ws_a)
+        d = wp.length(p_a - p_b)
         r_a = shape_radius[shape_a]
         r_b = shape_radius[shape_b]
         if d > r_a + r_b + rigid_contact_margin:
@@ -1167,10 +1169,6 @@ def broadphase_collision_pairs(
     elif type_a == GeoType.BOX or type_b == GeoType.BOX:
         num_contacts = 8
 
-    elif type_b == GeoType.MESH and type_a != GeoType.PLANE:
-        if wp.static(wp.config.verbose):
-            print("broadphase_collision_pairs: unsupported geometry type for mesh collision")
-        return
     elif type_a == GeoType.MESH and type_b == GeoType.MESH:
         mesh_a = wp.mesh_get(shape_source_ptr[shape_a])
         num_contacts_a = mesh_a.points.shape[0]
