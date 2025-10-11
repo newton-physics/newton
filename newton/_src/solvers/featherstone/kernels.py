@@ -21,7 +21,7 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
 )
-from ..euler.kernels import eval_joint_force
+from ..semi_implicit.kernels_body import joint_force
 
 
 @wp.kernel
@@ -401,7 +401,7 @@ def jcalc_tau(
             target_kd = joint_target_kd[j]
             mode = joint_dof_mode[j]
 
-            drive_f = eval_joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
+            drive_f = joint_force(q, qd, act, target_ke, target_kd, lower, upper, limit_ke, limit_kd, mode)
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
@@ -678,7 +678,7 @@ def compute_link_velocity(
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
     joint_X_p: wp.array(dtype=wp.transform),
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     # outputs
     joint_S_s: wp.array(dtype=wp.spatial_vector),
     body_I_s: wp.array(dtype=wp.spatial_matrix),
@@ -733,7 +733,7 @@ def compute_link_velocity(
     # gravity and external forces (expressed in frame aligned with s but centered at body mass)
     m = I_m[0, 0]
 
-    f_g = m * gravity
+    f_g = m * gravity[0]
     r_com = wp.transform_get_translation(X_sm)
     f_g_s = wp.spatial_vector(f_g, wp.cross(r_com, f_g))
 
@@ -763,7 +763,7 @@ def eval_rigid_id(
     body_q: wp.array(dtype=wp.transform),
     body_q_com: wp.array(dtype=wp.transform),
     joint_X_p: wp.array(dtype=wp.transform),
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     # outputs
     joint_S_s: wp.array(dtype=wp.spatial_vector),
     body_I_s: wp.array(dtype=wp.spatial_matrix),

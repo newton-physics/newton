@@ -4,7 +4,7 @@ name: Push Events - AWS GPU Tests
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g6e.xlarge
-  AWS_VOLUME_SIZE: 64
+  AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-github-actions-role-Role-GbdM0RBoT4xW
@@ -133,7 +133,7 @@ jobs:
           git checkout "${SAFE_BRANCH}"
 
           echo "Running Newton test suite..."
-          uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --serial-fallback --failfast 2>&1
+          uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml /tmp/rspec.xml --coverage --coverage-xml /tmp/coverage.xml --failfast 2>&1
           EOF
 
           # Prepare script to be passed as SSM parameters

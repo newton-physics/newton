@@ -14,9 +14,9 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Robot Anymal C Walk
+# Example Robot ANYmal C Walk
 #
-# Shows how to simulate Anymal C using SolverMuJoCo and control it with a
+# Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
 # policy trained in PhysX.
 #
 # Command: python -m newton.examples robot_anymal_c_walk
@@ -34,8 +34,8 @@ import newton.examples
 import newton.utils
 from newton import State
 
-lab_to_mujoco = [9, 3, 6, 0, 10, 4, 7, 1, 11, 5, 8, 2]
-mujoco_to_lab = [3, 7, 11, 1, 5, 9, 2, 6, 10, 0, 4, 8]
+lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
+mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
 
 @torch.jit.script
@@ -95,6 +95,7 @@ class Example:
         stage_path = str(asset_path / "urdf" / "anymal.urdf")
         builder.add_urdf(
             stage_path,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.62), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5)),
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
@@ -106,38 +107,31 @@ class Example:
         self.sim_time = 0.0
         self.sim_step = 0
         fps = 50
-        self.frame_dt = 1.0e0 / fps
+        self.frame_dt = 1.0 / fps
 
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        # set initial joint positions
+        initial_q = {
+            "RH_HAA": 0.0,
+            "RH_HFE": -0.4,
+            "RH_KFE": 0.8,
+            "LH_HAA": 0.0,
+            "LH_HFE": -0.4,
+            "LH_KFE": 0.8,
+            "RF_HAA": 0.0,
+            "RF_HFE": 0.4,
+            "RF_KFE": -0.8,
+            "LF_HAA": 0.0,
+            "LF_HFE": 0.4,
+            "LF_KFE": -0.8,
+        }
+        for key, value in initial_q.items():
+            builder.joint_q[builder.joint_key.index(key) + 6] = value
 
-        builder.joint_q[3:7] = [
-            0.0,
-            0.0,
-            0.7071,
-            0.7071,
-        ]
-
-        builder.joint_q[7:] = [
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-        ]
-        for i in range(len(builder.joint_dof_mode)):
+        for i in range(builder.joint_dof_count):
             builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-
-        for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
@@ -145,6 +139,17 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
 
         self.viewer.set_model(self.model)
+
+        self.follow_cam = True
+
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+
+            def toggle_follow_cam(imgui):
+                changed, follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
+                if changed:
+                    self.follow_cam = follow_cam
+
+            self.viewer.register_ui_callback(toggle_follow_cam, position="side")
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -163,13 +168,9 @@ class Example:
         self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
 
         # Pre-compute tensors that don't change during simulation
-        self.lab_to_mujoco_indices = torch.tensor(
-            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
-        )
-        self.mujoco_to_lab_indices = torch.tensor(
-            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
-        )
-        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
+        self.lab_to_mujoco_indices = torch.tensor(lab_to_mujoco, device=self.torch_device)
+        self.mujoco_to_lab_indices = torch.tensor(mujoco_to_lab, device=self.torch_device)
+        self.gravity_vec = torch.tensor([[0.0, 0.0, -1.0]], device=self.torch_device, dtype=torch.float32)
         self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
         self.command[0, 0] = 1
 
@@ -224,9 +225,70 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        if self.follow_cam:
+            self.viewer.set_camera(
+                pos=wp.vec3(*self.state_0.joint_q.numpy()[:3]) + wp.vec3(10.0, 0.0, 2.0), pitch=0.0, yaw=-180.0
+            )
+
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
+
+    def test(self):
+        assert self.model.body_key == [
+            "base",
+            "LF_HIP",
+            "LF_THIGH",
+            "LF_SHANK",
+            "RF_HIP",
+            "RF_THIGH",
+            "RF_SHANK",
+            "LH_HIP",
+            "LH_THIGH",
+            "LH_SHANK",
+            "RH_HIP",
+            "RH_THIGH",
+            "RH_SHANK",
+        ]
+        assert self.model.joint_key == [
+            "floating_base",
+            "LF_HAA",
+            "LF_HFE",
+            "LF_KFE",
+            "RF_HAA",
+            "RF_HFE",
+            "RF_KFE",
+            "LH_HAA",
+            "LH_HFE",
+            "LH_KFE",
+            "RH_HAA",
+            "RH_HFE",
+            "RH_KFE",
+        ]
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.1,
+        )
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "the robot went in the right direction",
+            lambda q, qd: q[1] > 9.0,  # This threshold assumes 500 frames
+        )
+
+        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -0.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 0.5, 0.5)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "the robot is moving forward and not falling",
+            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            indices=[0],
+        )
 
 
 if __name__ == "__main__":
@@ -235,4 +297,4 @@ if __name__ == "__main__":
 
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

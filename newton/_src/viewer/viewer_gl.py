@@ -15,15 +15,18 @@
 
 from __future__ import annotations
 
+import ctypes
 import time
 
 import numpy as np
 import warp as wp
+import warp.render.render_opengl
 
 import newton as nt
 from newton.selection import ArticulationView
 from newton.utils import create_sphere_mesh
 
+from ..core.types import override
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -126,6 +129,10 @@ class ViewerGL(ViewerBase):
         # positions: "side", "stats", "free"
         self._ui_callbacks = {"side": [], "stats": [], "free": []}
 
+        # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
+        self._pbo = None
+        self._wp_pbo = None
+
         self.set_model(None)
 
     def register_ui_callback(self, callback, position="side"):
@@ -163,6 +170,7 @@ class ViewerGL(ViewerBase):
 
         self._point_mesh.update(points, indices, normals, uvs)
 
+    @override
     def log_gizmo(
         self,
         name,
@@ -171,6 +179,7 @@ class ViewerGL(ViewerBase):
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
 
+    @override
     def set_model(self, model):
         """
         Set the Newton model to visualize.
@@ -186,18 +195,20 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
+    @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         self.camera.pos = pos
         self.camera.pitch = pitch
         self.camera.yaw = yaw
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -227,6 +238,7 @@ class ViewerGL(ViewerBase):
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         Log a batch of mesh instances for rendering.
@@ -238,6 +250,7 @@ class ViewerGL(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
+            hidden: Whether the instances are hidden.
         """
         if mesh not in self.objects:
             raise RuntimeError(f"Path {mesh} not found")
@@ -256,6 +269,7 @@ class ViewerGL(ViewerBase):
 
         self.objects[name].hidden = hidden
 
+    @override
     def log_lines(
         self,
         name,
@@ -273,6 +287,7 @@ class ViewerGL(ViewerBase):
             starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
             ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
             colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            width: The width of the lines (float)
             hidden (bool): Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
@@ -312,6 +327,7 @@ class ViewerGL(ViewerBase):
 
         self.lines[name].update(starts, ends, colors)
 
+    @override
     def log_points(self, name, points, radii, colors, hidden=False):
         """
         Log a batch of points for rendering as spheres.
@@ -332,18 +348,21 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
+    @override
     def log_array(self, name, array):
         """
         Log a generic array for visualization (not implemented).
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         Log a scalar value for visualization (not implemented).
         """
         pass
 
+    @override
     def log_state(self, state):
         """
         Cache the simulation state for UI panels and call parent log_state.
@@ -389,6 +408,7 @@ class ViewerGL(ViewerBase):
         # Render the line
         self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
+    @override
     def begin_frame(self, time):
         """
         Begin a new frame (calls parent implementation).
@@ -399,6 +419,7 @@ class ViewerGL(ViewerBase):
         super().begin_frame(time)
         self._gizmo_log = {}
 
+    @override
     def end_frame(self):
         """
         Finish rendering the current frame and process window events.
@@ -412,6 +433,7 @@ class ViewerGL(ViewerBase):
         """
         self._update()
 
+    @override
     def apply_forces(self, state):
         """
         Apply viewer-driven forces (picking, wind) to the model.
@@ -459,6 +481,84 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
+    def get_frame(self, target_image: wp.array | None = None) -> wp.array:
+        """
+        Retrieve the last rendered frame.
+
+        This method uses OpenGL Pixel Buffer Objects (PBO) and CUDA interoperability
+        to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
+
+        Args:
+            target_image (wp.array, optional):
+                Optional pre-allocated Warp array with shape `(height, width, 3)`
+                and dtype `wp.uint8`. If `None`, a new array will be created.
+
+        Returns:
+            wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
+                and dtype `wp.uint8`. Origin is top-left (OpenGL's bottom-left is flipped).
+        """
+
+        gl = RendererGL.gl
+        w, h = self.renderer._screen_width, self.renderer._screen_height
+
+        # Lazy initialization of PBO (Pixel Buffer Object).
+        if self._pbo is None:
+            pbo_id = (gl.GLuint * 1)()
+            gl.glGenBuffers(1, pbo_id)
+            self._pbo = pbo_id[0]
+
+            # Allocate PBO storage.
+            gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+            gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, gl.GLsizeiptr(w * h * 3), None, gl.GL_STREAM_READ)
+            gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
+
+            # Register with CUDA.
+            self._wp_pbo = wp.RegisteredGLBuffer(
+                gl_buffer_id=int(self._pbo),
+                device=self.device,
+                flags=wp.RegisteredGLBuffer.READ_ONLY,
+            )
+
+            # Set alignment once.
+            gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+
+        # GPU-to-GPU readback into PBO.
+        assert self.renderer._frame_fbo is not None
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+        gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+        # Map PBO buffer and copy using RGB kernel.
+        assert self._wp_pbo is not None
+        buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+
+        if target_image is None:
+            target_image = wp.empty(
+                shape=(h, w, 3),
+                dtype=wp.uint8,  # pyright: ignore[reportArgumentType]
+                device=self.device,
+            )
+
+        if target_image.shape != (h, w, 3):
+            raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+
+        # Launch the RGB kernel.
+        wp.launch(
+            warp.render.render_opengl.copy_rgb_frame_uint8,
+            dim=(w, h),
+            inputs=[buf, w, h],
+            outputs=[target_image],
+            device=self.device,
+        )
+
+        # Unmap the PBO buffer.
+        self._wp_pbo.unmap()
+
+        return target_image
+
+    @override
     def is_running(self) -> bool:
         """
         Check if the viewer is still running.
@@ -468,6 +568,7 @@ class ViewerGL(ViewerBase):
         """
         return not self.renderer.has_exit()
 
+    @override
     def is_paused(self) -> bool:
         """
         Check if the simulation is paused.
@@ -477,6 +578,7 @@ class ViewerGL(ViewerBase):
         """
         return self._paused
 
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
@@ -503,6 +605,7 @@ class ViewerGL(ViewerBase):
         """
         self.renderer.set_vsync(enabled)
 
+    @override
     def is_key_down(self, key):
         """
         Check if a key is currently pressed.
@@ -852,7 +955,7 @@ class ViewerGL(ViewerBase):
                     imgui.text(f"Environments: {self.model.num_envs}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
-                    gravity = self.model.gravity
+                    gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
 
@@ -1089,7 +1192,7 @@ class ViewerGL(ViewerBase):
             # Articulation Pattern Input
             imgui.text("Articulation Pattern:")
             imgui.push_item_width(200)
-            changed, state["selected_articulation_pattern"] = imgui.input_text(
+            _changed, state["selected_articulation_pattern"] = imgui.input_text(
                 "##pattern", state["selected_articulation_pattern"]
             )
             imgui.pop_item_width()
@@ -1417,7 +1520,7 @@ class ViewerGL(ViewerBase):
                 # Use slider for numeric values with fixed width
                 imgui.push_item_width(150)
                 slider_id = f"##{attribute_name}_{i}"
-                changed, new_val = imgui.slider_float(slider_id, current_sliders[i], slider_min, slider_max, "%.6f")
+                _changed, _new_val = imgui.slider_float(slider_id, current_sliders[i], slider_min, slider_max, "%.6f")
                 imgui.pop_item_width()
                 # if changed:
                 #     current_sliders[i] = new_val

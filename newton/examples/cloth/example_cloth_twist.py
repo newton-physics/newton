@@ -14,11 +14,13 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Cloth Self Contact
+# Example Cloth Twist
 #
 # This simulation demonstrates twisting an FEM cloth model using the VBD
 # solver, showcasing its ability to handle complex self-contacts while
 # ensuring it remains intersection-free.
+#
+# Command: python -m newton.examples cloth_twist
 #
 ###########################################################################
 
@@ -276,9 +278,6 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
-        pass
-
     def render(self):
         if self.viewer is None:
             return
@@ -289,6 +288,20 @@ class Example:
         # Render model-driven content (ground plane)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
+
+    def test(self):
+        p_lower = wp.vec3(-0.6, -0.9, -0.6)
+        p_upper = wp.vec3(0.6, 0.9, 0.6)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particle velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 1.0,
+        )
 
 
 if __name__ == "__main__":
@@ -301,4 +314,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

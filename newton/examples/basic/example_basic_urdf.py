@@ -26,6 +26,7 @@
 #
 ###########################################################################
 
+
 import warp as wp
 
 import newton
@@ -61,7 +62,7 @@ class Example:
         # parse the URDF file
         quadruped.add_urdf(
             newton.examples.get_asset("quadruped.urdf"),
-            xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,
         )
@@ -125,7 +126,22 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "quadruped links are not moving too fast",
+            lambda q, qd: max(abs(qd)) < 0.15,
+        )
+
+        bodies_per_env = self.model.body_count // self.num_envs
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "quadrupeds have reached the terminal height",
+            lambda q, qd: wp.abs(q[2] - 0.46) < 0.01,
+            # only select the root body of each environment
+            indices=[i * bodies_per_env for i in range(self.num_envs)],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -145,4 +161,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer, args.num_envs)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

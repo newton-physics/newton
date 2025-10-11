@@ -22,6 +22,9 @@ import warp as wp
 
 import newton
 import newton.utils
+
+# Import RingBuffer from the local source
+from newton._src.utils.recorder import RingBuffer
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 wp.config.quiet = True
@@ -29,6 +32,184 @@ wp.config.quiet = True
 
 class TestRecorder(unittest.TestCase):
     pass
+
+
+def test_ringbuffer_basic(test: TestRecorder, device):
+    """Test basic RingBuffer functionality."""
+    # Test with capacity 3
+    rb = RingBuffer(3)
+
+    # Test empty buffer
+    test.assertEqual(len(rb), 0)
+    test.assertEqual(rb.to_list(), [])
+
+    # Test adding items within capacity
+    rb.append("a")
+    test.assertEqual(len(rb), 1)
+    test.assertEqual(rb[0], "a")
+    test.assertEqual(rb.to_list(), ["a"])
+
+    rb.append("b")
+    test.assertEqual(len(rb), 2)
+    test.assertEqual(rb[0], "a")
+    test.assertEqual(rb[1], "b")
+    test.assertEqual(rb.to_list(), ["a", "b"])
+
+    rb.append("c")
+    test.assertEqual(len(rb), 3)
+    test.assertEqual(rb[0], "a")
+    test.assertEqual(rb[1], "b")
+    test.assertEqual(rb[2], "c")
+    test.assertEqual(rb.to_list(), ["a", "b", "c"])
+
+    # Test overflow (should overwrite oldest)
+    rb.append("d")
+    test.assertEqual(len(rb), 3)  # Still capacity 3
+    test.assertEqual(rb[0], "b")  # "a" was overwritten
+    test.assertEqual(rb[1], "c")
+    test.assertEqual(rb[2], "d")
+    test.assertEqual(rb.to_list(), ["b", "c", "d"])
+
+    rb.append("e")
+    test.assertEqual(len(rb), 3)
+    test.assertEqual(rb[0], "c")  # "b" was overwritten
+    test.assertEqual(rb[1], "d")
+    test.assertEqual(rb[2], "e")
+    test.assertEqual(rb.to_list(), ["c", "d", "e"])
+
+
+def test_ringbuffer_edge_cases(test: TestRecorder, device):
+    """Test RingBuffer edge cases."""
+    rb = RingBuffer(2)
+
+    # Test index errors
+    with test.assertRaises(IndexError):
+        _ = rb[0]
+
+    with test.assertRaises(IndexError):
+        rb[0] = "test"
+
+    # Test iteration on empty buffer
+    items = list(rb)
+    test.assertEqual(items, [])
+
+    # Add items and test iteration
+    rb.append("x")
+    rb.append("y")
+    items = list(rb)
+    test.assertEqual(items, ["x", "y"])
+
+    # Test overflow and iteration
+    rb.append("z")
+    items = list(rb)
+    test.assertEqual(items, ["y", "z"])
+
+    # Test clear
+    rb.clear()
+    test.assertEqual(len(rb), 0)
+    test.assertEqual(rb.to_list(), [])
+
+    # Test from_list
+    rb.from_list(["1", "2", "3", "4"])  # More than capacity
+    test.assertEqual(len(rb), 2)  # Should only keep last 2
+    test.assertEqual(rb.to_list(), ["3", "4"])
+
+
+def test_recorder_with_ringbuffer(test: TestRecorder, device):
+    """Test RecorderModelAndState with RingBuffer."""
+    # Test with ring buffer (capacity 3)
+    recorder_rb = newton.utils.RecorderModelAndState(max_history_size=3)
+
+    # Simulate recording states
+    for i in range(5):
+        state_data = {"frame": i, "data": f"state_{i}"}
+        recorder_rb.history.append(state_data)
+
+    # Should only keep last 3 states
+    test.assertEqual(len(recorder_rb.history), 3)
+    test.assertEqual(recorder_rb.history[0]["frame"], 2)  # Oldest kept
+    test.assertEqual(recorder_rb.history[1]["frame"], 3)
+    test.assertEqual(recorder_rb.history[2]["frame"], 4)  # Newest
+
+    # Test playback-style access
+    for i in range(len(recorder_rb.history)):
+        state_data = recorder_rb.history[i]
+        expected_frame = 2 + i
+        test.assertEqual(state_data["frame"], expected_frame)
+
+
+def test_recorder_backward_compatibility(test: TestRecorder, device):
+    """Test that RecorderModelAndState maintains backward compatibility."""
+    # Test with default (unlimited history)
+    recorder_list = newton.utils.RecorderModelAndState()
+
+    # Should use regular list
+    test.assertIsInstance(recorder_list.history, list)
+
+    # Simulate recording many states
+    for i in range(10):
+        state_data = {"frame": i, "data": f"state_{i}"}
+        recorder_list.history.append(state_data)
+
+    # Should keep all states
+    test.assertEqual(len(recorder_list.history), 10)
+    test.assertEqual(recorder_list.history[0]["frame"], 0)
+    test.assertEqual(recorder_list.history[9]["frame"], 9)
+
+
+def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
+    """Test RecorderModelAndState with RingBuffer save/load functionality."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    builder.add_shape_capsule(body)
+    builder.add_joint_free(body)
+    model = builder.finalize(device=device)
+
+    # Create recorder with ring buffer (capacity 3)
+    recorder = newton.utils.RecorderModelAndState(max_history_size=3)
+    recorder.record_model(model)
+
+    # Record 5 states (should only keep last 3)
+    states = []
+    for i in range(5):
+        state = model.state()
+        state.body_q.fill_(wp.transform([1.0 + i, 2.0 + i, 3.0 + i], wp.quat_identity()))
+        state.body_qd.fill_(wp.spatial_vector([0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i, 0.5 * i, 0.6 * i]))
+        recorder.record(state)
+        states.append(state)
+
+    # Should only have last 3 states
+    test.assertEqual(len(recorder.history), 3)
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        file_path = tmp.name
+
+    try:
+        recorder.save_to_file(file_path)
+
+        # Load into a new recorder with different capacity
+        new_recorder = newton.utils.RecorderModelAndState(max_history_size=5)
+        new_recorder.load_from_file(file_path)
+
+        # Should have loaded the 3 states that were saved
+        test.assertEqual(len(new_recorder.history), 3)
+
+        # Test that we can create a new model and restore it
+        restored_model = newton.Model(device=device)
+        new_recorder.playback_model(restored_model)
+
+        # Basic model validation
+        test.assertEqual(restored_model.body_count, model.body_count)
+        test.assertEqual(restored_model.joint_count, model.joint_count)
+        test.assertEqual(restored_model.shape_count, model.shape_count)
+
+        # Test state history comparison
+        for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
+            _compare_serialized_data(test, original_state_data, loaded_state_data)
+
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 
 def test_body_transform_recorder(test: TestRecorder, device):
@@ -171,6 +352,41 @@ devices = get_test_devices()
 
 add_function_test(
     TestRecorder,
+    "test_ringbuffer_basic",
+    test_ringbuffer_basic,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_ringbuffer_edge_cases",
+    test_ringbuffer_edge_cases,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_recorder_with_ringbuffer",
+    test_recorder_with_ringbuffer,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_recorder_backward_compatibility",
+    test_recorder_backward_compatibility,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_recorder_ringbuffer_save_load",
+    test_recorder_ringbuffer_save_load,
+    devices=devices,
+)
+
+add_function_test(
+    TestRecorder,
     "test_body_transform_recorder",
     test_body_transform_recorder,
     devices=devices,
@@ -188,6 +404,7 @@ add_function_test(
     "test_model_and_state_recorder_binary",
     test_model_and_state_recorder_binary,
     devices=devices,
+    check_output=False,  # Ignore "Please install 'psutil'" UserWarning
 )
 
 if __name__ == "__main__":

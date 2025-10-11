@@ -129,6 +129,28 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles have come close to a rest",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
+
+        p_lower = wp.vec3(-3.0, -3.0, 0.0)
+        p_upper = wp.vec3(3.0, 3.0, 2.0)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
+
+        newton.examples.test_particle_state(
+            self.state_0,
+            "lower particles touch the ground",
+            lambda q, qd: q[2] < 0.15,
+            indices=[4, 5, 12, 13],
+        )
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -137,4 +159,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
