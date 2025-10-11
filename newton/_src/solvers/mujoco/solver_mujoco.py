@@ -105,7 +105,7 @@ def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
 
 # Precomputed rotation quaternions for axis conversion
 # X-up to Z-up: Rotate 90 degrees around Y-axis
-CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
+CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi * 0.5)
 # Y-up to Z-up: Rotate 90 degrees around X-axis
 CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
 
@@ -1931,7 +1931,18 @@ class SolverMuJoCo(SolverBase):
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
+        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system
+        # (MuJoCo always uses Z-up) 
+        original_gravity = model.gravity.numpy()[0]
+        if model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
+            # Gravity along X-axis in Newton becomes gravity along Z-axis in MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
+        elif model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
+            # Gravity along Y-axis in Newton becomes gravity along Z-axis in MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
+        else:  # Z-up: no conversion needed
+            converted_gravity = original_gravity
+        spec.option.gravity = converted_gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
@@ -2823,15 +2834,27 @@ class SolverMuJoCo(SolverBase):
 
     def update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
+        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system (Z-up)
+        original_gravity = self.model.gravity.numpy()[0]
+        if self.model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
+        elif self.model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
+            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
+        else:  # Z-up: no conversion needed
+            converted_gravity = original_gravity
+            
         if self.use_mujoco_cpu:
-            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+            self.mj_model.opt.gravity[:] = converted_gravity
         else:
             if hasattr(self, "mjw_data"):
+                # For GPU, we need to update the kernel that handles gravity to perform the conversion
+                # Create a temporary array with the converted gravity
+                temp_gravity = wp.array([converted_gravity], dtype=wp.vec3, device=self.model.device)
                 wp.launch(
                     kernel=update_model_properties_kernel,
                     dim=self.mjw_data.nworld,
                     inputs=[
-                        self.model.gravity,
+                        temp_gravity,
                     ],
                     outputs=[
                         self.mjw_model.opt.gravity,
