@@ -368,11 +368,12 @@ def parse_mjcf(
                     # a single mesh
                     m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
+                    m_color = np.array(m.visual.main_color) / 255.0 if hasattr(m.visual, "main_color") else None
                     m_mesh = Mesh(
                         m_vertices,
                         m_faces,
                         m.vertex_normals,
-                        color=np.array(m.visual.main_color) / 255.0,
+                        color=m_color,
                         maxhullvert=maxhullvert,
                     )
                     s = builder.add_shape_mesh(
