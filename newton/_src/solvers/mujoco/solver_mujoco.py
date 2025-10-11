@@ -1932,7 +1932,7 @@ class SolverMuJoCo(SolverBase):
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system
-        # (MuJoCo always uses Z-up) 
+        # (MuJoCo always uses Z-up)
         original_gravity = model.gravity.numpy()[0]
         if model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
             # Gravity along X-axis in Newton becomes gravity along Z-axis in MuJoCo
@@ -2842,7 +2842,7 @@ class SolverMuJoCo(SolverBase):
             converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
         else:  # Z-up: no conversion needed
             converted_gravity = original_gravity
-            
+
         if self.use_mujoco_cpu:
             self.mj_model.opt.gravity[:] = converted_gravity
         else:
