@@ -226,6 +226,8 @@ class Model:
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
         self.joint_qd = None
         """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
+        self.joint_act = None
+        """Generalized joint actuation for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
         """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
         self.joint_target = None
@@ -405,6 +407,7 @@ class Model:
 
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = "joint_dof"
+        self.attribute_frequency["joint_act"] = "joint_dof"
         self.attribute_frequency["joint_f"] = "joint_dof"
         self.attribute_frequency["joint_armature"] = "joint_dof"
         self.attribute_frequency["joint_target"] = "joint_dof"
@@ -470,6 +473,7 @@ class Model:
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+            s.joint_act = wp.clone(self.joint_act, requires_grad=requires_grad)
 
         return s
 
