@@ -590,6 +590,7 @@ def collide_box_box(
     box2_pos: wp.vec3,
     box2_rot: wp.mat33,
     box2_size: wp.vec3,
+    margin: float = 0.0,
 ) -> tuple[wp.types.vector(8, wp.float32), wp.types.matrix((8, 3), wp.float32), wp.types.matrix((8, 3), wp.float32)]:
     """Core contact geometry calculation for box-box collision.
 
@@ -600,6 +601,8 @@ def collide_box_box(
       box2_pos: Center position of the second box
       box2_rot: Rotation matrix of the second box
       box2_size: Half-extents of the second box along each axis
+      margin: Distance threshold for early contact generation (default: 0.0).
+              When positive, contacts are generated before boxes overlap.
 
     Returns:
       Tuple containing:
@@ -631,7 +634,7 @@ def collide_box_box(
 
     # Compute axis of maximum separation
     s_sum_3 = 3.0 * (box1_size + box2_size)
-    separation = wp.float32(s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
+    separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
     axis_code = wp.int32(-1)
 
     # First test: consider boxes' face normals
@@ -640,7 +643,7 @@ def collide_box_box(
 
         c2 = -wp.abs(pos12[i]) + box2_size[i] + plen1[i]
 
-        if c1 < 0.0 or c2 < 0.0:
+        if c1 < -margin or c2 < -margin:
             return contact_dist, contact_pos, contact_normals
 
         if c1 < separation:
@@ -685,7 +688,7 @@ def collide_box_box(
             c3 -= wp.abs(box_dist)
 
             # Early exit: no collision if separated along this axis
-            if c3 < 0.0:
+            if c3 < -margin:
                 return contact_dist, contact_pos, contact_normals
 
             # Track minimum separation and which edge-edge pair it occurs on
@@ -812,7 +815,7 @@ def collide_box_box(
         n = wp.int32(0)
 
         for i in range(m):
-            if points[i][2] > 0.0:
+            if points[i][2] > margin:
                 continue
             if i != n:
                 points[n] = points[i]
@@ -926,7 +929,7 @@ def collide_box_box(
                         c2 = lc + ld * c1
                         if wp.abs(c2) > s[1 - q]:
                             continue
-                        if (lua[2] + lub[2] * c1) * innorm > 0.0:
+                        if (lua[2] + lub[2] * c1) * innorm > margin:
                             continue
 
                         points[n] = lua * 0.5 + c1 * lub * 0.5
@@ -970,7 +973,7 @@ def collide_box_box(
 
             vtmp2 = points[n] - vtmp
             tc1 = wp.length_sq(vtmp2)
-            if vtmp[2] > 0 and tc1 > 0.0:
+            if vtmp[2] > 0 and tc1 > margin * margin:
                 continue
 
             points[n] = 0.5 * (points[n] + vtmp)
@@ -1001,7 +1004,7 @@ def collide_box_box(
 
             c1 += pu[i, 2] * innorm * pu[i, 2] * innorm
 
-            if pu[i, 2] > 0 and c1 > 0.0:
+            if pu[i, 2] > 0 and c1 > margin * margin:
                 continue
 
             tmp_p = wp.vec3(pu[i, 0], pu[i, 1], 0.0)
