@@ -259,14 +259,34 @@ def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") 
     return Axis.from_string(axis_str)
 
 
-def get_transform(prim: Usd.Prim, local: bool = True, invert_rotation: bool = True) -> wp.transform:
+def get_transform_matrix(prim: Usd.Prim, local: bool = True) -> wp.mat44:
+    """
+    Extract the full transformation matrix from a USD Xform prim.
+
+    Args:
+        prim: The USD prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+
+    Returns:
+        A Warp 4x4 transform matrix.
+    """
+    xform = UsdGeom.Xformable(prim)
+
+    if local:
+        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
+    else:
+        time = Usd.TimeCode.Default()
+        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    return wp.mat44(mat.T)
+
+
+def get_transform(prim: Usd.Prim, local: bool = True) -> wp.transform:
     """
     Extract the transform (position and rotation) from a USD Xform prim.
 
     Args:
         prim: The USD prim to query.
         local: If True, get the local transformation; if False, get the world transformation.
-        invert_rotation: If True, transpose the rotation matrix before converting to quaternion.
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
@@ -275,11 +295,9 @@ def get_transform(prim: Usd.Prim, local: bool = True, invert_rotation: bool = Tr
     if local:
         mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
     else:
-        mat = np.array(xform.GetWorldTransformation(), dtype=np.float32)
-    if invert_rotation:
-        rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
-    else:
-        rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].flatten()))
+        time = Usd.TimeCode.Default()
+        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
     pos = mat[3, :3]
     return wp.transform(pos, rot)
 
