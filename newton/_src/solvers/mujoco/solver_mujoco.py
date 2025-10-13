@@ -1771,7 +1771,6 @@ class SolverMuJoCo(SolverBase):
         impratio: float = 1.0,
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
-        timestep: float = 0.01,
         cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
@@ -1872,7 +1871,6 @@ class SolverMuJoCo(SolverBase):
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
-        spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
