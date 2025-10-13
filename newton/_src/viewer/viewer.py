@@ -211,7 +211,7 @@ class ViewerBase:
                 shapes.name,
                 shapes.mesh,
                 shapes.world_xforms,
-                shapes.scales if self.model_changed else None,
+                shapes.scales,
                 shapes.colors if self.model_changed else None,
                 shapes.materials if self.model_changed else None,
                 hidden=not visible,
