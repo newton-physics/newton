@@ -1879,6 +1879,7 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
         spec.option.impratio = impratio
+
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
@@ -2388,7 +2389,6 @@ class SolverMuJoCo(SolverBase):
         self.mj_model.opt.ls_iterations = ls_iterations
         self.mj_model.opt.integrator = integrator
         self.mj_model.opt.solver = solver
-        self.mj_model.opt.impratio = impratio
         self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         self.update_mjc_data(self.mj_data, model, state)
