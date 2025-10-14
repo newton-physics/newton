@@ -1934,14 +1934,7 @@ class SolverMuJoCo(SolverBase):
         # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system
         # (MuJoCo always uses Z-up)
         original_gravity = model.gravity.numpy()[0]
-        if model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
-            # Gravity along X-axis in Newton becomes gravity along Z-axis in MuJoCo
-            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
-        elif model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
-            # Gravity along Y-axis in Newton becomes gravity along Z-axis in MuJoCo
-            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
-        else:  # Z-up: no conversion needed
-            converted_gravity = original_gravity
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), model.up_axis))
         spec.option.gravity = converted_gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
@@ -2836,12 +2829,7 @@ class SolverMuJoCo(SolverBase):
         """Update model properties including gravity in the MuJoCo model."""
         # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system (Z-up)
         original_gravity = self.model.gravity.numpy()[0]
-        if self.model.up_axis == 0:  # X-up: gravity is along X-axis, need to convert to Z-axis for MuJoCo
-            converted_gravity = np.array([0.0, 0.0, original_gravity[0]])
-        elif self.model.up_axis == 1:  # Y-up: gravity is along Y-axis, need to convert to Z-axis for MuJoCo
-            converted_gravity = np.array([0.0, 0.0, original_gravity[1]])
-        else:  # Z-up: no conversion needed
-            converted_gravity = original_gravity
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), self.model.up_axis))
 
         if self.use_mujoco_cpu:
             self.mj_model.opt.gravity[:] = converted_gravity

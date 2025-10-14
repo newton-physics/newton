@@ -22,6 +22,7 @@ import warp as wp
 import newton
 from newton import JointType, Mesh
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton._src.solvers.mujoco.solver_mujoco import convert_up_axis_pos, convert_up_axis_quat
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -319,13 +320,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     newton_pos = new_coms[newton_idx]
                     mjc_pos = solver.mjw_model.body_ipos.numpy()[env_idx, mjc_idx]
 
-                    # Convert positions based on up_axis
-                    if self.model.up_axis == 0:  # X-axis up to Z-up: (x, y, z) -> (-z, y, x)
-                        expected_pos = np.array([-newton_pos[2], newton_pos[1], newton_pos[0]])
-                    elif self.model.up_axis == 1:  # Y-axis up to Z-up: (x, y, z) -> (x, -z, y)
-                        expected_pos = np.array([newton_pos[0], -newton_pos[2], newton_pos[1]])
-                    else:  # Z-axis up: no conversion
-                        expected_pos = newton_pos
+                    expected_pos = np.array(convert_up_axis_pos(wp.vec3(*newton_pos), self.model.up_axis))
 
                     for dim in range(3):
                         self.assertAlmostEqual(
@@ -355,13 +350,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     newton_pos = updated_coms[newton_idx]
                     mjc_pos = solver.mjw_model.body_ipos.numpy()[env_idx, mjc_idx]
 
-                    # Convert positions based on up_axis
-                    if self.model.up_axis == 0:  # X-axis up to Z-up: (x, y, z) -> (-z, y, x)
-                        expected_pos = np.array([-newton_pos[2], newton_pos[1], newton_pos[0]])
-                    elif self.model.up_axis == 1:  # Y-axis up to Z-up: (x, y, z) -> (x, -z, y)
-                        expected_pos = np.array([newton_pos[0], -newton_pos[2], newton_pos[1]])
-                    else:  # Z-axis up: no conversion
-                        expected_pos = newton_pos
+                    expected_pos = np.array(convert_up_axis_pos(wp.vec3(*newton_pos), self.model.up_axis))
 
                     for dim in range(3):
                         self.assertAlmostEqual(
@@ -810,18 +799,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 shape_body = shape_bodies[shape_idx]
 
                 # Handle up-axis conversion if needed
-                if self.model.up_axis == 0:  # X-up to Z-up: (x, y, z) -> (-z, y, x) with rotation around Y-axis
-                    # For static geoms, position conversion
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(-expected_pos[2], expected_pos[1], expected_pos[0])
-                    rot_x2z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_x2z * expected_quat
-                elif self.model.up_axis == 1:  # Y-up to Z-up: (x, y, z) -> (x, -z, y) with rotation around X-axis
-                    # For static geoms, position conversion
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(expected_pos[0], -expected_pos[2], expected_pos[1])
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_y2z * expected_quat
+                # For static geoms, position conversion
+                if shape_body == -1:
+                    expected_pos = convert_up_axis_pos(expected_pos, self.model.up_axis)
+                expected_quat = convert_up_axis_quat(expected_quat, self.model.up_axis)
 
                 # Convert expected quaternion to MuJoCo format (wxyz)
                 expected_quat_mjc = np.array([expected_quat.w, expected_quat.x, expected_quat.y, expected_quat.z])
@@ -1025,16 +1006,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 shape_body = self.model.shape_body.numpy()[shape_idx]
 
                 # Handle up-axis conversion if needed
-                if self.model.up_axis == 0:  # X-up to Z-up: (x, y, z) -> (-z, y, x) with rotation around Y-axis
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(-expected_pos[2], expected_pos[1], expected_pos[0])
-                    rot_x2z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_x2z * expected_quat
-                elif self.model.up_axis == 1:  # Y-up to Z-up: (x, y, z) -> (x, -z, y) with rotation around X-axis
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(expected_pos[0], -expected_pos[2], expected_pos[1])
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_y2z * expected_quat
+                # For static geoms, position conversion
+                if shape_body == -1:
+                    expected_pos = convert_up_axis_pos(expected_pos, self.model.up_axis)
+                expected_quat = convert_up_axis_quat(expected_quat, self.model.up_axis)
 
                 # Convert expected quaternion to MuJoCo format (wxyz)
                 expected_quat_mjc = np.array([expected_quat.w, expected_quat.x, expected_quat.y, expected_quat.z])
