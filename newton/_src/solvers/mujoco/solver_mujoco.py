@@ -1771,7 +1771,6 @@ class SolverMuJoCo(SolverBase):
         impratio: float = 1.0,
         tolerance: float = 1e-8,
         ls_tolerance: float = 0.01,
-        timestep: float = 0.01,
         cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
         joint_limit_threshold: float = 1e3,
@@ -1872,13 +1871,16 @@ class SolverMuJoCo(SolverBase):
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
-        spec.option.timestep = timestep
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
         spec.option.impratio = impratio
+        spec.option.tolerance = tolerance
+        spec.option.ls_tolerance = ls_tolerance
+        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
@@ -2378,18 +2380,7 @@ class SolverMuJoCo(SolverBase):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         self.mj_model = spec.compile()
-
         self.mj_data = mujoco.MjData(self.mj_model)
-
-        self.mj_model.opt.tolerance = tolerance
-        self.mj_model.opt.ls_tolerance = ls_tolerance
-        self.mj_model.opt.cone = cone
-        self.mj_model.opt.iterations = iterations
-        self.mj_model.opt.ls_iterations = ls_iterations
-        self.mj_model.opt.integrator = integrator
-        self.mj_model.opt.solver = solver
-        self.mj_model.opt.impratio = impratio
-        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         self.update_mjc_data(self.mj_data, model, state)
 
