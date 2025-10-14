@@ -21,8 +21,8 @@ import warp as wp
 
 import newton
 from newton import JointType, Mesh
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton._src.solvers.mujoco.solver_mujoco import convert_up_axis_pos, convert_up_axis_quat
+from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 
 class TestMuJoCoSolver(unittest.TestCase):
