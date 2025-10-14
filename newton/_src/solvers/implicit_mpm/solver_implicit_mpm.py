@@ -880,6 +880,75 @@ def _particle_parameter(
         return wp.full(num_particles, model_value, dtype=float) if model_scale is None else model_value * model_scale
 
 
+def _merge_meshes(
+    points: list[np.array],
+    indices: list[np.array],
+):
+    pt_count = np.array([len(pts) for pts in points])
+    offsets = np.cumsum(pt_count) - pt_count
+
+    merged_points = np.vstack([pts[:, :3] for pts in points])
+    merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
+
+    return (
+        wp.array(merged_points, dtype=wp.vec3),
+        wp.array(merged_indices, dtype=int),
+    )
+
+
+def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3):
+    """Get a shape mesh from a model."""
+
+    if geo_type == newton.GeoType.MESH:
+        src_mesh = model.shape_source[shape_id]
+        vertices = src_mesh.vertices * np.array(geo_scale)
+        indices = src_mesh.indices
+        return vertices, indices
+    if geo_type == newton.GeoType.PLANE:
+        # Handle "infinite" planes encoded with non-positive scales
+        width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 1000.0
+        length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
+        return newton.utils.create_plane_mesh(width, length)
+    elif geo_type == newton.GeoType.SPHERE:
+        radius = geo_scale[0]
+        return newton.utils.create_sphere_mesh(radius)
+
+    elif geo_type == newton.GeoType.CAPSULE:
+        radius, half_height = geo_scale[:2]
+        return newton.utils.create_capsule_mesh(radius, half_height, up_axis=2)
+
+    elif geo_type == newton.GeoType.CYLINDER:
+        radius, half_height = geo_scale[:2]
+        return newton.utils.create_cylinder_mesh(radius, half_height, up_axis=2)
+
+    elif geo_type == newton.GeoType.CONE:
+        radius, half_height = geo_scale[:2]
+        return newton.utils.create_cone_mesh(radius, half_height, up_axis=2)
+
+    elif geo_type == newton.GeoType.BOX:
+        if len(geo_scale) == 1:
+            ext = (geo_scale[0],) * 3
+        else:
+            ext = tuple(geo_scale[:3])
+        return newton.utils.create_box_mesh(ext)
+
+    raise NotImplementedError(f"Shape type {geo_type} not supported")
+
+
+def _create_body_collider_mesh(model: newton.Model, body_index: int):
+    """Create a collider mesh from a body."""
+
+    shape_ids = model.body_shapes[body_index]
+
+    shape_scale = model.shape_scale.numpy()
+    shape_type = model.shape_type.numpy()
+
+    shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
+
+    collider_points, collider_indices = _merge_meshes(*zip(*shape_meshes, strict=True))
+    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points))
+
+
 class ImplicitMPMModel:
     """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
@@ -910,8 +979,8 @@ class ImplicitMPMModel:
         self.collider = Collider()
         """Collider struct"""
 
-        self.collider_coms = None
-        self.collider_inv_inertia = None
+        self.collider_body_mass = None
+        self.collider_body_inv_inertia = None
 
         self.setup_particle_material(options)
         self.setup_collider()
@@ -932,8 +1001,16 @@ class ImplicitMPMModel:
         Tracks the minimum collider mass to determine whether compliant
         colliders are present and to enable/disable related computations.
         """
-        self.min_collider_mass = np.min(self.collider.masses.numpy()) if len(self.collider.masses) > 0 else _INFINITY
+        body_ids = self.collider.body_index.numpy()
+        dynamic_body_ids = body_ids[body_ids >= 0]
+        dynamic_body_masses = self.collider_body_mass.numpy()[dynamic_body_ids]
+
+        self.min_collider_mass = np.min(dynamic_body_masses, initial=_INFINITY)
+        if self.min_collider_mass == 0.0:
+            self.min_collider_mass = _INFINITY
+
         self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
+        self.collider_body_count = int(np.max(dynamic_body_ids + 1, initial=0))
 
     def setup_particle_material(self, options: ImplicitMPMOptions):
         """Initialize per-particle material and derived fields from the model.
@@ -995,15 +1072,18 @@ class ImplicitMPMModel:
 
     def setup_collider(
         self,
-        # TODO: read colliders from model
-        colliders: list[wp.Mesh] | None = None,
+        collider_meshes: list[wp.Mesh] | None = None,
+        collider_body_ids: list[int] | None = None,
         collider_thicknesses: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
-        collider_masses: list[float] | None = None,
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
         ground_height: float = 0.0,
         ground_normal: wp.vec3 | None = None,
+        model: newton.Model | None = None,
+        body_com: wp.array | None = None,
+        body_mass: wp.array | None = None,
+        body_inv_inertia: wp.array | None = None,
     ):
         """Initialize collider parameters and defaults from inputs.
 
@@ -1017,57 +1097,74 @@ class ImplicitMPMModel:
             collider_thicknesses: Per-mesh signed distance offsets (m).
             collider_projection_threshold: Per-mesh projection thresholds as a
                 fraction of the voxel size.
-            collider_masses: Per-mesh masses; very large values mark kinematic colliders.
             collider_friction: Per-mesh Coulomb friction coefficients.
             collider_adhesion: Per-mesh adhesion (Pa).
+            collider_body_ids: For dynamic colliders, per-mesh body ids.
             ground_height: Height of the ground plane.
             ground_normal: Normal of the ground plane (default to model.up_axis).
+            model: The model to read collider properties from. Default to self.model.
+            body_com: For dynamic colliders, per-mesh body center of mass. Default to model.body_com.
+            body_mass: For dynamic colliders, per-mesh body mass. Default to model.body_mass.
+            body_inv_inertia: For dynamic colliders, per-mesh body inverse inertia. Default to model.body_inv_inertia.
         """
 
-        self._collider_meshes = colliders  # Keep a ref so that meshes are not garbage collected
+        if collider_body_ids is None:
+            if collider_meshes is None:
+                collider_body_ids = []
+            else:
+                collider_body_ids = [-1] * len(collider_meshes)
+        if collider_meshes is None:
+            collider_meshes = [None] * len(collider_body_ids)
+        assert len(collider_body_ids) == len(collider_meshes)
+        collider_count = len(collider_body_ids)
 
-        if colliders is None:
-            colliders = []
+        if collider_thicknesses is None:
+            collider_thicknesses = [_DEFAULT_THICKNESS * self.voxel_size] * collider_count
+        if collider_projection_threshold is None:
+            collider_projection_threshold = [_DEFAULT_PROJECTION_THRESHOLD] * collider_count
+        if collider_friction is None:
+            collider_friction = [_DEFAULT_FRICTION] * collider_count
+        if collider_adhesion is None:
+            collider_adhesion = [_DEFAULT_ADHESION] * collider_count
 
-        collider = self.collider
+        if model is None:
+            model = self.model
+        if body_com is None:
+            body_com = model.body_com
+        if body_mass is None:
+            body_mass = model.body_mass
+        if body_inv_inertia is None:
+            body_inv_inertia = model.body_inv_inertia
 
         with wp.ScopedDevice(self.model.device):
-            collider.meshes = wp.array([collider.id for collider in colliders], dtype=wp.uint64)
-            collider.thicknesses = (
-                wp.full(len(collider.meshes), _DEFAULT_THICKNESS * self.voxel_size, dtype=float)
-                if collider_thicknesses is None
-                else wp.array(collider_thicknesses, dtype=float)
-            )
-            collider.friction = (
-                wp.full(len(collider.meshes), _DEFAULT_FRICTION, dtype=float)
-                if collider_friction is None
-                else wp.array(collider_friction, dtype=float)
-            )
-            collider.adhesion = (
-                wp.full(len(collider.meshes), _DEFAULT_ADHESION, dtype=float)
-                if collider_adhesion is None
-                else wp.array(collider_adhesion, dtype=float)
-            )
-            collider.masses = (
-                wp.full(len(collider.meshes), _INFINITY * 2.0, dtype=float)
-                if collider_masses is None
-                else wp.array(collider_masses, dtype=float)
-            )
-            collider.projection_threshold = (
-                wp.full(len(collider.meshes), _DEFAULT_PROJECTION_THRESHOLD, dtype=float)
-                if collider_projection_threshold is None
-                else wp.array(collider_projection_threshold, dtype=float)
-            )
+            # Create collider meshes from bodies if necessary
+            for k, mesh in enumerate(collider_meshes):
+                if mesh is not None:
+                    continue
+                if collider_body_ids[k] < 0:
+                    raise ValueError("Collider mesh is required for kinematic colliders")
 
-            self.collider_coms = wp.zeros(len(collider.meshes), dtype=wp.vec3)
-            self.collider_inv_inertia = wp.zeros(len(collider.meshes), dtype=wp.mat33)
+                body_index = collider_body_ids[k]
+                collider_meshes[k] = _create_body_collider_mesh(model, body_index)
 
-        collider.ground_height = ground_height
+            self.collider.body_index = wp.array(collider_body_ids, dtype=int)
+            self.collider.meshes = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
+            self.collider.thicknesses = wp.array(collider_thicknesses, dtype=float)
+            self.collider.friction = wp.array(collider_friction, dtype=float)
+            self.collider.adhesion = wp.array(collider_adhesion, dtype=float)
+            self.collider.projection_threshold = wp.array(collider_projection_threshold, dtype=float)
+
+        self.collider.body_com = body_com
+        self.collider_body_mass = body_mass
+        self.collider_body_inv_inertia = body_inv_inertia
+        self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
+
+        self.collider.ground_height = ground_height
         if ground_normal is None:
-            collider.ground_normal = wp.vec3(0.0)
-            collider.ground_normal[self.model.up_axis] = 1.0
+            self.collider.ground_normal = wp.vec3(0.0)
+            self.collider.ground_normal[model.up_axis] = 1.0
         else:
-            collider.ground_normal = wp.vec3(ground_normal)
+            self.collider.ground_normal = wp.vec3(ground_normal)
 
         self.notify_collider_changed()
 
@@ -1335,6 +1432,11 @@ class SolverImplicitMPM(SolverBase):
             self._require_velocity_space_fields(state)
             self._require_strain_space_fields(state)
 
+            if state.body_q is None and self.mpm_model.collider_body_count > 0:
+                state.body_q = wp.zeros(self.mpm_model.collider_body_count, dtype=wp.transform, device=device)
+            if state.body_qd is None and self.mpm_model.collider_body_count > 0:
+                state.body_qd = wp.zeros(self.mpm_model.collider_body_count, dtype=wp.spatial_vector, device=device)
+
     @override
     def step(
         self,
@@ -1381,6 +1483,8 @@ class SolverImplicitMPM(SolverBase):
                 state_in.particle_qd_grad,
                 self.model.particle_flags,
                 self.mpm_model.collider,
+                state_in.body_q,
+                state_in.body_qd,
                 self.mpm_model.voxel_size,
                 dt,
             ],
@@ -1680,18 +1784,13 @@ class SolverImplicitMPM(SolverBase):
                     state_out.collider_position_field, space_restriction=scratch.velocity_test.space_restriction
                 ),
             )
-            fem.integrate(
-                integrate_fraction,
-                fields={"phi": scratch.fraction_test},
-                values={"inv_cell_volume": inv_cell_volume},
-                assembly="nodal",
-                output=scratch.collider_vel_node_volume.array,
-            )
             wp.launch(
                 rasterize_collider,
                 dim=vel_node_count,
                 inputs=[
                     self.mpm_model.collider,
+                    state_in.body_q,
+                    state_in.body_qd,
                     self.mpm_model.voxel_size,
                     dt,
                     state_out.collider_position_field.dof_values,
@@ -1776,10 +1875,18 @@ class SolverImplicitMPM(SolverBase):
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=not self._timers_use_nvtx,
             ):
+                fem.integrate(
+                    integrate_fraction,
+                    fields={"phi": scratch.fraction_test},
+                    values={"inv_cell_volume": inv_cell_volume},
+                    assembly="nodal",
+                    output=scratch.collider_vel_node_volume.array,
+                )
                 allot_collider_mass(
                     cell_volume=cell_volume,
                     node_volumes=scratch.collider_vel_node_volume.array,
                     collider=self.mpm_model.collider,
+                    body_mass=self.mpm_model.collider_body_mass,
                     collider_ids=state_out.collider_ids,
                     collider_total_volumes=scratch.collider_total_volumes.array,
                     collider_inv_mass_matrix=scratch.collider_inv_mass_matrix.array,
@@ -1790,9 +1897,10 @@ class SolverImplicitMPM(SolverBase):
                     node_volumes=scratch.collider_vel_node_volume.array,
                     node_positions=state_out.collider_position_field.dof_values,
                     collider=self.mpm_model.collider,
+                    body_q=state_in.body_q,
+                    body_mass=self.mpm_model.collider_body_mass,
+                    body_inv_inertia=self.mpm_model.collider_body_inv_inertia,
                     collider_ids=state_out.collider_ids,
-                    collider_coms=self.mpm_model.collider_coms,
-                    collider_inv_inertia=self.mpm_model.collider_inv_inertia,
                     collider_total_volumes=scratch.collider_total_volumes.array,
                 )
         else:

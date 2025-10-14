@@ -28,102 +28,10 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
-from newton._src.solvers.solver import integrate_bodies, integrate_rigid_body
 from newton.solvers import SolverImplicitMPM
-
-# @wp.kernel
-# def compute_body_velocities(
-#     dt: float,
-#     body_q: wp.array(dtype=wp.transform),
-#     body_q_next: wp.array(dtype=wp.transform),
-#     body_com: wp.array(dtype=wp.vec3),
-#     body_qd: wp.array(dtype=wp.spatial_vector),
-# ):
-#     i = wp.tid()
-
-#     q_inv = wp.quat_inverse(wp.transform_get_rotation(body_q[i]))
-#     delta_q = wp.transform_get_rotation(body_q_next[i]) * q_inv
-
-#     v_com = (
-#         wp.transform_point(body_q_next[i], body_com[i])
-#         - wp.transform_point(body_q[i], body_com[i])
-#     ) / dt
-
-#     axis = wp.vec3()
-#     angle = float(0.0)
-#     wp.quat_to_axis_angle(delta_q, axis, angle)
-
-#     body_qd[i] = wp.spatial_vector(axis * angle / dt, v_com)
-
-
-@wp.kernel
-def update_collider_meshes(
-    collider_id: wp.array(dtype=wp.vec2i),
-    collider_meshes: wp.array(dtype=wp.uint64),
-    src_points: wp.array(dtype=wp.vec3),
-    src_shape: wp.array(dtype=int),
-    shape_transforms: wp.array(dtype=wp.transform),
-    shape_body_id: wp.array(dtype=int),
-    body_q_cur: wp.array(dtype=wp.transform),
-    body_q_next: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    dt: float,
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_coms: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
-):
-    v = wp.tid()
-
-    cid = collider_id[v][0]
-    cv = collider_id[v][1]
-
-    res_mesh = collider_meshes[cid]
-    res = wp.mesh_get(res_mesh)
-
-    shape_id = src_shape[v]
-    p = wp.transform_point(shape_transforms[shape_id], src_points[v])
-
-    body_id = shape_body_id[shape_id]
-
-    # Remove previously applied force
-    f = body_f[body_id]
-    delta_v = dt * body_inv_mass[body_id] * wp.spatial_top(f)
-    r = wp.transform_get_rotation(body_q_next[body_id])
-
-    dw = dt * body_inv_inertia[body_id] * wp.quat_rotate_inv(r, wp.spatial_bottom(f))
-    delta_v += wp.quat_rotate(r, wp.cross(dw, p - body_coms[body_id]))
-
-    # (body_inv_mass[body_id] > 0.0)
-
-    # q_new, qd_new = integrate_rigid_body(
-    #     q,
-    #     body_f.dtype(0.0),
-    #     -f,
-    #     body_coms[body_id],
-    #     wp.mat33(0.0),
-    #     body_inv_mass[body_id],
-    #     body_inv_inertia[body_id],
-    #     wp.vec3(0.0),
-    #     0.0,
-    #     dt,
-    # )
-
-    next_p = wp.transform_point(body_q_next[body_id], p)
-
-    vel = wp.spatial_top(body_qd[body_id]) + wp.cross(
-        wp.spatial_bottom(body_qd[body_id]), wp.quat_rotate(r, p - body_coms[body_id])
-    )
-    res.velocities[cv] = vel - delta_v
-    res.points[cv] = next_p
-
-    # cur_p = wp.transform_point(body_q_cur[body_id], p)  # res.points[cv] + dt * res.velocities[cv]
-    # res.velocities[cv] = (next_p - cur_p) / dt - delta_v * IR
-    # res.points[cv] = cur_p
 
 
 @wp.kernel
@@ -151,23 +59,27 @@ def compute_body_forces(
 
 
 @wp.kernel
-def update_collider_coms(
-    body_id: wp.array(dtype=int),
+def substract_body_force(
+    dt: float,
     body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_f: wp.array(dtype=wp.spatial_vector),
     body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_coms: wp.array(dtype=wp.vec3),
-    collider_inv_inertia: wp.array(dtype=wp.mat33),
-    collider_coms: wp.array(dtype=wp.vec3),
+    body_inv_mass: wp.array(dtype=float),
+    body_q_res: wp.array(dtype=wp.transform),
+    body_qd_res: wp.array(dtype=wp.spatial_vector),
 ):
-    i = wp.tid()
-    body_index = body_id[i]
+    body_id = wp.tid()
 
-    X_wb = body_q[body_index]
-    X_com = body_coms[body_index]
+    # Remove previously applied force
+    f = body_f[body_id]
+    delta_v = dt * body_inv_mass[body_id] * wp.spatial_top(f)
+    r = wp.transform_get_rotation(body_q[body_id])
 
-    collider_coms[i] = wp.transform_point(X_wb, X_com)
-    R = wp.quat_to_matrix(wp.transform_get_rotation(X_wb))
-    collider_inv_inertia[i] = R @ body_inv_inertia[body_index] @ wp.transpose(R)
+    delta_w = dt * wp.quat_rotate(r, body_inv_inertia[body_id] * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
+
+    body_q_res[body_id] = body_q[body_id]
+    body_qd_res[body_id] = body_qd[body_id] - wp.spatial_vector(delta_v, delta_w)
 
 
 class Example:
@@ -216,7 +128,14 @@ class Example:
         # generate a few shapes with varying types and sizes
         # boxes
         # boxes = [(0.45, 0.35, 0.25)]  # (hx, hy, hz)
-        boxes = [(0.25, 0.35, 0.25), (0.25, 0.25, 0.25), (0.3, 0.2, 0.2), (0.25, 0.35, 0.25), (0.25, 0.25, 0.25), (0.3, 0.2, 0.2)]  # (hx, hy, hz)
+        boxes = [
+            (0.25, 0.35, 0.25),
+            (0.25, 0.25, 0.25),
+            (0.3, 0.2, 0.2),
+            (0.25, 0.35, 0.25),
+            (0.25, 0.25, 0.25),
+            (0.3, 0.2, 0.2),
+        ]  # (hx, hy, hz)
         for box in boxes:
             (hx, hy, hz) = box
 
@@ -228,63 +147,9 @@ class Example:
                 xform=wp.transform(p=wp.vec3(float(ox), float(oy), pz), q=wp.normalize(wp.quatf(0.0, 0.0, 0.0, 1.0))),
                 mass=75.0,
             )
-            shape_id = builder.add_shape_box(body, hx=float(hx), hy=float(hy), hz=float(hz))
+            builder.add_shape_box(body, hx=float(hx), hy=float(hy), hz=float(hz))
             # shape_id = builder.add_shape_capsule(body, radius=0.5 * hx, half_height=hz)
-
-            cube_points, cube_indices = newton.utils.create_box_mesh(extents=box)
-            # cube_points, cube_indices = newton.utils.create_capsule_mesh(radius=0.5 * hx, half_height=hz, up_axis=2)
-            nv = cube_points.shape[0]
-            cube_mesh = wp.Mesh(
-                wp.array(cube_points[:, 0:3], dtype=wp.vec3),
-                wp.array(cube_indices, dtype=int),
-                velocities=wp.zeros(nv, dtype=wp.vec3),
-            )
-            # print(cube_indices)
-            # cube_points = cube_points[:, 3]
-
-            # cube_mesh = wp.Mesh(
-            #     wp.array(np.ascontiguousarray(cube_points), dtype=wp.vec3),
-            #     wp.array(cube_indices, dtype=int),
-            # )
-
-            collider_meshes.append(cube_mesh)
-            collider_ids.append(
-                np.hstack(
-                    (
-                        np.full(nv, len(collider_ids)).reshape(-1, 1),
-                        np.arange(nv).reshape(-1, 1),
-                    )
-                )
-            )
             collider_body_id.append(body)
-            collider_shape_ids.append(np.full(nv, shape_id, dtype=int))
-
-        # # a few bunnies as triangle meshes
-        # usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-        # usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
-        # mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
-        # mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-        # demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
-
-        # # compute uniform scale so the largest dimension is <= 0.5 m
-        # vmin = mesh_vertices.min(axis=0)
-        # vmax = mesh_vertices.max(axis=0)
-        # vsize = vmax - vmin
-        # vmax_dim = float(np.max(vsize)) if vsize.size else 1.0
-        # bunny_scale = 0.5 / vmax_dim if vmax_dim > 0.0 else 1.0
-
-        # bunny_offsets = [(-0.7, 0.35, 0.2), (0.7, 0.35, 0.0), (0.0, -0.7, -1.0)]
-        # for _, (ox, oy, oz) in enumerate(bunny_offsets):
-        #     bx, by = offsets_xy[offset_index % len(offsets_xy)]
-        #     offset_index += 1
-        #     pz = drop_z + float(z_index) * z_separation
-        #     z_index += 1
-        #     p = wp.vec3(float(bx + ox), float(by + oy), float(pz - 0.5 + oz))
-        #     q = wp.quat(0.5, 0.5, 0.5, 0.5)
-        #     body = builder.add_body(xform=wp.transform(p=p, q=q))
-        #     builder.add_shape_mesh(body, mesh=demo_mesh, scale=wp.vec3(bunny_scale, bunny_scale, bunny_scale))
-
-        #   collider_meshes.append(demo_mesh)
 
         # ------------------------------------------
         # Add sand bed (2m x 2m x 0.5m) above ground
@@ -333,15 +198,6 @@ class Example:
         # setup rigid-body solver
         self.solver = newton.solvers.SolverXPBD(self.model)
 
-        self.collider_meshes = collider_meshes
-        self.collider_mesh_ids = wp.array([mesh.id for mesh in collider_meshes], dtype=wp.uint64)
-        self.collider_ids = wp.array(np.vstack(collider_ids), dtype=wp.vec2i)
-        self.collider_shape_ids = wp.array(np.concatenate(collider_shape_ids), dtype=int)
-        self.collider_body_id = wp.array(collider_body_id, dtype=int)
-        self.collider_rest_points = wp.array(
-            np.vstack([mesh.points.numpy() for mesh in collider_meshes]), dtype=wp.vec3
-        )
-
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Options()
         mpm_options.voxel_size = voxel_size
@@ -355,27 +211,26 @@ class Example:
         mpm_options.critical_fraction = 0.0
 
         mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
-
-        body_masses = self.model.body_mass.numpy()
         mpm_model.setup_collider(
-            colliders=self.collider_meshes,
-            collider_masses=[body_masses[body_id] for body_id in collider_body_id],
+            model=self.model,  # read colliders from the RB model
+            collider_body_ids=collider_body_id,
             collider_friction=[0.5 for _ in collider_body_id],
             collider_adhesion=[0.0 for _ in collider_body_id],
         )
+        self.collider_body_id = wp.array(collider_body_id, dtype=int)
+
         self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+
         self.sand_state_0 = self.sand_model.state()
-        self.sand_state_1 = self.sand_model.state()
 
         self.sand_body_forces = wp.zeros_like(self.state_0.body_f)
 
         # enrich states for MPM particles
         self.mpm_solver.enrich_state(self.sand_state_0)
-        self.mpm_solver.enrich_state(self.sand_state_1)
 
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
@@ -384,9 +239,6 @@ class Example:
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        self.ref_q = wp.clone(self.state_0.body_q)
-        self._update_collider_mesh(self.state_0)
 
         self.collider_impulses = None
         self.collider_impulse_pos = None
@@ -408,12 +260,9 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.ref_q.assign(self.state_0.body_q)
-
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # self.sand_body_forces.zero_()
             wp.launch(
                 compute_body_forces,
                 dim=self.collider_impulse_ids.shape[0],
@@ -428,9 +277,8 @@ class Example:
                     self.state_0.body_f,
                 ],
             )
+            # saved applied force to subtract later on
             self.sand_body_forces.assign(self.state_0.body_f)
-            # wp.assign(self.state_0.body_f, self.sand_body_forces)
-            # self.state_0.body_f.assign(self.sand_body_forces)
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
@@ -457,41 +305,26 @@ class Example:
             self.collider_impulse_ids.assign(collider_impulse_ids)
 
     def simulate_sand(self):
-        # one MPM step per frame (no collider setup for now)
-        self._update_collider_mesh(self.state_0)
+        # Subtract previously applied impulses from body velocities
+        wp.launch(
+            substract_body_force,
+            dim=self.sand_state_0.body_q.shape,
+            inputs=[
+                self.frame_dt,
+                self.state_0.body_q,
+                self.state_0.body_qd,
+                self.sand_body_forces,
+                self.model.body_inv_inertia,
+                self.model.body_inv_mass,
+                self.sand_state_0.body_q,
+                self.sand_state_0.body_qd,
+            ],
+        )
 
         self.mpm_solver.step(self.sand_state_0, self.sand_state_0, contacts=None, control=None, dt=self.frame_dt)
 
+        # Save applied impulses
         self.collect_collider_impulses()
-
-        # body_impulses = collider_impulses.numpy()[collider_ids.numpy() == 0]
-
-        # print(self.state_0.body_q)
-        # delta_qd = wp.zeros_like(self.state_0.body_qd)
-        # wp.launch(
-        #     kernel=integrate_bodies,
-        #     dim=self.model.body_count,
-        #     inputs=[
-        #         self.state_0.body_q,
-        #         delta_qd,
-        #         self.sand_body_forces,
-        #         self.model.body_com,
-        #         self.model.body_mass,
-        #         self.model.body_inertia,
-        #         self.model.body_inv_mass,
-        #         self.model.body_inv_inertia,
-        #         wp.vec3(0.0),
-        #         1.0,
-        #         self.frame_dt,
-        #     ],
-        #     outputs=[self.state_0.body_q, delta_qd],
-        #     device=self.model.device,
-        # )
-        # self.state_0.body_qd += delta_qd
-
-        # print(np.sum(body_impulses) / self.frame_dt)
-        # print(self.model.gravity * self.model.body_mass.numpy()[0])
-        # print(self.sand_body_forces.numpy())
 
     def step(self):
         if self.graph:
@@ -526,44 +359,6 @@ class Example:
 
         self.viewer.end_frame()
 
-    def _update_collider_mesh(self, state_next):
-        wp.launch(
-            update_collider_coms,
-            dim=self.collider_body_id.shape[0],
-            inputs=[
-                self.collider_body_id,
-                state_next.body_q,
-                # self.ref_q,
-                self.model.body_inv_inertia,
-                self.model.body_com,
-                self.mpm_solver.mpm_model.collider_inv_inertia,
-                self.mpm_solver.mpm_model.collider_coms,
-            ],
-        )
-        wp.launch(
-            update_collider_meshes,
-            dim=self.collider_rest_points.shape[0],
-            inputs=[
-                self.collider_ids,
-                self.collider_mesh_ids,
-                self.collider_rest_points,
-                self.collider_shape_ids,
-                self.model.shape_transform,
-                self.model.shape_body,
-                self.ref_q,
-                state_next.body_q,
-                state_next.body_qd,
-                self.frame_dt,
-                self.sand_body_forces,
-                self.model.body_inv_inertia,
-                self.model.body_com,
-                self.model.body_inv_mass,
-            ],
-        )
-
-        for mesh in self.collider_meshes:
-            mesh.refit()
-
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -572,4 +367,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)
