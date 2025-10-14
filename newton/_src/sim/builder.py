@@ -631,8 +631,8 @@ class ModelBuilder:
 
         Joint attributes can have different frequencies based on prefixes:
         - No prefix: JOINT frequency with one value per joint
-        - 'dof_' prefix: JOINT_DOF frequency requiring list with length equal to joint DOF count
-        - 'coord_' prefix: JOINT_COORD frequency requiring list with length equal to joint coordinate count
+        - ``dof_`` prefix: JOINT_DOF frequency requiring list with length equal to joint DOF count
+        - ``coord_`` prefix: JOINT_COORD frequency requiring list with length equal to joint coordinate count
 
         For DOF and COORD attributes:
         - Values must always be provided as lists
@@ -1562,8 +1562,8 @@ class ModelBuilder:
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
-                Attribute names with 'dof_' prefix use JOINT_DOF frequency (requires list of values per DOF).
-                Attribute names with 'coord_' prefix use JOINT_COORD frequency (requires list of values per coordinate).
+                Attribute names with ``dof_`` prefix use JOINT_DOF frequency (requires list of values per DOF).
+                Attribute names with ``coord_`` prefix use JOINT_COORD frequency (requires list of values per coordinate).
                 Attribute names without prefix use JOINT frequency (single value per joint).
 
         Returns:
