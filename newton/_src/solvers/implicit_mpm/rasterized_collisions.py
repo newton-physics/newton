@@ -136,7 +136,6 @@ def collision_sdf(
             sdf_grad = wp.quat_rotate(b_rot, sdf_grad)
 
             # Assumes linear/angular velocities in world frame
-            # Should we make this configurable?
             b_v = wp.spatial_top(body_qd[body_id])
             b_w = wp.spatial_bottom(body_qd[body_id])
             sdf_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
