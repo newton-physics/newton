@@ -883,16 +883,19 @@ def _particle_parameter(
 def _merge_meshes(
     points: list[np.array],
     indices: list[np.array],
+    shape_ids: np.array,
 ):
     pt_count = np.array([len(pts) for pts in points])
     offsets = np.cumsum(pt_count) - pt_count
 
     merged_points = np.vstack([pts[:, :3] for pts in points])
     merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
+    vertex_shape_ids = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
 
     return (
         wp.array(merged_points, dtype=wp.vec3),
         wp.array(merged_indices, dtype=int),
+        wp.array(shape_ids[vertex_shape_ids], dtype=int),
     )
 
 
@@ -935,17 +938,43 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
     raise NotImplementedError(f"Shape type {geo_type} not supported")
 
 
+@wp.kernel
+def _apply_shape_transforms(
+    points: wp.array(dtype=wp.vec3), shape_ids: wp.array(dtype=int), shape_transforms: wp.array(dtype=wp.transform)
+):
+    v = wp.tid()
+    p = points[v]
+    shape_id = shape_ids[v]
+    shape_transform = shape_transforms[shape_id]
+    p = wp.transform_point(shape_transform, p)
+    points[v] = p
+
+
 def _create_body_collider_mesh(model: newton.Model, body_index: int):
     """Create a collider mesh from a body."""
 
-    shape_ids = model.body_shapes[body_index]
+    shape_ids = np.array(model.body_shapes[body_index])
 
     shape_scale = model.shape_scale.numpy()
     shape_type = model.shape_type.numpy()
 
     shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
 
-    collider_points, collider_indices = _merge_meshes(*zip(*shape_meshes, strict=True))
+    collider_points, collider_indices, vertex_shape_ids = _merge_meshes(
+        *zip(*shape_meshes, strict=True),
+        shape_ids=shape_ids,
+    )
+
+    wp.launch(
+        _apply_shape_transforms,
+        dim=collider_points.shape[0],
+        inputs=[
+            collider_points,
+            vertex_shape_ids,
+            model.shape_transform,
+        ],
+    )
+
     return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points))
 
 

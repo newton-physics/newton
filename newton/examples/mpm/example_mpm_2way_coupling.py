@@ -93,11 +93,6 @@ class Example:
 
         self.viewer = viewer
 
-        collider_meshes = []
-        collider_ids = []
-        collider_shape_ids = []
-        collider_body_id = []
-
         builder = newton.ModelBuilder()
 
         # add ground plane
@@ -125,8 +120,7 @@ class Example:
         z_index = 0
         z_separation = 0.6  # vertical spacing to avoid initial overlap
 
-        # generate a few shapes with varying types and sizes
-        # boxes
+        # generate a few boxes with varying sizes
         # boxes = [(0.45, 0.35, 0.25)]  # (hx, hy, hz)
         boxes = [
             (0.25, 0.35, 0.25),
@@ -136,6 +130,7 @@ class Example:
             (0.25, 0.25, 0.25),
             (0.3, 0.2, 0.2),
         ]  # (hx, hy, hz)
+        collider_body_id = []
         for box in boxes:
             (hx, hy, hz) = box
 
