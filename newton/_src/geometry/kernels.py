@@ -2049,8 +2049,6 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             # Check if this contact point is valid (primitive function returns wp.inf for invalid contacts)
             if distance >= 1.0e5:  # Use a reasonable threshold instead of exact wp.inf comparison
                 return
-            else:
-                wp.printf("Cylinder-plane collision: distance = %f\n", distance)
 
         elif geo_a.geo_type == GeoType.MESH and geo_b.geo_type == GeoType.BOX:
             p_a_world, p_b_world, normal, distance = mesh_box_collision(
@@ -2099,12 +2097,6 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
                     return
             index = counter_increment(contact_count, 0, contact_tids, tid)
             if index == -1:
-                wp.printf(
-                    "Reached contact point limit for shape pair %d and %d (pair_index: %d)\n",
-                    shape_a,
-                    shape_b,
-                    pair_index,
-                )
                 return
             contact_shape0[index] = shape_a
             contact_shape1[index] = shape_b
