@@ -35,30 +35,6 @@ from newton.examples.robot.example_robot_anymal_c_walk import compute_obs, lab_t
 from newton.solvers import SolverImplicitMPM
 
 
-@wp.kernel
-def update_collider_mesh(
-    src_points: wp.array(dtype=wp.vec3),
-    src_shape: wp.array(dtype=int),
-    res_mesh: wp.uint64,
-    shape_transforms: wp.array(dtype=wp.transform),
-    shape_body_id: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    dt: float,
-):
-    v = wp.tid()
-    res = wp.mesh_get(res_mesh)
-
-    shape_id = src_shape[v]
-    p = wp.transform_point(shape_transforms[shape_id], src_points[v])
-
-    X_wb = body_q[shape_body_id[shape_id]]
-
-    cur_p = res.points[v] + dt * res.velocities[v]
-    next_p = wp.transform_point(X_wb, p)
-    res.velocities[v] = (next_p - cur_p) / dt
-    res.points[v] = cur_p
-
-
 class Example:
     def __init__(
         self,
@@ -171,22 +147,14 @@ class Example:
 
         # Select and merge meshes for robot/sand collisions
         collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
-        collider_shape_ids = np.concatenate(
-            [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
+
+        mpm_model.setup_collider(
+            model=self.model,
+            collider_body_ids=collider_body_idx,
+            collider_friction=[0.5 for _ in collider_body_idx],
+            collider_adhesion=[0.0 for _ in collider_body_idx],
+            body_mass=wp.zeros_like(self.model.body_mass),  # so that the robot bodies are considered as kinematic
         )
-
-        collider_points, collider_indices, collider_v_shape_ids = _merge_meshes(
-            [self.model.shape_source[m].vertices for m in collider_shape_ids],
-            [self.model.shape_source[m].indices for m in collider_shape_ids],
-            [self.model.shape_scale.numpy()[m] for m in collider_shape_ids],
-            collider_shape_ids,
-        )
-
-        self.collider_mesh = wp.Mesh(wp.clone(collider_points), collider_indices, wp.zeros_like(collider_points))
-        self.collider_rest_points = collider_points
-        self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
-
-        mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0])
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
@@ -201,7 +169,6 @@ class Example:
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        self._update_collider_mesh(self.state_0)
 
         # Setup control policy
         self.control = self.model.control()
@@ -275,7 +242,6 @@ class Example:
 
     def simulate_sand(self):
         # sand step (in-place on frame dt)
-        self._update_collider_mesh(self.state_0)
         self.mpm_solver.step(self.state_0, self.state_0, contacts=None, control=None, dt=self.frame_dt)
 
     def step(self):
@@ -343,22 +309,6 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
-
-    def _update_collider_mesh(self, state):
-        wp.launch(
-            update_collider_mesh,
-            dim=self.collider_rest_points.shape[0],
-            inputs=[
-                self.collider_rest_points,
-                self.collider_shape_ids,
-                self.collider_mesh.id,
-                self.model.shape_transform,
-                self.model.shape_body,
-                state.body_q,
-                self.frame_dt,
-            ],
-        )
-        self.collider_mesh.refit()
 
 
 def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, density):
