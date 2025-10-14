@@ -492,8 +492,8 @@ class ModelBuilder:
         self,
         name: str,
         frequency: ModelAttributeFrequency,
+        dtype: Any,
         default=None,
-        dtype=None,
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ):
         """Define a custom per-entity attribute to be added to the Model.
@@ -501,19 +501,19 @@ class ModelBuilder:
         Args:
             name: Variable name to expose on the Model
             frequency: ModelAttributeFrequency enum value
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). Required.
             default: Default value for the attribute. If None, will use dtype-specific default
                 (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
-            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). If None, defaults to wp.float32
             assignment: ModelAttributeAssignment enum value determining where the attribute appears
         """
         if name in self.custom_attributes:
             # validate that specification matches exactly
             existing = self.custom_attributes[name]
-            # if caller did not pass dtype, treat as unspecified (i.e., must match existing)
-            target_dtype = dtype if dtype is not None else existing.dtype
-            if existing.frequency != frequency or existing.dtype != target_dtype or existing.assignment != assignment:
+            if existing.frequency != frequency or existing.dtype != dtype or existing.assignment != assignment:
                 raise ValueError(
-                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', dtype='{existing.dtype}', assignment='{existing.assignment}'. "
+                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', "
+                    f"dtype='{existing.dtype}', assignment='{existing.assignment}'. "
+                    f"Cannot redefine with frequency='{frequency}', dtype='{dtype}', assignment='{assignment}'."
                 )
             return
 
@@ -521,31 +521,105 @@ class ModelBuilder:
             assignment=assignment,
             frequency=frequency,
             name=name,
-            dtype=dtype if dtype is not None else wp.float32,
+            dtype=dtype,
             default=default,
         )
+
+    def _process_custom_attributes_dict(
+        self,
+        entity_index: int,
+        custom_attrs_dict: dict[ModelAttributeAssignment, dict[str, Any]],
+        expected_frequency: ModelAttributeFrequency,
+    ) -> None:
+        """Process custom attributes from a dictionary grouped by assignment.
+
+        Args:
+            entity_index: Index of the entity (body, shape, joint, etc.)
+            custom_attrs_dict: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            expected_frequency: Expected frequency for these attributes.
+        """
+        for assignment, attrs in custom_attrs_dict.items():
+            if not isinstance(assignment, ModelAttributeAssignment):
+                raise TypeError(
+                    f"Invalid assignment key type '{type(assignment).__name__}'. "
+                    f"Must use ModelAttributeAssignment enum (e.g., ModelAttributeAssignment.MODEL)"
+                )
+
+            self._process_custom_attributes(
+                entity_index=entity_index,
+                custom_attrs=attrs,
+                expected_frequency=expected_frequency,
+                assignment=assignment,
+            )
 
     def _process_custom_attributes(
         self,
         entity_index: int,
         custom_attrs: dict[str, Any],
+        expected_frequency: ModelAttributeFrequency,
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ) -> None:
         """Process custom attributes from kwargs and assign them to an entity.
+
+        This method validates that custom attributes exist with the correct frequency and assignment,
+        then assigns values to the specific entity.
 
         Args:
             entity_index: Index of the entity (body, shape, joint, etc.)
             custom_attrs: Dictionary of custom attribute names to values
+            expected_frequency: Expected frequency for these attributes
+            assignment: Expected assignment category for these attributes
         """
         for attr_name, value in custom_attrs.items():
             # Ensure the custom attribute is defined
             custom_attr = self.custom_attributes.get(attr_name)
             if custom_attr is None:
-                raise AttributeError(f"Custom attribute '{attr_name}' is not defined")
+                raise AttributeError(
+                    f"Custom attribute '{attr_name}' is not defined. "
+                    f"Please declare it first using add_custom_attribute()."
+                )
+
+            # Validate frequency matches
+            if custom_attr.frequency != expected_frequency:
+                raise ValueError(
+                    f"Custom attribute '{attr_name}' has frequency {custom_attr.frequency}, "
+                    f"but expected {expected_frequency} for this entity type"
+                )
+
+            # Validate assignment matches
+            if custom_attr.assignment != assignment:
+                raise ValueError(
+                    f"Custom attribute '{attr_name}' has assignment {custom_attr.assignment}, but expected {assignment}"
+                )
 
             # Set the value for this specific entity
             if custom_attr.values is None:
                 custom_attr.values = {}
             custom_attr.values[entity_index] = value
+
+    def _process_joint_custom_attributes_dict(
+        self,
+        joint_index: int,
+        custom_attrs_dict: dict[ModelAttributeAssignment, dict[str, Any]],
+    ) -> None:
+        """Process custom attributes from a dictionary grouped by assignment for joints.
+
+        Args:
+            joint_index: Index of the joint.
+            custom_attrs_dict: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+        """
+        for assignment, attrs in custom_attrs_dict.items():
+            if not isinstance(assignment, ModelAttributeAssignment):
+                raise TypeError(
+                    f"Invalid assignment key type '{type(assignment).__name__}'. "
+                    f"Must use ModelAttributeAssignment enum (e.g., ModelAttributeAssignment.MODEL)"
+                )
+
+            self._process_joint_custom_attributes(
+                joint_index=joint_index,
+                custom_attrs=attrs,
+                assignment=assignment,
+            )
 
     def _process_joint_custom_attributes(
         self,
@@ -593,6 +667,8 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=joint_index,
                 custom_attrs=joint_attrs,
+                expected_frequency=ModelAttributeFrequency.JOINT,
+                assignment=assignment,
             )
 
         # Process JOINT_DOF frequency attributes (one per DOF)
@@ -624,6 +700,8 @@ class ModelBuilder:
                     self._process_custom_attributes(
                         entity_index=dof_start + i,
                         custom_attrs=single_attr,
+                        expected_frequency=ModelAttributeFrequency.JOINT_DOF,
+                        assignment=assignment,
                     )
 
         # Process JOINT_COORD frequency attributes (one per coordinate)
@@ -655,6 +733,8 @@ class ModelBuilder:
                     self._process_custom_attributes(
                         entity_index=coord_start + i,
                         custom_attrs=single_attr,
+                        expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                        assignment=assignment,
                     )
 
     @property
@@ -1378,7 +1458,7 @@ class ModelBuilder:
         I_m: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """Adds a rigid body to the model.
 
@@ -1389,8 +1469,7 @@ class ModelBuilder:
             I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
-            **kwargs: Additional custom attributes to assign to this body. Each keyword argument
-                creates a custom attribute with BODY frequency applied to this specific body.
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
 
         Returns:
             The index of the body in the model.
@@ -1436,11 +1515,12 @@ class ModelBuilder:
         self.body_shapes[body_id] = []
         self.body_group.append(self.current_env_group)
 
-        # Process custom attributes from kwargs
-        if kwargs:
-            self._process_custom_attributes(
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes_dict(
                 entity_index=body_id,
-                custom_attrs=kwargs,
+                custom_attrs_dict=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.BODY,
             )
 
         return body_id
@@ -1459,7 +1539,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """
         Generic method to add any type of joint to this ModelBuilder.
@@ -1475,13 +1555,10 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            **kwargs: Additional custom attributes to assign to this joint. Supports different frequencies:
-                - No prefix: JOINT frequency with one scalar value applied to the joint
-                - 'dof_' prefix: JOINT_DOF frequency requiring a list of values, one per DOF
-                  List length must equal total DOF count determined by linear_axes plus angular_axes
-                  For vector types, provide a list of vector values
-                - 'coord_' prefix: JOINT_COORD frequency requiring a list of values, one per coordinate
-                  List length must equal joint coordinate count
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+                Attribute names with 'dof_' prefix use JOINT_DOF frequency (requires list of values per DOF).
+                Attribute names with 'coord_' prefix use JOINT_COORD frequency (requires list of values per coordinate).
+                Attribute names without prefix use JOINT frequency (single value per joint).
 
         Returns:
             The index of the added joint.
@@ -1576,10 +1653,11 @@ class ModelBuilder:
 
         joint_index = self.joint_count - 1
 
-        # Process custom attributes from kwargs
-        if kwargs:
-            self._process_joint_custom_attributes(
-                joint_index=joint_index, custom_attrs=kwargs, assignment=ModelAttributeAssignment.MODEL
+        # Process custom attributes
+        if custom_attributes:
+            self._process_joint_custom_attributes_dict(
+                joint_index=joint_index,
+                custom_attrs_dict=custom_attributes,
             )
 
         return joint_index
@@ -2607,7 +2685,7 @@ class ModelBuilder:
         src: SDF | Mesh | Any | None = None,
         is_static: bool = False,
         key: str | None = None,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """Adds a generic collision shape to the model.
 
@@ -2622,8 +2700,7 @@ class ModelBuilder:
             src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
-            **kwargs: Additional custom attributes to assign to this shape. Each keyword argument
-                creates a custom attribute with SHAPE frequency applied to this specific shape.
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
 
         Returns:
             int: The index of the newly added shape.
@@ -2671,11 +2748,12 @@ class ModelBuilder:
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
 
-        # Process custom attributes from kwargs
-        if kwargs:
-            self._process_custom_attributes(
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes_dict(
                 entity_index=shape,
-                custom_attrs=kwargs,
+                custom_attrs_dict=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.SHAPE,
             )
 
         return shape

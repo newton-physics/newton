@@ -1667,7 +1667,7 @@ def parse_usd(
     for variable, prim_map in custom_props.items():
         attr = prim_map.attribute
         builder.add_custom_attribute(
-            variable, attr.frequency, default=attr.default, dtype=attr.dtype, assignment=attr.assignment
+            variable, attr.frequency, attr.dtype, default=attr.default, assignment=attr.assignment
         )
         for pth, val in prim_map.occurrences.items():
             _assign_value(variable, attr.frequency, pth, val)
