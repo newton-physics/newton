@@ -1879,6 +1879,10 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
         spec.option.impratio = impratio
+        spec.option.tolerance = tolerance
+        spec.option.ls_tolerance = ls_tolerance
+        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
@@ -2378,18 +2382,7 @@ class SolverMuJoCo(SolverBase):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         self.mj_model = spec.compile()
-
         self.mj_data = mujoco.MjData(self.mj_model)
-
-        self.mj_model.opt.tolerance = tolerance
-        self.mj_model.opt.ls_tolerance = ls_tolerance
-        self.mj_model.opt.cone = cone
-        self.mj_model.opt.iterations = iterations
-        self.mj_model.opt.ls_iterations = ls_iterations
-        self.mj_model.opt.integrator = integrator
-        self.mj_model.opt.solver = solver
-        self.mj_model.opt.impratio = impratio
-        self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         self.update_mjc_data(self.mj_data, model, state)
 
@@ -2515,7 +2508,7 @@ class SolverMuJoCo(SolverBase):
         if nworld == 1:
             return
 
-        model_fields_to_expand = [
+        model_fields_to_expand = {
             # "qpos0",
             # "qpos_spring",
             "body_pos",
@@ -2588,7 +2581,7 @@ class SolverMuJoCo(SolverBase):
             # "tendon_length0",
             # "tendon_invweight0",
             # "mat_rgba",
-        ]
+        }
 
         def tile(x: wp.array):
             # Create new array with same shape but first dim multiplied by nworld

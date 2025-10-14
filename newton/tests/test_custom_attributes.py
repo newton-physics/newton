@@ -530,7 +530,6 @@ class TestCustomAttributes(unittest.TestCase):
             assignment=newton.ModelAttributeAssignment.STATE,
         )
 
-        # Try to use it in a MODEL context (which is what ModelAttributeAssignment.MODEL uses)
         # This should fail because the attribute expects STATE assignment but we're using MODEL
         with self.assertRaises(ValueError) as context:
             builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"state_attr": 3.0}})
