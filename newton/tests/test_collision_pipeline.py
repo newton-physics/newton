@@ -64,8 +64,8 @@ class CollisionSetup:
         self.add_shape(shape_type_a, body_a)
         self.builder.add_joint_free(body_a)
 
-        init_velocity = 5.0
-        self.builder.joint_qd[0] = self.builder.body_qd[-1][0] = init_velocity
+        self.init_velocity = 5.0
+        self.builder.joint_qd[0] = self.builder.body_qd[-1][0] = self.init_velocity
 
         self.builder.add_articulation()
         body_b = self.builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
@@ -146,7 +146,7 @@ class CollisionSetup:
                 self.model,
                 self.state_0,
                 f"{body_name} is moving forward",
-                lambda _q, qd: qd[0] > 0.03,
+                lambda _q, qd: qd[0] > 0.03 and qd[0] <= wp.static(self.init_velocity),
                 indices=[body],
                 show_body_qd=True,
             )
