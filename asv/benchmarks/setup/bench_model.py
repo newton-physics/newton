@@ -26,7 +26,7 @@ from newton.examples.example_mujoco import Example
 
 
 class KpiInitializeModel:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
+    params = (["humanoid", "g1", "cartpole"], [8192])
     param_names = ["robot", "num_envs"]
 
     rounds = 1
@@ -48,7 +48,7 @@ class KpiInitializeModel:
 
 
 class KpiInitializeSolver:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [4096, 8192])
+    params = (["humanoid", "g1", "cartpole", "ant"], [8192])
     param_names = ["robot", "num_envs"]
 
     rounds = 1
@@ -79,7 +79,7 @@ class KpiInitializeSolver:
 
 
 class FastInitializeModel:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
+    params = (["humanoid", "g1", "cartpole"], [256])
     param_names = ["robot", "num_envs"]
 
     rounds = 1
@@ -114,7 +114,7 @@ class FastInitializeModel:
 
 
 class FastInitializeSolver:
-    params = (["humanoid", "g1", "h1", "cartpole", "ant", "quadruped"], [128, 256])
+    params = (["humanoid", "g1", "cartpole"], [256])
     param_names = ["robot", "num_envs"]
 
     rounds = 1

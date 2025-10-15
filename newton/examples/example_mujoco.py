@@ -81,6 +81,13 @@ ROBOT_CONFIGS = {
         "nconmax": 50,
         "ls_parallel": True,
     },
+    "allegro": {
+        "solver": "newton",
+        "integrator": "euler",
+        "njmax": 60,
+        "nconmax": 35,
+        "ls_parallel": True,
+    },
     "kitchen": {
         "setup_builder": lambda x: _setup_kitchen(x),
         "njmax": 3800,
@@ -213,6 +220,28 @@ def _setup_quadruped(articulation_builder):
         enable_self_collisions=False,
     )
     root_dofs = 7
+
+    return root_dofs
+
+
+def _setup_allegro(articulation_builder):
+    asset_path = newton.utils.download_asset("wonik_allegro")
+    asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
+    articulation_builder.add_usd(
+        asset_file,
+        xform=wp.transform(wp.vec3(0, 0, 0.5)),
+        enable_self_collisions=True,
+        ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
+        load_non_physics_prims=True,
+    )
+
+    # set joint targets and joint drive gains
+    for i in range(len(articulation_builder.joint_dof_mode)):
+        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        articulation_builder.joint_target_ke[i] = 150
+        articulation_builder.joint_target_kd[i] = 5
+        articulation_builder.joint_target[i] = 0.0
+    root_dofs = 1
 
     return root_dofs
 
@@ -358,6 +387,8 @@ class Example:
             root_dofs = _setup_ant(articulation_builder)
         elif robot == "quadruped":
             root_dofs = _setup_quadruped(articulation_builder)
+        elif robot == "allegro":
+            root_dofs = _setup_allegro(articulation_builder)
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 

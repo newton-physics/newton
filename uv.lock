@@ -2333,17 +2333,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.10.0.dev20250915"
+version = "1.10.0.dev20251008"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20250915-py3-none-macosx_10_13_universal2.whl", hash = "sha256:460280a62c3824e834568f52e65248a906f3ab7e3f7d46315475ef4065c0310e" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20250915-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:a4642695733356e3d28410792d348f3c9239c3cdbc02b47ded7d1d5a15a5ff96" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20250915-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:66f3d42faa99b2368db592d887fd888485e39eb3fca4af2679e98ab48a6784f9" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20250915-py3-none-win_amd64.whl", hash = "sha256:d7baa544175f196af32a9becc8ddcff69fb4f3f4b38a64e6f007ac298413b446" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20251008-py3-none-macosx_10_13_universal2.whl", hash = "sha256:78c9cae1511c43bf8590f2fb865ccb630031835f37398e56a378c0384565f843" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20251008-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:8cb2ca873324166d3075995925497813ef628e772862981443efe5256dd75472" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20251008-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:b23cdae30583b73eb9a8a7d40260b41dab0147c63ce03cad345d6cced380fd20" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.10.0.dev20251008-py3-none-win_amd64.whl", hash = "sha256:26b7ead55ad0e54c89be8e6d7ba3446c06dca4a9ddb5706400a29ca36ffb161d" },
 ]
 
 [[package]]

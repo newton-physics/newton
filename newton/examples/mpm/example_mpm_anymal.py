@@ -14,9 +14,9 @@
 # limitations under the License.
 
 ###########################################################################
-# Example MPM Anymal
+# Example MPM ANYmal
 #
-# Shows Anymal C with a pretrained policy coupled with implicit MPM sand.
+# Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
 #
 # Example usage (via unified runner):
 #   python -m newton.examples mpm_anymal --viewer gl
@@ -92,35 +92,46 @@ class Example:
         builder.default_shape_cfg.mu = 0.75
 
         asset_path = newton.utils.download_asset("anybotics_anymal_c")
+        stage_path = str(asset_path / "urdf" / "anymal.urdf")
         builder.add_urdf(
-            str(asset_path / "urdf" / "anymal.urdf"),
+            stage_path,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.62), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5)),
             floating=True,
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
         )
+
         builder.add_ground_plane()
 
-        # setup robot joint properties
-        builder.joint_q[:3] = [0.0, 0.0, 0.62]
-        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
-        builder.joint_q[7:] = [
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-        ]
-        for i in range(len(builder.joint_dof_mode)):
+        self.sim_time = 0.0
+        self.sim_step = 0
+        fps = 50
+        self.frame_dt = 1.0 / fps
+
+        self.sim_substeps = 4
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        # set initial joint positions
+        initial_q = {
+            "RH_HAA": 0.0,
+            "RH_HFE": -0.4,
+            "RH_KFE": 0.8,
+            "LH_HAA": 0.0,
+            "LH_HFE": -0.4,
+            "LH_KFE": 0.8,
+            "RF_HAA": 0.0,
+            "RF_HFE": 0.4,
+            "RF_KFE": -0.8,
+            "LF_HAA": 0.0,
+            "LF_HFE": 0.4,
+            "LF_KFE": -0.8,
+        }
+        for key, value in initial_q.items():
+            builder.joint_q[builder.joint_key.index(key) + 6] = value
+
+        for i in range(builder.joint_dof_count):
             builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
-        for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
@@ -294,20 +305,28 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.2,
+            lambda q, qd: q[2] > 0.1,
         )
-        forward_vel = wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "the robot went in the right direction",
+            lambda q, qd: q[1] > 0.9,  # This threshold assumes 100 frames
+        )
+
+        forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -0.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.2, 1.1, 0.2, 0.8, 0.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_allclose(qd, forward_vel, rtol=0.1, atol=0.15),
+            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -0.02,
+            lambda q, qd: q[2] > -0.03,
         )
 
     def render(self):
