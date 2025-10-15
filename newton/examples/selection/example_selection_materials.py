@@ -89,7 +89,7 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        scene.replicate(env, num_copies=self.num_envs)
 
         # finalize model
         self.model = scene.finalize()
@@ -147,6 +147,7 @@ class Example:
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
         self.viewer.set_model(self.model)
+        self.viewer.set_env_offsets(self.num_envs, spacing=(4.0, 4.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)

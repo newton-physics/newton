@@ -111,7 +111,7 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        scene.replicate(env, num_copies=self.num_envs)
 
         # finalize model
         self.model = scene.finalize()
@@ -188,6 +188,7 @@ class Example:
             wp.launch(init_masks, dim=num_envs, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
+        self.viewer.set_env_offsets(self.num_envs, spacing=(4.0, 4.0, 0.0))
 
         # reset all
         self.reset()

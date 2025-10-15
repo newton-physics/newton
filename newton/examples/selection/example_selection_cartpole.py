@@ -73,7 +73,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(2.0, 0.0, 0.0))
+        scene.replicate(env, num_copies=self.num_envs)
 
         # finalize model
         self.model = scene.finalize()
@@ -111,6 +111,7 @@ class Example:
             self.cartpoles.eval_fk(self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_env_offsets(self.num_envs, spacing=(2.0, 0.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(

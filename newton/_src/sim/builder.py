@@ -619,7 +619,7 @@ class ModelBuilder:
         self,
         builder: ModelBuilder,
         num_copies: int,
-        spacing: tuple[float, float, float] = (5.0, 5.0, 0.0),
+        spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -628,12 +628,17 @@ class ModelBuilder:
         arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
         specified spacing vector, and all entities from each copy are assigned to a new environment group.
 
+        Note:
+            For visual separation of environments, it is recommended to use the viewer's
+            `set_env_offsets()` method instead of physical spacing. This improves numerical
+            stability by keeping all environments at the origin in the physics simulation.
+
         Args:
             builder (ModelBuilder): The builder to replicate. All entities from this builder will be copied.
             num_copies (int): The number of copies to create.
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
-                Defaults to (5.0, 5.0, 0.0).
+                Defaults to (0.0, 0.0, 0.0).
         """
         offsets = self._compute_replicate_offsets(num_copies, spacing)
         xform = wp.transform_identity()

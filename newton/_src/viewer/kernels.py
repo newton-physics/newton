@@ -204,6 +204,8 @@ def update_shape_xforms(
     shape_xforms: wp.array(dtype=wp.transform),
     shape_parents: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
+    shape_groups: wp.array(dtype=int, ndim=1),
+    env_offsets: wp.array(dtype=wp.vec3, ndim=1),
     world_xforms: wp.array(dtype=wp.transform),
 ):
     tid = wp.tid()
@@ -215,6 +217,12 @@ def update_shape_xforms(
         world_xform = wp.transform_multiply(body_q[shape_parent], shape_xform)
     else:
         world_xform = shape_xform
+
+    if env_offsets and shape_groups:
+        shape_group = shape_groups[tid]
+        if shape_group >= 0 and shape_group < env_offsets.shape[0]:
+            offset = env_offsets[shape_group]
+            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
 
     world_xforms[tid] = world_xform
 
