@@ -243,7 +243,7 @@ class _SwizzleBenchmark:
             for _ in range(self.num_frames):
                 self.step()
 
-            swizzle_overhead = 100.0 * self.overhead_time / (self.overhead_time + self.step_time)
+        swizzle_overhead = 100.0 * self.overhead_time / (self.overhead_time + self.step_time)
 
         return swizzle_overhead
 
