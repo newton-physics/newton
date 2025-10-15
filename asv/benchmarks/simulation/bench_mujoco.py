@@ -207,6 +207,26 @@ class KpiAllegro(_KpiBenchmark):
     env="None"
 
 
+class FastKitchenG1(_FastBenchmark):
+    num_frames = 25
+    robot = "g1"
+    repeat = 2
+    num_envs = 32
+    random_init = True
+    env="kitchen"
+
+
+class KpiKitchenG1(_KpiBenchmark):
+    params = [512]
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+    env="kitchen"
+
+
 if __name__ == "__main__":
     import argparse
 
