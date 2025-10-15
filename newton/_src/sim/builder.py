@@ -676,6 +676,8 @@ class ModelBuilder:
         ignore_inertial_definitions: bool = True,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
+        joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
+        bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
     ):
@@ -696,6 +698,8 @@ class ModelBuilder:
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
             ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
             static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
+            joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
+            bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
@@ -716,6 +720,8 @@ class ModelBuilder:
             ignore_inertial_definitions,
             ensure_nonstatic_links,
             static_link_mass,
+            joint_ordering,
+            bodies_follow_joint_ordering,
             collapse_fixed_joints,
             mesh_maxhullvert,
         )

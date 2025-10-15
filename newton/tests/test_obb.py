@@ -225,8 +225,8 @@ class TestOBB(unittest.TestCase):
         vertices = np.array(vertices, dtype=np.float32)
 
         # Both methods should work, though they may produce different results
-        tf_pca, extents_pca = compute_pca_obb(vertices)
-        tf_inertia, extents_inertia = compute_inertia_obb(vertices)
+        _tf_pca, extents_pca = compute_pca_obb(vertices)
+        _tf_inertia, extents_inertia = compute_inertia_obb(vertices)
 
         # Convert to numpy arrays
         extents_pca_np = np.array(extents_pca)
