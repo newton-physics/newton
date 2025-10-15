@@ -14,8 +14,9 @@
 # limitations under the License.
 
 
-import warp as wp
 import time
+
+import warp as wp
 
 wp.config.enable_backward = False
 wp.config.quiet = True
@@ -127,6 +128,7 @@ class _KpiBenchmark:
 
     track_simulate.unit = "ms/env-step"
 
+
 class _SwizzleBenchmark:
     """Utility base class for measuring swizzling overhead."""
 
@@ -136,7 +138,6 @@ class _SwizzleBenchmark:
     robot = None
     samples = None
     ls_iteration = None
-
 
     def setup(self, num_envs):
         if not hasattr(self, "builder") or self.builder is None:
@@ -162,8 +163,13 @@ class _SwizzleBenchmark:
             # Capture the pre-step graph
             with wp.ScopedCapture() as capture:
                 example.state_0.clear_forces()
-                example.solver.apply_mjc_control(example.model, example.state_0, example.control, example.solver.mjw_data)
-                if example.solver.update_data_interval > 0 and example.solver._step % example.solver.update_data_interval == 0:
+                example.solver.apply_mjc_control(
+                    example.model, example.state_0, example.control, example.solver.mjw_data
+                )
+                if (
+                    example.solver.update_data_interval > 0
+                    and example.solver._step % example.solver.update_data_interval == 0
+                ):
                     example.solver.update_mjc_data(example.solver.mjw_data, example.model, example.state_0)
                 example.solver.mjw_model.opt.timestep.fill_(example.sim_dt)
             self.graph_prestep = capture.graph
@@ -179,7 +185,6 @@ class _SwizzleBenchmark:
                 example.solver._step += 1
                 example.state_0, example.state_1 = example.state_1, example.state_0
             self.graph_poststep = capture.graph
-
 
     def step(self):
         # Reimplement the step function to be able to graph the mujoco_warp step function
@@ -216,7 +221,6 @@ class _SwizzleBenchmark:
             wp.synchronize_device()
             end_time = time.time()
             self.overhead_time += end_time - start_time
-
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
