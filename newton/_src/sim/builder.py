@@ -685,7 +685,7 @@ class ModelBuilder:
             for attr_name, value in dof_attrs.items():
                 # DOF attributes must always be lists
                 if not isinstance(value, (list, tuple)):
-                    raise ValueError(
+                    raise TypeError(
                         f"DOF attribute '{attr_name}' must be a list with length equal to joint DOF count ({dof_count})"
                     )
 
@@ -718,7 +718,7 @@ class ModelBuilder:
             for attr_name, value in coord_attrs.items():
                 # COORD attributes must always be lists
                 if not isinstance(value, (list, tuple)):
-                    raise ValueError(
+                    raise TypeError(
                         f"COORD attribute '{attr_name}' must be a list with length equal to joint coordinate count ({coord_count})"
                     )
 
@@ -1061,6 +1061,16 @@ class ModelBuilder:
                   - Dictionary of all attributes applied to the PhysicsScene prim
                 * - "collapse_results"
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
+                * - "physics_dt"
+                  - The resolved physics scene time step (float or None)
+                * - "solver_specific_attrs"
+                  - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+                * - "max_solver_iterations"
+                  - The resolved maximum solver iterations (int or None)
+                * - "path_body_relative_transform"
+                  - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
+                * - "path_original_body_map"
+                  - Mapping from prim path to original body index before `collapse_fixed_joints`
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
@@ -2887,7 +2897,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """Adds a sphere collision shape to a body.
 
@@ -2897,6 +2907,7 @@ class ModelBuilder:
             radius (float): The radius of the sphere. Defaults to `1.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
 
         Returns:
             int: The index of the newly added shape.
@@ -2905,7 +2916,15 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale: Any = wp.vec3(radius, 0.0, 0.0)
-        return self.add_shape(body=body, type=GeoType.SPHERE, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
+        return self.add_shape(
+            body=body,
+            type=GeoType.SPHERE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
 
     def add_shape_box(
         self,
@@ -2916,7 +2935,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """Adds a box collision shape to a body.
 
@@ -2930,8 +2949,7 @@ class ModelBuilder:
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            **kwargs: Additional custom attributes to assign to this shape. Each keyword argument
-                creates a custom attribute with SHAPE frequency applied to this specific shape.
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
 
         Returns:
             int: The index of the newly added shape.
@@ -2940,7 +2958,9 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale = wp.vec3(hx, hy, hz)
-        return self.add_shape(body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
+        return self.add_shape(
+            body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, custom_attributes=custom_attributes
+        )
 
     def add_shape_capsule(
         self,
@@ -2950,7 +2970,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        **kwargs,
+        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
@@ -2963,6 +2983,7 @@ class ModelBuilder:
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
 
         Returns:
             int: The index of the newly added shape.
@@ -2976,7 +2997,15 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
-        return self.add_shape(body=body, type=GeoType.CAPSULE, xform=xform, cfg=cfg, scale=scale, key=key, **kwargs)
+        return self.add_shape(
+            body=body,
+            type=GeoType.CAPSULE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
 
     def add_shape_cylinder(
         self,
@@ -4782,8 +4811,7 @@ class ModelBuilder:
                     continue
 
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                if not hasattr(m, var_name):
-                    m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
+                m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
 
             return m
 

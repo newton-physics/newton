@@ -200,10 +200,9 @@ After authoring custom attributes in USD, they can be imported and accessed as s
 .. code-block:: python
 
    from newton import ModelBuilder
-   from newton._src.utils.import_usd import parse_usd
    
    builder = ModelBuilder()
-   parse_usd(builder, source="robot_arm.usda")
+   builder.add_usd("robot_arm.usda")
    
    model = builder.finalize()
    state = model.state()

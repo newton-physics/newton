@@ -401,9 +401,9 @@ class TestCustomAttributes(unittest.TestCase):
         robot_entities = self._add_test_robot(builder)
         cfg = newton.ModelBuilder.JointDofConfig
 
-        # Test DOF attribute must be a list
+        # Test DOF attribute must be a list (type error)
         body1 = builder.add_body(mass=1.0)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             builder.add_joint_revolute(
                 parent=robot_entities["link2"],
                 child=body1,
@@ -411,7 +411,7 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={ModelAttributeAssignment.MODEL: {"dof_custom_float": 0.1}},
             )
 
-        # Test wrong DOF list length
+        # Test wrong DOF list length (value error)
         body2 = builder.add_body(mass=1.0)
         with self.assertRaises(ValueError):
             builder.add_joint_d6(
@@ -424,9 +424,9 @@ class TestCustomAttributes(unittest.TestCase):
                 },  # 2 values for 3-DOF joint
             )
 
-        # Test coordinate attribute must be a list
+        # Test coordinate attribute must be a list (type error)
         body3 = builder.add_body(mass=1.0)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             builder.add_joint_revolute(
                 parent=robot_entities["link2"],
                 child=body3,

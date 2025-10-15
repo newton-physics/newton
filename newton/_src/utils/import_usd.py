@@ -124,6 +124,16 @@ def parse_usd(
               - Dictionary of all attributes applied to the PhysicsScene prim
             * - "collapse_results"
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
+            * - "physics_dt"
+              - The resolved physics scene time step (float or None)
+            * - "solver_specific_attrs"
+              - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+            * - "max_solver_iterations"
+              - The resolved maximum solver iterations (int or None)
+            * - "path_body_relative_transform"
+              - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
+            * - "path_original_body_map"
+              - Mapping from prim path to original body index before `collapse_fixed_joints`
     """
     # default schema resolvers (avoid mutable default argument)
     if schema_resolvers is None:

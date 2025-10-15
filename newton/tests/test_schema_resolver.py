@@ -66,7 +66,7 @@ if USD_AVAILABLE:
         from pxr import Usd as _Usd
 
         Usd: Any = _Usd
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         Usd = None  # type: ignore[assignment]
 else:
     Usd = None  # type: ignore[assignment]
