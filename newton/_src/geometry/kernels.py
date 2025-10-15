@@ -866,15 +866,15 @@ def count_contact_points_for_pair(
         if type_b == GeoType.CYLINDER:
             # infinite plane: support max primitive contacts (2 caps + 2 side) = 4
             return 4, 0
-        if type_b == GeoType.MESH:
-            mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
-            return mesh_b.points.shape[0], 0
         if type_b == GeoType.BOX:
             # elif actual_type_b == GeoType.PLANE:
             if scale_a[0] == 0.0 and scale_a[1] == 0.0:
                 return 8, 0  # vertex-based collision
             else:
                 return 8 + 4, 0  # vertex-based collision + plane edges
+        if type_b == GeoType.MESH:
+            mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
+            return mesh_b.points.shape[0], 0
 
     # SPHERE against all other types (always 1 contact)
     elif type_a == GeoType.SPHERE:
