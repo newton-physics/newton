@@ -40,7 +40,7 @@ When working with USD assets authored for other physics solvers like PhysX or Mu
 Example: Consider the physics time step parameter:
 
 * Newton uses ``newton:timeStep`` (direct time step value in seconds)
-* PhysX uses ``physxScene:timeStepsPerSecond`` (frequency, requiring inversion to get the time step)  
+* PhysX uses ``physxScene:timeStepsPerSecond`` (frequency, requiring inversion to get the time step)
 * MuJoCo uses ``mjc:option:timestep`` (direct time step value in seconds)
 
 Newton can use the time step value from any of these sources and convert it to the internal representation via the schema resolver system.
@@ -66,7 +66,6 @@ Example USD with PhysX Attributes that are remapped to Newton's internal represe
    ) {
        # PhysX joint attributes remapped to Newton
        float physxJoint:armature = 0.1  # → armature = 0.1
-       
        # PhysX limit attributes (applied via PhysxLimitAPI:angular)
        float physxLimit:angular:stiffness = 1000.0  # → limit_angular_ke = 1000.0
        float physxLimit:angular:damping = 10.0  # → limit_angular_kd = 10.0

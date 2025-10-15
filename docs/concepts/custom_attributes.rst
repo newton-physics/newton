@@ -256,8 +256,8 @@ Use Cases
 Custom attributes enable a wide range of simulation extensions. 
 They can store per-body thermal properties, shape material composition that affect simulation behaviors. 
 For hardware-in-the-loop simulation, custom attributes can tag bodies and joints with sensor IDs, actuator types, or hardware specifications. 
-Custom controllers can store more advance control parameters such as gains, velocity limits, or control modes per-joint. 
+Custom controllers can store more advanced control parameters such as gains, velocity limits, or control modes per-joint. 
 Visualization pipelines can attach colors, labels, or rendering properties to simulation entities. 
-For multi-physics coupling, custom attributes can store quantities such as surface stress for fluid simulations that interact with rigid bodeis. 
-In reinforcement learning applications, observation buffers, reward weights, or optimization parameters can be stored directly on simulation entities which will simplify the idexing and access of these data on the learning side.
+For multi-physics coupling, custom attributes can store quantities such as surface stress for fluid simulations that interact with rigid bodies. 
+In reinforcement learning applications, observation buffers, reward weights, or optimization parameters can be stored directly on simulation entities which will simplify the indexing and access of these data on the learning side.
 

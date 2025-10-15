@@ -684,7 +684,7 @@ class ModelBuilder:
 
             for attr_name, value in dof_attrs.items():
                 # DOF attributes must always be lists
-                if not isinstance(value, list | tuple):
+                if not isinstance(value, (list, tuple)):
                     raise ValueError(
                         f"DOF attribute '{attr_name}' must be a list with length equal to joint DOF count ({dof_count})"
                     )
@@ -717,7 +717,7 @@ class ModelBuilder:
 
             for attr_name, value in coord_attrs.items():
                 # COORD attributes must always be lists
-                if not isinstance(value, list | tuple):
+                if not isinstance(value, (list, tuple)):
                     raise ValueError(
                         f"COORD attribute '{attr_name}' must be a list with length equal to joint coordinate count ({coord_count})"
                     )
@@ -1250,6 +1250,12 @@ class ModelBuilder:
             return out
 
         start_particle_idx = self.particle_count
+        start_body_idx = self.body_count
+        start_shape_idx = self.shape_count
+        start_joint_idx = self.joint_count
+        start_joint_dof_idx = self.joint_dof_count
+        start_joint_coord_idx = self.joint_coord_count
+
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
             if xform is not None:
@@ -1442,6 +1448,41 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
+
+        # Merge custom attributes from the sub-builder
+        if builder.custom_attributes:
+            for name, attr in builder.custom_attributes.items():
+                # Declare the attribute if it doesn't exist in the main builder
+                self.add_custom_attribute(
+                    name=name,
+                    frequency=attr.frequency,
+                    dtype=attr.dtype,
+                    default=attr.default,
+                    assignment=attr.assignment,
+                )
+                merged = self.custom_attributes[name]
+                if not attr.values:
+                    continue
+
+                # Determine the offset based on frequency
+                if attr.frequency == ModelAttributeFrequency.BODY:
+                    offset = start_body_idx
+                elif attr.frequency == ModelAttributeFrequency.SHAPE:
+                    offset = start_shape_idx
+                elif attr.frequency == ModelAttributeFrequency.JOINT:
+                    offset = start_joint_idx
+                elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
+                    offset = start_joint_dof_idx
+                elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
+                    offset = start_joint_coord_idx
+                else:
+                    continue
+
+                # Remap indices and copy values
+                if merged.values is None:
+                    merged.values = {}
+                for idx, value in attr.values.items():
+                    merged.values[offset + idx] = value
 
         if update_num_env_count:
             # Globals do not contribute to the environment count

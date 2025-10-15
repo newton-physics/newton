@@ -1565,6 +1565,9 @@ def parse_usd(
             path_body_map[path] = new_id
         merged_body_data = collapse_results["merged_body_data"]
 
+        # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
+        path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
+
     path_original_body_map = path_body_map.copy()
     if cloned_env is not None:
         with wp.ScopedTimer("replicating envs"):

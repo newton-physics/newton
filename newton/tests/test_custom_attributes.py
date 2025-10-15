@@ -595,6 +595,130 @@ class TestCustomAttributes(unittest.TestCase):
         np.testing.assert_array_almost_equal(vec3_val[body], [1.0, 2.0, 3.0], decimal=5)
         self.assertEqual(int_val[body], 7)
 
+    def test_custom_attributes_with_multi_builders(self):
+        """Test that custom attributes are preserved when using add_builder()."""
+        # Create a sub-builder with custom attributes
+        sub_builder = newton.ModelBuilder()
+
+        # Declare attributes with different frequencies and assignments
+        sub_builder.add_custom_attribute(
+            "robot_id", newton.ModelAttributeFrequency.BODY, dtype=wp.int32, assignment=ModelAttributeAssignment.MODEL
+        )
+        sub_builder.add_custom_attribute(
+            "temperature",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.STATE,
+        )
+        sub_builder.add_custom_attribute(
+            "shape_color",
+            newton.ModelAttributeFrequency.SHAPE,
+            dtype=wp.vec3,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        sub_builder.add_custom_attribute(
+            "dof_gain",
+            newton.ModelAttributeFrequency.JOINT_DOF,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.CONTROL,
+        )
+
+        # Create a simple robot in sub-builder
+        body1 = sub_builder.add_body(
+            mass=1.0,
+            custom_attributes={
+                ModelAttributeAssignment.MODEL: {"robot_id": 100},
+                ModelAttributeAssignment.STATE: {"temperature": 37.5},
+            },
+        )
+        sub_builder.add_shape_sphere(
+            body1, radius=0.1, custom_attributes={ModelAttributeAssignment.MODEL: {"shape_color": [1.0, 0.0, 0.0]}}
+        )
+
+        body2 = sub_builder.add_body(
+            mass=0.5,
+            custom_attributes={
+                ModelAttributeAssignment.MODEL: {"robot_id": 200},
+                ModelAttributeAssignment.STATE: {"temperature": 38.0},
+            },
+        )
+        sub_builder.add_shape_box(
+            body2,
+            hx=0.05,
+            hy=0.05,
+            hz=0.05,
+            custom_attributes={ModelAttributeAssignment.MODEL: {"shape_color": [0.0, 1.0, 0.0]}},
+        )
+
+        sub_builder.add_joint_revolute(
+            parent=body1,
+            child=body2,
+            axis=[0, 0, 1],
+            custom_attributes={ModelAttributeAssignment.CONTROL: {"dof_gain": [1.5]}},
+        )
+
+        # Create main builder and add sub-builder multiple times
+        main_builder = newton.ModelBuilder()
+
+        # Add first instance
+        main_builder.add_builder(sub_builder, environment=0)
+        # Add second instance
+        main_builder.add_builder(sub_builder, environment=1)
+
+        # Verify custom attributes were merged
+        self.assertIn("robot_id", main_builder.custom_attributes)
+        self.assertIn("temperature", main_builder.custom_attributes)
+        self.assertIn("shape_color", main_builder.custom_attributes)
+        self.assertIn("dof_gain", main_builder.custom_attributes)
+
+        # Verify frequencies and assignments
+        self.assertEqual(main_builder.custom_attributes["robot_id"].frequency, newton.ModelAttributeFrequency.BODY)
+        self.assertEqual(main_builder.custom_attributes["robot_id"].assignment, ModelAttributeAssignment.MODEL)
+        self.assertEqual(main_builder.custom_attributes["temperature"].assignment, ModelAttributeAssignment.STATE)
+        self.assertEqual(main_builder.custom_attributes["shape_color"].frequency, newton.ModelAttributeFrequency.SHAPE)
+        self.assertEqual(main_builder.custom_attributes["dof_gain"].frequency, newton.ModelAttributeFrequency.JOINT_DOF)
+
+        # Build model and verify values
+        model = main_builder.finalize(device=self.device)
+        state = model.state()
+        control = model.control()
+
+        # Verify BODY attributes (2 bodies per instance, 2 instances = 4 bodies total)
+        robot_ids = model.robot_id.numpy()
+        temperatures = state.temperature.numpy()
+
+        # First instance (bodies 0, 1)
+        self.assertEqual(robot_ids[0], 100)
+        self.assertEqual(robot_ids[1], 200)
+        self.assertAlmostEqual(temperatures[0], 37.5, places=5)
+        self.assertAlmostEqual(temperatures[1], 38.0, places=5)
+
+        # Second instance (bodies 2, 3)
+        self.assertEqual(robot_ids[2], 100)
+        self.assertEqual(robot_ids[3], 200)
+        self.assertAlmostEqual(temperatures[2], 37.5, places=5)
+        self.assertAlmostEqual(temperatures[3], 38.0, places=5)
+
+        # Verify SHAPE attributes (2 shapes per instance, 2 instances = 4 shapes total)
+        shape_colors = model.shape_color.numpy()
+
+        # First instance (shapes 0, 1)
+        np.testing.assert_array_almost_equal(shape_colors[0], [1.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 1.0, 0.0], decimal=5)
+
+        # Second instance (shapes 2, 3)
+        np.testing.assert_array_almost_equal(shape_colors[2], [1.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[3], [0.0, 1.0, 0.0], decimal=5)
+
+        # Verify JOINT_DOF attributes (1 DOF per instance, 2 instances = 2 DOFs total)
+        dof_gains = control.dof_gain.numpy()
+
+        # First instance (DOF 0)
+        self.assertAlmostEqual(dof_gains[0], 1.5, places=5)
+
+        # Second instance (DOF 1)
+        self.assertAlmostEqual(dof_gains[1], 1.5, places=5)
+
 
 def run_tests():
     """Run all custom attributes tests."""
