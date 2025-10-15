@@ -136,8 +136,6 @@ class _SwizzleBenchmark:
     robot = None
     samples = None
     ls_iteration = None
-    overhead_time = 0.0
-    step_time = 0.0
 
 
     def setup(self, num_envs):
@@ -153,8 +151,7 @@ class _SwizzleBenchmark:
         # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
         cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         if not cuda_graph_comp:
-            print("Cannot use graph capture. Graph capture is disabled.")
-            raise RuntimeError
+            SkipNotImplemented("Graph capture requires CUDA with mempool enabled")
         else:
             # Capture the control graph
             with wp.ScopedCapture() as capture:
@@ -223,6 +220,8 @@ class _SwizzleBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
+        self.overhead_time = 0.0
+        self.step_time = 0.0
         for _iter in range(self.samples):
             example = Example(
                 stage_path=None,
@@ -245,14 +244,6 @@ class _SwizzleBenchmark:
         return swizzle_overhead
 
 
-class SwizzleAnt(_SwizzleBenchmark):
-    params = [256]
-    num_frames = 100
-    robot = "ant"
-    samples = 4
-    ls_iteration = 10
-
-
 class FastCartpole(_FastBenchmark):
     num_frames = 50
     robot = "cartpole"
@@ -262,7 +253,7 @@ class FastCartpole(_FastBenchmark):
 
 
 class KpiCartpole(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 50
     robot = "cartpole"
     samples = 4
@@ -279,7 +270,17 @@ class FastG1(_FastBenchmark):
 
 
 class KpiG1(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+
+
+class KpiSwizzleG1(_SwizzleBenchmark):
+    params = [[8192]]
     num_frames = 50
     robot = "g1"
     timeout = 900
@@ -297,7 +298,16 @@ class FastHumanoid(_FastBenchmark):
 
 
 class KpiHumanoid(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
+    num_frames = 100
+    robot = "humanoid"
+    samples = 4
+    ls_iteration = 15
+    random_init = True
+
+
+class KpiSwizzleHumanoid(_SwizzleBenchmark):
+    params = [[8192]]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -314,7 +324,7 @@ class FastAllegro(_FastBenchmark):
 
 
 class KpiAllegro(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 300
     robot = "allegro"
     samples = 2
@@ -336,7 +346,8 @@ if __name__ == "__main__":
         "KpiG1": KpiG1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
-        "SwizzleAnt": SwizzleAnt,
+        "KpiSwizzleG1": KpiSwizzleG1,
+        "KpiSwizzleHumanoid": KpiSwizzleHumanoid,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
