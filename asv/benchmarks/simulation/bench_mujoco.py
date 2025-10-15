@@ -33,6 +33,7 @@ def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
 
 class _FastBenchmark:
     """Utility base class for fast benchmarks."""
+
     num_frames = None
     robot = None
     number = 1
@@ -40,7 +41,7 @@ class _FastBenchmark:
     repeat = None
     num_envs = None
     random_init = None
-    env="None"
+    env = "None"
 
     def setup(self):
         if not hasattr(self, "builder") or self.builder is None:
@@ -94,7 +95,7 @@ class _KpiBenchmark:
     samples = None
     ls_iteration = None
     random_init = None
-    env="None"
+    env = "None"
 
     def setup(self, num_envs):
         if not hasattr(self, "builder") or self.builder is None:
@@ -136,7 +137,7 @@ class FastCartpole(_FastBenchmark):
     repeat = 8
     num_envs = 256
     random_init = True
-    env="None"
+    env = "None"
 
 
 class KpiCartpole(_KpiBenchmark):
@@ -146,7 +147,7 @@ class KpiCartpole(_KpiBenchmark):
     samples = 4
     ls_iteration = 3
     random_init = True
-    env="None"
+    env = "None"
 
 
 class FastG1(_FastBenchmark):
@@ -155,7 +156,7 @@ class FastG1(_FastBenchmark):
     repeat = 2
     num_envs = 256
     random_init = True
-    env="None"
+    env = "None"
 
 
 class KpiG1(_KpiBenchmark):
@@ -166,7 +167,7 @@ class KpiG1(_KpiBenchmark):
     samples = 2
     ls_iteration = 10
     random_init = True
-    env="None"
+    env = "None"
 
 
 class FastHumanoid(_FastBenchmark):
@@ -175,7 +176,7 @@ class FastHumanoid(_FastBenchmark):
     repeat = 8
     num_envs = 256
     random_init = True
-    env="None"
+    env = "None"
 
 
 class KpiHumanoid(_KpiBenchmark):
@@ -185,7 +186,7 @@ class KpiHumanoid(_KpiBenchmark):
     samples = 4
     ls_iteration = 15
     random_init = True
-    env="None"
+    env = "None"
 
 
 class FastAllegro(_FastBenchmark):
@@ -194,7 +195,7 @@ class FastAllegro(_FastBenchmark):
     repeat = 2
     num_envs = 256
     random_init = False
-    env="None"
+    env = "None"
 
 
 class KpiAllegro(_KpiBenchmark):
@@ -204,7 +205,7 @@ class KpiAllegro(_KpiBenchmark):
     samples = 2
     ls_iteration = 10
     random_init = False
-    env="None"
+    env = "None"
 
 
 class FastKitchenG1(_FastBenchmark):
@@ -213,7 +214,7 @@ class FastKitchenG1(_FastBenchmark):
     repeat = 2
     num_envs = 32
     random_init = True
-    env="kitchen"
+    env = "kitchen"
 
 
 class KpiKitchenG1(_KpiBenchmark):
@@ -224,7 +225,7 @@ class KpiKitchenG1(_KpiBenchmark):
     samples = 2
     ls_iteration = 10
     random_init = True
-    env="kitchen"
+    env = "kitchen"
 
 
 if __name__ == "__main__":
