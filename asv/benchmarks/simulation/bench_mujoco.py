@@ -238,10 +238,12 @@ if __name__ == "__main__":
         "FastG1": FastG1,
         "FastHumanoid": FastHumanoid,
         "FastAllegro": FastAllegro,
+        "FastKitchenG1": FastKitchenG1,
         "KpiCartpole": KpiCartpole,
         "KpiG1": KpiG1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
+        "KpiKitchenG1": KpiKitchenG1,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
