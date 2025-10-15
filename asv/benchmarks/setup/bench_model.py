@@ -25,6 +25,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 from newton.examples.example_mujoco import Example
 from newton.viewer import ViewerGL
 
+
 class KpiInitializeModel:
     params = (["humanoid", "g1", "cartpole"], [8192])
     param_names = ["robot", "num_envs"]
