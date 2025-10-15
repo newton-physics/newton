@@ -1217,7 +1217,7 @@ class SolverMuJoCo(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
-        integrator: int | str = "euler",
+        integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
         impratio: float = 1.0,
         use_mujoco_cpu: bool = False,
@@ -1243,7 +1243,7 @@ class SolverMuJoCo(SolverBase):
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
-            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicit", or their corresponding MuJoCo integer constants.
+            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
             impratio (float): Frictional-to-normal constraint impedance ratio.
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
@@ -1765,7 +1765,7 @@ class SolverMuJoCo(SolverBase):
         njmax: int | None = None,  # number of constraints per world
         ncon_per_env: int | None = None,
         solver: int | str = "cg",
-        integrator: int | str = "euler",
+        integrator: int | str = "implicitfast",
         disableflags: int = 0,
         disable_contacts: bool = False,
         impratio: float = 1.0,
