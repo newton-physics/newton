@@ -7,7 +7,7 @@ System Requirements
 -------------------
 
 - Python 3.10 or higher
-- Windows or Linux on x86-64 architecture (to be expanded to more platforms and architectures soon)
+- Windows or Linux on x86-64 architecture (Linux aarch64 is supported but not as thoroughly tested)
 - NVIDIA GPU with compute capability >= 5.0 (Maxwell) and driver 545 or newer (see note below)
 
 A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-downloads>`__ is not required for Newton.
@@ -15,6 +15,19 @@ A local installation of the `CUDA Toolkit <https://developer.nvidia.com/cuda-dow
 **Note:**
     - NVIDIA GPU driver 545+ is required for Warp kernel compilation *during* CUDA graph capture. Some examples using graph capture may fail with older drivers.
     - Unless otherwise specified, Newton's system requirements are identical to NVIDIA's `Warp <https://developer.nvidia.com/warp>`__ requirements.
+
+Platform-Specific Requirements
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Linux aarch64 (ARM64)**
+
+On ARM64 Linux systems (such as NVIDIA Jetson Thor and DGX Spark), installing the ``examples`` extras currently requires
+X11 development libraries to build ``imgui_bundle`` from source:
+
+.. code-block:: console
+
+    sudo apt-get update
+    sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
 1. Clone the repository
 -----------------------

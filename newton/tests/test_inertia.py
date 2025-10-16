@@ -17,7 +17,6 @@ import unittest
 
 import numpy as np
 import warp as wp
-from warp.render import OpenGLRenderer
 
 import newton
 from newton._src.core import quat_between_axes
@@ -27,6 +26,7 @@ from newton._src.geometry.inertia import (
     compute_mesh_inertia,
     compute_sphere_inertia,
 )
+from newton._src.utils.mesh import create_sphere_mesh
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -115,7 +115,7 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(I_1_hollow), np.array(I_0_hollow), tol=1e-4)
 
     def test_sphere_mesh_inertia(self):
-        vertices, indices = OpenGLRenderer._create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
+        vertices, indices = create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
 
         offset = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         vertices = vertices[:, :3] + offset
@@ -136,7 +136,7 @@ class TestInertia(unittest.TestCase):
         self.assertAlmostEqual(vol_mesh, 4.0 / 3.0 * np.pi * 2.5**3, delta=3e-2)
 
     def test_body_inertia(self):
-        vertices, indices = OpenGLRenderer._create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
+        vertices, indices = create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
 
         offset = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         vertices = vertices[:, :3] + offset
