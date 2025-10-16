@@ -31,7 +31,7 @@ class GeoType(enum.IntEnum):
     """
 
     PLANE = 0
-    """Infinite plane."""
+    """Plane."""
 
     HFIELD = 1
     """Height field (terrain)."""
