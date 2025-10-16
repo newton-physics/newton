@@ -41,6 +41,8 @@ def test_body_state(
     test_name: str,
     test_fn: wp.Function | Callable[[wp.transform, wp.spatial_vectorf], bool],
     indices: list[int] | None = None,
+    show_body_q: bool = False,
+    show_body_qd: bool = False,
 ):
     """
     Test the position and velocity coordinates of the given bodies by applying the given test function to each body.
@@ -52,6 +54,8 @@ def test_body_state(
         test_name: The name of the test.
         test_fn: The test function to evaluate. Maps from the body pose and twist to a boolean.
         indices: The indices of the bodies to test. If None, all bodies will be tested.
+        show_body_q: Whether to print the body pose in the error message.
+        show_body_qd: Whether to print the body twist in the error message.
     """
 
     # construct a Warp kernel to evaluate the test function for the given body indices
@@ -90,8 +94,22 @@ def test_body_state(
         failures_np = failures.numpy()
         if np.any(failures_np):
             body_key = np.array(model.body_key)[indices]
-            failed_bodies = body_key[np.where(failures_np)[0]]
-            raise ValueError(f'Test "{test_name}" failed for the following bodies: [{", ".join(failed_bodies)}]')
+            body_q = body_q.numpy()[indices]
+            body_qd = body_qd.numpy()[indices]
+            failed_indices = np.where(failures_np)[0]
+            failed_details = []
+            for index in failed_indices:
+                detail = body_key[index]
+                extras = []
+                if show_body_q:
+                    extras.append(f"q={body_q[index]}")
+                if show_body_qd:
+                    extras.append(f"qd={body_qd[index]}")
+                if len(extras) > 0:
+                    failed_details.append(f"{detail} ({', '.join(extras)})")
+                else:
+                    failed_details.append(detail)
+            raise ValueError(f'Test "{test_name}" failed for the following bodies: [{", ".join(failed_details)}]')
 
 
 def test_particle_state(
