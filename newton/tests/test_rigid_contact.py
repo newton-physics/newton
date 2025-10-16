@@ -270,7 +270,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
         graph = capture.graph
 
     # Simulate for a few steps to make sure physics is stable
-    for _ in range(50):
+    for _ in range(250):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
