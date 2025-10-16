@@ -137,7 +137,7 @@ class Model:
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
-        self.shape_collision_filter_pairs = set()
+        self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
         """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
@@ -539,7 +539,6 @@ class Model:
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
-        iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
     ) -> Contacts:
         """
@@ -559,7 +558,6 @@ class Model:
                 If None, a kernel is launched to count the number of possible contacts.
             soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
             edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
-            iterate_mesh_vertices (bool, optional): Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box <> mesh collision). Default is True.
             requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
 
         Returns:
@@ -574,21 +572,19 @@ class Model:
             self._collision_pipeline = collision_pipeline
         elif not hasattr(self, "_collision_pipeline"):
             self._collision_pipeline = CollisionPipeline.from_model(
-                self,
-                rigid_contact_max_per_pair,
-                rigid_contact_margin,
-                soft_contact_max,
-                soft_contact_margin,
-                edge_sdf_iter,
-                iterate_mesh_vertices,
-                requires_grad,
+                model=self,
+                rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+                rigid_contact_margin=rigid_contact_margin,
+                soft_contact_max=soft_contact_max,
+                soft_contact_margin=soft_contact_margin,
+                edge_sdf_iter=edge_sdf_iter,
+                requires_grad=requires_grad,
             )
 
         # update any additional parameters
         self._collision_pipeline.rigid_contact_margin = rigid_contact_margin
         self._collision_pipeline.soft_contact_margin = soft_contact_margin
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
-        self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
         return self._collision_pipeline.collide(self, state)
 
