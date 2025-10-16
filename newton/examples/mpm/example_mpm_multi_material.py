@@ -74,11 +74,14 @@ class Example:
 
         mpm_model.notify_particle_material_changed()
 
-        self.state_0 = mpm_model.state()
-        self.state_1 = mpm_model.state()
-
         # Initialize MPM solver
         self.solver = SolverImplicitMPM(mpm_model, mpm_options)
+
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+
+        self.solver.enrich_state(self.state_0)
+        self.solver.enrich_state(self.state_1)
 
         # Assign different colors to each particle type
         self.particle_colors = wp.full(

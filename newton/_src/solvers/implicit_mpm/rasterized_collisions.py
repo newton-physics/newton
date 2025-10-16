@@ -61,8 +61,11 @@ class Collider:
     adhesion: wp.array(dtype=float)
     """Adhesion coefficient for each collider (Pa)"""
 
-    masses: wp.array(dtype=float)
-    """Mass of each collider"""
+    body_index: wp.array(dtype=int)
+    """Body index of each collider"""
+
+    body_com: wp.array(dtype=wp.vec3)
+    """Body center of mass of each collider"""
 
     query_max_dist: float
     """Maximum distance to query collider sdf"""
@@ -75,12 +78,15 @@ class Collider:
 
 
 @wp.func
-def collision_sdf(x: wp.vec3, collider: Collider):
+def collision_sdf(
+    x: wp.vec3, collider: Collider, body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector)
+):
     ground_sdf = wp.dot(x, collider.ground_normal) - collider.ground_height
 
     min_sdf = ground_sdf
     sdf_grad = collider.ground_normal
     sdf_vel = wp.vec3(0.0)
+    closest_point = wp.vec3(0.0)
     collider_id = int(_GROUND_COLLIDER_ID)
 
     # Find closest collider
@@ -89,14 +95,23 @@ def collision_sdf(x: wp.vec3, collider: Collider):
 
         thickness = collider.thicknesses[m]
         max_dist = collider.query_max_dist + thickness
-        query = wp.mesh_query_point_sign_normal(mesh, x, max_dist)
+
+        body_id = collider.body_index[m]
+        if body_id >= 0:
+            b_pos = wp.transform_get_translation(body_q[body_id])
+            b_rot = wp.transform_get_rotation(body_q[body_id])
+            x_local = wp.quat_rotate_inv(b_rot, x - b_pos)
+        else:
+            x_local = x
+
+        query = wp.mesh_query_point_sign_normal(mesh, x_local, max_dist)
 
         if query.result:
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
-
-            offset = x - cp
+            offset = x_local - cp
             d = wp.length(offset) * query.sign
             sdf = d - thickness
+
 
             if sdf < min_sdf:
                 min_sdf = sdf
@@ -106,7 +121,24 @@ def collision_sdf(x: wp.vec3, collider: Collider):
                     sdf_grad = wp.normalize(offset) * query.sign
 
                 sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
+                closest_point = cp
                 collider_id = m
+
+    # If closest collider has rigid motion, transform back to world frame
+    # Do that as a second step to avoid requiring more registers inside bvh query loop
+    if collider_id >= 0:
+        body_id = collider.body_index[collider_id]
+        if body_id >= 0:
+            b_pos = wp.transform_get_translation(body_q[body_id])
+            b_rot = wp.transform_get_rotation(body_q[body_id])
+
+            sdf_vel = wp.quat_rotate(b_rot, sdf_vel)
+            sdf_grad = wp.quat_rotate(b_rot, sdf_grad)
+
+            # Assumes linear/angular velocities in world frame
+            b_v = wp.spatial_top(body_qd[body_id])
+            b_w = wp.spatial_bottom(body_qd[body_id])
+            sdf_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
 
     return min_sdf, sdf_grad, sdf_vel, collider_id
 
@@ -116,21 +148,17 @@ def collision_is_active(sdf: float, voxel_size: float):
     return sdf < _COLLIDER_EXTRAPOLATION_DISTANCE * voxel_size
 
 
-@fem.integrand
-def collider_volumes(
-    s: fem.Sample,
-    domain: fem.Domain,
-    collider: Collider,
-    voxel_size: float,
+@wp.kernel
+def collider_volumes_kernel(
+    cell_volume: float,
+    collider_ids: wp.array(dtype=int),
+    node_volumes: wp.array(dtype=float),
     volumes: wp.array(dtype=float),
 ):
-    x = domain(s)
-
-    sdf, _sdf_gradient, _sdf_vel, collider_id = collision_sdf(x, collider)
-    bc_active = collision_is_active(sdf, voxel_size)
-
-    if bc_active and collider_id >= 0:
-        wp.atomic_add(volumes, collider_id, fem.measure(domain, s) * s.qp_weight)
+    i = wp.tid()
+    collider_id = collider_ids[i]
+    if collider_id >= 0:
+        wp.atomic_add(volumes, collider_id, node_volumes[i] * cell_volume)
 
 
 @wp.func
@@ -148,10 +176,15 @@ def collider_adhesion_coefficient(collider_id: int, collider: Collider):
 
 
 @wp.func
-def collider_density(collider_id: int, collider: Collider, collider_volumes: wp.array(dtype=float)):
+def collider_density(
+    collider_id: int, collider: Collider, collider_volumes: wp.array(dtype=float), body_mass: wp.array(dtype=float)
+):
     if collider_id == _GROUND_COLLIDER_ID:
         return _INFINITY
-    return collider.masses[collider_id] / collider_volumes[collider_id]
+    body_id = collider.body_index[collider_id]
+    if body_id < 0:
+        return _INFINITY
+    return body_mass[body_id] / collider_volumes[collider_id]
 
 
 @wp.func
@@ -162,10 +195,13 @@ def collider_projection_threshold(collider_id: int, collider: Collider):
 
 
 @wp.func
-def collider_is_dynamic(collider_id: int, collider: Collider):
+def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array(dtype=float)):
     if collider_id < 0:
         return False
-    return collider.masses[collider_id] < _INFINITY
+    body_id = collider.body_index[collider_id]
+    if body_id < 0:
+        return False
+    return body_mass[body_id] > 0.0
 
 
 @wp.kernel
@@ -175,6 +211,8 @@ def project_outside_collider(
     velocity_gradients: wp.array(dtype=wp.mat33),
     particle_flags: wp.array(dtype=wp.int32),
     collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
     voxel_size: float,
     dt: float,
     positions_out: wp.array(dtype=wp.vec3),
@@ -195,6 +233,8 @@ def project_outside_collider(
         velocity_gradients: Current particle velocity gradients.
         particle_flags: Per-particle flags (used to gate inactive particles).
         collider: Collider description and geometry.
+        body_q: Rigid body transforms.
+        body_qd: Rigid body velocities.
         voxel_size: Grid voxel edge length (used for thresholds/scales).
         dt: Timestep length.
         positions_out: Output particle positions.
@@ -214,7 +254,7 @@ def project_outside_collider(
         return
 
     # project outside of collider
-    sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(pos_adv, collider)
+    sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(pos_adv, collider, body_q, body_qd)
 
     sdf_end = (
         sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider_projection_threshold(collider_id, collider) * voxel_size
@@ -241,6 +281,8 @@ def project_outside_collider(
 @wp.kernel
 def rasterize_collider(
     collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
     voxel_size: float,
     dt: float,
     node_positions: wp.array(dtype=wp.vec3),
@@ -261,6 +303,8 @@ def rasterize_collider(
 
     Args:
         collider: Collider description and geometry.
+        body_q: Rigid body transforms.
+        body_qd: Rigid body velocities.
         voxel_size: Grid voxel edge length (sets query/extrapolation band).
         dt: Timestep length (used to scale adhesion).
         node_positions: Grid node positions to sample at.
@@ -273,8 +317,13 @@ def rasterize_collider(
     """
     i = wp.tid()
     x = node_positions[i]
-    sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider)
-    bc_active = collision_is_active(sdf, voxel_size)
+
+    if x[0] == fem.OUTSIDE:
+        bc_active = False
+        sdf = fem.OUTSIDE
+    else:
+        sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider, body_q, body_qd)
+        bc_active = collision_is_active(sdf, voxel_size)
 
     collider_sdf[i] = sdf
 
@@ -296,6 +345,7 @@ def rasterize_collider(
 @wp.kernel
 def collider_inverse_mass(
     collider: Collider,
+    body_mass: wp.array(dtype=float),
     collider_ids: wp.array(dtype=int),
     node_volume: wp.array(dtype=float),
     collider_volumes: wp.array(dtype=float),
@@ -304,9 +354,9 @@ def collider_inverse_mass(
     i = wp.tid()
     collider_id = collider_ids[i]
 
-    if collider_is_dynamic(collider_id, collider):
-        bc_vol = node_volume[i]
-        bc_density = collider_density(collider_id, collider, collider_volumes)
+    bc_vol = node_volume[i]
+    if collider_is_dynamic(collider_id, collider, body_mass) and bc_vol > 0.0:
+        bc_density = collider_density(collider_id, collider, collider_volumes, body_mass)
         bc_mass = bc_vol * bc_density
         collider_inv_mass_matrix[i] = 1.0 / bc_mass
     else:
@@ -319,10 +369,11 @@ def fill_collider_rigidity_matrices(
     collider_volumes: wp.array(dtype=float),
     node_volumes: wp.array(dtype=float),
     collider: Collider,
-    voxel_size: float,
+    body_q: wp.array(dtype=wp.transform),
+    body_mass: wp.array(dtype=float),
+    body_inv_inertia: wp.array(dtype=wp.mat33),
+    cell_volume: float,
     collider_ids: wp.array(dtype=int),
-    collider_coms: wp.array(dtype=wp.vec3),
-    collider_inv_inertia: wp.array(dtype=wp.mat33),
     J_rows: wp.array(dtype=int),
     J_cols: wp.array(dtype=int),
     J_values: wp.array(dtype=wp.mat33),
@@ -335,23 +386,28 @@ def fill_collider_rigidity_matrices(
     collider_id = collider_ids[i]
     bc_active = collider_id != _NULL_COLLIDER_ID
 
-    cvol = voxel_size * voxel_size * voxel_size
-
-    if bc_active and collider_is_dynamic(collider_id, collider):
+    if bc_active and collider_is_dynamic(collider_id, collider, body_mass):
         J_rows[2 * i] = i
         J_rows[2 * i + 1] = i
         J_cols[2 * i] = 2 * collider_id
         J_cols[2 * i + 1] = 2 * collider_id + 1
 
-        W = wp.skew(collider_coms[collider_id] - x)
+        body_id = collider.body_index[collider_id]
+        b_pos = wp.transform_get_translation(body_q[body_id])
+        b_rot = wp.transform_get_rotation(body_q[body_id])
+        R = wp.quat_to_matrix(b_rot)
+
+        W = wp.skew(b_pos + R * collider.body_com[body_id] - x)
+
         Id = wp.identity(n=3, dtype=float)
         J_values[2 * i] = W
         J_values[2 * i + 1] = Id
 
-        bc_mass = node_volumes[i] * cvol * collider_density(collider_id, collider, collider_volumes)
+        bc_mass = node_volumes[i] * cell_volume * collider_density(collider_id, collider, collider_volumes, body_mass)
 
-        IJtm_values[2 * i] = -bc_mass * collider_inv_inertia[collider_id] * W
-        IJtm_values[2 * i + 1] = bc_mass / collider.masses[collider_id] * Id
+        world_inv_inertia = R @ body_inv_inertia[body_id] @ wp.transpose(R)
+        IJtm_values[2 * i] = -bc_mass * world_inv_inertia @ W
+        IJtm_values[2 * i + 1] = bc_mass / body_mass[body_id] * Id
 
         non_rigid_diagonal[i] = -Id
 
@@ -365,10 +421,10 @@ def fill_collider_rigidity_matrices(
 
 
 def allot_collider_mass(
-    voxel_size: float,
+    cell_volume: float,
     node_volumes: wp.array(dtype=float),
     collider: Collider,
-    collider_quadrature: fem.Quadrature,
+    body_mass: wp.array(dtype=float),
     collider_ids: wp.array(dtype=int),
     collider_total_volumes: wp.array(dtype=float),
     collider_inv_mass_matrix: wp.array(dtype=float),
@@ -376,8 +432,7 @@ def allot_collider_mass(
     """Accumulate collider mass onto grid nodes and compute inverse masses.
 
     This function first integrates the per-mesh volume contribution of all
-    active collider regions using the provided ``collider_quadrature`` and the
-    ``collider_volumes`` integrand. It then computes per-node inverse masses for
+    active collider regions. It then computes per-node inverse masses for
     nodes tagged by ``collider_ids`` as being within the collider influence.
 
     - Dynamic colliders (finite mass) contribute a non-zero inverse mass that
@@ -387,10 +442,9 @@ def allot_collider_mass(
       collider receive an inverse mass of zero.
 
     Args:
-        voxel_size: Grid voxel edge length.
+        cell_volume: Grid cell volume as scalaing factor to node_volumes.
         node_volumes: Per-velocity-node volume fractions (in voxel units).
         collider: Packed collider parameters and geometry handles.
-        collider_quadrature: Quadrature used to integrate collider volumes.
         collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
         collider_total_volumes: Output per-collider total volumes (accumulated).
         collider_inv_mass_matrix: Output per-node inverse masses due to collider compliance.
@@ -399,14 +453,15 @@ def allot_collider_mass(
     vel_node_count = node_volumes.shape[0]
 
     collider_total_volumes.zero_()
-    fem.interpolate(
-        collider_total_volumes,
-        quadrature=collider_quadrature,
-        values={
-            "collider": collider,
-            "volumes": collider_total_volumes,
-            "voxel_size": voxel_size,
-        },
+    wp.launch(
+        collider_volumes_kernel,
+        dim=vel_node_count,
+        inputs=[
+            cell_volume,
+            collider_ids,
+            node_volumes,
+            collider_total_volumes,
+        ],
     )
 
     wp.launch(
@@ -414,6 +469,7 @@ def allot_collider_mass(
         dim=vel_node_count,
         inputs=[
             collider,
+            body_mass,
             collider_ids,
             node_volumes,
             collider_total_volumes,
@@ -423,13 +479,14 @@ def allot_collider_mass(
 
 
 def build_rigidity_matrix(
-    voxel_size: float,
+    cell_volume: float,
     node_volumes: wp.array(dtype=float),
     node_positions: wp.array(dtype=wp.vec3),
     collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_mass: wp.array(dtype=float),
+    body_inv_inertia: wp.array(dtype=wp.mat33),
     collider_ids: wp.array(dtype=int),
-    collider_coms: wp.array(dtype=wp.vec3),
-    collider_inv_inertia: wp.array(dtype=wp.mat33),
     collider_total_volumes: wp.array(dtype=float),
 ):
     """Assemble the collider rigidity matrix that couples node motion to rigid DOFs.
@@ -448,7 +505,7 @@ def build_rigidity_matrix(
     propagate rigid coupling when solving collider friction.
 
     Args:
-        voxel_size: Grid voxel edge length.
+        cell_volume: Grid cell volume as scalaing factor to node_volumes.
         node_volumes: Per-velocity-node volume fractions.
         node_positions: World-space node positions (3D).
         collider: Packed collider parameters and geometry handles.
@@ -478,10 +535,11 @@ def build_rigidity_matrix(
             collider_total_volumes,
             node_volumes,
             collider,
-            voxel_size,
+            body_q,
+            body_mass,
+            body_inv_inertia,
+            cell_volume,
             collider_ids,
-            collider_coms,
-            collider_inv_inertia,
             J_rows,
             J_cols,
             J_values,
@@ -506,8 +564,7 @@ def build_rigidity_matrix(
         values=IJtm_values,
     )
 
-    rigid = J @ IJtm
-    rigid += wps.bsr_diag(Iphi_diag)
-    rigid.nnz_sync()
+    rigid = wps.bsr_diag(Iphi_diag)
+    wps.bsr_mm(x=J, y=IJtm, z=rigid, alpha=1.0, beta=1.0, max_new_nnz=10 * rigid.nnz)
 
     return rigid

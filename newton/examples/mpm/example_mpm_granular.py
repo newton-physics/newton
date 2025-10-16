@@ -84,16 +84,29 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
+            if self.sim_substeps % 2 != 0:
+                wp.utils.warn("Sim substeps must be even for graph capture of MPM step")
+            else:
+                with wp.ScopedCapture() as capture:
+                    self.simulate()
+                self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
             self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def test(self):
@@ -224,6 +237,8 @@ if __name__ == "__main__":
     parser.add_argument("--hardening", type=float, default=0.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
+    parser.add_argument("--grid-padding", "-gp", type=int, default=0)
+    parser.add_argument("--max-active-cell-count", "-mac", type=int, default=-1)
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 

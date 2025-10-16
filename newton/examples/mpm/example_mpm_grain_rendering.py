@@ -49,11 +49,14 @@ class Example:
         # Create MPM model from Newton model
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
-        self.state_0 = mpm_model.state()
-        self.state_1 = mpm_model.state()
-
         # Initialize MPM solver and add supplemental state variables
         self.solver = SolverImplicitMPM(mpm_model, mpm_options)
+
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+
+        self.solver.enrich_state(self.state_0)
+        self.solver.enrich_state(self.state_1)
 
         # Setup grain rendering
 
