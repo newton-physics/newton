@@ -218,7 +218,7 @@ def update_shape_xforms(
     else:
         world_xform = shape_xform
 
-    if env_offsets and shape_groups:
+    if env_offsets:
         shape_group = shape_groups[tid]
         if shape_group >= 0 and shape_group < env_offsets.shape[0]:
             offset = env_offsets[shape_group]
