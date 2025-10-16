@@ -210,6 +210,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
     else:  # Z-axis (default)
         initial_pos = wp.vec3(0.0, 0.0, 1.0)  # Position above ground in Z direction
 
+    builder.add_articulation()
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
     builder.add_joint_free(b)
     builder.add_shape_sphere(
