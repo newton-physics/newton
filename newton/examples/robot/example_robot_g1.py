@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a G1 robot articulation
 # from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_g1 --num-envs 16
+# Command: python -m newton.examples robot_g1 --num-worlds 16
 #
 ###########################################################################
 
@@ -31,14 +31,14 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_envs=4):
+    def __init__(self, viewer, num_worlds=4):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -68,7 +68,7 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(g1, self.num_worlds, spacing=(3, 3, 0))
 
         builder.add_ground_plane()
 
@@ -79,7 +79,7 @@ class Example:
             solver="newton",
             integrator="euler",
             njmax=300,
-            ncon_per_env=150,
+            ncon_per_world=150,
             cone="elliptic",
             impratio=100,
             iterations=100,
@@ -146,10 +146,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

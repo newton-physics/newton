@@ -47,9 +47,9 @@ class _NoopObjective(ik.IKObjective):
         return 1
 
     def compute_residuals(self, state, model, residuals, start_idx):
-        # write a single zero residual per env so nothing influences FK
-        env = 0  # only 1 env used here
-        residuals[env, start_idx] = 0.0
+        # write a single zero residual per world so nothing influences FK
+        world = 0  # only 1 world used here
+        residuals[world, start_idx] = 0.0
 
     def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx):
         pass

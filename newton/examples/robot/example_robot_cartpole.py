@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a rigid-body cartpole articulation
 # from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_cartpole --num-envs 100
+# Command: python -m newton.examples robot_cartpole --num-worlds 100
 #
 ###########################################################################
 
@@ -30,14 +30,14 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs=8):
+    def __init__(self, viewer, num_worlds=8):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -55,7 +55,7 @@ class Example:
         cartpole.joint_q[-3:] = [0.0, 0.3, 0.0]
 
         builder = newton.ModelBuilder()
-        builder.replicate(cartpole, self.num_envs, spacing=(1.0, 2.0, 0.0))
+        builder.replicate(cartpole, self.num_worlds, spacing=(1.0, 2.0, 0.0))
 
         # finalize model
         self.model = builder.finalize()
@@ -110,13 +110,13 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        num_bodies_per_env = self.model.body_count // self.num_envs
+        num_bodies_per_world = self.model.body_count // self.num_worlds
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart is at ground level and has correct orientation",
             lambda q, qd: q[2] == 0.0 and newton.utils.vec_allclose(q.q, wp.quat_identity()),
-            indices=[i * num_bodies_per_env for i in range(self.num_envs)],
+            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -126,7 +126,7 @@ class Example:
             and abs(qd[1]) > 0.05
             and qd[2] == 0.0
             and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
-            indices=[i * num_bodies_per_env for i in range(self.num_envs)],
+            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -138,7 +138,7 @@ class Example:
             and abs(qd[3]) > 0.3
             and qd[4] == 0.0
             and qd[5] == 0.0,
-            indices=[i * num_bodies_per_env + 1 for i in range(self.num_envs)],
+            indices=[i * num_bodies_per_world + 1 for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -150,40 +150,40 @@ class Example:
             and abs(qd[3]) > 0.2
             and qd[4] == 0.0
             and qd[5] == 0.0,
-            indices=[i * num_bodies_per_env + 2 for i in range(self.num_envs)],
+            indices=[i * num_bodies_per_world + 2 for i in range(self.num_worlds)],
         )
         qd = self.state_0.body_qd.numpy()
-        env0_cart_vel = wp.spatial_vector(*qd[0])
-        env0_pole1_vel = wp.spatial_vector(*qd[1])
-        env0_pole2_vel = wp.spatial_vector(*qd[2])
+        world0_cart_vel = wp.spatial_vector(*qd[0])
+        world0_pole1_vel = wp.spatial_vector(*qd[1])
+        world0_pole2_vel = wp.spatial_vector(*qd[2])
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "cart velocities match across environments",
-            lambda q, qd: newton.utils.vec_allclose(qd, env0_cart_vel),
-            indices=[i * num_bodies_per_env for i in range(self.num_envs)],
+            "cart velocities match across worlds",
+            lambda q, qd: newton.utils.vec_allclose(qd, world0_cart_vel),
+            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "pole1 velocities match across environments",
-            lambda q, qd: newton.utils.vec_allclose(qd, env0_pole1_vel),
-            indices=[i * num_bodies_per_env + 1 for i in range(self.num_envs)],
+            "pole1 velocities match across worlds",
+            lambda q, qd: newton.utils.vec_allclose(qd, world0_pole1_vel),
+            indices=[i * num_bodies_per_world + 1 for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "pole2 velocities match across environments",
-            lambda q, qd: newton.utils.vec_allclose(qd, env0_pole2_vel),
-            indices=[i * num_bodies_per_env + 2 for i in range(self.num_envs)],
+            "pole2 velocities match across worlds",
+            lambda q, qd: newton.utils.vec_allclose(qd, world0_pole2_vel),
+            indices=[i * num_bodies_per_world + 2 for i in range(self.num_worlds)],
         )
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=100, help="Total number of simulated worlds.")
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

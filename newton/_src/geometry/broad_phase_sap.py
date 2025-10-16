@@ -18,7 +18,7 @@ import warp as wp
 from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
-    test_environment_and_group_pair,
+    test_world_and_group_pair,
     write_pair,
 )
 
@@ -231,7 +231,7 @@ def _sap_broadphase_kernel(
     num_negative_group_counter: wp.array(dtype=int, ndim=1),  # Size one array
     unique_group_id_counter: wp.array(dtype=int, ndim=1),  # Size one array
     collision_group: wp.array(dtype=int, ndim=1),
-    shape_group: wp.array(dtype=int, ndim=1),  # Environment groups
+    shape_world: wp.array(dtype=int, ndim=1),  # World indices
     sap_sort_index_in: wp.array(dtype=int, ndim=1),
     sap_cumulative_sum_in: wp.array(dtype=int, ndim=1),
     geom_cutoff: wp.array(dtype=float, ndim=1),
@@ -266,14 +266,14 @@ def _sap_broadphase_kernel(
         if geom2 >= num_boxes:
             geom2 = negative_group_indices[(geom2 - num_boxes) % num_negative_group_elements]
 
-        # Get collision and environment groups
+        # Get collision and world groups
         col_group1 = collision_group[geom1]
         col_group2 = collision_group[geom2]
-        env_group1 = shape_group[geom1]
-        env_group2 = shape_group[geom2]
+        world1 = shape_world[geom1]
+        world2 = shape_world[geom2]
 
-        # Check both environment and collision groups
-        if not test_environment_and_group_pair(env_group1, env_group2, col_group1, col_group2):
+        # Check both world and collision groups
+        if not test_world_and_group_pair(world1, world2, col_group1, col_group2):
             geomid += nsweep_in
             continue
 
@@ -344,7 +344,7 @@ class BroadPhaseSAP:
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
         geom_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        geom_shape_group: wp.array(dtype=int, ndim=1),  # Environment group ID per box
+        geom_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
@@ -354,7 +354,7 @@ class BroadPhaseSAP:
 
         This method performs collision detection between geometries using a sweep and prune algorithm along a fixed axis.
         It projects the bounding boxes onto the sweep axis, sorts them, and checks for overlaps between nearby boxes.
-        The method also handles collision filtering based on both environment groups and collision groups.
+        The method also handles collision filtering based on both worlds and collision groups.
 
         Args:
             geom_lower: Array of lower bounds for each geometry's AABB
@@ -363,16 +363,16 @@ class BroadPhaseSAP:
             geom_collision_groups: Array of collision group IDs for each geometry. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            geom_shape_groups: Array of environment group IDs for each geometry. Group -1 indicates global entities
-                that collide with all environments. Groups 0, 1, 2, ... indicate environment-specific entities.
-                Can be None if environment groups are not used.
+            geom_shape_world: Array of world indices for each geometry. Index -1 indicates global entities
+                that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
+                Can be None if world indices are not used.
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
 
         The method will populate candidate_pair with the indices of geometry pairs whose AABBs overlap
-        when expanded by their cutoff distances, whose collision groups allow interaction, and whose environment groups
-        are compatible (same environment or at least one is global). The number of pairs found will be written to
+        when expanded by their cutoff distances, whose collision groups allow interaction, and whose worlds
+        are compatible (same world or at least one is global). The number of pairs found will be written to
         num_candidate_pair[0].
         """
         # TODO: Choose an optimal direction
@@ -467,7 +467,7 @@ class BroadPhaseSAP:
                 self.negative_group_counter,
                 self.unique_group_id_counter,
                 geom_collision_group,
-                geom_shape_group,
+                geom_shape_world,
                 self.sap_sort_index,
                 self.sap_cumulative_sum,
                 geom_cutoffs,
