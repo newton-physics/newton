@@ -77,7 +77,7 @@ class Example:
             self.model,
             use_mujoco_cpu=False,
             solver="newton",
-            integrator="euler",
+            integrator="implicitfast",
             njmax=300,
             ncon_per_env=150,
             cone="elliptic",
