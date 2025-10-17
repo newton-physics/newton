@@ -39,7 +39,7 @@ The **frequency** determines the array size and indexing pattern (``BODY``, ``SH
 
 The following example shows how to declare custom attributes with different frequencies and assignments:
 
-.. code-block:: python
+.. testcode::
 
    from newton import ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
    import warp as wp
@@ -80,7 +80,7 @@ After declaration, custom attributes are authored through the standard entity cr
 
 For the attributes declared above, the following shows how to assign values when creating bodies:
 
-.. code-block:: python
+.. testcode::
 
    # Add a body with custom attributes
    body_id = builder.add_body(
@@ -95,7 +95,7 @@ For joints, attribute names can use prefixes to specify different frequencies. A
 
 The following shows how to declare and author joint attributes with these different frequencies:
 
-.. code-block:: python
+.. testcode::
 
    # Declare joint attributes with different frequencies
    builder.add_custom_attribute(
@@ -119,14 +119,18 @@ The following shows how to declare and author joint attributes with these differ
 
 After declaring these joint attributes, values can be assigned when creating joints:
 
-.. code-block:: python
+.. testcode::
 
-   # Author joint attributes
+   # Author joint attributes (requires parent_body and child_body from previous example)
+   parent_body = builder.add_body(mass=1.0)
+   child_body = builder.add_body(mass=1.0)
+   
+   cfg = ModelBuilder.JointDofConfig
    builder.add_joint_d6(
        parent=parent_body,
        child=child_body,
-       linear_axes=[...],
-       angular_axes=[...],
+       linear_axes=[cfg(axis=[1, 0, 0]), cfg(axis=[0, 1, 0])],
+       angular_axes=[cfg(axis=[0, 0, 1])],
        custom_attributes={
            "joint_type": 2,
            "dof_stiffness": [100.0, 150.0, 200.0],  # Three DOFs
@@ -141,7 +145,7 @@ After authoring custom attributes on entities, they become accessible as arrays 
 
 Using the same attributes declared and authored above (``temperature`` and ``velocity_limit``), the following demonstrates how to access the data:
 
-.. code-block:: python
+.. testcode::
 
    # Build the model
    model = builder.finalize()
@@ -154,6 +158,11 @@ Using the same attributes declared and authored above (``temperature`` and ``vel
    # Access STATE attributes  
    velocity_limits = state.velocity_limit.numpy()
    print(f"Velocity limit: {velocity_limits[body_id]}")
+
+.. testoutput::
+
+   Body temperature: 37.5
+   Velocity limit: [2. 2. 2.]
 
 Custom attributes follow the same GPU/CPU synchronization rules as built-in attributes and can be modified during simulation.
 
@@ -191,7 +200,8 @@ The following USD file demonstrates how to author custom attributes for bodies a
 
 After authoring custom attributes in USD, they can be imported and accessed as shown below:
 
-.. code-block:: python
+.. testcode::
+   :skipif: True
 
    from newton import ModelBuilder
    
@@ -209,10 +219,13 @@ After authoring custom attributes in USD, they can be imported and accessed as s
 
 Custom attributes use default values for entities that don't explicitly specify values. When declaring an attribute, users can provide a ``default`` parameter. If not specified, dtype-specific defaults are used: 0.0 for floats, 0 for integers, False for booleans, and zero vectors for vector types. The following demonstrates this behavior:
 
-.. code-block:: python
+.. testcode::
 
+   # Create a new builder for this example
+   builder2 = ModelBuilder()
+   
    # Declare with explicit default
-   builder.add_custom_attribute(
+   builder2.add_custom_attribute(
        name="temperature",
        frequency=ModelAttributeFrequency.BODY,
        dtype=wp.float32,
@@ -220,23 +233,26 @@ Custom attributes use default values for entities that don't explicitly specify 
        assignment=ModelAttributeAssignment.MODEL
    )
    
-   body1 = builder.add_body(mass=1.0)  # Uses default: 20.0
+   body1 = builder2.add_body(mass=1.0)  # Uses default: 20.0
    
-   body2 = builder.add_body(
+   body2 = builder2.add_body(
        mass=1.0,
-       custom_attributes={
-           ModelAttributeAssignment.MODEL: {"temperature": 65.0}  # Override default
-       }
+       custom_attributes={"temperature": 65.0}  # Override default
    )
 
 After creating bodies with and without explicit values, the arrays reflect both authored and default values:
 
-.. code-block:: python
+.. testcode::
    
-   model = builder.finalize()
-   temps = model.temperature.numpy()
-   # temps[body1] = 20.0 (default)
-   # temps[body2] = 65.0 (authored)
+   model2 = builder2.finalize()
+   temps = model2.temperature.numpy()
+   print(f"Body 1 temperature: {temps[body1]}")  # 20.0 (default)
+   print(f"Body 2 temperature: {temps[body2]}")  # 65.0 (authored)
+
+.. testoutput::
+
+   Body 1 temperature: 20.0
+   Body 2 temperature: 65.0
 
 Validation and Constraints
 ---------------------------

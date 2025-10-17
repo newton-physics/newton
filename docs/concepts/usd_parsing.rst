@@ -107,29 +107,32 @@ consider a USD asset with conflicting armature values from different solvers:
        float mjc:armature = 0.03
    }
 
-.. code-block:: python
+.. testcode::
+   :skipif: True
 
-   # Test different priority configurations
+   from newton import ModelBuilder
+   from newton.utils.schema_resolver import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
+   
+   builder = ModelBuilder()
    
    # Configuration 1: Newton priority
-   result_newton = parse_usd(
-       builder=builder,
+   result_newton = builder.add_usd(
        source="conflicting_asset.usda",
        schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()]
    )
    # Result: Uses newton:armature = 0.01
    
    # Configuration 2: PhysX priority  
-   result_physx = parse_usd(
-       builder=builder,
+   builder2 = ModelBuilder()
+   result_physx = builder2.add_usd(
        source="conflicting_asset.usda", 
        schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton(), SchemaResolverMjc()]
    )
    # Result: Uses physxJoint:armature = 0.02
    
    # Configuration 3: MuJoCo priority
-   result_mjc = parse_usd(
-       builder=builder,
+   builder3 = ModelBuilder()
+   result_mjc = builder3.add_usd(
        source="conflicting_asset.usda",
        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()]
    )
@@ -158,11 +161,14 @@ Each resolver collects attributes from specific namespaces defined in its ``extr
 
 Accessing Collected Solver-Specific Attributes:
 
-.. code-block:: python
+.. testcode::
+   :skipif: True
 
+   from newton import ModelBuilder
+   from newton.utils.schema_resolver import SchemaResolverPhysx, SchemaResolverNewton
+   
    builder = ModelBuilder()
-   result = parse_usd(
-       builder=builder,
+   result = builder.add_usd(
        source="physx_humanoid.usda", 
        schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
        collect_solver_specific_attrs=True
@@ -334,15 +340,14 @@ Example USD Authoring with Custom Attributes:
 
 Importing and Accessing Custom Attributes:
 
-.. code-block:: python
+.. testcode::
+   :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.utils.import_usd import parse_usd
-   from newton._src.utils.schema_resolver import SchemaResolverNewton
+   from newton.utils.schema_resolver import SchemaResolverNewton
 
    builder = ModelBuilder()
-   result = parse_usd(
-       builder=builder,
+   result = builder.add_usd(
        source="robot_with_custom_attrs.usda",
        schema_resolvers=[SchemaResolverNewton()],
        collect_solver_specific_attrs=True
