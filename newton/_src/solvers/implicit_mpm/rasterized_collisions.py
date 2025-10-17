@@ -160,7 +160,6 @@ def collider_volumes_kernel(
     if collider_id >= 0:
         wp.atomic_add(volumes, collider_id, node_volumes[i] * cell_volume)
 
-
 @wp.func
 def collider_friction_coefficient(collider_id: int, collider: Collider):
     if collider_id == _GROUND_COLLIDER_ID:
@@ -337,8 +336,11 @@ def rasterize_collider(
 
     collider_ids[i] = collider_id
     collider_normals[i] = sdf_gradient
+
     collider_friction[i] = collider_friction_coefficient(collider_id, collider)
     collider_adhesion[i] = collider_adhesion_coefficient(collider_id, collider) * dt * voxel_size
+
+
     collider_velocity[i] = sdf_vel
 
 
