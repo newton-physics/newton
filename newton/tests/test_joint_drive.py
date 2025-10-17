@@ -151,7 +151,9 @@ class TestJointDrive(unittest.TestCase):
         control = model.control()
         contacts = model.collide(state_in)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco_cpu=False)
+        solver = SolverMuJoCo(
+            model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco_cpu=False, integrator="euler"
+        )
 
         # Compute the expected velocity outcome after a single sim step.
         vNew = [0.0] * nb_worlds
