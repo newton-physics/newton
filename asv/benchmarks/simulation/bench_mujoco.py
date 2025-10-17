@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+import time
+
 import warp as wp
 
 wp.config.enable_backward = False
@@ -125,6 +127,125 @@ class _KpiBenchmark:
     track_simulate.unit = "ms/world-step"
 
 
+class _SwizzleBenchmark:
+    """Utility base class for measuring swizzling overhead."""
+
+    param_names = ["num_envs"]
+    num_frames = None
+    params = None
+    robot = None
+    samples = None
+    ls_iteration = None
+
+    def setup(self, num_envs):
+        if not hasattr(self, "builder") or self.builder is None:
+            self.builder = {}
+        if num_envs not in self.builder:
+            self.builder[num_envs] = Example.create_model_builder(self.robot, num_envs, randomize=True, seed=123)
+
+    def create_graph(self, example):
+        self.sim_substeps = example.sim_substeps
+        self.frame_dt = example.frame_dt
+
+        # simulate() allocates memory via a clone, so we can't use graph capture if the device does not support mempools
+        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        if not cuda_graph_comp:
+            SkipNotImplemented("Graph capture requires CUDA with mempool enabled")
+        else:
+            # Capture the control graph
+            with wp.ScopedCapture() as capture:
+                joint_target = wp.array(example.rng.uniform(-1.0, 1.0, size=example.model.joint_dof_count), dtype=float)
+                wp.copy(example.control.joint_target, joint_target)
+            self.graph_control = capture.graph
+
+            # Capture the pre-step graph
+            with wp.ScopedCapture() as capture:
+                example.state_0.clear_forces()
+                example.solver.apply_mjc_control(
+                    example.model, example.state_0, example.control, example.solver.mjw_data
+                )
+                if (
+                    example.solver.update_data_interval > 0
+                    and example.solver._step % example.solver.update_data_interval == 0
+                ):
+                    example.solver.update_mjc_data(example.solver.mjw_data, example.model, example.state_0)
+                example.solver.mjw_model.opt.timestep.fill_(example.sim_dt)
+            self.graph_prestep = capture.graph
+
+            # Capture the step graph
+            with wp.ScopedCapture() as capture:
+                example.solver._mujoco_warp.step(example.solver.mjw_model, example.solver.mjw_data)
+            self.graph_step = capture.graph
+
+            # Capture the post-step graph
+            with wp.ScopedCapture() as capture:
+                example.solver.update_newton_state(example.model, example.state_1, example.solver.mjw_data)
+                example.solver._step += 1
+                example.state_0, example.state_1 = example.state_1, example.state_0
+            self.graph_poststep = capture.graph
+
+    def step(self):
+        # Reimplement the step function to be able to graph the mujoco_warp step function
+
+        # Setup control input
+        wp.synchronize_device()
+        start_time = time.time()
+        wp.capture_launch(self.graph_control)
+        wp.synchronize_device()
+        end_time = time.time()
+        self.overhead_time += end_time - start_time
+
+        for _ in range(self.sim_substeps):
+            # Prepare for the step
+            wp.synchronize_device()
+            start_time = time.time()
+            wp.capture_launch(self.graph_prestep)
+            wp.synchronize_device()
+            end_time = time.time()
+            self.overhead_time += end_time - start_time
+
+            # Step
+            wp.synchronize_device()
+            start_time = time.time()
+            wp.capture_launch(self.graph_step)
+            wp.synchronize_device()
+            end_time = time.time()
+            self.step_time += end_time - start_time
+
+            # Complete the step
+            wp.synchronize_device()
+            start_time = time.time()
+            wp.capture_launch(self.graph_poststep)
+            wp.synchronize_device()
+            end_time = time.time()
+            self.overhead_time += end_time - start_time
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_simulate(self, num_envs):
+        self.overhead_time = 0.0
+        self.step_time = 0.0
+        for _iter in range(self.samples):
+            example = Example(
+                stage_path=None,
+                robot=self.robot,
+                randomize=True,
+                headless=True,
+                actuation="random",
+                num_envs=num_envs,
+                use_cuda_graph=True,
+                builder=self.builder[num_envs],
+                ls_iteration=self.ls_iteration,
+            )
+
+            self.create_graph(example)
+            for _ in range(self.num_frames):
+                self.step()
+
+        swizzle_overhead = 100.0 * self.overhead_time / (self.overhead_time + self.step_time)
+
+        return swizzle_overhead
+
+
 class FastCartpole(_FastBenchmark):
     num_frames = 50
     robot = "cartpole"
@@ -134,7 +255,7 @@ class FastCartpole(_FastBenchmark):
 
 
 class KpiCartpole(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 50
     robot = "cartpole"
     samples = 4
@@ -151,7 +272,17 @@ class FastG1(_FastBenchmark):
 
 
 class KpiG1(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+
+
+class KpiSwizzleG1(_SwizzleBenchmark):
+    params = [[8192]]
     num_frames = 50
     robot = "g1"
     timeout = 900
@@ -169,7 +300,16 @@ class FastHumanoid(_FastBenchmark):
 
 
 class KpiHumanoid(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
+    num_frames = 100
+    robot = "humanoid"
+    samples = 4
+    ls_iteration = 15
+    random_init = True
+
+
+class KpiSwizzleHumanoid(_SwizzleBenchmark):
+    params = [[8192]]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -186,7 +326,7 @@ class FastAllegro(_FastBenchmark):
 
 
 class KpiAllegro(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 300
     robot = "allegro"
     samples = 2
@@ -208,6 +348,8 @@ if __name__ == "__main__":
         "KpiG1": KpiG1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
+        "KpiSwizzleG1": KpiSwizzleG1,
+        "KpiSwizzleHumanoid": KpiSwizzleHumanoid,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
