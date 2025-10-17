@@ -53,8 +53,8 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
-        # Environment offset support
-        self.env_offsets = None  # Array of vec3 offsets per environment
+        # World offset support
+        self.world_offsets = None  # Array of vec3 offsets per world
 
         # Display options as individual boolean attributes
         self.show_joints = False
@@ -97,61 +97,61 @@ class ViewerBase:
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
 
-    def set_env_offsets(self, num_envs: int, spacing: tuple[float, float, float] = (5.0, 5.0, 0.0)):
-        """Set environment offsets for visual separation of multiple environments.
+    def set_world_offsets(self, num_worlds: int, spacing: tuple[float, float, float] = (5.0, 5.0, 0.0)):
+        """Set world offsets for visual separation of multiple worlds.
 
         Args:
-            num_envs: Number of environments
-            spacing: Spacing between environments along each axis (x, y, z)
+            num_worlds: Number of worlds
+            spacing: Spacing between worlds along each axis (x, y, z)
         """
         # Compute offsets using the same logic as ModelBuilder._compute_replicate_offsets
 
-        env_offset = np.array(spacing)
-        nonzeros = np.nonzero(env_offset)[0]
+        world_spacing = np.array(spacing)
+        nonzeros = np.nonzero(world_spacing)[0]
         num_dim = nonzeros.shape[0]
 
-        if num_dim > 0 and num_envs > 0:
-            side_length = int(np.ceil(num_envs ** (1.0 / num_dim)))
-            env_offsets = []
+        if num_dim > 0 and num_worlds > 0:
+            side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+            world_offsets = []
 
             if num_dim == 1:
-                for i in range(num_envs):
-                    env_offsets.append(i * env_offset)
+                for i in range(num_worlds):
+                    world_offsets.append(i * world_spacing)
             elif num_dim == 2:
-                for i in range(num_envs):
+                for i in range(num_worlds):
                     d0 = i // side_length
                     d1 = i % side_length
                     offset = np.zeros(3)
-                    offset[nonzeros[0]] = d0 * env_offset[nonzeros[0]]
-                    offset[nonzeros[1]] = d1 * env_offset[nonzeros[1]]
-                    env_offsets.append(offset)
+                    offset[nonzeros[0]] = d0 * world_spacing[nonzeros[0]]
+                    offset[nonzeros[1]] = d1 * world_spacing[nonzeros[1]]
+                    world_offsets.append(offset)
             elif num_dim == 3:
-                for i in range(num_envs):
+                for i in range(num_worlds):
                     d0 = i // (side_length * side_length)
                     d1 = (i // side_length) % side_length
                     d2 = i % side_length
                     offset = np.zeros(3)
-                    offset[0] = d0 * env_offset[0]
-                    offset[1] = d1 * env_offset[1]
-                    offset[2] = d2 * env_offset[2]
-                    env_offsets.append(offset)
+                    offset[0] = d0 * world_spacing[0]
+                    offset[1] = d1 * world_spacing[1]
+                    offset[2] = d2 * world_spacing[2]
+                    world_offsets.append(offset)
 
-            env_offsets = np.array(env_offsets)
+            world_offsets = np.array(world_offsets)
 
-            # Center the environments
-            min_offsets = np.min(env_offsets, axis=0)
-            correction = min_offsets + (np.max(env_offsets, axis=0) - min_offsets) / 2.0
+            # Center the worlds
+            min_offsets = np.min(world_offsets, axis=0)
+            correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
 
-            # Ensure the envs are not shifted below the ground plane
+            # Ensure the worlds are not shifted below the ground plane
             if self.model is not None:
                 correction[self.model.up_axis] = 0.0
 
-            env_offsets -= correction
+            world_offsets -= correction
         else:
-            env_offsets = np.zeros((num_envs, 3))
+            world_offsets = np.zeros((num_worlds, 3))
 
         # Convert to warp array
-        self.env_offsets = wp.array(env_offsets, dtype=wp.vec3, device=self.device)
+        self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
 
     def begin_frame(self, time):
         self.time = time
@@ -167,7 +167,7 @@ class ViewerBase:
             visible = self._should_show_shape(shapes.flags, shapes.static)
 
             if visible:
-                shapes.update(state, env_offsets=self.env_offsets)
+                shapes.update(state, world_offsets=self.world_offsets)
 
             self.log_instances(
                 shapes.name,
@@ -484,18 +484,18 @@ class ViewerBase:
             self.scales = []
             self.colors = []
             self.materials = []
-            self.groups = []  # Environment group for each shape
+            self.worlds = []  # World index for each shape
 
             self.world_xforms = None
 
-        def add(self, parent, xform, scale, color, material, group=-1):
+        def add(self, parent, xform, scale, color, material, world=-1):
             # add an instance of the geometry to the batch
             self.parents.append(parent)
             self.xforms.append(xform)
             self.scales.append(scale)
             self.colors.append(color)
             self.materials.append(material)
-            self.groups.append(group)
+            self.worlds.append(world)
 
         def finalize(self):
             # convert to warp arrays
@@ -504,11 +504,11 @@ class ViewerBase:
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
             self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
-            self.groups = wp.array(self.groups, dtype=int, device=self.device)
+            self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
-        def update(self, state, env_offsets=None):
+        def update(self, state, world_offsets=None):
             from .kernels import update_shape_xforms  # noqa: PLC0415
 
             wp.launch(
@@ -518,8 +518,8 @@ class ViewerBase:
                     self.xforms,
                     self.parents,
                     state.body_q,
-                    self.groups,
-                    env_offsets,
+                    self.worlds,
+                    world_offsets,
                 ],
                 outputs=[self.world_xforms],
                 device=self.device,
@@ -623,7 +623,7 @@ class ViewerBase:
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
-        shape_group = self.model.shape_group.numpy()
+        shape_world = self.model.shape_world.numpy()
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -696,7 +696,7 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, shape_group[s])
+            batch.add(parent, xform, scale, color, material, shape_world[s])
 
         # upload all batches to the GPU
         for batch in self._shape_instances.values():
