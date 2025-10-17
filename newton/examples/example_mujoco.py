@@ -321,7 +321,7 @@ class Example:
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
             self.renderer.set_model(self.model)
-            self.renderer.set_world_offsets(num_envs, spacing=(4.0, 4.0, 0.0))
+            self.renderer.set_world_offsets(num_worlds, spacing=(4.0, 4.0, 0.0))
         else:
             self.renderer = None
 
