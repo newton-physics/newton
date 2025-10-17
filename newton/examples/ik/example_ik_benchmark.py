@@ -112,7 +112,7 @@ class Example:
 
     def _create_robot(self) -> newton.Model:
         franka = newton.ModelBuilder()
-        franka.num_rigid_contacts_per_env = 0
+        franka.num_rigid_contacts_per_world = 0
         franka.default_shape_cfg.density = 100.0
         asset_path = newton.utils.download_asset(self.asset_name) / self.asset_file
         self.parser(franka, asset_path, floating=False)

@@ -44,7 +44,7 @@ def parse_usd(
     invert_rotations: bool = True,
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
-    cloned_env: str | None = None,
+    cloned_world: str | None = None,
     collapse_fixed_joints: bool = False,
     enable_self_collisions: bool = True,
     apply_up_axis_from_stage: bool = False,
@@ -71,7 +71,7 @@ def parse_usd(
         invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-        cloned_env (str): The prim path of an environment which is cloned within this USD file. Siblings of this environment prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated environments.
+        cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -243,34 +243,34 @@ def parse_usd(
         if verbose:
             print(f"Failed to get linear unit: {e}")
 
-    # resolve cloned environments
-    if cloned_env is not None:
-        cloned_env_prim = stage.GetPrimAtPath(cloned_env)
-        if not cloned_env_prim:
-            raise RuntimeError(f"Failed to resolve cloned environment {cloned_env}")
-        cloned_env_xforms = []
-        cloned_env_paths = []
-        # get paths of the siblings of the cloned env
+    # resolve cloned worlds
+    if cloned_world is not None:
+        cloned_world_prim = stage.GetPrimAtPath(cloned_world)
+        if not cloned_world_prim:
+            raise RuntimeError(f"Failed to resolve cloned world {cloned_world}")
+        cloned_world_xforms = []
+        cloned_world_paths = []
+        # get paths of the siblings of the cloned world
         # and ignore them during parsing, later we use
         # ModelBuilder.add_builder() to instantiate these
-        # envs at their respective Xform transforms
-        envs_prim = cloned_env_prim.GetParent()
-        for sibling in envs_prim.GetChildren():
+        # worlds at their respective Xform transforms
+        worlds_prim = cloned_world_prim.GetParent()
+        for sibling in worlds_prim.GetChildren():
             # print(sibling.GetPath(), parse_xform(sibling))
             p = str(sibling.GetPath())
-            cloned_env_xforms.append(parse_xform(sibling))
-            cloned_env_paths.append(p)
-            if sibling != cloned_env_prim:
+            cloned_world_xforms.append(parse_xform(sibling))
+            cloned_world_paths.append(p)
+            if sibling != cloned_world_prim:
                 ignore_paths.append(p)
 
-        # set xform of the cloned env (e.g. "env0") to identity
+        # set xform of the cloned world (e.g. "world0") to identity
         # and later apply this xform via ModelBuilder.add_builder()
-        # to instantiate the env at the correct location
-        UsdGeom.Xform(cloned_env_prim).SetXformOpOrder([])
+        # to instantiate the world at the correct location
+        UsdGeom.Xform(cloned_world_prim).SetXformOpOrder([])
 
-        # create a new builder for the cloned env, then instantiate
+        # create a new builder for the cloned world, then instantiate
         # it back in the original builder
-        multi_env_builder = builder
+        multi_world_builder = builder
         builder = ModelBuilder()
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
@@ -1364,9 +1364,9 @@ def parse_usd(
         merged_body_data = collapse_results["merged_body_data"]
 
     path_original_body_map = path_body_map.copy()
-    if cloned_env is not None:
-        with wp.ScopedTimer("replicating envs"):
-            # instantiate environments
+    if cloned_world is not None:
+        with wp.ScopedTimer("replicating worlds"):
+            # instantiate worlds
             path_shape_map_updates = {}
             path_body_map_updates = {}
             path_shape_scale_updates = {}
@@ -1376,17 +1376,17 @@ def parse_usd(
             shape_key = builder.shape_key
             joint_key = builder.joint_key
             body_key = builder.body_key
-            for env_path, env_xform in zip(cloned_env_paths, cloned_env_xforms, strict=False):
-                shape_count = multi_env_builder.shape_count
-                body_count = multi_env_builder.body_count
-                original_body_count = multi_env_builder.body_count
-                art_count = multi_env_builder.articulation_count
+            for world_path, world_xform in zip(cloned_world_paths, cloned_world_xforms, strict=False):
+                shape_count = multi_world_builder.shape_count
+                body_count = multi_world_builder.body_count
+                original_body_count = multi_world_builder.body_count
+                art_count = multi_world_builder.articulation_count
                 # print("articulation_bodies = ", articulation_bodies)
                 for path, shape_id in path_shape_map.items():
-                    new_path = path.replace(cloned_env, env_path)
+                    new_path = path.replace(cloned_world, world_path)
                     path_shape_map_updates[new_path] = shape_id + shape_count
                 for path, body_id in path_body_map.items():
-                    new_path = path.replace(cloned_env, env_path)
+                    new_path = path.replace(cloned_world, world_path)
                     path_body_map_updates[new_path] = body_id + body_count
                     if collapse_fixed_joints:
                         original_body_id = path_original_body_map[path]
@@ -1394,23 +1394,23 @@ def parse_usd(
                     if path in merged_body_data:
                         merged_body_data[new_path] = merged_body_data[path]
                         parent_path = merged_body_data[path]["parent_body"]
-                        new_parent_path = parent_path.replace(cloned_env, env_path)
+                        new_parent_path = parent_path.replace(cloned_world, world_path)
                         merged_body_data[new_path]["parent_body"] = new_parent_path
 
                 for path, scale in path_shape_scale.items():
-                    new_path = path.replace(cloned_env, env_path)
+                    new_path = path.replace(cloned_world, world_path)
                     path_shape_scale_updates[new_path] = scale
                 for art_id, bodies in articulation_bodies.items():
                     articulation_bodies_updates[art_id + art_count] = [b + body_count for b in bodies]
                 for root in articulation_roots:
-                    new_path = root.replace(cloned_env, env_path)
+                    new_path = root.replace(cloned_world, world_path)
                     articulation_roots_updates.append(new_path)
 
-                builder.articulation_key = [key.replace(cloned_env, env_path) for key in articulation_key]
-                builder.shape_key = [key.replace(cloned_env, env_path) for key in shape_key]
-                builder.joint_key = [key.replace(cloned_env, env_path) for key in joint_key]
-                builder.body_key = [key.replace(cloned_env, env_path) for key in body_key]
-                multi_env_builder.add_builder(builder, xform=env_xform)
+                builder.articulation_key = [key.replace(cloned_world, world_path) for key in articulation_key]
+                builder.shape_key = [key.replace(cloned_world, world_path) for key in shape_key]
+                builder.joint_key = [key.replace(cloned_world, world_path) for key in joint_key]
+                builder.body_key = [key.replace(cloned_world, world_path) for key in body_key]
+                multi_world_builder.add_builder(builder, xform=world_xform)
 
             path_shape_map = path_shape_map_updates
             path_body_map = path_body_map_updates
@@ -1418,7 +1418,7 @@ def parse_usd(
             articulation_roots = articulation_roots_updates
             articulation_bodies = articulation_bodies_updates
 
-            builder = multi_env_builder
+            builder = multi_world_builder
 
     return {
         "fps": stage.GetFramesPerSecond(),

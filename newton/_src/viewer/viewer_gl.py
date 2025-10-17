@@ -1010,7 +1010,7 @@ class ViewerGL(ViewerBase):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Environments: {self.model.num_envs}")
+                    imgui.text(f"Worlds: {self.model.num_worlds}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1410,7 +1410,7 @@ class ViewerGL(ViewerBase):
             if len(values.shape) == 2:
                 batch_size = values.shape[0]
                 imgui.spacing()
-                imgui.text("Batch/Environment Selection:")
+                imgui.text("Batch/World Selection:")
                 imgui.push_item_width(100)
 
                 # Ensure selected batch index is valid
@@ -1421,7 +1421,7 @@ class ViewerGL(ViewerBase):
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"Environment {state['selected_batch_idx']} / {batch_size}"
+                text = f"World {state['selected_batch_idx']} / {batch_size}"
                 imgui.text(text)
 
             # Display values as sliders in a scrollable region
@@ -1457,7 +1457,7 @@ class ViewerGL(ViewerBase):
                 if len(values.shape) == 2:
                     batch_idx = state["selected_batch_idx"]
                     stats_data = values[batch_idx]
-                    imgui.text(f"Statistics for Environment {batch_idx}:")
+                    imgui.text(f"Statistics for World {batch_idx}:")
                 else:
                     stats_data = values
                     imgui.text("Statistics:")
