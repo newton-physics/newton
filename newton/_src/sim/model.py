@@ -132,13 +132,13 @@ class Model:
 
     Key Features:
         - Stores all static data for simulation: particles, rigid bodies, joints, shapes, soft/rigid elements, etc.
-        - Supports grouping of entities by environment using group indices (e.g., `particle_group`, `body_group`, etc.).
-          - Group index -1: global entities shared across all environments.
-          - Group indices 0, 1, 2, ...: environment-specific entities.
+        - Supports grouping of entities by world using world indices (e.g., `particle_world`, `body_world`, etc.).
+          - Index -1: global entities shared across all worlds.
+          - Indices 0, 1, 2, ...: world-specific entities.
         - Grouping enables:
-          - Collision detection optimization (e.g., separating environments)
-          - Visualization (e.g., spatially separating environments)
-          - Parallel processing of independent environments
+          - Collision detection optimization (e.g., separating worlds)
+          - Visualization (e.g., spatially separating worlds)
+          - Parallel processing of independent worlds
 
     Note:
         It is strongly recommended to use the :class:`ModelBuilder` to construct a Model.
@@ -154,8 +154,8 @@ class Model:
         """
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
-        self.num_envs = 0
-        """Number of articulation environments added to the ModelBuilder via `add_builder`."""
+        self.num_worlds = 0
+        """Number of articulation worlds added to the ModelBuilder via `add_builder`."""
 
         self.particle_q = None
         """Particle positions, shape [particle_count, 3], float."""
@@ -187,8 +187,8 @@ class Model:
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity = 1e5
         """Maximum particle velocity (to prevent instability)."""
-        self.particle_group = None
-        """Environment group index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_world = None
+        """World index for each particle, shape [particle_count], int. -1 for global."""
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -233,7 +233,7 @@ class Model:
 
         self.shape_collision_group = []
         """Collision group of each shape, shape [shape_count], int."""
-        self.shape_collision_filter_pairs = set()
+        self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
         """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
@@ -241,8 +241,8 @@ class Model:
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
         """Number of shape contact pairs."""
-        self.shape_group = None
-        """Environment group index for each shape, shape [shape_count], int. -1 for global."""
+        self.shape_world = None
+        """World index for each shape, shape [shape_count], int. -1 for global."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -315,8 +315,8 @@ class Model:
         """Rigid body inverse mass, shape [body_count], float."""
         self.body_key = []
         """Rigid body keys, shape [body_count], str."""
-        self.body_group = None
-        """Environment group index for each body, shape [body_count], int. Global entities have group index -1."""
+        self.body_world = None
+        """World index for each body, shape [body_count], int. Global entities have index -1."""
 
         self.joint_q = None
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
@@ -376,14 +376,14 @@ class Model:
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_key = []
         """Joint keys, shape [joint_count], str."""
-        self.joint_group = None
-        """Environment group index for each joint, shape [joint_count], int. -1 for global."""
+        self.joint_world = None
+        """World index for each joint, shape [joint_count], int. -1 for global."""
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
-        self.articulation_group = None
-        """Environment group index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.articulation_world = None
+        """World index for each articulation, shape [articulation_count], int. -1 for global."""
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
@@ -646,7 +646,6 @@ class Model:
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
-        iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
     ) -> Contacts:
         """
@@ -666,7 +665,6 @@ class Model:
                 If None, a kernel is launched to count the number of possible contacts.
             soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
             edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
-            iterate_mesh_vertices (bool, optional): Whether to iterate over all vertices of a mesh for contact generation (used for capsule/box <> mesh collision). Default is True.
             requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
 
         Returns:
@@ -681,21 +679,19 @@ class Model:
             self._collision_pipeline = collision_pipeline
         elif not hasattr(self, "_collision_pipeline"):
             self._collision_pipeline = CollisionPipeline.from_model(
-                self,
-                rigid_contact_max_per_pair,
-                rigid_contact_margin,
-                soft_contact_max,
-                soft_contact_margin,
-                edge_sdf_iter,
-                iterate_mesh_vertices,
-                requires_grad,
+                model=self,
+                rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+                rigid_contact_margin=rigid_contact_margin,
+                soft_contact_max=soft_contact_max,
+                soft_contact_margin=soft_contact_margin,
+                edge_sdf_iter=edge_sdf_iter,
+                requires_grad=requires_grad,
             )
 
         # update any additional parameters
         self._collision_pipeline.rigid_contact_margin = rigid_contact_margin
         self._collision_pipeline.soft_contact_margin = soft_contact_margin
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
-        self._collision_pipeline.iterate_mesh_vertices = iterate_mesh_vertices
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom attributes with assignment==CONTACT
