@@ -394,7 +394,7 @@ def parse_usd(
                         print("Warning: Non-uniform extents of spheres are not supported.")
                     radius = extents[0]
                 else:
-                    radius = parse_float(prim, "radius", 1.0) * scale[0]
+                    radius = parse_float(prim, "radius", 1.0)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -1402,7 +1402,7 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
-                        radius=shape_spec.radius * scale[0],
+                        radius=shape_spec.radius,
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     # Apply axis rotation to transform
