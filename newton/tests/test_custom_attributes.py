@@ -114,42 +114,30 @@ class TestCustomAttributes(unittest.TestCase):
         body1 = builder.add_body(
             mass=1.0,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "custom_float": 25.5,
-                    "custom_int": 42,
-                    "custom_bool": True,
-                    "custom_vec3": [1.0, 0.5, 0.0],
-                },
-                ModelAttributeAssignment.STATE: {
-                    "velocity_limit": [2.0, 2.0, 2.0],
-                    "is_active": True,
-                    "energy": 100.5,
-                },
-                ModelAttributeAssignment.CONTROL: {
-                    "gain": 1.5,
-                    "mode": 3,
-                },
+                "custom_float": 25.5,
+                "custom_int": 42,
+                "custom_bool": True,
+                "custom_vec3": [1.0, 0.5, 0.0],
+                "velocity_limit": [2.0, 2.0, 2.0],
+                "is_active": True,
+                "energy": 100.5,
+                "gain": 1.5,
+                "mode": 3,
             },
         )
 
         body2 = builder.add_body(
             mass=2.0,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "custom_float": 30.0,
-                    "custom_int": 7,
-                    "custom_bool": False,
-                    "custom_vec3": [0.0, 1.0, 0.5],
-                },
-                ModelAttributeAssignment.STATE: {
-                    "velocity_limit": [3.0, 3.0, 3.0],
-                    "is_active": False,
-                    "energy": 200.0,
-                },
-                ModelAttributeAssignment.CONTROL: {
-                    "gain": 2.0,
-                    "mode": 5,
-                },
+                "custom_float": 30.0,
+                "custom_int": 7,
+                "custom_bool": False,
+                "custom_vec3": [0.0, 1.0, 0.5],
+                "velocity_limit": [3.0, 3.0, 3.0],
+                "is_active": False,
+                "energy": 200.0,
+                "gain": 2.0,
+                "mode": 5,
             },
         )
 
@@ -224,12 +212,10 @@ class TestCustomAttributes(unittest.TestCase):
             hy=0.05,
             hz=0.05,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "custom_float": 0.8,
-                    "custom_int": 3,
-                    "custom_bool": False,
-                    "custom_vec2": [0.2, 0.4],
-                }
+                "custom_float": 0.8,
+                "custom_int": 3,
+                "custom_bool": False,
+                "custom_vec2": [0.2, 0.4],
             },
         )
 
@@ -237,12 +223,10 @@ class TestCustomAttributes(unittest.TestCase):
             body=robot_entities["link1"],
             radius=0.02,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "custom_float": 0.3,
-                    "custom_int": 1,
-                    "custom_bool": True,
-                    "custom_vec2": [0.8, 0.6],
-                }
+                "custom_float": 0.3,
+                "custom_int": 1,
+                "custom_bool": True,
+                "custom_vec2": [0.8, 0.6],
             },
         )
 
@@ -279,12 +263,10 @@ class TestCustomAttributes(unittest.TestCase):
             child=body,
             axis=[0.0, 0.0, 1.0],
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "dof_custom_float": [0.05],
-                    "dof_custom_int": [15],
-                    "coord_custom_float": [0.5],
-                    "coord_custom_int": [12],
-                }
+                "dof_custom_float": [0.05],
+                "dof_custom_int": [15],
+                "coord_custom_float": [0.5],
+                "coord_custom_int": [12],
             },
         )
 
@@ -326,10 +308,8 @@ class TestCustomAttributes(unittest.TestCase):
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
             angular_axes=[cfg(axis=[0, 0, 1])],
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "dof_custom_float": [0.1, 0.2, 0.3],
-                    "coord_custom_int": [100, 200, 300],
-                }
+                "dof_custom_float": [0.1, 0.2, 0.3],
+                "coord_custom_int": [100, 200, 300],
             },
         )
 
@@ -367,10 +347,8 @@ class TestCustomAttributes(unittest.TestCase):
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
             angular_axes=[cfg(axis=[0, 0, 1])],
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "dof_custom_vec2": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
-                    "coord_custom_vec3": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
-                }
+                "dof_custom_vec2": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                "coord_custom_vec3": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
             },
         )
 
@@ -408,7 +386,7 @@ class TestCustomAttributes(unittest.TestCase):
                 parent=robot_entities["link2"],
                 child=body1,
                 axis=[0, 0, 1],
-                custom_attributes={ModelAttributeAssignment.MODEL: {"dof_custom_float": 0.1}},
+                custom_attributes={"dof_custom_float": 0.1},
             )
 
         # Test wrong DOF list length (value error)
@@ -419,9 +397,7 @@ class TestCustomAttributes(unittest.TestCase):
                 child=body2,
                 linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
                 angular_axes=[cfg(axis=[0, 0, 1])],
-                custom_attributes={
-                    ModelAttributeAssignment.MODEL: {"dof_custom_float": [0.1, 0.2]}
-                },  # 2 values for 3-DOF joint
+                custom_attributes={"dof_custom_float": [0.1, 0.2]},  # 2 values for 3-DOF joint
             )
 
         # Test coordinate attribute must be a list (type error)
@@ -431,7 +407,7 @@ class TestCustomAttributes(unittest.TestCase):
                 parent=robot_entities["link2"],
                 child=body3,
                 axis=[1, 0, 0],
-                custom_attributes={ModelAttributeAssignment.MODEL: {"coord_custom_float": 0.5}},
+                custom_attributes={"coord_custom_float": 0.5},
             )
 
     def test_vector_type_inference(self):
@@ -446,11 +422,9 @@ class TestCustomAttributes(unittest.TestCase):
         body = builder.add_body(
             mass=1.0,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "custom_vec2": [1.0, 2.0],
-                    "custom_vec3": [1.0, 2.0, 3.0],
-                    "custom_vec4": [1.0, 2.0, 3.0, 4.0],
-                }
+                "custom_vec2": [1.0, 2.0],
+                "custom_vec3": [1.0, 2.0, 3.0],
+                "custom_vec4": [1.0, 2.0, 3.0, 4.0],
             },
         )
 
@@ -478,13 +452,11 @@ class TestCustomAttributes(unittest.TestCase):
         with self.assertRaises(AttributeError):
             builder.add_body(
                 mass=1.0,
-                custom_attributes={
-                    ModelAttributeAssignment.MODEL: {"custom_string": "test_body", "custom_float": 25.0}
-                },
+                custom_attributes={"custom_string": "test_body", "custom_float": 25.0},
             )
 
         # But using only declared attribute should work
-        builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"custom_float": 25.0}})
+        builder.add_body(mass=1.0, custom_attributes={"custom_float": 25.0})
 
         custom_attrs = builder.custom_attributes
         self.assertIn("custom_float", custom_attrs)
@@ -500,7 +472,7 @@ class TestCustomAttributes(unittest.TestCase):
                 hx=0.1,
                 hy=0.1,
                 hz=0.1,
-                custom_attributes={ModelAttributeAssignment.MODEL: {"body_only_attr": 1.0}},
+                custom_attributes={"body_only_attr": 1.0},
             )
         self.assertIn("frequency", str(context.exception).lower())
 
@@ -508,37 +480,22 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute("shape_only_attr", newton.ModelAttributeFrequency.SHAPE, dtype=wp.float32)
 
         with self.assertRaises(ValueError) as context:
-            builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"shape_only_attr": 2.0}})
+            builder.add_body(mass=1.0, custom_attributes={"shape_only_attr": 2.0})
         self.assertIn("frequency", str(context.exception).lower())
 
         # Test 4: Using attributes with correct frequency should work
-        builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"body_only_attr": 1.5}})
+        builder.add_body(mass=1.0, custom_attributes={"body_only_attr": 1.5})
         builder.add_shape_box(
             body=robot_entities["base"],
             hx=0.1,
             hy=0.1,
             hz=0.1,
-            custom_attributes={ModelAttributeAssignment.MODEL: {"shape_only_attr": 2.5}},
+            custom_attributes={"shape_only_attr": 2.5},
         )
-
-        # Test 5: Attribute with wrong assignment should raise ValueError
-        # Declare an attribute with STATE assignment
-        builder.add_custom_attribute(
-            "state_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=newton.ModelAttributeAssignment.STATE,
-        )
-
-        # This should fail because the attribute expects STATE assignment but we're using MODEL
-        with self.assertRaises(ValueError) as context:
-            builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"state_attr": 3.0}})
-        self.assertIn("assignment", str(context.exception).lower())
 
         # Verify attributes were created with correct assignments
         self.assertEqual(custom_attrs["custom_float"].assignment, ModelAttributeAssignment.MODEL)
         self.assertEqual(custom_attrs["body_only_attr"].assignment, ModelAttributeAssignment.MODEL)
-        self.assertEqual(builder.custom_attributes["state_attr"].assignment, ModelAttributeAssignment.STATE)
 
         model = builder.finalize(device=self.device)
         self.assertTrue(hasattr(model, "custom_float"))
@@ -551,7 +508,7 @@ class TestCustomAttributes(unittest.TestCase):
         # Declare custom attribute before use
         builder.add_custom_attribute("custom_float", newton.ModelAttributeFrequency.BODY, dtype=wp.float32)
 
-        builder.add_body(mass=1.0, custom_attributes={ModelAttributeAssignment.MODEL: {"custom_float": 25.0}})
+        builder.add_body(mass=1.0, custom_attributes={"custom_float": 25.0})
 
         custom_attrs = builder.custom_attributes
         self.assertEqual(custom_attrs["custom_float"].assignment, ModelAttributeAssignment.MODEL)
@@ -577,11 +534,9 @@ class TestCustomAttributes(unittest.TestCase):
         body = builder.add_body(
             mass=1.0,
             custom_attributes={
-                ModelAttributeAssignment.MODEL: {
-                    "scalar_attr": 42.5,
-                    "vec3_attr": [1.0, 2.0, 3.0],
-                    "int_attr": 7,
-                }
+                "scalar_attr": 42.5,
+                "vec3_attr": [1.0, 2.0, 3.0],
+                "int_attr": 7,
             },
         )
 
@@ -626,44 +581,36 @@ class TestCustomAttributes(unittest.TestCase):
         # Create a simple robot in sub-builder
         body1 = sub_builder.add_body(
             mass=1.0,
-            custom_attributes={
-                ModelAttributeAssignment.MODEL: {"robot_id": 100},
-                ModelAttributeAssignment.STATE: {"temperature": 37.5},
-            },
+            custom_attributes={"robot_id": 100, "temperature": 37.5},
         )
-        sub_builder.add_shape_sphere(
-            body1, radius=0.1, custom_attributes={ModelAttributeAssignment.MODEL: {"shape_color": [1.0, 0.0, 0.0]}}
-        )
+        sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"shape_color": [1.0, 0.0, 0.0]})
 
         body2 = sub_builder.add_body(
             mass=0.5,
-            custom_attributes={
-                ModelAttributeAssignment.MODEL: {"robot_id": 200},
-                ModelAttributeAssignment.STATE: {"temperature": 38.0},
-            },
+            custom_attributes={"robot_id": 200, "temperature": 38.0},
         )
         sub_builder.add_shape_box(
             body2,
             hx=0.05,
             hy=0.05,
             hz=0.05,
-            custom_attributes={ModelAttributeAssignment.MODEL: {"shape_color": [0.0, 1.0, 0.0]}},
+            custom_attributes={"shape_color": [0.0, 1.0, 0.0]},
         )
 
         sub_builder.add_joint_revolute(
             parent=body1,
             child=body2,
             axis=[0, 0, 1],
-            custom_attributes={ModelAttributeAssignment.CONTROL: {"dof_gain": [1.5]}},
+            custom_attributes={"dof_gain": [1.5]},
         )
 
         # Create main builder and add sub-builder multiple times
         main_builder = newton.ModelBuilder()
 
         # Add first instance
-        main_builder.add_builder(sub_builder, environment=0)
+        main_builder.add_builder(sub_builder, world=0)
         # Add second instance
-        main_builder.add_builder(sub_builder, environment=1)
+        main_builder.add_builder(sub_builder, world=1)
 
         # Verify custom attributes were merged
         self.assertIn("robot_id", main_builder.custom_attributes)

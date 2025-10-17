@@ -76,7 +76,7 @@ The following example shows how to declare custom attributes with different freq
 Authoring Custom Attributes
 ----------------------------
 
-After declaration, custom attributes are authored through the standard entity creation API (``add_body``, ``add_shape``, ``add_joint``, etc.). Values are provided in a dictionary structure grouped by assignment.
+After declaration, custom attributes are authored through the standard entity creation API (``add_body``, ``add_shape``, ``add_joint``, etc.). Values are provided in a simple dictionary where the assignment (MODEL, STATE, or CONTROL) is automatically inferred from how the attribute was declared.
 
 For the attributes declared above, the following shows how to assign values when creating bodies:
 
@@ -86,12 +86,8 @@ For the attributes declared above, the following shows how to assign values when
    body_id = builder.add_body(
        mass=1.0,
        custom_attributes={
-           ModelAttributeAssignment.MODEL: {
-               "temperature": 37.5,
-           },
-           ModelAttributeAssignment.STATE: {
-               "velocity_limit": [2.0, 2.0, 2.0],
-           }
+           "temperature": 37.5,
+           "velocity_limit": [2.0, 2.0, 2.0],
        }
    )
 
@@ -132,11 +128,9 @@ After declaring these joint attributes, values can be assigned when creating joi
        linear_axes=[...],
        angular_axes=[...],
        custom_attributes={
-           ModelAttributeAssignment.MODEL: {
-               "joint_type": 2,
-               "dof_stiffness": [100.0, 150.0, 200.0],  # Three DOFs
-               "coord_offset": [0.1, 0.2, 0.3],         # Three coordinates
-           }
+           "joint_type": 2,
+           "dof_stiffness": [100.0, 150.0, 200.0],  # Three DOFs
+           "coord_offset": [0.1, 0.2, 0.3],         # Three coordinates
        }
    )
 

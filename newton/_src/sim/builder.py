@@ -525,50 +525,22 @@ class ModelBuilder:
             default=default,
         )
 
-    def _process_custom_attributes_dict(
-        self,
-        entity_index: int,
-        custom_attrs_dict: dict[ModelAttributeAssignment, dict[str, Any]],
-        expected_frequency: ModelAttributeFrequency,
-    ) -> None:
-        """Process custom attributes from a dictionary grouped by assignment.
-
-        Args:
-            entity_index: Index of the entity (body, shape, joint, etc.)
-            custom_attrs_dict: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
-            expected_frequency: Expected frequency for these attributes.
-        """
-        for assignment, attrs in custom_attrs_dict.items():
-            if not isinstance(assignment, ModelAttributeAssignment):
-                raise TypeError(
-                    f"Invalid assignment key type '{type(assignment).__name__}'. "
-                    f"Must use ModelAttributeAssignment enum (e.g., ModelAttributeAssignment.MODEL)"
-                )
-
-            self._process_custom_attributes(
-                entity_index=entity_index,
-                custom_attrs=attrs,
-                expected_frequency=expected_frequency,
-                assignment=assignment,
-            )
-
     def _process_custom_attributes(
         self,
         entity_index: int,
         custom_attrs: dict[str, Any],
         expected_frequency: ModelAttributeFrequency,
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ) -> None:
         """Process custom attributes from kwargs and assign them to an entity.
 
-        This method validates that custom attributes exist with the correct frequency and assignment,
-        then assigns values to the specific entity.
+        This method validates that custom attributes exist with the correct frequency,
+        then assigns values to the specific entity. The assignment is inferred from the
+        attribute definition.
 
         Args:
             entity_index: Index of the entity (body, shape, joint, etc.)
             custom_attrs: Dictionary of custom attribute names to values
             expected_frequency: Expected frequency for these attributes
-            assignment: Expected assignment category for these attributes
         """
         for attr_name, value in custom_attrs.items():
             # Ensure the custom attribute is defined
@@ -586,46 +558,15 @@ class ModelBuilder:
                     f"but expected {expected_frequency} for this entity type"
                 )
 
-            # Validate assignment matches
-            if custom_attr.assignment != assignment:
-                raise ValueError(
-                    f"Custom attribute '{attr_name}' has assignment {custom_attr.assignment}, but expected {assignment}"
-                )
-
             # Set the value for this specific entity
             if custom_attr.values is None:
                 custom_attr.values = {}
             custom_attr.values[entity_index] = value
 
-    def _process_joint_custom_attributes_dict(
-        self,
-        joint_index: int,
-        custom_attrs_dict: dict[ModelAttributeAssignment, dict[str, Any]],
-    ) -> None:
-        """Process custom attributes from a dictionary grouped by assignment for joints.
-
-        Args:
-            joint_index: Index of the joint.
-            custom_attrs_dict: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
-        """
-        for assignment, attrs in custom_attrs_dict.items():
-            if not isinstance(assignment, ModelAttributeAssignment):
-                raise TypeError(
-                    f"Invalid assignment key type '{type(assignment).__name__}'. "
-                    f"Must use ModelAttributeAssignment enum (e.g., ModelAttributeAssignment.MODEL)"
-                )
-
-            self._process_joint_custom_attributes(
-                joint_index=joint_index,
-                custom_attrs=attrs,
-                assignment=assignment,
-            )
-
     def _process_joint_custom_attributes(
         self,
         joint_index: int,
         custom_attrs: dict[str, Any],
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
     ) -> None:
         """Process custom attributes from kwargs for joints, supporting multiple frequencies.
 
@@ -643,7 +584,6 @@ class ModelBuilder:
         Args:
             joint_index: Index of the joint
             custom_attrs: Dictionary of custom attribute names to values
-            assignment: Assignment category for the attributes
         """
 
         # Separate attributes by frequency based on prefixes
@@ -668,7 +608,6 @@ class ModelBuilder:
                 entity_index=joint_index,
                 custom_attrs=joint_attrs,
                 expected_frequency=ModelAttributeFrequency.JOINT,
-                assignment=assignment,
             )
 
         # Process JOINT_DOF frequency attributes (one per DOF)
@@ -701,7 +640,6 @@ class ModelBuilder:
                         entity_index=dof_start + i,
                         custom_attrs=single_attr,
                         expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                        assignment=assignment,
                     )
 
         # Process JOINT_COORD frequency attributes (one per coordinate)
@@ -734,7 +672,6 @@ class ModelBuilder:
                         entity_index=coord_start + i,
                         custom_attrs=single_attr,
                         expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                        assignment=assignment,
                     )
 
     @property
@@ -1471,6 +1408,22 @@ class ModelBuilder:
                     assignment=attr.assignment,
                 )
                 merged = self.custom_attributes[name]
+                # Prevent silent divergence if defaults differ
+                # Handle array/vector types by converting to comparable format
+                try:
+                    defaults_match = merged.default == attr.default
+                    # Handle array-like comparisons
+                    if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
+                        defaults_match = all(defaults_match)
+                except (ValueError, TypeError):
+                    # If comparison fails, assume they're different
+                    defaults_match = False
+
+                if not defaults_match:
+                    raise ValueError(
+                        f"Custom attribute '{name}' default mismatch when merging builders: "
+                        f"existing={merged.default}, incoming={attr.default}"
+                    )
                 if not attr.values:
                     continue
 
@@ -1494,7 +1447,7 @@ class ModelBuilder:
                 for idx, value in attr.values.items():
                     merged.values[offset + idx] = value
 
-        if update_num_env_count:
+        if update_num_world_count:
             # Globals do not contribute to the world count
             if group_idx >= 0:
                 # If an explicit world is provided, ensure num_worlds >= group_idx+1.
@@ -1515,7 +1468,7 @@ class ModelBuilder:
         I_m: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a rigid body to the model.
 
@@ -1526,7 +1479,7 @@ class ModelBuilder:
             I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             The index of the body in the model.
@@ -1573,9 +1526,9 @@ class ModelBuilder:
         self.body_world.append(self.current_world)
         # Process custom attributes
         if custom_attributes:
-            self._process_custom_attributes_dict(
+            self._process_custom_attributes(
                 entity_index=body_id,
-                custom_attrs_dict=custom_attributes,
+                custom_attrs=custom_attributes,
                 expected_frequency=ModelAttributeFrequency.BODY,
             )
 
@@ -1595,7 +1548,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """
         Generic method to add any type of joint to this ModelBuilder.
@@ -1611,7 +1564,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
                 Attribute names with ``dof_`` prefix use JOINT_DOF frequency (requires list of values per DOF).
                 Attribute names with ``coord_`` prefix use JOINT_COORD frequency (requires list of values per coordinate).
                 Attribute names without prefix use JOINT frequency (single value per joint).
@@ -1711,9 +1664,9 @@ class ModelBuilder:
 
         # Process custom attributes
         if custom_attributes:
-            self._process_joint_custom_attributes_dict(
+            self._process_joint_custom_attributes(
                 joint_index=joint_index,
-                custom_attrs_dict=custom_attributes,
+                custom_attrs=custom_attributes,
             )
 
         return joint_index
@@ -2741,7 +2694,7 @@ class ModelBuilder:
         src: SDF | Mesh | Any | None = None,
         is_static: bool = False,
         key: str | None = None,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a generic collision shape to the model.
 
@@ -2756,7 +2709,7 @@ class ModelBuilder:
             src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             int: The index of the newly added shape.
@@ -2806,9 +2759,9 @@ class ModelBuilder:
 
         # Process custom attributes
         if custom_attributes:
-            self._process_custom_attributes_dict(
+            self._process_custom_attributes(
                 entity_index=shape,
-                custom_attrs_dict=custom_attributes,
+                custom_attrs=custom_attributes,
                 expected_frequency=ModelAttributeFrequency.SHAPE,
             )
 
@@ -2896,7 +2849,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a sphere collision shape to a body.
 
@@ -2906,7 +2859,7 @@ class ModelBuilder:
             radius (float): The radius of the sphere. Defaults to `1.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             int: The index of the newly added shape.
@@ -2934,7 +2887,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a box collision shape to a body.
 
@@ -2948,7 +2901,7 @@ class ModelBuilder:
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             int: The index of the newly added shape.
@@ -2969,7 +2922,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
-        custom_attributes: dict[ModelAttributeAssignment, dict[str, Any]] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a capsule collision shape to a body.
 
@@ -2982,7 +2935,7 @@ class ModelBuilder:
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            custom_attributes: Dictionary mapping ModelAttributeAssignment enums to attribute dictionaries.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
             int: The index of the newly added shape.
