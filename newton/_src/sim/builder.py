@@ -612,10 +612,12 @@ class ModelBuilder:
         coord_attrs = {}  # JOINT_COORD frequency
 
         for attr_name, value in custom_attrs.items():
-            if attr_name.startswith("dof_"):
+            local_name = attr_name.split(":", 1)[1] if ":" in attr_name else attr_name
+
+            if local_name.startswith("dof_"):
                 # Keep the full attribute name as provided by user
                 dof_attrs[attr_name] = value
-            elif attr_name.startswith("coord_"):
+            elif local_name.startswith("coord_"):
                 # Keep the full attribute name as provided by user
                 coord_attrs[attr_name] = value
             else:

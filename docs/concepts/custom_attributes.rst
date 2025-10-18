@@ -13,7 +13,6 @@ Custom attributes enable a wide range of simulation extensions:
 * **Visualization**: Attach colors, labels, rendering properties, or UI metadata to simulation entities
 * **Multi-physics coupling**: Store quantities like surface stress, temperature fields, or electromagnetic properties
 * **Reinforcement learning**: Store observation buffers, reward weights, optimization parameters, or policy-specific data directly on entities
-* **Hardware-in-the-loop**: Tag entities with device IDs, calibration data, or communication parameters
 
 Custom attributes follow Newton's flat array indexing scheme, enabling efficient GPU-parallel access while maintaining flexibility for domain-specific extensions.
 
@@ -89,10 +88,10 @@ The following example demonstrates declaring attributes with and without namespa
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
    
-   - ✅ ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-   - ✅ ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-   - ❌ ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
-   - ❌ ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
+   - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
 
 Authoring Custom Attributes
 ----------------------------

@@ -800,14 +800,13 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
-            AttributeError: If the attribute already exists, is not a wp.array, or is on the wrong device.
+            TypeError: If the attribute is not a wp.array.
+            AttributeError: If the attribute already exists or is on the wrong device.
         """
         if not isinstance(attrib, wp.array):
-            raise AttributeError(f"Attribute '{name}' must be an array, got {type(attrib)}")
+            raise TypeError(f"Attribute '{name}' must be a wp.array")
         if attrib.device != self.device:
-            raise AttributeError(
-                f"Attribute '{name}' must be on the same device as the Model, expected {self.device}, got {attrib.device}"
-            )
+            raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
         # Handle namespaced attributes
         if namespace:
@@ -817,14 +816,14 @@ class Model:
 
             ns_obj = getattr(self, namespace)
             if hasattr(ns_obj, name):
-                raise AttributeError(f"Attribute '{namespace}.{name}' already exists")
+                raise AttributeError(f"Attribute already exists: {namespace}.{name}")
 
             setattr(ns_obj, name, attrib)
             full_name = f"{namespace}:{name}"
         else:
             # Add directly to model
             if hasattr(self, name):
-                raise AttributeError(f"Attribute '{name}' already exists")
+                raise AttributeError(f"Attribute already exists: {name}")
             setattr(self, name, attrib)
             full_name = name
 
