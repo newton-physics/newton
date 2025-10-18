@@ -666,6 +666,243 @@ class TestCustomAttributes(unittest.TestCase):
         # Second instance (DOF 1)
         self.assertAlmostEqual(dof_gains[1], 1.5, places=5)
 
+    def test_namespaced_attributes(self):
+        """Test namespaced custom attributes with hierarchical organization."""
+        builder = newton.ModelBuilder()
+
+        # Declare attributes in different namespaces
+        builder.add_custom_attribute(
+            "damping",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            namespace="mujoco",
+        )
+        builder.add_custom_attribute(
+            "enable_ccd",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.bool,
+            assignment=ModelAttributeAssignment.STATE,
+            namespace="physx",
+        )
+        builder.add_custom_attribute(
+            "custom_id",
+            newton.ModelAttributeFrequency.SHAPE,
+            dtype=wp.int32,
+            assignment=ModelAttributeAssignment.MODEL,
+            namespace="mujoco",
+        )
+        # Declare a default namespace attribute (no namespace)
+        builder.add_custom_attribute(
+            "temperature",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+
+        robot_entities = self._add_test_robot(builder)
+
+        # Create bodies with namespaced attributes
+        body1 = builder.add_body(
+            mass=1.0,
+            custom_attributes={
+                "mujoco:damping": 0.1,
+                "physx:enable_ccd": True,
+                "temperature": 37.5,
+            },
+        )
+
+        body2 = builder.add_body(
+            mass=2.0,
+            custom_attributes={
+                "mujoco:damping": 0.2,
+                "physx:enable_ccd": False,
+                "temperature": 40.0,
+            },
+        )
+
+        # Create shapes with namespaced attributes
+        shape1 = builder.add_shape_box(
+            body=body1,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            custom_attributes={"mujoco:custom_id": 100},
+        )
+
+        shape2 = builder.add_shape_sphere(
+            body=body2,
+            radius=0.05,
+            custom_attributes={"mujoco:custom_id": 200},
+        )
+
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        # Verify namespaced attributes exist on correct objects
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(state, "physx"))
+        self.assertTrue(hasattr(model, "temperature"))  # default namespace
+
+        # Verify mujoco namespace attributes
+        mujoco_damping = model.mujoco.damping.numpy()
+        self.assertAlmostEqual(mujoco_damping[body1], 0.1, places=5)
+        self.assertAlmostEqual(mujoco_damping[body2], 0.2, places=5)
+        self.assertAlmostEqual(mujoco_damping[robot_entities["base"]], 0.0, places=5)  # default value
+
+        mujoco_custom_id = model.mujoco.custom_id.numpy()
+        self.assertEqual(mujoco_custom_id[shape1], 100)
+        self.assertEqual(mujoco_custom_id[shape2], 200)
+
+        # Verify physx namespace attributes
+        physx_enable_ccd = state.physx.enable_ccd.numpy()
+        self.assertEqual(physx_enable_ccd[body1], 1)  # True
+        self.assertEqual(physx_enable_ccd[body2], 0)  # False
+        self.assertEqual(physx_enable_ccd[robot_entities["link1"]], 0)  # default False
+
+        # Verify default namespace attribute
+        temperatures = model.temperature.numpy()
+        self.assertAlmostEqual(temperatures[body1], 37.5, places=5)
+        self.assertAlmostEqual(temperatures[body2], 40.0, places=5)
+
+    def test_attribute_uniqueness_constraints(self):
+        """Test uniqueness constraints for custom attributes based on full identifier (namespace:name)."""
+
+        # Test 1: Same name in different namespaces with different assignments - SHOULD WORK
+        # Key "float_attr" vs "namespace_a:float_attr" are different
+        builder1 = newton.ModelBuilder()
+        builder1.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        builder1.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.STATE,
+            namespace="namespace_a",
+        )
+        # Should work - different full keys
+        body = builder1.add_body(
+            mass=1.0,
+            custom_attributes={
+                "float_attr": 1.0,  # MODEL
+                "namespace_a:float_attr": 2.0,  # STATE, namespaced
+            },
+        )
+        model1 = builder1.finalize(device=self.device)
+        state1 = model1.state()
+
+        self.assertAlmostEqual(model1.float_attr.numpy()[body], 1.0, places=5)
+        self.assertAlmostEqual(state1.namespace_a.float_attr.numpy()[body], 2.0, places=5)
+
+        # Test 2: Same name (no namespace) with different assignments - SHOULD FAIL
+        # Both use key "float_attr"
+        builder2 = newton.ModelBuilder()
+        builder2.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        with self.assertRaises(ValueError) as context:
+            builder2.add_custom_attribute(
+                "float_attr",
+                newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,  # Different assignment, same key
+            )
+        self.assertIn("already exists", str(context.exception))
+        self.assertIn("assignment", str(context.exception))
+
+        # Test 3: Same namespace:name with different assignments - SHOULD FAIL
+        # Both use key "namespace_a:float_attr"
+        builder3 = newton.ModelBuilder()
+        builder3.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            namespace="namespace_a",
+        )
+        with self.assertRaises(ValueError) as context:
+            builder3.add_custom_attribute(
+                "float_attr",
+                newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,  # Different assignment, same namespace:name
+                namespace="namespace_a",
+            )
+        self.assertIn("already exists", str(context.exception))
+
+        # Test 4: Same name in different namespaces with same assignment - SHOULD WORK
+        # Keys "namespace_a:float_attr" and "namespace_b:float_attr" are different
+        builder4 = newton.ModelBuilder()
+        builder4.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            namespace="namespace_a",
+        )
+        builder4.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            namespace="namespace_b",
+        )
+        # Should work - different namespaces create different keys
+        body = builder4.add_body(
+            mass=1.0,
+            custom_attributes={
+                "namespace_a:float_attr": 10.0,
+                "namespace_b:float_attr": 20.0,
+            },
+        )
+        model4 = builder4.finalize(device=self.device)
+
+        self.assertAlmostEqual(model4.namespace_a.float_attr.numpy()[body], 10.0, places=5)
+        self.assertAlmostEqual(model4.namespace_b.float_attr.numpy()[body], 20.0, places=5)
+
+        # Test 5: Idempotent declaration - declaring same attribute twice with identical params - SHOULD WORK
+        builder5 = newton.ModelBuilder()
+        builder5.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        # Declaring again with same parameters should be allowed
+        builder5.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        # Should still work
+        self.assertEqual(len(builder5.custom_attributes), 1)
+
+        # Test 6: Same key with different frequency - SHOULD FAIL
+        builder6 = newton.ModelBuilder()
+        builder6.add_custom_attribute(
+            "float_attr",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+        )
+        with self.assertRaises(ValueError) as context:
+            builder6.add_custom_attribute(
+                "float_attr",
+                newton.ModelAttributeFrequency.SHAPE,  # Different frequency
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
+        self.assertIn("already exists", str(context.exception))
+        self.assertIn("frequency", str(context.exception))
+
 
 def run_tests():
     """Run all custom attributes tests."""

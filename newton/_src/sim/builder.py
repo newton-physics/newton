@@ -495,33 +495,46 @@ class ModelBuilder:
         dtype: Any,
         default=None,
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
+        namespace: str | None = None,
     ):
         """Define a custom per-entity attribute to be added to the Model.
 
         Args:
-            name: Variable name to expose on the Model
+            name: Variable name to expose on the Model (or within the namespace if namespace is specified)
             frequency: ModelAttributeFrequency enum value
             dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). Required.
             default: Default value for the attribute. If None, will use dtype-specific default
                 (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
             assignment: ModelAttributeAssignment enum value determining where the attribute appears
+            namespace: Optional namespace for organizing attributes hierarchically.
+                If None, attribute is added directly to the assignment object (e.g., model.attr_name).
+                If specified, creates a namespace object under the assignment (e.g., model.namespace.attr_name)
         """
-        if name in self.custom_attributes:
+        # Create a full key that includes namespace for uniqueness checking
+        full_key = f"{namespace}:{name}" if namespace else name
+
+        if full_key in self.custom_attributes:
             # validate that specification matches exactly
-            existing = self.custom_attributes[name]
-            if existing.frequency != frequency or existing.dtype != dtype or existing.assignment != assignment:
+            existing = self.custom_attributes[full_key]
+            if (
+                existing.frequency != frequency
+                or existing.dtype != dtype
+                or existing.assignment != assignment
+                or existing.namespace != namespace
+            ):
                 raise ValueError(
-                    f"Custom attribute '{name}' already exists with frequency='{existing.frequency}', "
-                    f"dtype='{existing.dtype}', assignment='{existing.assignment}'. "
-                    f"Cannot redefine with frequency='{frequency}', dtype='{dtype}', assignment='{assignment}'."
+                    f"Custom attribute '{full_key}' already exists with frequency='{existing.frequency}', "
+                    f"dtype='{existing.dtype}', assignment='{existing.assignment}', namespace='{existing.namespace}'. "
+                    f"Cannot redefine with frequency='{frequency}', dtype='{dtype}', assignment='{assignment}', namespace='{namespace}'."
                 )
             return
 
-        self.custom_attributes[name] = CustomAttribute(
+        self.custom_attributes[full_key] = CustomAttribute(
             assignment=assignment,
             frequency=frequency,
             name=name,
             dtype=dtype,
+            namespace=namespace,
             default=default,
         )
 
@@ -537,24 +550,31 @@ class ModelBuilder:
         then assigns values to the specific entity. The assignment is inferred from the
         attribute definition.
 
+        Attribute names can optionally include a namespace prefix in the format "namespace:attr_name".
+        If no namespace prefix is provided, the attribute is assumed to be in the default namespace (None).
+
         Args:
             entity_index: Index of the entity (body, shape, joint, etc.)
-            custom_attrs: Dictionary of custom attribute names to values
+            custom_attrs: Dictionary of custom attribute names to values.
+                Keys can be "attr_name" or "namespace:attr_name"
             expected_frequency: Expected frequency for these attributes
         """
-        for attr_name, value in custom_attrs.items():
+        for attr_key, value in custom_attrs.items():
+            # Parse namespace prefix if present (format: "namespace:attr_name" or "attr_name")
+            full_key = attr_key
+
             # Ensure the custom attribute is defined
-            custom_attr = self.custom_attributes.get(attr_name)
+            custom_attr = self.custom_attributes.get(full_key)
             if custom_attr is None:
                 raise AttributeError(
-                    f"Custom attribute '{attr_name}' is not defined. "
+                    f"Custom attribute '{full_key}' is not defined. "
                     f"Please declare it first using add_custom_attribute()."
                 )
 
             # Validate frequency matches
             if custom_attr.frequency != expected_frequency:
                 raise ValueError(
-                    f"Custom attribute '{attr_name}' has frequency {custom_attr.frequency}, "
+                    f"Custom attribute '{full_key}' has frequency {custom_attr.frequency}, "
                     f"but expected {expected_frequency} for this entity type"
                 )
 
@@ -1398,16 +1418,17 @@ class ModelBuilder:
 
         # Merge custom attributes from the sub-builder
         if builder.custom_attributes:
-            for name, attr in builder.custom_attributes.items():
+            for full_key, attr in builder.custom_attributes.items():
                 # Declare the attribute if it doesn't exist in the main builder
                 self.add_custom_attribute(
-                    name=name,
+                    name=attr.name,
                     frequency=attr.frequency,
                     dtype=attr.dtype,
                     default=attr.default,
                     assignment=attr.assignment,
+                    namespace=attr.namespace,
                 )
-                merged = self.custom_attributes[name]
+                merged = self.custom_attributes[full_key]
                 # Prevent silent divergence if defaults differ
                 # Handle array/vector types by converting to comparable format
                 try:
@@ -1421,7 +1442,7 @@ class ModelBuilder:
 
                 if not defaults_match:
                     raise ValueError(
-                        f"Custom attribute '{name}' default mismatch when merging builders: "
+                        f"Custom attribute '{full_key}' default mismatch when merging builders: "
                         f"existing={merged.default}, incoming={attr.default}"
                     )
                 if not attr.values:
@@ -4745,7 +4766,7 @@ class ModelBuilder:
                 return m
 
             # Process custom attributes
-            for var_name, custom_attr in self.custom_attributes.items():
+            for _full_key, custom_attr in self.custom_attributes.items():
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
@@ -4763,7 +4784,7 @@ class ModelBuilder:
                     continue
 
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(var_name, wp_arr, frequency, custom_attr.assignment)
+                m.add_attribute(custom_attr.name, wp_arr, frequency, custom_attr.assignment, custom_attr.namespace)
 
             return m
 

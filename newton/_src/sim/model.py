@@ -68,6 +68,29 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
 
 
+class AttributeNamespace:
+    """
+    A container for namespaced custom attributes.
+
+    Custom attributes are stored as regular instance attributes on this object,
+    allowing hierarchical organization of related properties.
+    """
+
+    def __init__(self, namespace_name: str):
+        """Initialize the namespace container.
+
+        Args:
+            namespace_name: The name of the namespace
+        """
+        self._namespace_name = namespace_name
+
+    def __repr__(self):
+        """Return a string representation showing the namespace and its attributes."""
+        # List all public attributes (not starting with _)
+        attrs = [k for k in self.__dict__ if not k.startswith("_")]
+        return f"AttributeNamespace('{self._namespace_name}', attributes={attrs})"
+
+
 @dataclass
 class CustomAttribute:
     """
@@ -78,6 +101,7 @@ class CustomAttribute:
         frequency: Frequency category (see ModelAttributeFrequency enum)
         name: Variable name to expose on the Model
         dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        namespace: Namespace for the attribute
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
     """
@@ -86,6 +110,7 @@ class CustomAttribute:
     frequency: ModelAttributeFrequency
     name: str
     dtype: object
+    namespace: str | None = None
     default: Any = None
     values: dict[int, Any] | None = None
 
@@ -714,22 +739,44 @@ class Model:
             requires_grad: Whether cloned arrays should have requires_grad enabled
             clone_arrays: Whether to clone wp.arrays (True) or use references (False)
         """
-        for name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(name, ModelAttributeAssignment.MODEL) != assignment:
+        for full_name, _freq in self.attribute_frequency.items():
+            if self.attribute_assignment.get(full_name, ModelAttributeAssignment.MODEL) != assignment:
                 continue
-            src = getattr(self, name, None)
-            if src is None:
-                raise AttributeError(
-                    f"Attribute '{name}' is registered in attribute_frequency but does not exist on the model"
-                )
 
+            # Parse namespace from full_name (format: "namespace:attr_name" or "attr_name")
+            if ":" in full_name:
+                namespace, attr_name = full_name.split(":", 1)
+                # Get source from namespaced location on model
+                ns_obj = getattr(self, namespace, None)
+                if ns_obj is None:
+                    raise AttributeError(f"Namespace '{namespace}' does not exist on the model")
+                src = getattr(ns_obj, attr_name, None)
+                if src is None:
+                    raise AttributeError(
+                        f"Attribute '{namespace}.{attr_name}' is registered but does not exist on the model"
+                    )
+                # Create namespace on destination if it doesn't exist
+                if not hasattr(destination, namespace):
+                    setattr(destination, namespace, AttributeNamespace(namespace))
+                dest = getattr(destination, namespace)
+            else:
+                # Non-namespaced attribute - add directly to destination
+                attr_name = full_name
+                src = getattr(self, attr_name, None)
+                if src is None:
+                    raise AttributeError(
+                        f"Attribute '{attr_name}' is registered in attribute_frequency but does not exist on the model"
+                    )
+                dest = destination
+
+            # Add attribute to the determined destination (either destination or dest_ns)
             if isinstance(src, wp.array):
                 if clone_arrays:
-                    setattr(destination, name, wp.clone(src, requires_grad=requires_grad))
+                    setattr(dest, attr_name, wp.clone(src, requires_grad=requires_grad))
                 else:
-                    setattr(destination, name, src)
+                    setattr(dest, attr_name, src)
             else:
-                setattr(destination, name, src)
+                setattr(dest, attr_name, src)
 
     def add_attribute(
         self,
@@ -737,6 +784,7 @@ class Model:
         attrib: wp.array,
         frequency: ModelAttributeFrequency,
         assignment: ModelAttributeAssignment | None = None,
+        namespace: str | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -746,13 +794,14 @@ class Model:
             attrib (wp.array): The array to add as an attribute.
             frequency (ModelAttributeFrequency): The frequency of the attribute using ModelAttributeFrequency enum.
             assignment (ModelAttributeAssignment, optional): The assignment category using ModelAttributeAssignment enum.
+                Determines which object will hold the attribute.
+            namespace (str, optional): Namespace for the attribute.
+                If None, attribute is added directly to the assignment object (e.g., model.attr_name).
+                If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
             AttributeError: If the attribute already exists, is not a wp.array, or is on the wrong device.
         """
-        if hasattr(self, name):
-            raise AttributeError(f"Attribute '{name}' already exists")
-
         if not isinstance(attrib, wp.array):
             raise AttributeError(f"Attribute '{name}' must be an array, got {type(attrib)}")
         if attrib.device != self.device:
@@ -760,11 +809,28 @@ class Model:
                 f"Attribute '{name}' must be on the same device as the Model, expected {self.device}, got {attrib.device}"
             )
 
-        setattr(self, name, attrib)
+        # Handle namespaced attributes
+        if namespace:
+            # Create namespace object if it doesn't exist
+            if not hasattr(self, namespace):
+                setattr(self, namespace, AttributeNamespace(namespace))
 
-        self.attribute_frequency[name] = frequency
+            ns_obj = getattr(self, namespace)
+            if hasattr(ns_obj, name):
+                raise AttributeError(f"Attribute '{namespace}.{name}' already exists")
+
+            setattr(ns_obj, name, attrib)
+            full_name = f"{namespace}:{name}"
+        else:
+            # Add directly to model
+            if hasattr(self, name):
+                raise AttributeError(f"Attribute '{name}' already exists")
+            setattr(self, name, attrib)
+            full_name = name
+
+        self.attribute_frequency[full_name] = frequency
         if assignment is not None:
-            self.attribute_assignment[name] = assignment
+            self.attribute_assignment[full_name] = assignment
 
     def get_attribute_frequency(self, name):
         """

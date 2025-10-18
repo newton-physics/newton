@@ -205,17 +205,25 @@ Accessing Collected Solver-Specific Attributes:
 
 USD assets can define custom attributes that become part of the model/state/control attributes. Newton's schema resolver system supports these custom attributes that follow a structured naming convention and are automatically parsed and integrated into the simulation model.
 
-Custom attributes enable users to:
+For a comprehensive guide to custom attributes, including declaration, authoring via Python API, use cases, and constraints, see :doc:`custom_attributes`.
+
+This section focuses specifically on USD authoring and integration of custom attributes. Custom attributes enable users to:
 
 * Extend Newton's data model with application-specific properties
 * Store per-body/joint/dof/shape data directly in USD assets  
 * Implement custom simulation behaviors driven by USD-authored data
 
-**Custom Attribute Naming Convention:** ``newton:assignment:frequency:attribute_name``
+**Custom Attribute Naming Convention:** 
+
+Newton supports two naming formats for custom attributes in USD:
+
+1. **Default namespace:** ``newton:assignment:frequency:attribute_name``
+2. **Custom namespace:** ``newton:assignment:namespace:frequency:attribute_name``
 
 Where:
 
 * **assignment**: Determines where the attribute is stored (``model``, ``state``, ``control``, or ``contact``)
+* **namespace** (optional): Custom namespace for organizing related attributes
 * **frequency**: Defines the per-entity granularity (``body``, ``shape``, ``joint``, ``joint_dof``, or ``joint_coord``)
 * **attribute_name**: User-defined attribute name
 
@@ -303,38 +311,44 @@ Example USD Authoring with Custom Attributes:
        def Xform "torso" (
            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
        ) {
-           # Model assignment - stored on the Model object
-           float newton:model:body:mass_scale = 1.5
-           float3 newton:model:body:local_marker = (0.1, 0.2, 0.3)
-           bool newton:model:body:has_sensor = true
-           int newton:model:body:priority_level = 5
+           # Default namespace - stored directly on Model object
+           float newton:model:body:float_attr = 1.5
+           float3 newton:model:body:vec3_attr = (0.1, 0.2, 0.3)
+           bool newton:model:body:bool_attr = true
            
-           # State assignment - stored on the State object 
-           float3 newton:state:body:target_position = (1.0, 2.0, 3.0)
-           quatf newton:state:body:target_orientation = (0.9239, 0, 0, 0.3827)
-           bool newton:state:body:is_active = true
+           # Custom namespace "namespace_a" - stored on model.namespace_a object
+           float newton:model:namespace_a:body:float_attr = 0.05
+           float3 newton:model:namespace_a:body:vec3_attr = (1.0, 0.5, 0.0)
+           
+           # Custom namespace "namespace_b" - stored on state.namespace_b object
+           bool newton:state:namespace_b:body:bool_attr = true
+           float newton:state:namespace_b:body:float_attr = 0.005
+           
+           # Default namespace state attribute
+           float3 newton:state:body:vec3_attr = (1.0, 2.0, 3.0)
        }
        
        def RevoluteJoint "shoulder_joint" {
-           # Joint model properties (static configuration)
-           float newton:model:joint:gear_ratio = 2.25
-           float newton:model:joint:velocityEffortGradient = 50.0
+           # Default namespace joint properties
+           float newton:model:joint:float_attr = 2.25
            
-           # Control assignment - stored on the Control object  
-           float2 newton:control:joint:pid_gains = (100.0, 10.0)
-           float newton:control:joint:max_torque = 50.0
+           # Custom namespace control attributes
+           float newton:control:namespace_a:joint_dof:float_attr = 150.0
+           float newton:control:namespace_a:joint_dof:float_attr2 = 0.01
            
-           # Joint state initialization
-           float newton:state:joint:target_angle = 0.785  # 45 degrees
+           # Custom namespace model attributes
+           float newton:model:namespace_b:joint:float_attr = 1000.0
        }
        
        def Mesh "gripper_finger" (
            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
        ) {
-           # Shape-level custom attributes
-           float newton:model:shape:contact_stiffness = 5000.0
-           bool newton:model:shape:is_tactile = true
-           float3 newton:model:shape:sensor_offset = (0.0, 0.0, 0.02)
+           # Default namespace shape attributes
+           float newton:model:shape:float_attr = 5000.0
+           
+           # Custom namespace shape attributes
+           int newton:model:namespace_a:shape:int_attr = 1
+           int newton:model:namespace_a:shape:int_attr2 = 2
        }
    }
 
@@ -357,33 +371,40 @@ Importing and Accessing Custom Attributes:
    state = model.state()
    control = model.control()
    
-   # Access model-assigned custom attributes
-   body_mass_scales = model.mass_scale.numpy()  # Per-body scalar array
-   local_markers = model.local_marker.numpy()   # Per-body vec3 array
-   sensor_flags = model.has_sensor.numpy()      # Per-body bool array
-   gear_ratios = model.gear_ratio.numpy()       # Per-joint scalar array
-   velocity_gradients = model.velocityEffortGradient.numpy()  # Per-joint scalar array
+   # Access default namespace MODEL attributes
+   body_float_attrs = model.float_attr.numpy()  # Per-body scalar array
+   body_vec3_attrs = model.vec3_attr.numpy()   # Per-body vec3 array
+   body_bool_attrs = model.bool_attr.numpy()      # Per-body bool array
+   joint_float_attrs = model.float_attr.numpy()       # Per-joint scalar array
    
-   print(f"Body mass scales: {body_mass_scales}")
-   print(f"Local markers: {local_markers}")
-   print(f"Sensor flags: {sensor_flags}")
-   print(f"Gear ratios: {gear_ratios}")
+   print(f"Body float attributes: {body_float_attrs}")
+   print(f"Body bool attributes: {body_bool_attrs}")
    
-   # Access state-assigned custom attributes
-   target_positions = state.target_position.numpy()    # Per-body vec3 array
-   target_orientations = state.target_orientation.numpy()  # Per-body quat array
-   target_angles = state.target_angle.numpy()   # Per-joint scalar array
-   is_active_flags = state.is_active.numpy()    # Per-body bool array
+   # Access custom namespace "namespace_a" MODEL attributes
+   namespace_a_float = model.namespace_a.float_attr.numpy()  # Per-body scalar
+   namespace_a_vec3 = model.namespace_a.vec3_attr.numpy()  # Per-body vec3
+   namespace_a_int = model.namespace_a.int_attr.numpy()  # Per-shape int
    
-   print(f"Target positions: {target_positions}")
-   print(f"Target orientations: {target_orientations}")
-   print(f"Target joint angles: {target_angles}")
+   print(f"Namespace A float: {namespace_a_float}")
+   print(f"Namespace A vec3: {namespace_a_vec3}")
    
-   # Access control-assigned custom attributes
-   pid_gains = control.pid_gains.numpy()        # Per-joint vec2 array
-   max_torques = control.max_torque.numpy()     # Per-joint scalar array
+   # Access default namespace STATE attributes
+   state_vec3_attrs = state.vec3_attr.numpy()  # Per-body vec3 array
    
-   print(f"PID gains: {pid_gains}")
-   print(f"Max torques: {max_torques}")
+   # Access custom namespace "namespace_b" STATE attributes  
+   namespace_b_bool = state.namespace_b.bool_attr.numpy()  # Per-body bool
+   namespace_b_float = state.namespace_b.float_attr.numpy()  # Per-body float
+   
+   print(f"State vec3 attributes: {state_vec3_attrs}")
+   print(f"Namespace B bool: {namespace_b_bool}")
+   
+   # Access custom namespace "namespace_a" CONTROL attributes
+   namespace_a_control_float = control.namespace_a.float_attr.numpy()  # Per-joint-DOF scalar
+   namespace_a_control_float2 = control.namespace_a.float_attr2.numpy()   # Per-joint-DOF scalar
+   
+   print(f"Namespace A control float: {namespace_a_control_float}")
+   print(f"Namespace A control float2: {namespace_a_control_float2}")
 
 This custom attribute framework allows embedding application-specific data directly into USD assets, enabling data-driven simulations.
+
+For detailed information about declaring custom attributes via Python API, default values, validation constraints, and complete usage examples, refer to :doc:`custom_attributes`.
