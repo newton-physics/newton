@@ -135,7 +135,7 @@ class Example:
         mpm_options.grid_type = grid_type
 
         mpm_options.grid_padding = 50 if grid_type == "fixed" else 0
-        mpm_options.max_active_cell_count = 1 << 15 if grid_type == "fixed" else 0
+        mpm_options.max_active_cell_count = 1 << 15 if grid_type == "fixed" else -1
 
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
