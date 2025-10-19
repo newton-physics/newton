@@ -836,7 +836,7 @@ def update_condition(
     condition[0] = wp.where(stop, 0, 1)
 
 
-def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity):
+def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity, delta_body_qd):
     """Apply collider rigidity feedback to the current collider velocities.
 
     Computes and applies a velocity correction induced by the rigid coupling
@@ -848,27 +848,28 @@ def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocit
     for the next iteration.
 
     Args:
-        rigidity_mat: Block-sparse rigidity matrix returned by
+        rigidity_mat: Block-sparse rigidity operator (D + J @ IJtm) returned by
             ``build_rigidity_matrix``.
         prev_collider_velocity: Velocity vector from the previous iteration
             (updated in place at the end of the call).
         collider_velocity: Current collider velocity vector to be corrected in place.
     """
-    # velocity delta
+
+    D, J, IJtm = rigidity_mat
+
+    # compute velocity delta, store in prev_collider_velocity
     fem.utils.array_axpy(
         y=prev_collider_velocity,
         x=collider_velocity,
         alpha=1.0,
         beta=-1.0,
     )
-    # rigidity contribution to new velocity
-    sp.bsr_mv(
-        A=rigidity_mat,
-        x=prev_collider_velocity,
-        y=collider_velocity,
-        alpha=1.0,
-        beta=1.0,
-    )
+    delta_velocity = prev_collider_velocity
+
+    sp.bsr_mv(D, x=delta_velocity, y=collider_velocity, alpha=1.0, beta=1.0)
+    sp.bsr_mv(IJtm, x=delta_velocity, y=delta_body_qd, alpha=1.0, beta=0.0)
+    sp.bsr_mv(J, x=delta_body_qd, y=collider_velocity, alpha=1.0, beta=1.0)
+
     # save for next iterations
     wp.copy(dest=prev_collider_velocity, src=collider_velocity)
 
@@ -1163,6 +1164,8 @@ def solve_rheology(
     if rigidity_mat is not None:
         prev_collider_velocity = fem.borrow_temporary_like(collider_velocities, temporary_store)
         wp.copy(dest=prev_collider_velocity.array, src=collider_velocities)
+        _D, J, _IJtm = rigidity_mat
+        delta_body_qd = fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float)
 
     # Apply initial impulse guess
     wp.launch(
@@ -1178,7 +1181,7 @@ def solve_rheology(
         ],
     )
     if rigidity_mat is not None:
-        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities, delta_body_qd)
 
     solve_collider_launch = wp.launch(
         kernel=solve_nodal_friction,
@@ -1200,7 +1203,7 @@ def solve_rheology(
         # solve contacts
         solve_collider_launch.launch()
         if rigidity_mat is not None:
-            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities, delta_body_qd)
 
         # solve stress
         if gs:
