@@ -344,7 +344,7 @@ class Example:
             hidden=False,
         )
 
-        impulses, pos, cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
+        impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
         self.viewer.log_lines(
             "impulses",
             starts=pos,
