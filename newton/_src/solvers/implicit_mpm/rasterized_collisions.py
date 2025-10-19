@@ -112,7 +112,6 @@ def collision_sdf(
             d = wp.length(offset) * query.sign
             sdf = d - thickness
 
-
             if sdf < min_sdf:
                 min_sdf = sdf
                 if wp.abs(d) < 0.0001:
@@ -159,6 +158,7 @@ def collider_volumes_kernel(
     collider_id = collider_ids[i]
     if collider_id >= 0:
         wp.atomic_add(volumes, collider_id, node_volumes[i] * cell_volume)
+
 
 @wp.func
 def collider_friction_coefficient(collider_id: int, collider: Collider):
@@ -340,7 +340,6 @@ def rasterize_collider(
     collider_friction[i] = collider_friction_coefficient(collider_id, collider)
     collider_adhesion[i] = collider_adhesion_coefficient(collider_id, collider) * dt * voxel_size
 
-
     collider_velocity[i] = sdf_vel
 
 
@@ -386,15 +385,14 @@ def fill_collider_rigidity_matrices(
     x = node_positions[i]
 
     collider_id = collider_ids[i]
-    bc_active = collider_id != _NULL_COLLIDER_ID
+    if collider_is_dynamic(collider_id, collider, body_mass):
+        body_id = collider.body_index[collider_id]
 
-    if bc_active and collider_is_dynamic(collider_id, collider, body_mass):
         J_rows[2 * i] = i
         J_rows[2 * i + 1] = i
-        J_cols[2 * i] = 2 * collider_id
-        J_cols[2 * i + 1] = 2 * collider_id + 1
+        J_cols[2 * i] = 2 * body_id
+        J_cols[2 * i + 1] = 2 * body_id + 1
 
-        body_id = collider.body_index[collider_id]
         b_pos = wp.transform_get_translation(body_q[body_id])
         b_rot = wp.transform_get_rotation(body_q[body_id])
         R = wp.quat_to_matrix(b_rot)
@@ -490,7 +488,7 @@ def build_rigidity_matrix(
     body_inv_inertia: wp.array(dtype=wp.mat33),
     collider_ids: wp.array(dtype=int),
     collider_total_volumes: wp.array(dtype=float),
-):
+) -> tuple[wps.BsrMatrix, wps.BsrMatrix, wps.BsrMatrix]:
     """Assemble the collider rigidity matrix that couples node motion to rigid DOFs.
 
     Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
@@ -517,11 +515,11 @@ def build_rigidity_matrix(
         collider_total_volumes: Per-collider integrated volumes used to derive densities.
 
     Returns:
-        A ``warp.sparse.BsrMatrix`` representing the rigidity coupling.
+        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator (D + J @ IJtm)
     """
 
     vel_node_count = node_volumes.shape[0]
-    collider_count = collider.meshes.shape[0]
+    body_count = body_q.shape[0]
 
     J_rows = wp.empty(vel_node_count * 2, dtype=int)
     J_cols = wp.empty(vel_node_count * 2, dtype=int)
@@ -552,7 +550,7 @@ def build_rigidity_matrix(
 
     J = wps.bsr_from_triplets(
         rows_of_blocks=vel_node_count,
-        cols_of_blocks=2 * collider_count,
+        cols_of_blocks=2 * body_count,
         rows=J_rows,
         columns=J_cols,
         values=J_values,
@@ -560,13 +558,11 @@ def build_rigidity_matrix(
 
     IJtm = wps.bsr_from_triplets(
         cols_of_blocks=vel_node_count,
-        rows_of_blocks=2 * collider_count,
+        rows_of_blocks=2 * body_count,
         columns=J_rows,
         rows=J_cols,
         values=IJtm_values,
     )
 
-    rigid = wps.bsr_diag(Iphi_diag)
-    wps.bsr_mm(x=J, y=IJtm, z=rigid, alpha=1.0, beta=1.0, max_new_nnz=10 * rigid.nnz)
-
-    return rigid
+    D = wps.bsr_diag(Iphi_diag)
+    return D, J, IJtm
