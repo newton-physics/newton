@@ -235,9 +235,10 @@ class Example:
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.collider_impulses = None
-        self.collider_impulse_pos = None
-        self.collider_impulse_ids = None
+        max_nodes = 1 << 20
+        self.collider_impulses = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
+        self.collider_impulse_pos = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
+        self.collider_impulse_ids = wp.full(max_nodes, value=-1, dtype=int, device=self.model.device)
         self.collect_collider_impulses()
 
         self.particle_render_colors = wp.full(
@@ -287,34 +288,33 @@ class Example:
         self.simulate_sand()
 
     def collect_collider_impulses(self):
-        if self.collider_impulses is None:
-            self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
-                self.mpm_solver.collect_collider_impulses(self.sand_state_0)
-            )
-        else:
-            collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
-                self.sand_state_0
-            )
-            self.collider_impulses.assign(collider_impulses)
-            self.collider_impulse_pos.assign(collider_impulse_pos)
-            self.collider_impulse_ids.assign(collider_impulse_ids)
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
+            self.sand_state_0
+        )
+        self.collider_impulse_ids.fill_(-1)
+        n_colliders = min(collider_impulses.shape[0], self.collider_impulses.shape[0])
+        self.collider_impulses[:n_colliders].assign(collider_impulses[:n_colliders])
+        self.collider_impulse_pos[:n_colliders].assign(collider_impulse_pos[:n_colliders])
+        self.collider_impulse_ids[:n_colliders].assign(collider_impulse_ids[:n_colliders])
 
     def simulate_sand(self):
         # Subtract previously applied impulses from body velocities
-        wp.launch(
-            substract_body_force,
-            dim=self.sand_state_0.body_q.shape,
-            inputs=[
-                self.frame_dt,
-                self.state_0.body_q,
-                self.state_0.body_qd,
-                self.sand_body_forces,
-                self.model.body_inv_inertia,
-                self.model.body_inv_mass,
-                self.sand_state_0.body_q,
-                self.sand_state_0.body_qd,
-            ],
-        )
+
+        if self.sand_state_0.body_q is not None:
+            wp.launch(
+                substract_body_force,
+                dim=self.sand_state_0.body_q.shape,
+                inputs=[
+                    self.frame_dt,
+                    self.state_0.body_q,
+                    self.state_0.body_qd,
+                    self.sand_body_forces,
+                    self.model.body_inv_inertia,
+                    self.model.body_inv_mass,
+                    self.sand_state_0.body_q,
+                    self.sand_state_0.body_qd,
+                ],
+            )
 
         self.mpm_solver.step(self.sand_state_0, self.sand_state_0, contacts=None, control=None, dt=self.frame_dt)
 
