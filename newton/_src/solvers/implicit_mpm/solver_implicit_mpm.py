@@ -1383,6 +1383,12 @@ def normalize_gradient(gradient: wp.array(dtype=wp.vec3)):
     gradient[i] = wp.normalize(gradient[i])
 
 
+@wp.kernel
+def reset_collider_node_position(node_positions: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    node_positions[i] = wp.vec3(fem.OUTSIDE)
+
+
 class SolverImplicitMPM(SolverBase):
     """Implicit MPM solver.
 
@@ -1825,7 +1831,14 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            state_out.collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
+            wp.launch(
+                reset_collider_node_position,
+                dim=vel_node_count,
+                inputs=[
+                    state_out.collider_position_field.dof_values,
+                ],
+            )
+
             fem.interpolate(
                 world_position,
                 dest=fem.make_restriction(
