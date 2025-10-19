@@ -163,7 +163,7 @@ class Camera:
 
         # pre-compute factor from vertical FOV
         fov_rad = np.radians(self.fov)
-        alpha = np.tan(fov_rad * 0.5)  # = tan(fov/2)
+        alpha = float(np.tan(fov_rad * 0.5))  # = tan(fov/2)
 
         # build an orthonormal basis (front, right, up)
         front = self.get_front()
@@ -175,7 +175,7 @@ class Camera:
         v = 2.0 * (y / self.height) - 1.0  # [-1, 1] bottom → top
 
         # ray direction in world space (before normalisation)
-        direction = front + u * alpha * aspect_ratio * right + v * alpha * up
+        direction = front + right * u * alpha * aspect_ratio + up * v * alpha
         direction = direction / float(np.linalg.norm(direction))
 
         return self.pos, PyVec3(*direction)
