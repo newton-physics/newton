@@ -382,9 +382,9 @@ def fill_collider_rigidity_matrices(
     non_rigid_diagonal: wp.array(dtype=wp.mat33),
 ):
     i = wp.tid()
-    x = node_positions[i]
 
     collider_id = collider_ids[i]
+
     if collider_is_dynamic(collider_id, collider, body_mass):
         body_id = collider.body_index[collider_id]
 
@@ -397,6 +397,7 @@ def fill_collider_rigidity_matrices(
         b_rot = wp.transform_get_rotation(body_q[body_id])
         R = wp.quat_to_matrix(b_rot)
 
+        x = node_positions[i]
         W = wp.skew(b_pos + R * collider.body_com[body_id] - x)
 
         Id = wp.identity(n=3, dtype=float)
