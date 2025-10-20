@@ -26,6 +26,7 @@ import warp.sparse as sp
 from warp.context import assert_conditional_graph_support
 
 import newton
+import newton.utils
 
 from ...core.types import override
 from ..solver import SolverBase
@@ -70,9 +71,9 @@ _EPSILON = wp.constant(1.0 / _INFINITY)
 _DEFAULT_PROJECTION_THRESHOLD = wp.constant(0.5)
 """Default threshold for projection outside of collider, as a fraction of the voxel size"""
 
-_DEFAULT_THICKNESS = 0.5
+_DEFAULT_THICKNESS = 0.01
 """Default thickness for colliders"""
-_DEFAULT_FRICTION = 0.0
+_DEFAULT_FRICTION = 0.5
 """Default friction coefficient for colliders"""
 _DEFAULT_ADHESION = 0.0
 """Default adhesion coefficient for colliders (Pa)"""
@@ -567,6 +568,10 @@ class ImplicitMPMOptions:
     air_drag: float = 1.0
     """Numerical drag for the background air."""
 
+    # experimental
+    collider_normal_from_sdf_gradient: bool = False
+    """Compute collider normals from sdf gradient rather than closest point"""
+
 
 class _ImplicitMPMScratchpad:
     """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
@@ -887,18 +892,24 @@ def _merge_meshes(
     points: list[np.array] = (),
     indices: list[np.array] = (),
     shape_ids: np.array = (),
-):
+    material_ids: np.array = (),
+) -> tuple[wp.array, wp.array, wp.array, np.array]:
+    """Merges the points and indices of several meshes into a single one"""
+
     pt_count = np.array([len(pts) for pts in points])
+    face_count = np.array([len(idx) // 3 for idx in indices])
     offsets = np.cumsum(pt_count) - pt_count
 
     merged_points = np.vstack([pts[:, :3] for pts in points])
     merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
     vertex_shape_ids = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
+    face_shape_ids = np.repeat(np.arange(len(points), dtype=int), repeats=face_count)
 
     return (
         wp.array(merged_points, dtype=wp.vec3),
         wp.array(merged_indices, dtype=int),
         wp.array(shape_ids[vertex_shape_ids], dtype=int),
+        np.array(material_ids, dtype=int)[face_shape_ids],
     )
 
 
@@ -953,19 +964,40 @@ def _apply_shape_transforms(
     points[v] = p
 
 
-def _create_body_collider_mesh(model: newton.Model, body_index: int):
-    """Create a collider mesh from a body."""
+def _get_body_collision_shapes(model: newton.Model, body_index: int):
+    """Returns the ids of the shapes of a body with active collision flags."""
 
-    shape_ids = np.array(model.body_shapes[body_index])
+    shape_flags = model.shape_flags.numpy()
+    body_shape_ids = np.array(model.body_shapes[body_index], dtype=int)
+
+    return body_shape_ids[(shape_flags[body_shape_ids] & newton.ShapeFlags.COLLIDE_PARTICLES) > 0]
+
+
+def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
+    """Returns the collision materials from the modle for a list of shapes"""
+    thicknesses = model.shape_thickness.numpy()[shape_ids]
+    friction = model.shape_material_mu.numpy()[shape_ids]
+
+    return thicknesses, friction
+
+
+def _create_body_collider_mesh(
+    model: newton.Model,
+    body_index: int,
+    shape_ids: list[int],
+    material_ids: list[int],
+):
+    """Create a collider mesh from a body."""
 
     shape_scale = model.shape_scale.numpy()
     shape_type = model.shape_type.numpy()
 
     shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
 
-    collider_points, collider_indices, vertex_shape_ids = _merge_meshes(
+    collider_points, collider_indices, vertex_shape_ids, face_material_ids = _merge_meshes(
         *zip(*shape_meshes, strict=True),
         shape_ids=shape_ids,
+        material_ids=material_ids,
     )
 
     wp.launch(
@@ -978,7 +1010,7 @@ def _create_body_collider_mesh(model: newton.Model, body_index: int):
         ],
     )
 
-    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points))
+    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
 
 
 class ImplicitMPMModel:
@@ -1033,12 +1065,13 @@ class ImplicitMPMModel:
         Tracks the minimum collider mass to determine whether compliant
         colliders are present and to enable/disable related computations.
         """
-        body_ids = self.collider.body_index.numpy()
+        body_ids = self.collider.collider_body_index.numpy()
         body_mass = self.collider_body_mass.numpy()
-        dynamic_body_ids = body_ids[np.logical_and(body_ids >= 0, body_mass[body_ids] > 0.0)]
+        dynamic_body_ids = body_ids[body_ids >= 0]
+        dynamic_body_ids = dynamic_body_ids[body_mass[dynamic_body_ids] > 0.0]
         dynamic_body_masses = body_mass[dynamic_body_ids]
 
-        self.min_collider_mass = np.min(dynamic_body_masses, initial=_INFINITY)
+        self.min_collider_mass = np.min(dynamic_body_masses, initial=np.inf)
         self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
         self.collider_body_count = int(np.max(body_ids + 1, initial=0))
 
@@ -1105,10 +1138,10 @@ class ImplicitMPMModel:
         collider_meshes: list[wp.Mesh] | None = None,
         collider_body_ids: list[int] | None = None,
         collider_thicknesses: list[float] | None = None,
-        collider_projection_threshold: list[float] | None = None,
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
-        ground_height: float = 0.0,
+        collider_projection_threshold: list[float] | None = None,
+        ground_height: float = -_INFINITY,
         ground_normal: wp.vec3 | None = None,
         model: newton.Model | None = None,
         body_com: wp.array | None = None,
@@ -1117,19 +1150,25 @@ class ImplicitMPMModel:
     ):
         """Initialize collider parameters and defaults from inputs.
 
-        Populates the ``Collider`` struct with mesh handles and per-mesh
-        properties (thickness, friction, adhesion, mass, projection threshold),
-        using solver defaults when lists are not provided. Also sets the ground
-        plane parameters from the wrapped model's up axis.
+        Populates the ``Collider`` struct with meshes, body mapping, and per-material
+        properties (thickness, friction, adhesion, projection threshold).
+
+        By default, this will setup collisions against all collision shapes in the model with flag `newton.ShapeFlag.COLLIDE_PARTICLES`.
+        Rigid body colliders will be treated as kinematic if their mass is zero; for all model bodies to be treated as kinematic,
+        pass ``body_mass=wp.zeros_like(model.body_mass)``.
+
+        For any collider index `i`, only one of ``collider_meshes[i]`` and ``collider_body_ids`` may not be `None`.
+        If material properties are not provided for a collider, but a body index is provided,
+        the material will be read from the body shape material attributes on the model.
 
         Args:
-            colliders: Warp triangular meshes used as colliders.
+            collider_meshes: Warp triangular meshes used as colliders.
+            collider_body_ids: For dynamic colliders, per-mesh body ids.
             collider_thicknesses: Per-mesh signed distance offsets (m).
-            collider_projection_threshold: Per-mesh projection thresholds as a
-                fraction of the voxel size.
             collider_friction: Per-mesh Coulomb friction coefficients.
             collider_adhesion: Per-mesh adhesion (Pa).
-            collider_body_ids: For dynamic colliders, per-mesh body ids.
+            collider_projection_threshold: Per-mesh projection threshold, i.e. how far below the surface the
+              particle may be before it is projected out. (m)
             ground_height: Height of the ground plane.
             ground_normal: Normal of the ground plane (default to model.up_axis).
             model: The model to read collider properties from. Default to self.model.
@@ -1138,32 +1177,48 @@ class ImplicitMPMModel:
             body_inv_inertia: For dynamic colliders, per-mesh body inverse inertia. Default to model.body_inv_inertia.
         """
 
+        if model is None:
+            model = self.model
+
         if collider_body_ids is None:
             if collider_meshes is None:
-                collider_body_ids = []
+                collider_body_ids = [
+                    body_id
+                    for body_id in range(-1, model.body_count)
+                    if len(_get_body_collision_shapes(model, body_id)) > 0
+                ]
             else:
-                collider_body_ids = [-1] * len(collider_meshes)
+                collider_body_ids = [None] * len(collider_meshes)
         if collider_meshes is None:
             collider_meshes = [None] * len(collider_body_ids)
-        assert len(collider_body_ids) == len(collider_meshes)
+
+        for collider_id, (mesh, body_id) in enumerate(zip(collider_meshes, collider_body_ids, strict=True)):
+            if mesh is None:
+                if body_id is None:
+                    raise ValueError(
+                        f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} is missing both"
+                    )
+            elif body_id is not None:
+                raise ValueError(
+                    f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} provides both"
+                )
+
         collider_count = len(collider_body_ids)
 
         if collider_thicknesses is None:
-            collider_thicknesses = [_DEFAULT_THICKNESS * self.voxel_size] * collider_count
+            collider_thicknesses = [None] * collider_count
         if collider_projection_threshold is None:
-            collider_projection_threshold = [_DEFAULT_PROJECTION_THRESHOLD] * collider_count
+            collider_projection_threshold = [None] * collider_count
         if collider_friction is None:
-            collider_friction = [_DEFAULT_FRICTION] * collider_count
+            collider_friction = [None] * collider_count
         if collider_adhesion is None:
-            collider_adhesion = [_DEFAULT_ADHESION] * collider_count
+            collider_adhesion = [None] * collider_count
 
         assert len(collider_body_ids) == len(collider_thicknesses)
         assert len(collider_body_ids) == len(collider_projection_threshold)
         assert len(collider_body_ids) == len(collider_friction)
         assert len(collider_body_ids) == len(collider_adhesion)
 
-        if model is None:
-            model = self.model
         if body_com is None:
             body_com = model.body_com
         if body_mass is None:
@@ -1171,21 +1226,107 @@ class ImplicitMPMModel:
         if body_inv_inertia is None:
             body_inv_inertia = model.body_inv_inertia
 
+        # count materials and shapes
+        material_count = 1  # ground material
+        body_shapes = {}
+        collider_material_ids = []
+        for body_id in collider_body_ids:
+            if body_id is not None:
+                shapes = _get_body_collision_shapes(model, body_id)
+                if len(shapes) == 0:
+                    raise ValueError(f"Body {body_id} has no collision shapes")
+
+                body_shapes[body_id] = shapes
+                collider_material_ids.append(list(range(material_count, material_count + len(shapes))))
+                material_count += len(shapes)
+            else:
+                collider_material_ids.append([material_count])
+                material_count += 1
+
+        # assign material values
+        material_thickness = [_DEFAULT_THICKNESS * self.voxel_size] * material_count
+        material_friction = [_DEFAULT_FRICTION] * material_count
+        material_adhesion = [_DEFAULT_ADHESION] * material_count
+        material_projection_threshold = [_DEFAULT_PROJECTION_THRESHOLD * self.voxel_size] * material_count
+
+        def assign_material(
+            material_id: int,
+            thickness: float | None = None,
+            friction: float | None = None,
+            adhesion: float | None = None,
+            projection_threshold: float | None = None,
+        ):
+            if thickness is not None:
+                material_thickness[material_id] = thickness
+            if friction is not None:
+                material_friction[material_id] = friction
+            if adhesion is not None:
+                material_adhesion[material_id] = adhesion
+            if projection_threshold is not None:
+                material_projection_threshold[material_id] = projection_threshold
+
+        def assign_collider_material(material_id: int, collider_id: int):
+            assign_material(
+                material_id,
+                collider_thicknesses[collider_id],
+                collider_friction[collider_id],
+                collider_adhesion[collider_id],
+                collider_projection_threshold[collider_id],
+            )
+
+        for collider_id, body_id in enumerate(collider_body_ids):
+            if body_id is not None:
+                for material_id, shape_thickness, shape_friction in zip(
+                    collider_material_ids[collider_id],
+                    *_get_shape_collision_materials(model, body_shapes[body_id]),
+                    strict=True,
+                ):
+                    # use material from shapes as default
+                    assign_material(material_id, thickness=shape_thickness, friction=shape_friction)
+                    # override with user-provided material
+                    assign_collider_material(material_id, collider_id)
+            else:
+                # user-provided collider, single material
+                assign_collider_material(collider_material_ids[collider_id][0], collider_id)
+
+        collider_max_thickness = [
+            max((material_thickness[material_id] for material_id in collider_material_ids[collider_id]), default=0.0)
+            for collider_id in range(collider_count)
+        ]
+
+        # Create device arrays
         with wp.ScopedDevice(self.model.device):
             # Create collider meshes from bodies if necessary
-            for k, mesh in enumerate(collider_meshes):
-                if mesh is not None:
-                    continue
+            face_material_ids = [[]]
+            for collider_id in range(collider_count):
+                body_index = collider_body_ids[collider_id]
 
-                body_index = collider_body_ids[k]
-                collider_meshes[k] = _create_body_collider_mesh(model, body_index)
+                if body_index is None:
+                    # Set body index to -1 to indicate a static collider
+                    # This may not correspond to the model's body -1, but as far as the collision kernels
+                    # are concerned, it does not matter.
 
-            self.collider.body_index = wp.array(collider_body_ids, dtype=int)
-            self.collider.meshes = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
-            self.collider.thicknesses = wp.array(collider_thicknesses, dtype=float)
-            self.collider.friction = wp.array(collider_friction, dtype=float)
-            self.collider.adhesion = wp.array(collider_adhesion, dtype=float)
-            self.collider.projection_threshold = wp.array(collider_projection_threshold, dtype=float)
+                    collider_body_ids[collider_id] = -1
+                    material_id = collider_material_ids[collider_id][0]
+                    face_count = collider_meshes[collider_id].indices.shape[0] // 3
+                    mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
+                else:
+                    collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
+                        model, body_index, body_shapes[body_index], collider_material_ids[collider_id]
+                    )
+
+                face_material_ids.append(mesh_face_material_ids)
+
+            self.collider.collider_body_index = wp.array(collider_body_ids, dtype=int)
+            self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
+            self.collider.collider_max_thickness = wp.array(collider_max_thickness, dtype=float)
+
+            self.collider.face_material_index = wp.array(np.concatenate(face_material_ids), dtype=int)
+
+            self.collider.material_thickness = wp.array(material_thickness, dtype=float)
+            self.collider.material_friction = wp.array(material_friction, dtype=float)
+            self.collider.material_adhesion = wp.array(material_adhesion, dtype=float)
+            self.collider.material_projection_threshold = wp.array(material_projection_threshold, dtype=float)
 
         self.collider.body_com = body_com
         self.collider_body_mass = body_mass
@@ -1369,12 +1510,17 @@ wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=vec6), "dest": wp.a
 
 
 @fem.integrand
-def collider_gradient_field(s: fem.Sample, distance: fem.Field):
+def collider_gradient_field(s: fem.Sample, distance: fem.Field, voxel_size: float):
+    for k in range(8):
+        # if any node is outside of narrow band, ignore
+        if distance(fem.at_node(distance, s, k)) > 1.0e6:
+            return wp.vec3(0.0)
+
     g = fem.grad(distance, s)
 
     # weight by exponential of negative distance
     d = distance(s)
-    return g * wp.exp(-wp.abs(d))
+    return g * wp.exp(-wp.abs(d) / voxel_size)
 
 
 @wp.kernel
@@ -1434,6 +1580,7 @@ class SolverImplicitMPM(SolverBase):
         self.coloring = options.solver == "gauss-seidel"
         self.apic = options.transfer_scheme == "apic"
         self.max_active_cell_count = options.max_active_cell_count
+        self.collider_normal_from_sdf_gradient = options.collider_normal_from_sdf_gradient
 
         self.temporary_store = fem.TemporaryStore()
 
@@ -1539,7 +1686,6 @@ class SolverImplicitMPM(SolverBase):
                 self.mpm_model.collider,
                 state_in.body_q,
                 state_in.body_qd,
-                self.mpm_model.voxel_size,
                 dt,
             ],
             outputs=[
@@ -1765,7 +1911,7 @@ class SolverImplicitMPM(SolverBase):
             has_compliant_colliders = self.mpm_model.min_collider_mass < _INFINITY
 
             self._scratchpad.allocate_temporaries(
-                collider_count=self.mpm_model.collider.meshes.shape[0],
+                collider_count=self.mpm_model.collider.collider_mesh.shape[0],
                 has_compliant_bodies=has_compliant_colliders,
                 has_critical_fraction=self.mpm_model.critical_fraction > 0.0,
                 max_colors=self._max_colors(),
@@ -1865,19 +2011,21 @@ class SolverImplicitMPM(SolverBase):
                 ],
             )
 
-            fem.interpolate(
-                collider_gradient_field,
-                dest=fem.make_restriction(
-                    scratch.collider_normal_field, space_restriction=scratch.velocity_test.space_restriction
-                ),
-                fields={"distance": scratch.collider_distance_field},
-            )
+            if self.collider_normal_from_sdf_gradient:
+                fem.interpolate(
+                    collider_gradient_field,
+                    dest=fem.make_restriction(
+                        scratch.collider_normal_field, space_restriction=scratch.velocity_test.space_restriction
+                    ),
+                    fields={"distance": scratch.collider_distance_field},
+                    values={"voxel_size": self.mpm_model.voxel_size},
+                )
 
-            wp.launch(
-                normalize_gradient,
-                dim=scratch.collider_normal_field.dof_values.shape,
-                inputs=[scratch.collider_normal_field.dof_values],
-            )
+                wp.launch(
+                    normalize_gradient,
+                    dim=scratch.collider_normal_field.dof_values.shape,
+                    inputs=[scratch.collider_normal_field.dof_values],
+                )
 
         # Velocity right-hand side and inverse mass matrix
         with wp.ScopedTimer(

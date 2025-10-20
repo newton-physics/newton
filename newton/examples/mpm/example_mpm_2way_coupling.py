@@ -50,6 +50,9 @@ def compute_body_forces(
     cid = collider_ids[i]
     if cid >= 0 and cid < body_ids.shape[0]:
         body_index = body_ids[cid]
+        if body_index == -1:
+            return
+
         f_world = collider_impulses[i] / dt
 
         X_wb = body_q[body_index]
@@ -59,7 +62,7 @@ def compute_body_forces(
 
 
 @wp.kernel
-def substract_body_force(
+def subtract_body_force(
     dt: float,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -94,6 +97,7 @@ class Example:
         self.viewer = viewer
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.mu = 0.5
 
         # add ground plane
         builder.add_ground_plane()
@@ -130,7 +134,6 @@ class Example:
             (0.25, 0.25, 0.25),
             (0.3, 0.2, 0.2),
         ]  # (hx, hy, hz)
-        collider_body_id = []
         for box in boxes:
             (hx, hy, hz) = box
 
@@ -143,8 +146,6 @@ class Example:
                 mass=75.0,
             )
             builder.add_shape_box(body, hx=float(hx), hy=float(hy), hz=float(hz))
-            # shape_id = builder.add_shape_capsule(body, radius=0.5 * hx, half_height=hz)
-            collider_body_id.append(body)
 
         # ------------------------------------------
         # Add sand bed (2m x 2m x 0.5m) above ground
@@ -198,7 +199,7 @@ class Example:
         mpm_options.voxel_size = voxel_size
         mpm_options.tolerance = 1.0e-6
         mpm_options.grid_type = "fixed"
-        mpm_options.grid_padding = 20
+        mpm_options.grid_padding = 50
         mpm_options.max_active_cell_count = 1 << 15
 
         mpm_options.strain_basis = "P0"
@@ -206,13 +207,8 @@ class Example:
         mpm_options.critical_fraction = 0.0
 
         mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
-        mpm_model.setup_collider(
-            model=self.model,  # read colliders from the RB model
-            collider_body_ids=collider_body_id,
-            collider_friction=[0.5 for _ in collider_body_id],
-            collider_adhesion=[0.0 for _ in collider_body_id],
-        )
-        self.collider_body_id = wp.array(collider_body_id, dtype=int)
+        # read colliders from the RB model rather than the sand model
+        mpm_model.setup_collider(model=self.model)
 
         self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
@@ -240,6 +236,9 @@ class Example:
         self.collider_impulse_pos = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
         self.collider_impulse_ids = wp.full(max_nodes, value=-1, dtype=int, device=self.model.device)
         self.collect_collider_impulses()
+
+        # map from collider index to body index
+        self.collider_body_id = mpm_model.collider.collider_body_index
 
         self.particle_render_colors = wp.full(
             self.sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=self.sand_model.device
@@ -302,7 +301,7 @@ class Example:
 
         if self.sand_state_0.body_q is not None:
             wp.launch(
-                substract_body_force,
+                subtract_body_force,
                 dim=self.sand_state_0.body_q.shape,
                 inputs=[
                     self.frame_dt,

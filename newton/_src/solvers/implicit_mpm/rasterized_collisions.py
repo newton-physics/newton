@@ -29,7 +29,7 @@ __all__ = [
     "rasterize_collider",
 ]
 
-_COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.25)
+_COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.5)
 """Distance to extrapolate collider sdf, as a fraction of the voxel size"""
 
 _INFINITY = wp.constant(1.0e12)
@@ -37,35 +37,39 @@ _INFINITY = wp.constant(1.0e12)
 
 _NULL_COLLIDER_ID = -2
 _GROUND_COLLIDER_ID = -1
-_GROUND_FRICTION = 1.0
-_GROUND_ADHESION = 0.0
-_GROUND_PROJECTION_THRESHOLD = 0.5
+_GROUND_COLLIDER_MATERIAL_INDEX = 0
 
 
 @wp.struct
 class Collider:
     """Packed collider parameters and geometry queried during rasterization."""
 
-    meshes: wp.array(dtype=wp.uint64)
-    """Meshes of the collider"""
+    collider_mesh: wp.array(dtype=wp.uint64)
+    """Mesh of the collider. Shape (collider_count,)."""
 
-    thicknesses: wp.array(dtype=float)
-    """Thickness of each collider mesh"""
+    collider_max_thickness: wp.array(dtype=float)
+    """Max thickness of each collider mesh. Shape (collider_count,)."""
 
-    projection_threshold: wp.array(dtype=float)
-    """Projection threshold for each collider"""
+    collider_body_index: wp.array(dtype=int)
+    """Body index of each collider. Shape (collider_count,)"""
 
-    friction: wp.array(dtype=float)
-    """Friction coefficient for each collider"""
+    face_material_index: wp.array(dtype=int)
+    """Material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
 
-    adhesion: wp.array(dtype=float)
-    """Adhesion coefficient for each collider (Pa)"""
+    material_thickness: wp.array(dtype=float)
+    """Thickness for each collider material. Shape (material_count,)"""
 
-    body_index: wp.array(dtype=int)
-    """Body index of each collider"""
+    material_friction: wp.array(dtype=float)
+    """Friction coefficient for each collider material. Shape (material_count,)"""
+
+    material_adhesion: wp.array(dtype=float)
+    """Adhesion coeffient for each collider material (Pa). Shape (material_count,)"""
+
+    material_projection_threshold: wp.array(dtype=float)
+    """Projection threshold for each collider material. Shape (material_count,)"""
 
     body_com: wp.array(dtype=wp.vec3)
-    """Body center of mass of each collider"""
+    """Body center of mass of each collider. Shape (body_count,)"""
 
     query_max_dist: float
     """Maximum distance to query collider sdf"""
@@ -81,22 +85,26 @@ class Collider:
 def collision_sdf(
     x: wp.vec3, collider: Collider, body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector)
 ):
-    ground_sdf = wp.dot(x, collider.ground_normal) - collider.ground_height
+    ground_sdf = (
+        wp.dot(x, collider.ground_normal)
+        - collider.ground_height
+        - collider.material_thickness[_GROUND_COLLIDER_MATERIAL_INDEX]
+    )
 
     min_sdf = ground_sdf
     sdf_grad = collider.ground_normal
     sdf_vel = wp.vec3(0.0)
     closest_point = wp.vec3(0.0)
     collider_id = int(_GROUND_COLLIDER_ID)
+    material_id = int(_GROUND_COLLIDER_MATERIAL_INDEX)
 
     # Find closest collider
-    for m in range(collider.meshes.shape[0]):
-        mesh = collider.meshes[m]
+    global_face_id = int(0)
+    for m in range(collider.collider_mesh.shape[0]):
+        mesh = collider.collider_mesh[m]
+        thickness = collider.collider_max_thickness[m]
+        body_id = collider.collider_body_index[m]
 
-        thickness = collider.thicknesses[m]
-        max_dist = collider.query_max_dist + thickness
-
-        body_id = collider.body_index[m]
         if body_id >= 0:
             b_pos = wp.transform_get_translation(body_q[body_id])
             b_rot = wp.transform_get_rotation(body_q[body_id])
@@ -104,17 +112,22 @@ def collision_sdf(
         else:
             x_local = x
 
+        max_dist = collider.query_max_dist + thickness
         query = wp.mesh_query_point_sign_normal(mesh, x_local, max_dist)
 
         if query.result:
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
+            mesh_material_id = collider.face_material_index[global_face_id + query.face]
+
+            thickness = collider.material_thickness[mesh_material_id]
+
             offset = x_local - cp
             d = wp.length(offset) * query.sign
             sdf = d - thickness
 
             if sdf < min_sdf:
                 min_sdf = sdf
-                if wp.abs(d) < 0.0001:
+                if wp.abs(d) < 0.001:
                     sdf_grad = wp.mesh_eval_face_normal(mesh, query.face)
                 else:
                     sdf_grad = wp.normalize(offset) * query.sign
@@ -122,24 +135,27 @@ def collision_sdf(
                 sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
                 closest_point = cp
                 collider_id = m
+                material_id = mesh_material_id
+
+        global_face_id += wp.mesh_get(mesh).indices.shape[0] // 3
 
     # If closest collider has rigid motion, transform back to world frame
     # Do that as a second step to avoid requiring more registers inside bvh query loop
     if collider_id >= 0:
-        body_id = collider.body_index[collider_id]
+        body_id = collider.collider_body_index[collider_id]
         if body_id >= 0:
             b_pos = wp.transform_get_translation(body_q[body_id])
             b_rot = wp.transform_get_rotation(body_q[body_id])
 
             sdf_vel = wp.quat_rotate(b_rot, sdf_vel)
-            sdf_grad = wp.quat_rotate(b_rot, sdf_grad)
+            sdf_grad = wp.normalize(wp.quat_rotate(b_rot, sdf_grad))
 
             # Assumes linear/angular velocities in world frame
             b_v = wp.spatial_top(body_qd[body_id])
             b_w = wp.spatial_bottom(body_qd[body_id])
             sdf_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
 
-    return min_sdf, sdf_grad, sdf_vel, collider_id
+    return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
 
 
 @wp.func
@@ -161,43 +177,22 @@ def collider_volumes_kernel(
 
 
 @wp.func
-def collider_friction_coefficient(collider_id: int, collider: Collider):
-    if collider_id == _GROUND_COLLIDER_ID:
-        return _GROUND_FRICTION
-    return collider.friction[collider_id]
-
-
-@wp.func
-def collider_adhesion_coefficient(collider_id: int, collider: Collider):
-    if collider_id == _GROUND_COLLIDER_ID:
-        return _GROUND_ADHESION
-    return collider.adhesion[collider_id]
-
-
-@wp.func
 def collider_density(
     collider_id: int, collider: Collider, collider_volumes: wp.array(dtype=float), body_mass: wp.array(dtype=float)
 ):
     if collider_id == _GROUND_COLLIDER_ID:
         return _INFINITY
-    body_id = collider.body_index[collider_id]
+    body_id = collider.collider_body_index[collider_id]
     if body_id < 0:
         return _INFINITY
     return body_mass[body_id] / collider_volumes[collider_id]
 
 
 @wp.func
-def collider_projection_threshold(collider_id: int, collider: Collider):
-    if collider_id == _GROUND_COLLIDER_ID:
-        return _GROUND_PROJECTION_THRESHOLD
-    return collider.projection_threshold[collider_id]
-
-
-@wp.func
 def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array(dtype=float)):
     if collider_id < 0:
         return False
-    body_id = collider.body_index[collider_id]
+    body_id = collider.collider_body_index[collider_id]
     if body_id < 0:
         return False
     return body_mass[body_id] > 0.0
@@ -212,7 +207,6 @@ def project_outside_collider(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
-    voxel_size: float,
     dt: float,
     positions_out: wp.array(dtype=wp.vec3),
     velocities_out: wp.array(dtype=wp.vec3),
@@ -253,14 +247,12 @@ def project_outside_collider(
         return
 
     # project outside of collider
-    sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(pos_adv, collider, body_q, body_qd)
+    sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(pos_adv, collider, body_q, body_qd)
 
-    sdf_end = (
-        sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider_projection_threshold(collider_id, collider) * voxel_size
-    )
+    sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
     if sdf_end < 0:
         # remove normal vel
-        friction = collider_friction_coefficient(collider_id, collider)
+        friction = collider.material_friction[material_id]
         delta_vel = solve_coulomb_isotropic(friction, sdf_gradient, p_vel - sdf_vel) + sdf_vel - p_vel
 
         p_vel += delta_vel
@@ -321,7 +313,7 @@ def rasterize_collider(
         bc_active = False
         sdf = fem.OUTSIDE
     else:
-        sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider, body_q, body_qd)
+        sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(x, collider, body_q, body_qd)
         bc_active = collision_is_active(sdf, voxel_size)
 
     collider_sdf[i] = sdf
@@ -337,8 +329,8 @@ def rasterize_collider(
     collider_ids[i] = collider_id
     collider_normals[i] = sdf_gradient
 
-    collider_friction[i] = collider_friction_coefficient(collider_id, collider)
-    collider_adhesion[i] = collider_adhesion_coefficient(collider_id, collider) * dt * voxel_size
+    collider_friction[i] = collider.material_friction[material_id]
+    collider_adhesion[i] = collider.material_adhesion[material_id] * dt * voxel_size
 
     collider_velocity[i] = sdf_vel
 
@@ -386,7 +378,7 @@ def fill_collider_rigidity_matrices(
     collider_id = collider_ids[i]
 
     if collider_is_dynamic(collider_id, collider, body_mass):
-        body_id = collider.body_index[collider_id]
+        body_id = collider.collider_body_index[collider_id]
 
         J_rows[2 * i] = i
         J_rows[2 * i + 1] = i

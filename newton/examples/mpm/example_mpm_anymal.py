@@ -78,6 +78,12 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
+        # Disable collisions with bodies other than shanks
+        for body in range(builder.body_count):
+            if "SHANK" not in builder.body_key[body]:
+                for shape in builder.body_shapes[body]:
+                    builder.shape_flags[shape] = builder.shape_flags[shape] & ~newton.ShapeFlags.COLLIDE_PARTICLES
+
         builder.add_ground_plane()
 
         self.sim_time = 0.0
@@ -146,13 +152,7 @@ class Example:
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
         # Select and merge meshes for robot/sand collisions
-        collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
-
         mpm_model.setup_collider(
-            model=self.model,
-            collider_body_ids=collider_body_idx,
-            collider_friction=[0.5 for _ in collider_body_idx],
-            collider_adhesion=[0.0 for _ in collider_body_idx],
             body_mass=wp.zeros_like(self.model.body_mass),  # so that the robot bodies are considered as kinematic
         )
 
@@ -338,28 +338,6 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
     builder.particle_mass = np.full(points.shape[0], mass)
     builder.particle_radius = np.full(points.shape[0], radius)
     builder.particle_flags = np.ones(points.shape[0], dtype=int)
-
-
-def _merge_meshes(
-    points: list[np.array],
-    indices: list[np.array],
-    scales: list[np.array],
-    shape_ids: list[int],
-):
-    pt_count = np.array([len(pts) for pts in points])
-    offsets = np.cumsum(pt_count) - pt_count
-
-    mesh_id = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
-
-    merged_points = np.vstack([pts * scale for pts, scale in zip(points, scales, strict=False)])
-
-    merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
-
-    return (
-        wp.array(merged_points, dtype=wp.vec3),
-        wp.array(merged_indices, dtype=int),
-        wp.array(np.array(shape_ids)[mesh_id], dtype=int),
-    )
 
 
 if __name__ == "__main__":
