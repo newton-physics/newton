@@ -96,7 +96,7 @@ class KpiInitializeRender:
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, num_envs):
         # Setting up the renderer
-        self.renderer = ViewerGL()
+        self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
 
         # Rendering one frame
@@ -193,7 +193,7 @@ class FastInitializeRender:
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, num_envs):
         # Setting up the renderer
-        self.renderer = ViewerGL()
+        self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
 
         # Rendering one frame
