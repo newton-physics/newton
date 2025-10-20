@@ -111,7 +111,11 @@ class ViewerGL(ViewerBase):
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
-        self.ui = UI(self.renderer.window)
+        # Only create UI in non-headless mode to avoid OpenGL context dependency
+        if not headless:
+            self.ui = UI(self.renderer.window)
+        else:
+            self.ui = None
 
         # Performance tracking
         self._fps_history = []
@@ -470,7 +474,7 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui.is_available and self.show_ui:
+        if self.ui and self.ui.is_available and self.show_ui:
             self.ui.begin_frame()
 
             # Render the UI
@@ -673,7 +677,7 @@ class ViewerGL(ViewerBase):
             x, y: Mouse position.
             scroll_x, scroll_y: Scroll deltas.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         fov_delta = scroll_y * 2.0
@@ -689,7 +693,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -721,7 +725,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -756,7 +760,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         try:
@@ -786,7 +790,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt (float): Time delta since last update.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         # camera-relative basis
@@ -841,7 +845,8 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
 
-        self.ui.resize(width, height)
+        if self.ui:
+            self.ui.resize(width, height)
 
     def _update_fps(self):
         """
@@ -864,7 +869,7 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
-        if not self._gizmo_log:
+        if not self._gizmo_log or not self.ui:
             return
 
         giz = self.ui.giz
@@ -908,7 +913,7 @@ class ViewerGL(ViewerBase):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
-        if not self.ui.is_available:
+        if not self.ui or not self.ui.is_available:
             return
 
         # Render gizmos
