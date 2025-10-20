@@ -219,6 +219,7 @@ class ViewerBase:
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             thickness: Optional thickness (used for hashing consistency)
             is_solid: If False, can be used for wire/solid hashing parity
+            geo_src: Optional source geometry for newton.GeoType.Mesh type
             hidden: If True, the shape will not be rendered
         """
 
