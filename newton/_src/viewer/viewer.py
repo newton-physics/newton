@@ -231,34 +231,14 @@ class ViewerBase:
 
         geo_scale = _as_float_list(geo_scale)
 
-        # check whether we can instance an already created shape with the same geometry
-        geo_hash = self._hash_geometry(
+        # ensure mesh exists (shared with populate path)
+        mesh_path = self._populate_geometry(
             int(geo_type),
             tuple(geo_scale),
             float(geo_thickness),
             bool(geo_is_solid),
-            geo_src,
+            geo_src=geo_src,
         )
-
-        # ensure geometry exists and get mesh path
-        if geo_hash not in self._geometry_cache:
-            mesh_path = self._populate_geometry(
-                int(geo_type),
-                tuple(geo_scale),
-                float(geo_thickness),
-                bool(geo_is_solid),
-                geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
-            )
-        else:
-            mesh_path = self._geometry_cache[geo_hash]
-
-        # # ensure mesh exists (shared with populate path)
-        # mesh_path = self._populate_geometry(
-        #     int(geo_type),
-        #     tuple(geo_scale),
-        #     float(geo_thickness),
-        #     bool(geo_is_solid),
-        # )
 
         # prepare instance properties
         num_instances = len(xforms)
