@@ -37,20 +37,25 @@ class Example:
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
-        colliders = []
-        if options.collider is not None:
-            collider = _create_collider_mesh(options.collider)
-            if collider is not None:
-                builder.add_shape_mesh(
-                    body=-1,
-                    mesh=newton.Mesh(collider.points.numpy(), collider.indices.numpy()),
+        if options.collider:
+            extents = (0.5, 2.0, 0.6)
+            if options.collider == "cube":
+                xform = wp.transform(wp.vec3(0.75, 0.0, 0.9), wp.quat_identity())
+            elif options.collider == "wedge":
+                xform = wp.transform(
+                    wp.vec3(0.0, 0.0, 0.9), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
-                colliders.append(collider)
 
-        builder.add_ground_plane()
+            builder.add_shape_box(
+                body=-1,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=0.1),
+                xform=xform,
+                hx=extents[0],
+                hy=extents[1],
+                hz=extents[2],
+            )
 
-        # builder's gravity isn't a vec3. use model.set_gravity()
-        # builder.gravity = wp.vec3(options.gravity)
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
 
         self.model = builder.finalize()
         self.model.particle_mu = options.friction_coeff
@@ -71,8 +76,6 @@ class Example:
 
         # Create MPM model from Newton model
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
-        mpm_model.setup_collider(colliders, collider_friction=[0.1] * len(colliders))
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
@@ -179,35 +182,6 @@ class Example:
         builder.particle_radius = np.full(points.shape[0], radius)
 
         builder.particle_flags = np.ones(points.shape[0], dtype=int)
-
-
-def _create_collider_mesh(collider: str):
-    """Create a collider mesh."""
-
-    if collider == "cube":
-        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
-
-        return wp.Mesh(
-            wp.array(cube_points[:, 0:3] + [0.75, 0, 0.5], dtype=wp.vec3),
-            wp.array(cube_indices, dtype=int),
-        )
-    elif collider == "wedge":
-        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
-
-        cube_points = cube_points[:, 0:3] @ np.array(
-            [
-                [np.cos(np.pi / 4), 0, -np.sin(np.pi / 4)],
-                [0, 1, 0],
-                [np.sin(np.pi / 4), 0, np.cos(np.pi / 4)],
-            ]
-        )
-
-        return wp.Mesh(
-            wp.array(cube_points + np.array([0.0, 0, 0.25]), dtype=wp.vec3),
-            wp.array(cube_indices, dtype=int),
-        )
-    else:
-        return None
 
 
 if __name__ == "__main__":
