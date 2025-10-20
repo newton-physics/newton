@@ -29,7 +29,7 @@ class MockModel:
         self.device = device or wp.get_device()
 
 
-def create_contacts(device, pairs, nconmax, positions=None, normals=None, separations=None, forces=None):
+def create_contacts(device, pairs, naconmax, positions=None, normals=None, separations=None, forces=None):
     """Helper to create Contacts with specified contacts"""
     contacts = newton.Contacts(0, 0)
 
@@ -44,11 +44,11 @@ def create_contacts(device, pairs, nconmax, positions=None, normals=None, separa
     if forces is None:
         forces = [0.1] * n_contacts
 
-    pairs_padded = pairs + [(-1, -1)] * (nconmax - n_contacts)
-    positions_padded = positions + [[0.0, 0.0, 0.0]] * (nconmax - n_contacts)
-    normals_padded = normals + [[0.0, 0.0, 0.0]] * (nconmax - n_contacts)
-    separations_padded = separations + [0.0] * (nconmax - n_contacts)
-    forces_padded = forces + [0.0] * (nconmax - n_contacts)
+    pairs_padded = pairs + [(-1, -1)] * (naconmax - n_contacts)
+    positions_padded = positions + [[0.0, 0.0, 0.0]] * (naconmax - n_contacts)
+    normals_padded = normals + [[0.0, 0.0, 0.0]] * (naconmax - n_contacts)
+    separations_padded = separations + [0.0] * (naconmax - n_contacts)
+    forces_padded = forces + [0.0] * (naconmax - n_contacts)
 
     with wp.ScopedDevice(device):
         contacts.pair = wp.array(pairs_padded, dtype=wp.vec2i)
@@ -58,7 +58,7 @@ def create_contacts(device, pairs, nconmax, positions=None, normals=None, separa
         contacts.force = wp.array(forces_padded, dtype=wp.float32)
 
         contacts.rigid_contact_count = wp.array([n_contacts], dtype=wp.int32)
-        contacts.rigid_contact_max = nconmax
+        contacts.rigid_contact_max = naconmax
 
     return contacts
 
@@ -183,7 +183,7 @@ class TestContactSensor(unittest.TestCase):
                 contacts = create_contacts(
                     device,
                     scenario["pairs"],
-                    nconmax=10,
+                    naconmax=10,
                     positions=scenario["positions"],
                     normals=scenario["normals"],
                     separations=scenario["separations"],

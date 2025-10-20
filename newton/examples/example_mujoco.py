@@ -550,9 +550,7 @@ if __name__ == "__main__":
         actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
         # Get actual max constraints and contacts from MuJoCo Warp data
         actual_njmax = example.solver.mjw_data.njmax
-        actual_nconmax = (
-            example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
-        )
+        actual_nconmax = example.solver.mjw_data.nconmax
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
         # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
