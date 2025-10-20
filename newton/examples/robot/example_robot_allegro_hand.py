@@ -128,7 +128,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             solver="newton",
-            integrator="euler",
+            integrator="implicitfast",
             njmax=200,
             ncon_per_world=150,
             impratio=10.0,
