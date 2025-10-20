@@ -14,6 +14,10 @@
 # limitations under the License.
 
 import gc
+import os
+
+# Force headless mode for CI environments before any pyglet imports
+os.environ["PYGLET_HEADLESS"] = "1"
 
 import warp as wp
 
