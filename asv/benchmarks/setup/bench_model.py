@@ -81,7 +81,7 @@ class KpiInitializeSolver:
 
 class KpiInitializeRender:
     params = (["g1"], [8192])
-    param_names = ["robot", "num_envs"]
+    param_names = ["robot", "num_worlds"]
 
     rounds = 1
     repeat = 3
@@ -113,6 +113,7 @@ class KpiInitializeRender:
 
     def teardown(self, robot, num_worlds):
         del self._model
+        del self._state
 
 
 class FastInitializeModel:
@@ -178,7 +179,7 @@ class FastInitializeSolver:
 
 class FastInitializeRender:
     params = (["g1"], [256])
-    param_names = ["robot", "num_envs"]
+    param_names = ["robot", "num_worlds"]
 
     rounds = 1
     repeat = 3
@@ -210,6 +211,7 @@ class FastInitializeRender:
 
     def teardown(self, robot, num_worlds):
         del self._model
+        del self._state
 
 
 if __name__ == "__main__":
