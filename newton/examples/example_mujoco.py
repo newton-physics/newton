@@ -431,7 +431,7 @@ class Example:
         njmax=None,
         nconmax=None,
         ls_parallel=None,
-        cone="None",
+        cone=None,
     ):
         solver_iteration = solver_iteration if solver_iteration is not None else 100
         ls_iteration = ls_iteration if ls_iteration is not None else 50
