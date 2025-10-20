@@ -455,6 +455,7 @@ class Example:
             njmax=njmax,
             ncon_per_world=nconmax,
             ls_parallel=ls_parallel,
+            cone=cone,
         )
 
 
