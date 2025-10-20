@@ -135,7 +135,7 @@ class Example:
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Bunny: spinning at at x = 9
+        # Bunny: spinning at x = 9
         x_bunny_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
         base_left += self.spacing
 
