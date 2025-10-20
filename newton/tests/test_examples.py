@@ -220,8 +220,8 @@ add_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
-    test_options_cpu={"num_envs": 16},
-    test_options_cuda={"num_envs": 64},
+    test_options_cpu={"num_worlds": 16},
+    test_options_cuda={"num_worlds": 64},
     use_viewer=True,
 )
 

@@ -220,7 +220,7 @@ def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
 
 def check_conditional_graph_support():
     """
-    Check if conditional graph support is available in the current environment.
+    Check if conditional graph support is available in the current world.
 
     Returns:
         bool: True if conditional graph support is available, False otherwise.
