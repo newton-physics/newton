@@ -199,6 +199,7 @@ class ViewerBase:
         materials=None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
+        geo_src=None,
         hidden=False,
     ):
         """
@@ -230,13 +231,34 @@ class ViewerBase:
 
         geo_scale = _as_float_list(geo_scale)
 
-        # ensure mesh exists (shared with populate path)
-        mesh_path = self._populate_geometry(
+        # check whether we can instance an already created shape with the same geometry
+        geo_hash = self._hash_geometry(
             int(geo_type),
             tuple(geo_scale),
             float(geo_thickness),
             bool(geo_is_solid),
+            geo_src,
         )
+
+        # ensure geometry exists and get mesh path
+        if geo_hash not in self._geometry_cache:
+            mesh_path = self._populate_geometry(
+                int(geo_type),
+                tuple(geo_scale),
+                float(geo_thickness),
+                bool(geo_is_solid),
+                geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
+            )
+        else:
+            mesh_path = self._geometry_cache[geo_hash]
+
+        # # ensure mesh exists (shared with populate path)
+        # mesh_path = self._populate_geometry(
+        #     int(geo_type),
+        #     tuple(geo_scale),
+        #     float(geo_thickness),
+        #     bool(geo_is_solid),
+        # )
 
         # prepare instance properties
         num_instances = len(xforms)
@@ -294,7 +316,7 @@ class ViewerBase:
         # GEO_MESH handled by provided source geometry
         if geo_type == newton.GeoType.MESH:
             if geo_src is None:
-                raise ValueError("log_geo requires geo_src for GEO_MESH")
+                raise ValueError(f"log_geo requires geo_src for GEO_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
             from warp.render.utils import solidify_mesh  # noqa: PLC0415
@@ -349,7 +371,7 @@ class ViewerBase:
                 ext = tuple(geo_scale[:3])
             vertices, indices = create_box_mesh(ext)
         else:
-            raise ValueError(f"log_geo does not support geo_type={geo_type}")
+            raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
         # Convert to Warp arrays and forward to log_mesh
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
