@@ -210,7 +210,7 @@ class FastKitchenG1(_FastBenchmark):
     num_frames = 25
     robot = "g1"
     repeat = 2
-    num_envs = 32
+    num_worlds = 32
     random_init = True
     env = "kitchen"
 
