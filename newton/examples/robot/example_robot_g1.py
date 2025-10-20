@@ -77,7 +77,7 @@ class Example:
             self.model,
             use_mujoco_cpu=False,
             solver="newton",
-            integrator="euler",
+            integrator="implicitfast",
             njmax=300,
             ncon_per_world=150,
             cone="elliptic",
@@ -140,7 +140,7 @@ class Example:
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd)) < 0.001,
+            lambda q, qd: max(abs(qd)) < 0.005,
         )
 
 

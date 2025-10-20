@@ -41,49 +41,49 @@ import newton.utils
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
         "ls_parallel": True,
     },
     "g1": {
         "solver": "newton",
-        "integrator": "implicit",
+        "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
         "ls_parallel": True,
     },
     "h1": {
         "solver": "newton",
-        "integrator": "implicit",
+        "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
         "ls_parallel": True,
     },
     "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 24,  # 5
         "nconmax": 6,  # 5
         "ls_parallel": False,
     },
     "ant": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
         "ls_parallel": True,
     },
     "quadruped": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
         "ls_parallel": True,
     },
     "allegro": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 60,
         "nconmax": 35,
         "ls_parallel": True,
