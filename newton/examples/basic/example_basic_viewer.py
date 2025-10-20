@@ -23,10 +23,11 @@
 #
 ###########################################################################
 
-
 import math
 
+import numpy as np
 import warp as wp
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
@@ -42,11 +43,20 @@ class Example:
         self.col_cone = wp.array([wp.vec3(0.1, 0.4, 0.9)], dtype=wp.vec3)
         self.col_capsule = wp.array([wp.vec3(0.9, 0.9, 0.1)], dtype=wp.vec3)
         self.col_cylinder = wp.array([wp.vec3(0.8, 0.5, 0.2)], dtype=wp.vec3)
+        self.col_bunny = wp.array([wp.vec3(0.5, 0.2, 0.8)], dtype=wp.vec3)
         self.col_plane = wp.array([wp.vec3(0.125, 0.125, 0.15)], dtype=wp.vec3)
 
         # material = (metallic, roughness, checker, unused)
         self.mat_default = wp.array([wp.vec4(0.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
         self.mat_plane = wp.array([wp.vec4(0.5, 0.5, 1.0, 0.0)], dtype=wp.vec4)
+
+        # MESH (bunny)
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
+        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+        mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
+        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        self.bunny_mesh = newton.Mesh(mesh_vertices, mesh_indices)
+        self.bunny_mesh.finalize()
 
         # Demonstrate log_lines() with animated debug/visualization lines
         axis_eps = 0.01
@@ -106,7 +116,6 @@ class Example:
         # Sphere: gentle bounce at x = -6
         sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * self.time)))
         x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
-
         base_left += self.spacing
 
         # Box: rocking rotation at x = -3
@@ -124,6 +133,10 @@ class Example:
         # Capsule: gentle sway at x = 6
         capsule_pos = wp.vec3(0.3 * math.sin(0.8 * self.time), base_left, base_height)
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
+        base_left += self.spacing
+
+        # Bunny: spinning at at x = 9
+        x_bunny_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
         base_left += self.spacing
 
         # Update instances via log_shapes
@@ -166,6 +179,15 @@ class Example:
             x_cap_anim,
             self.col_capsule,
             self.mat_default,
+        )
+        self.viewer.log_shapes(
+            "/bunny_instance",
+            newton.GeoType.MESH,
+            (1.0, 1.0, 1.0),
+            x_bunny_anim,
+            self.col_bunny,
+            self.mat_default,
+            geo_src=self.bunny_mesh,
         )
 
         self.viewer.log_shapes(
