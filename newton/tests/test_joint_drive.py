@@ -24,7 +24,7 @@ from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 class TestJointDrive(unittest.TestCase):
     def compute_expected_velocity_outcome(
         self,
-        env_id,
+        world_id,
         g,
         dt,
         joint_type,
@@ -38,13 +38,13 @@ class TestJointDrive(unittest.TestCase):
         masses,
         inertias,
     ) -> float:
-        target = targets[env_id]
-        ke = target_kes[env_id]
-        kd = target_kds[env_id]
-        q = joint_qs[env_id]
-        qd = joint_qds[env_id]
-        mass = masses[env_id]
-        inertia = inertias[env_id]
+        target = targets[world_id]
+        ke = target_kes[world_id]
+        kd = target_kds[world_id]
+        q = joint_qs[world_id]
+        qd = joint_qds[world_id]
+        mass = masses[world_id]
+        inertia = inertias[world_id]
 
         M = 0.0
         if joint_type == newton.JointType.PRISMATIC:
@@ -78,7 +78,7 @@ class TestJointDrive(unittest.TestCase):
         else:
             joint_type = newton.JointType.REVOLUTE
 
-        nb_envs = 2
+        nb_worlds = 2
         body_masses = [10.0, 20.0]
         body_coms = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)]
         body_inertias = [
@@ -91,8 +91,8 @@ class TestJointDrive(unittest.TestCase):
         joint_drive_stiffnesses = [100.0, 200.0]
         joint_drive_dampings = [10.0, 20.0]
 
-        world_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
-        for i in range(0, nb_envs):
+        main_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
+        for i in range(0, nb_worlds):
             body_mass = body_masses[i]
             body_com = body_coms[i]
             body_inertia = body_inertias[i]
@@ -104,13 +104,13 @@ class TestJointDrive(unittest.TestCase):
 
             # Create a single body jointed to the world with a prismatic joint
             # Make sure that we use the mass properties specified here by setting shape density to 0.0
-            environment_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
-            bodyIndex = environment_builder.add_body(mass=body_mass, I_m=body_inertia, armature=0.0, com=body_com)
-            environment_builder.add_shape_sphere(
+            world_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
+            bodyIndex = world_builder.add_body(mass=body_mass, I_m=body_inertia, armature=0.0, com=body_com)
+            world_builder.add_shape_sphere(
                 radius=1.0, body=bodyIndex, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False)
             )
             if is_prismatic:
-                environment_builder.add_joint_prismatic(
+                world_builder.add_joint_prismatic(
                     mode=newton.JointMode.TARGET_POSITION,
                     axis=joint_motion_axis,
                     parent=-1,
@@ -124,7 +124,7 @@ class TestJointDrive(unittest.TestCase):
                     friction=0.0,
                 )
             else:
-                environment_builder.add_joint_revolute(
+                world_builder.add_joint_revolute(
                     mode=newton.JointMode.TARGET_POSITION,
                     axis=joint_motion_axis,
                     parent=-1,
@@ -138,26 +138,28 @@ class TestJointDrive(unittest.TestCase):
                     friction=0.0,
                 )
 
-            world_builder.add_builder(environment_builder)
+            main_builder.add_builder(world_builder, world=i)
 
             # Set the start pos and vel of the dof.
-            world_builder.joint_q[i] = joint_start_position
-            world_builder.joint_qd[i] = joint_start_velocity
+            main_builder.joint_q[i] = joint_start_position
+            main_builder.joint_qd[i] = joint_start_velocity
 
         # Create the MujocoSolver instance
-        model = world_builder.finalize()
+        model = main_builder.finalize()
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         contacts = model.collide(state_in)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco_cpu=False)
+        solver = SolverMuJoCo(
+            model, iterations=1, ls_iterations=1, disable_contacts=True, use_mujoco_cpu=False, integrator="euler"
+        )
 
         # Compute the expected velocity outcome after a single sim step.
-        vNew = [0.0] * nb_envs
-        for i in range(0, nb_envs):
+        vNew = [0.0] * nb_worlds
+        for i in range(0, nb_worlds):
             vNew[i] = self.compute_expected_velocity_outcome(
-                env_id=i,
+                world_id=i,
                 g=g,
                 dt=dt,
                 joint_type=joint_type,
@@ -174,7 +176,7 @@ class TestJointDrive(unittest.TestCase):
 
         # Perform 1 sim step.
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
 
@@ -192,9 +194,9 @@ class TestJointDrive(unittest.TestCase):
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             vNew[i] = self.compute_expected_velocity_outcome(
-                env_id=i,
+                world_id=i,
                 g=g,
                 dt=dt,
                 joint_type=joint_type,
@@ -212,7 +214,7 @@ class TestJointDrive(unittest.TestCase):
         # Run a sim step with the new values of ke and kd
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
 
@@ -235,9 +237,9 @@ class TestJointDrive(unittest.TestCase):
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             vNew[i] = self.compute_expected_velocity_outcome(
-                env_id=i,
+                world_id=i,
                 g=g,
                 dt=dt,
                 joint_type=joint_type,
@@ -255,7 +257,7 @@ class TestJointDrive(unittest.TestCase):
         # Run a sim step with the new drive type
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
         state_in, state_out = state_out, state_in
 
@@ -270,9 +272,9 @@ class TestJointDrive(unittest.TestCase):
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             vNew[i] = self.compute_expected_velocity_outcome(
-                env_id=i,
+                world_id=i,
                 g=g,
                 dt=dt,
                 joint_type=joint_type,
@@ -290,7 +292,7 @@ class TestJointDrive(unittest.TestCase):
         # Run a sim step with the new drive type
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
-        for i in range(0, nb_envs):
+        for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
 
     def test_joint_drive_prismatic_upX_motionX(self):

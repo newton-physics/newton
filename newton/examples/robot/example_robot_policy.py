@@ -272,7 +272,7 @@ class Example:
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            ncon_per_env=30,
+            ncon_per_world=30,
             njmax=100,
         )
 

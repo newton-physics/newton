@@ -769,6 +769,9 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.F:
+            # Frame camera around model bounds
+            self._frame_camera_on_model()
         elif symbol == pyglet.window.key.ESCAPE or symbol == pyglet.window.key.Q:
             # Exit with Escape or Q key
             self.renderer.close()
@@ -778,6 +781,61 @@ class ViewerGL(ViewerBase):
         Handle key release events (not used).
         """
         pass
+
+    def _frame_camera_on_model(self):
+        """
+        Frame the camera to show all visible objects in the scene.
+        """
+        if self.model is None:
+            return
+
+        # Compute bounds from all visible objects
+        min_bounds = np.array([float("inf")] * 3)
+        max_bounds = np.array([float("-inf")] * 3)
+        found_objects = False
+
+        # Check body positions if available
+        if hasattr(self, "_last_state") and self._last_state is not None:
+            if hasattr(self._last_state, "body_q") and self._last_state.body_q is not None:
+                body_q = self._last_state.body_q.numpy()
+                # body_q is an array of transforms (7 values: 3 pos + 4 quat)
+                # Extract positions (first 3 values of each transform)
+                for i in range(len(body_q)):
+                    pos = body_q[i, :3]
+                    min_bounds = np.minimum(min_bounds, pos)
+                    max_bounds = np.maximum(max_bounds, pos)
+                    found_objects = True
+
+        # If no objects found, use default bounds
+        if not found_objects:
+            min_bounds = np.array([-5.0, -5.0, -5.0])
+            max_bounds = np.array([5.0, 5.0, 5.0])
+
+        # Calculate center and size of bounding box
+        center = (min_bounds + max_bounds) * 0.5
+        size = max_bounds - min_bounds
+        max_extent = np.max(size)
+
+        # Ensure minimum size to avoid camera being too close
+        if max_extent < 1.0:
+            max_extent = 1.0
+
+        # Calculate camera distance based on field of view
+        # Distance = extent / tan(fov/2) with some padding
+        fov_rad = np.radians(self.camera.fov)
+        padding = 1.5
+        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
+
+        # Position camera at distance from current viewing direction, looking at center
+        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+
+        front = self.camera.get_front()
+        new_pos = PyVec3(
+            center[0] - front.x * distance,
+            center[1] - front.y * distance,
+            center[2] - front.z * distance,
+        )
+        self.camera.pos = new_pos
 
     def _update_camera(self, dt: float):
         """
@@ -952,7 +1010,7 @@ class ViewerGL(ViewerBase):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Environments: {self.model.num_envs}")
+                    imgui.text(f"Worlds: {self.model.num_worlds}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1080,6 +1138,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Scroll - Zoom")
                 imgui.text("Space - Pause/Resume")
                 imgui.text("H - Toggle UI")
+                imgui.text("F - Frame camera around model")
 
             # Selection API section
             self._render_selection_panel()
@@ -1351,7 +1410,7 @@ class ViewerGL(ViewerBase):
             if len(values.shape) == 2:
                 batch_size = values.shape[0]
                 imgui.spacing()
-                imgui.text("Batch/Environment Selection:")
+                imgui.text("Batch/World Selection:")
                 imgui.push_item_width(100)
 
                 # Ensure selected batch index is valid
@@ -1362,7 +1421,7 @@ class ViewerGL(ViewerBase):
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"Environment {state['selected_batch_idx']} / {batch_size}"
+                text = f"World {state['selected_batch_idx']} / {batch_size}"
                 imgui.text(text)
 
             # Display values as sliders in a scrollable region
@@ -1398,7 +1457,7 @@ class ViewerGL(ViewerBase):
                 if len(values.shape) == 2:
                     batch_idx = state["selected_batch_idx"]
                     stats_data = values[batch_idx]
-                    imgui.text(f"Statistics for Environment {batch_idx}:")
+                    imgui.text(f"Statistics for World {batch_idx}:")
                 else:
                     stats_data = values
                     imgui.text("Statistics:")
