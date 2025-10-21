@@ -86,6 +86,8 @@ class EventTracer:
 
     def __exit__(self, type, value, traceback):
         self._STACK = None
+        if EventTracer._active_instance is self:
+            EventTracer._active_instance = None
 
 
 def _merge(a: dict, b: dict) -> dict:
