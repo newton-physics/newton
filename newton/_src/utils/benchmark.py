@@ -48,7 +48,7 @@ class EventTracer:
     _active_instance = None
 
     def __new__(cls, enabled):
-        if cls._STACK is not None:
+        if EventTracer._active_instance is not None and enabled:
             raise ValueError("only one EventTracer can run at a time")
         return super().__new__(cls)
 
