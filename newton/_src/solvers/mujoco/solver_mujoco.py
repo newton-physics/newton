@@ -2482,7 +2482,7 @@ class SolverMuJoCo(SolverBase):
                     else:
                         naconmax = rigid_contact_max
                 else:
-                    naconmax = self.mj_data.ncon * nworld
+                    naconmax = max(512, self.mj_data.ncon * nworld)
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:

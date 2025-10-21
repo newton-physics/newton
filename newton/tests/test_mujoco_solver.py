@@ -1140,7 +1140,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def test_sphere_on_plane_with_newton_contacts(self):
         """Test that a sphere correctly collides with a plane using Newton contacts."""
         try:
-            solver = SolverMuJoCo(self.model, use_mujoco_contacts=False, ncon_per_world=50)
+            solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
