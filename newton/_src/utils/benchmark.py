@@ -15,6 +15,120 @@
 
 import itertools
 import time
+import inspect
+
+import warp as wp
+import functools
+
+
+_STACK = None
+
+
+class EventTracer:
+    """Calculates elapsed times of functions annotated with `event_scope`.
+
+    This class hes been copied from:
+    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L28
+
+    Use as a context manager like so:
+
+      @event_trace
+      def my_warp_function(...):
+        ...
+
+      with EventTracer() as tracer:
+        my_warp_function(...)
+        print(tracer.trace())
+    """
+
+    def __init__(self, enabled: bool = True):
+        global _STACK
+        if _STACK is not None:
+            raise ValueError("only one EventTracer can run at a time")
+        if enabled:
+            _STACK = {}
+
+    def __enter__(self):
+        return self
+
+    def trace(self) -> dict:
+        """Calculates elapsed times for every node of the trace."""
+        global _STACK
+
+        if _STACK is None:
+            return {}
+
+        ret = {}
+
+        for k, v in _STACK.items():
+            events, sub_stack = v
+            # push into next level of stack
+            saved_stack, _STACK = _STACK, sub_stack
+            sub_trace = self.trace()
+            # pop!
+            _STACK = saved_stack
+            events = tuple(wp.get_event_elapsed_time(beg, end) for beg, end in events)
+            ret[k] = (events, sub_trace)
+
+        return ret
+
+    def __exit__(self, type, value, traceback):
+        global _STACK
+        _STACK = None
+
+
+def _merge(a: dict, b: dict) -> dict:
+    """Merges two event trace stacks.
+    This function hes been copied from:
+    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L78
+    """
+    ret = {}
+    if not a or not b:
+        return dict(**a, **b)
+    if set(a) != set(b):
+        raise ValueError("incompatible stacks")
+    for key in a:
+        a1_events, a1_substack = a[key]
+        a2_events, a2_substack = b[key]
+        ret[key] = (a1_events + a2_events, _merge(a1_substack, a2_substack))
+    return ret
+
+
+def event_scope(fn, name: str = ""):
+    """Wraps a function and records an event before and after the function invocation.
+
+    This function hes been copied from:
+    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L92
+    """
+    name = name or getattr(fn, "__name__")
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _STACK
+        if _STACK is None:
+            return fn(*args, **kwargs)
+
+        for frame_info in inspect.stack():
+            if frame_info.function in ("capture_while", "capture_if"):
+                return fn(*args, **kwargs)
+
+        # push into next level of stack
+        saved_stack, _STACK = _STACK, {}
+        beg = wp.Event(enable_timing=True)
+        end = wp.Event(enable_timing=True)
+        wp.record_event(beg)
+        res = fn(*args, **kwargs)
+        wp.record_event(end)
+        # pop back up to current level
+        sub_stack, _STACK = _STACK, saved_stack
+        # append events and substack
+        prev_events, prev_substack = _STACK.get(name, ((), {}))
+        events = prev_events + ((beg, end),)
+        sub_stack = _merge(prev_substack, sub_stack)
+        _STACK[name] = (events, sub_stack)
+        return res
+
+    return wrapper
 
 
 def run_benchmark(benchmark_cls, number=1, print_results=True):
