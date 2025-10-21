@@ -22,6 +22,7 @@ wp.config.quiet = True
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 from newton.examples.example_mujoco import Example
+from newton.utils import EventTracer
 
 
 @wp.kernel
@@ -127,6 +128,51 @@ class _KpiBenchmark:
     track_simulate.unit = "ms/env-step"
 
 
+class _SwizzleBenchmark:
+    """Utility base class for measuring swizzling overhead."""
+
+    param_names = ["num_envs"]
+    num_frames = None
+    params = None
+    robot = None
+    samples = None
+    ls_iteration = None
+    random_init = None
+
+    def setup(self, num_envs):
+        if not hasattr(self, "builder") or self.builder is None:
+            self.builder = {}
+        if num_envs not in self.builder:
+            self.builder[num_envs] = Example.create_model_builder(self.robot, num_envs, randomize=True, seed=123)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_simulate(self, num_envs):
+        with EventTracer(enabled=args.event_trace) as tracer:
+            for _iter in range(self.samples):
+                example = Example(
+                    stage_path=None,
+                    robot=self.robot,
+                    randomize=self.random_init,
+                    headless=True,
+                    actuation="random",
+                    num_envs=num_envs,
+                    use_cuda_graph=True,
+                    builder=self.builder[num_envs],
+                    ls_iteration=self.ls_iteration,
+                )
+
+                for _ in range(self.num_frames):
+                    example.step()
+                    trace = example.add_trace(trace, tracer.trace())
+
+        step_time = trace["step"][0]
+        mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
+        overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
+        return overhead
+
+    track_simulate.unit = "%"
+
+
 class FastCartpole(_FastBenchmark):
     num_frames = 50
     robot = "cartpole"
@@ -172,6 +218,15 @@ class FastHumanoid(_FastBenchmark):
 
 class KpiHumanoid(_KpiBenchmark):
     params = [8192]
+    num_frames = 100
+    robot = "humanoid"
+    samples = 4
+    ls_iteration = 15
+    random_init = True
+
+
+class KpiSwizzleHumanoid(_SwizzleBenchmark):
+    params = [[8192]]
     num_frames = 100
     robot = "humanoid"
     samples = 4
