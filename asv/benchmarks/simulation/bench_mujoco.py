@@ -209,6 +209,25 @@ class KpiG1(_KpiBenchmark):
     random_init = True
 
 
+class FastSwizzleG1(_SwizzleBenchmark):
+    params = [[256]]
+    num_frames = 25
+    robot = "g1"
+    repeat = 2
+    samples = 1
+    random_init = True
+
+
+class KpiSwizzleG1(_SwizzleBenchmark):
+    params = [[8192]]
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+
+
 class FastHumanoid(_FastBenchmark):
     num_frames = 50
     robot = "humanoid"
@@ -223,6 +242,15 @@ class KpiHumanoid(_KpiBenchmark):
     robot = "humanoid"
     samples = 4
     ls_iteration = 15
+    random_init = True
+
+
+class FastSwizzleHumanoid(_SwizzleBenchmark):
+    params = [[256]]
+    num_frames = 50
+    robot = "humanoid"
+    repeat = 8
+    samples = 1
     random_init = True
 
 
