@@ -147,7 +147,8 @@ class _SwizzleBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_envs):
-        with EventTracer(enabled=args.event_trace) as tracer:
+        trace = {}
+        with EventTracer(enabled=True) as tracer:
             for _iter in range(self.samples):
                 example = Example(
                     stage_path=None,
