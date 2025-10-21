@@ -28,7 +28,7 @@ class EventTracer:
 
         This class hes been copied from:
         https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L28
-
+        Then modified to change _STACK from being a global.
 
     Example
     -------
@@ -96,6 +96,7 @@ def _merge(a: dict, b: dict) -> dict:
 
         This function hes been copied from:
         https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L78
+        Then modified to change how the dictionary items were accessed.
 
     Parameters:
       a  : Base event trace stack.
@@ -123,6 +124,7 @@ def event_scope(fn, name: str = ""):
 
         This function hes been copied from:
         https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L92
+        Then modified to change _STACK from being a global.
 
     Parameters:
       fn    : Function to be wrapped.
