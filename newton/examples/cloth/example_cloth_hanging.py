@@ -19,6 +19,8 @@
 # This simulation demonstrates a simple cloth hanging behavior. A planar cloth
 # mesh is fixed on one side and hangs under gravity, colliding with the ground.
 #
+# Command: python -m newton.examples cloth_hanging (--solver [semi_implicit, style3d, xpbd, vbd])
+#
 ###########################################################################
 
 import warp as wp
@@ -45,7 +47,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             self.sim_substeps = 32
         elif self.solver_type == "style3d":
             self.sim_substeps = 2
@@ -58,11 +60,11 @@ class Example:
         self.viewer = viewer
 
         if self.solver_type == "style3d":
-            builder = newton.sim.Style3DModelBuilder()
+            builder = newton.Style3DModelBuilder()
         else:
             builder = newton.ModelBuilder()
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             ground_cfg = builder.default_shape_cfg.copy()
             ground_cfg.ke = 1.0e2
             ground_cfg.kd = 5.0e1
@@ -87,7 +89,7 @@ class Example:
         }
 
         solver_params = {}
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
@@ -128,7 +130,7 @@ class Example:
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        if self.solver_type == "euler":
+        if self.solver_type == "semi_implicit":
             self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
         elif self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
@@ -183,7 +185,21 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        if self.solver_type != "style3d":
+            newton.examples.test_particle_state(
+                self.state_0,
+                "particles are above the ground",
+                lambda q, qd: q[2] > 0.0,
+            )
+
+        min_x = -float(self.sim_width) * 0.11
+        p_lower = wp.vec3(min_x, -4.0, -1.8)
+        p_upper = wp.vec3(0.1, 7.0, 4.0)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -201,7 +217,7 @@ if __name__ == "__main__":
         "--solver",
         help="Type of solver",
         type=str,
-        choices=["euler", "style3d", "xpbd", "vbd"],
+        choices=["semi_implicit", "style3d", "xpbd", "vbd"],
         default="vbd",
     )
     parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
@@ -218,4 +234,4 @@ if __name__ == "__main__":
         width=args.width,
     )
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

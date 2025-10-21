@@ -950,7 +950,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
 
     p = pos[v]
 
-    closest_p, bary, feature_type = triangle_closest_point(a, b, c, p)
+    closest_p, bary, _feature_type = triangle_closest_point(a, b, c, p)
 
     diff = p - closest_p
     dis = wp.length(diff)
@@ -1039,7 +1039,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
     p = pos[v]
 
-    closest_p, bary, feature_type = triangle_closest_point(a, b, c, p)
+    closest_p, bary, _feature_type = triangle_closest_point(a, b, c, p)
 
     diff = p - closest_p
     dis = wp.length(diff)
@@ -1205,7 +1205,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 @wp.kernel
 def forward_step(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1220,7 +1220,7 @@ def forward_step(
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
         inertia[particle] = pos_prev[particle]
         return
-    vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
+    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
     pos[particle] = pos[particle] + vel_new * dt
     inertia[particle] = pos[particle]
 
@@ -1228,7 +1228,7 @@ def forward_step(
 @wp.kernel
 def forward_step_penetration_free(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1245,7 +1245,7 @@ def forward_step_penetration_free(
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
         inertia[particle_index] = pos_prev[particle_index]
         return
-    vel_new = vel[particle_index] + (gravity + external_force[particle_index] * inv_mass[particle_index]) * dt
+    vel_new = vel[particle_index] + (gravity[0] + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
     inertia[particle_index] = pos_inertia
 
@@ -1274,7 +1274,7 @@ def compute_particle_conservative_bound(
             particle_index,
         )
     ):
-        tri_index, vertex_order = get_vertex_adjacent_face_id_order(
+        tri_index, _vertex_order = get_vertex_adjacent_face_id_order(
             adjacency,
             particle_index,
             i_adj_tri,

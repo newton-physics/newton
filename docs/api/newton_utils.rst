@@ -37,11 +37,14 @@ newton.utils
    quat_to_rpy
    quat_twist
    quat_twist_angle
+   run_benchmark
    smooth_max
    smooth_min
    transform_twist
    transform_wrench
    vec_abs
+   vec_allclose
+   vec_inside_limits
    vec_leaky_max
    vec_leaky_min
    vec_max

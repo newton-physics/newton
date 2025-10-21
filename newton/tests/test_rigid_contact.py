@@ -99,7 +99,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 2e4
     builder.default_shape_cfg.kd = 500.0
-    # !!! disable friction for Euler integrators
+    # !!! disable friction for SemiImplicit integrators
     builder.default_shape_cfg.kf = 0.0
 
     expected_end_positions = []
@@ -107,6 +107,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     for i, scale in enumerate([0.5, 1.0]):
         y_pos = i * 1.5
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_sphere(
@@ -115,6 +116,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(0.0, y_pos, 0.1 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         # Apply Y-axis rotation to capsule
@@ -127,6 +129,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_box(
@@ -137,14 +140,25 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
 
-        b = builder.add_body(xform=wp.transform(wp.vec3(6.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_articulation()
+        b = builder.add_body(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
+        builder.add_joint_free(b)
+        builder.add_shape_cylinder(
+            body=b,
+            radius=0.1 * scale,
+            half_height=0.3 * scale,
+        )
+        expected_end_positions.append(wp.vec3(5.0, y_pos, 0.3 * scale))
+
+        builder.add_articulation()
+        b = builder.add_body(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_mesh(
             body=b,
             mesh=cube_mesh,
             scale=wp.vec3(scale, scale, scale),
         )
-        expected_end_positions.append(wp.vec3(6.0, y_pos, 0.3 * scale))
+        expected_end_positions.append(wp.vec3(7.0, y_pos, 0.3 * scale))
 
     builder.add_ground_plane()
 
@@ -182,7 +196,7 @@ devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
 }
@@ -202,4 +216,4 @@ for device in devices:
 
 if __name__ == "__main__":
     # wp.clear_kernel_cache()
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=True)

@@ -18,14 +18,16 @@
 #
 # Shows how to control robot pretrained in IsaacLab with RL.
 # The policy is loaded from a file and the robot is controlled via keyboard.
-# Press space to start the simulation.
+#
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
 # Run this example with:
-# python example_robot_policy.py --robot g1_29dof
-# python example_robot_policy.py --robot go2
-# python example_robot_policy.py --robot anymal
-# to run the example with physX trained policies run with --physx
+# python -m newton.examples robot_policy --robot g1_29dof
+# python -m newton.examples robot_policy --robot g1_23dof
+# python -m newton.examples robot_policy --robot go2
+# python -m newton.examples robot_policy --robot anymal
+# python -m newton.examples robot_policy --robot anymal --physx
+# to run the example with a PhysX-trained policy run with --physx
 ###########################################################################
 
 from dataclasses import dataclass
@@ -67,7 +69,7 @@ ROBOT_CONFIGS = {
     "go2": RobotConfig(
         asset_dir="unitree_go2",
         policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
-        asset_path="usd/go2.usd",
+        asset_path="usd/go2.usda",
         yaml_path="rl_policies/go2.yaml",
     ),
     "g1_29dof": RobotConfig(
@@ -136,8 +138,8 @@ def compute_obs(
     joint_qd = state.joint_qd if state.joint_qd is not None else []
 
     root_quat_w = torch.tensor(joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_lin_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
+    root_ang_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
     joint_pos_current = torch.tensor(joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
     joint_vel_current = torch.tensor(joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
 
@@ -248,7 +250,8 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -260,11 +263,14 @@ class Example:
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
+        self.model.set_gravity((0.0, 0.0, -9.81))
+
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            ncon_per_env=30,
+            ncon_per_world=30,
+            njmax=100,
         )
 
         # Initialize state objects
@@ -401,7 +407,12 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
 
 
 if __name__ == "__main__":
@@ -460,4 +471,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
     # Run using standard example loop
-    newton.examples.run(example)
+    newton.examples.run(example, args)

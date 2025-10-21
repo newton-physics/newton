@@ -14,12 +14,14 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Robot Manipulating Cloth
+# Example Cloth Franka
 #
-# This simulation demonstrates twisting a coupled robot-cloth simulation
+# This simulation demonstrates a coupled robot-cloth simulation
 # using the VBD solver for the cloth and Featherstone for the robot,
 # showcasing its ability to handle complex contacts while ensuring it
 # remains intersection-free.
+#
+# Command: python -m newton.examples cloth_franka
 #
 ###########################################################################
 
@@ -37,26 +39,18 @@ from newton.solvers import SolverFeatherstone, SolverVBD
 from newton.utils import transform_twist
 
 
-def allclose(a: wp.vec3, b: wp.vec3, rtol=1e-5, atol=1e-8):
-    return (
-        wp.abs(a[0] - b[0]) <= (atol + rtol * wp.abs(b[0]))
-        and wp.abs(a[1] - b[1]) <= (atol + rtol * wp.abs(b[1]))
-        and wp.abs(a[2] - b[2]) <= (atol + rtol * wp.abs(b[2]))
-    )
-
-
 @wp.kernel
 def compute_ee_delta(
     body_q: wp.array(dtype=wp.transform),
     offset: wp.transform,
     body_id: int,
-    bodies_per_env: int,
+    bodies_per_world: int,
     target: wp.transform,
     # outputs
     ee_delta: wp.array(dtype=wp.spatial_vector),
 ):
-    env_id = wp.tid()
-    tf = body_q[bodies_per_env * env_id + body_id] * offset
+    world_id = wp.tid()
+    tf = body_q[bodies_per_world * world_id + body_id] * offset
     pos = wp.transform_get_translation(tf)
     pos_des = wp.transform_get_translation(target)
     pos_diff = pos_des - pos
@@ -64,7 +58,7 @@ def compute_ee_delta(
     rot_des = wp.transform_get_rotation(target)
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
-    ee_delta[env_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
+    ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
 
 
 def compute_body_jacobian(
@@ -135,10 +129,7 @@ def compute_body_jacobian(
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-    ):
+    def __init__(self, viewer):
         # parameters
         #   simulation
         self.add_cloth = True
@@ -173,32 +164,25 @@ class Example:
         self.bending_ke = 1e-4
         self.bending_kd = 1e-3
 
-        self.gravity = -10.0  # cm/s^2
-
-        self.scene = ModelBuilder(gravity=self.gravity)
+        self.scene = ModelBuilder()
         self.soft_contact_max = 1000000
 
         self.viewer = viewer
 
         if self.add_robot:
-            franka = ModelBuilder(gravity=self.gravity)
+            franka = ModelBuilder()
             self.create_articulation(franka)
 
-            xform = wp.transform(wp.vec3(0), wp.quat_identity())
-            self.scene.add_builder(franka, xform)
-            self.bodies_per_env = franka.body_count
-            self.dof_q_per_env = franka.joint_coord_count
-            self.dof_qd_per_env = franka.joint_dof_count
+            self.scene.add_builder(franka)
+            self.bodies_per_world = franka.body_count
+            self.dof_q_per_world = franka.joint_coord_count
+            self.dof_qd_per_world = franka.joint_dof_count
 
         # add a table
         self.scene.add_shape_box(
             -1,
             wp.transform(
-                wp.vec3(
-                    0,
-                    -0.5,
-                    0.1,
-                ),
+                wp.vec3(0.0, -0.5, 0.1),
                 wp.quat_identity(),
             ),
             hx=0.4,
@@ -271,6 +255,12 @@ class Example:
             )
 
         self.viewer.set_model(self.model)
+
+        # create Warp arrays for gravity so we can swap Model.gravity during
+        # a simulation running under CUDA graph capture
+        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)  # used for the robot solver
+        # gravity in cm/s^2
+        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3)  # used for the cloth solver
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -449,7 +439,7 @@ class Example:
                 state_in.body_q,
                 self.endeffector_offset,
                 self.endeffector_id,
-                self.bodies_per_env,
+                self.bodies_per_world,
                 wp.transform(*self.target[:7]),
             ],
             outputs=[self.ee_delta],
@@ -501,9 +491,6 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
-        pass
-
     def simulate(self):
         self.cloth_solver.rebuild_bvh(self.state_0)
         for _step in range(self.sim_substeps):
@@ -516,9 +503,9 @@ class Example:
 
             if self.add_robot:
                 particle_count = self.model.particle_count
-                # set particle_count = 0 to circumvent
+                # set particle_count = 0 to disable particle simulation in robot solver
                 self.model.particle_count = 0
-                self.model.gravity = wp.vec3(0)
+                self.model.gravity.assign(self.gravity_zero)
 
                 # Update the robot pose - this will modify state_0 and copy to state_1
                 self.model.shape_contact_pair_count = 0
@@ -529,8 +516,9 @@ class Example:
 
                 self.state_0.particle_f.zero_()
 
+                # restore original settings
                 self.model.particle_count = particle_count
-                self.model.gravity = wp.vec3(0, 0, self.gravity)
+                self.model.gravity.assign(self.gravity_earth)
 
             # cloth sim
             self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
@@ -546,12 +534,29 @@ class Example:
         if self.viewer is None:
             return
 
-        # Begin frame with time
         self.viewer.begin_frame(self.sim_time)
-
-        # Render model-driven content (ground plane)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
+
+    def test(self):
+        p_lower = wp.vec3(-0.34, -0.9, 0.0)
+        p_upper = wp.vec3(0.34, 0.0, 0.51)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particle velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 2.0,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 0.7,
+        )
 
 
 if __name__ == "__main__":
@@ -563,4 +568,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

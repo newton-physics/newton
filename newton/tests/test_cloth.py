@@ -485,7 +485,7 @@ class ClothSim:
         self.model.soft_contact_ke = 1e4
         self.model.soft_contact_kd = 1e-3
         self.model.soft_contact_mu = 0.2
-        self.model.gravity = wp.vec3(0.0, -1000.0, 0)
+        self.model.set_gravity((0.0, -1000.0, 0.0))
         self.num_test_frames = 30
 
     def set_up_non_zero_rest_angle_bending_experiment(self):
@@ -831,7 +831,7 @@ class ClothSim:
         builder.color(include_bending=True)
 
         self.model = builder.finalize(device=self.device)
-        self.model.gravity = wp.vec3(0, -1000.0, 0) if use_gravity else wp.vec3(0, 0, 0)
+        self.model.set_gravity((0.0, -1000.0 if use_gravity else 0.0, 0.0))
         self.model.soft_contact_ke = 1.0e4
         self.model.soft_contact_kd = 1.0e-2
 
@@ -879,15 +879,10 @@ class ClothSim:
         self.sim_time = 0.0
 
         if self.do_rendering:
-            self.renderer = newton.viewer.RendererOpenGL(
-                path="Test Cloth",
-                model=self.model,
-                scaling=self.renderer_scale_factor,
-                show_joints=True,
-                show_particles=False,
-            )
+            self.viewer = newton.viewer.ViewerGL()
+            self.viewer.set_model(self.model)
         else:
-            self.renderer = None
+            self.viewer = None
 
         for _frame in range(self.num_test_frames):
             if self.graph:
@@ -895,10 +890,10 @@ class ClothSim:
             else:
                 self.simulate()
 
-            if self.renderer is not None:
-                self.renderer.begin_frame()
-                self.renderer.render(self.state0)
-                self.renderer.end_frame()
+            if self.viewer is not None:
+                self.viewer.begin_frame(self.sim_time)
+                self.viewer.log_state(self.state0)
+                self.viewer.end_frame()
             self.sim_time = self.sim_time + self.frame_dt
 
     def set_points_fixed(self, model, fixed_particles):
@@ -911,7 +906,7 @@ class ClothSim:
 
 
 def compute_current_angles(model, state):
-    """Compute current angles consistent with both add_edges() in model.py and bending angle computation in integrators (XPBD, VBD, Euler)"""
+    """Compute current angles consistent with both add_edges() in model.py and bending angle computation in integrators (XPBD, VBD, SemiImplicit)"""
     angles = []
     for i, j, k, l in model.edge_indices.numpy():
         x3 = state.particle_q.numpy()[k]  # edge start
@@ -1052,7 +1047,7 @@ def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     position_diff = final_pos - initial_pos
 
     # Get gravity direction (normalized)
-    gravity_vector = np.array(example.model.gravity)
+    gravity_vector = example.model.gravity.numpy()[0]  # Extract first element from warp array
     gravity_direction = gravity_vector / np.linalg.norm(gravity_vector)
 
     # For each vertex, project its displacement onto gravity direction
@@ -1109,7 +1104,7 @@ def test_cloth_free_fall(test, device, solver):
     # examine that the simulation has moved
     test.assertTrue((example.init_pos != final_pos).any())
 
-    gravity = np.array(example.model.gravity)
+    gravity = example.model.gravity.numpy()[0]
     diff = final_pos - initial_pos
     vertical_translation_norm = diff @ gravity[..., None] / (np.linalg.norm(gravity) ** 2)
     # ensure it's free-falling

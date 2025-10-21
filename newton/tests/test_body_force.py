@@ -47,7 +47,6 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # print("model.body_inv_inertia\n", model.body_inv_inertia)
 
     solver = solver_fn(model)
-    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
 
     state_0, state_1 = model.state(), model.state()
 
@@ -80,9 +79,6 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     for _ in range(1):
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # renderer.begin_frame(sim_time)
-        # renderer.render(state_1)
-        # renderer.end_frame()
 
     body_qd = state_0.body_qd.numpy()[0]
     # print("body_qd" , body_qd)
@@ -133,7 +129,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
     model = builder.finalize(device=device)
     # print("model.body_inertia_inv\n", model.body_inv_inertia)
     test.assertEqual(model.joint_dof_count, 6)
-    # renderer = newton.viewer.RendererOpenGL(path="example_pendulum.usd", model=model, scaling=1.0, show_joints=True)
+
     angular_values = [0.24, 0.282353, 0.96]
     for control_dim in range(3):
         solver = solver_fn(model)
@@ -157,9 +153,6 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
         for _ in range(1):
             solver.step(state_0, state_1, None, None, sim_dt)
             state_0, state_1 = state_1, state_0
-            # renderer.begin_frame(sim_time)
-            # renderer.render(state_1)
-            # renderer.end_frame()
 
         if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
             # need to compute joint_qd from body_qd
@@ -187,16 +180,23 @@ for device in devices:
     for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-        # add_function_test(TestBodyForce, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
-        # add_function_test(
-        #     TestBodyForce,
-        #     f"test_floating_body_angular_up_axis_Y_{solver_name}",
-        #     test_floating_body,
-        #     devices=[device],
-        #     solver_fn=solver_fn,
-        #     test_angular=True,
-        #     up_axis=newton.Axis.Y,
-        # )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_linear_{solver_name}",
+            test_floating_body,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_angular_up_axis_Y_{solver_name}",
+            test_floating_body,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=True,
+            up_axis=newton.Axis.Y,
+        )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_angular_up_axis_Z_{solver_name}",
@@ -206,15 +206,15 @@ for device in devices:
             test_angular=True,
             up_axis=newton.Axis.Z,
         )
-        # add_function_test(
-        #     TestBodyForce,
-        #     f"test_floating_body_linear_up_axis_Y_{solver_name}",
-        #     test_floating_body,
-        #     devices=[device],
-        #     solver_fn=solver_fn,
-        #     test_angular=False,
-        #     up_axis=newton.Axis.Y,
-        # )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_linear_up_axis_Y_{solver_name}",
+            test_floating_body,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+            up_axis=newton.Axis.Y,
+        )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_linear_up_axis_Z_{solver_name}",
@@ -225,16 +225,16 @@ for device in devices:
             up_axis=newton.Axis.Z,
         )
 
-        # # test 3d articulation
-        # add_function_test(
-        #     TestBodyForce,
-        #     f"test_3d_articulation_up_axis_Y_{solver_name}",
-        #     test_3d_articulation,
-        #     devices=[device],
-        #     solver_fn=solver_fn,
-        #     test_angular=True,
-        #     up_axis=newton.Axis.Y,
-        # )
+        # test 3d articulation
+        add_function_test(
+            TestBodyForce,
+            f"test_3d_articulation_up_axis_Y_{solver_name}",
+            test_3d_articulation,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=True,
+            up_axis=newton.Axis.Y,
+        )
         add_function_test(
             TestBodyForce,
             f"test_3d_articulation_up_axis_Z_{solver_name}",
@@ -244,18 +244,18 @@ for device in devices:
             test_angular=True,
             up_axis=newton.Axis.Z,
         )
-        # add_function_test(
-        #     TestBodyForce,
-        #     f"test_3d_articulation_up_axis_Y_{solver_name}",
-        #     test_3d_articulation,
-        #     devices=[device],
-        #     solver_fn=solver_fn,
-        #     test_angular=False,
-        #     up_axis=newton.Axis.Y,
-        # )
         add_function_test(
             TestBodyForce,
-            f"test_3d_articulation_up_axis_Z_{solver_name}",
+            f"test_3d_articulation_linear_up_axis_Y_{solver_name}",
+            test_3d_articulation,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+            up_axis=newton.Axis.Y,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_3d_articulation_linear_up_axis_Z_{solver_name}",
             test_3d_articulation,
             devices=[device],
             solver_fn=solver_fn,

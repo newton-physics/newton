@@ -56,4 +56,4 @@ newton
    * - Name
      - Value
    * - __version__
-     - 0.1.1.a2
+     - 0.1.3

@@ -2208,7 +2208,19 @@ def solve_body_contact_positions(
 
         if err > 0.0:
             lambda_fr = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -perp, perp, angular_a, angular_b, 1.0, dt
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                -perp,
+                perp,
+                angular_a,
+                angular_b,
+                relaxation,
+                dt,
             )
 
             # limit friction based on incremental normal force, good approximation to limiting on total force
@@ -2230,7 +2242,7 @@ def solve_body_contact_positions(
         if wp.abs(err) > 0.0:
             lin = wp.vec3(0.0)
             lambda_torsion = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, 1.0, dt
+                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, relaxation, dt
             )
 
             lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * torsional_friction, lambda_n * torsional_friction)
@@ -2246,7 +2258,7 @@ def solve_body_contact_positions(
             lin = wp.vec3(0.0)
             roll_n = wp.normalize(delta_omega)
             lambda_roll = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, 1.0, dt
+                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, relaxation, dt
             )
 
             lambda_roll = wp.max(lambda_roll, -lambda_n * rolling_friction)
@@ -2317,7 +2329,7 @@ def apply_rigid_restitution(
     contact_thickness0: wp.array(dtype=float),
     contact_thickness1: wp.array(dtype=float),
     contact_inv_weight: wp.array(dtype=float),
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     dt: float,
     # outputs
     deltas: wp.array(dtype=wp.spatial_vector),
@@ -2399,7 +2411,7 @@ def apply_rigid_restitution(
     rxn_a = wp.vec3(0.0)
     rxn_b = wp.vec3(0.0)
     if body_a >= 0:
-        v_a = velocity_at_point(body_qd_prev[body_a], r_a) + gravity * dt
+        v_a = velocity_at_point(body_qd_prev[body_a], r_a) + gravity[0] * dt
         v_a_new = velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
         rxn_a = wp.quat_rotate_inv(q_a, wp.cross(r_a, n))
@@ -2410,7 +2422,7 @@ def apply_rigid_restitution(
         #         inv_mass_a *= contact_inv_weight[body_a]
         inv_mass += inv_mass_a
     if body_b >= 0:
-        v_b = velocity_at_point(body_qd_prev[body_b], r_b) + gravity * dt
+        v_b = velocity_at_point(body_qd_prev[body_b], r_b) + gravity[0] * dt
         v_b_new = velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         rxn_b = wp.quat_rotate_inv(q_b, wp.cross(r_b, n))

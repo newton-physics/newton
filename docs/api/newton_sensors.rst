@@ -10,6 +10,8 @@ newton.sensors
    :nosignatures:
 
    ContactSensor
+   MatchKind
+   RaycastSensor
 
 .. rubric:: Functions
 

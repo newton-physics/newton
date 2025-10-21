@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Grad Cloth
+# Example Diffsim Cloth
 #
 # Shows how to use Newton to optimize the initial velocities of a piece of
 # cloth such that its center of mass hits a target after a specified time.
@@ -26,10 +26,13 @@
 # Command: python -m newton.examples diffsim_cloth
 #
 ###########################################################################
+import numpy as np
 import warp as wp
+import warp.render
 
 import newton
 import newton.examples
+from newton.tests.unittest_utils import most
 
 
 @wp.kernel
@@ -74,6 +77,7 @@ class Example:
         self.target = (0.0, 8.0, 0.0)
         self.com = wp.zeros(1, dtype=wp.vec3, requires_grad=True)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        self.loss_history = []
 
         # setup rendering
         self.viewer = viewer
@@ -177,9 +181,11 @@ class Example:
         self.tape.zero()
 
         self.train_iter += 1
+        self.loss_history.append(self.loss.numpy()[0])
 
     def test(self):
-        pass
+        assert all(np.array(self.loss_history) < 300.0)
+        assert most(np.diff(self.loss_history[:-1]) < -1.0)
 
     def render(self):
         if self.frame > 0 and self.train_iter % 4 != 0:
@@ -224,4 +230,4 @@ if __name__ == "__main__":
     example = Example(viewer, verbose=args.verbose)
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

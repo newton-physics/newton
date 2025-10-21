@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Sim Grad Bounce
+# Example Diffsim Ball
 #
 # Shows how to use Newton to optimize the initial velocity of a particle
 # such that it bounces off the wall and floor in order to hit a target.
@@ -26,10 +26,13 @@
 # Command: python -m newton.examples diffsim_ball
 #
 ###########################################################################
+import numpy as np
 import warp as wp
+import warp.render
 
 import newton
 import newton.examples
+from newton.tests.unittest_utils import assert_np_equal
 
 
 @wp.kernel
@@ -63,6 +66,7 @@ class Example:
         self.train_rate = 0.02
         self.target = (0.0, -2.0, 1.5)
         self.loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        self.loss_history = []
 
         self.viewer = viewer
         self.viewer.show_particles = True
@@ -160,9 +164,14 @@ class Example:
         self.tape.zero()
 
         self.train_iter += 1
+        self.loss_history.append(self.loss.numpy()[0])
 
     def test(self):
-        pass
+        x_grad_numeric, x_grad_analytic = self.check_grad()
+        assert_np_equal(x_grad_numeric, x_grad_analytic, tol=5e-2)
+        assert all(np.array(self.loss_history) < 10.0)
+        # skip the last loss because there could be some bouncing around the optimum
+        assert all(np.diff(self.loss_history[:-1]) < -1e-3)
 
     def render(self):
         if self.frame > 0 and self.train_iter % 16 != 0:
@@ -196,8 +205,6 @@ class Example:
             self.frame += 1
 
     def check_grad(self):
-        import numpy as np  # noqa: PLC0415
-
         param = self.states[0].particle_qd
 
         # initial value
@@ -235,12 +242,14 @@ class Example:
 
         tape.backward(l)
 
-        x_grad_analytic = tape.gradients[param]
+        x_grad_analytic = param.grad.numpy()[0].copy()
 
         print(f"numeric grad: {x_grad_numeric}")
         print(f"analytic grad: {x_grad_analytic}")
 
         tape.zero()
+
+        return x_grad_numeric, x_grad_analytic
 
 
 if __name__ == "__main__":
@@ -258,4 +267,4 @@ if __name__ == "__main__":
     example.check_grad()
 
     # Run example
-    newton.examples.run(example)
+    newton.examples.run(example, args)

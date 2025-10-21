@@ -4,7 +4,7 @@ name: GPU Benchmarks
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g6e.xlarge
-  AWS_VOLUME_SIZE: 64
+  AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-github-actions-role-Role-GbdM0RBoT4xW
@@ -12,6 +12,7 @@ env:
   AWS_S3_BUCKET: newton-github-workflow-artifacts
 
 on:
+  merge_group:
   pull_request_target:
 
 # Cancels in-progress runs of this workflow for the same pull request,
@@ -185,7 +186,8 @@ jobs:
 
           # Prepare script to be passed as SSM parameters
           jq -n --arg script_body "$(cat remote_script.sh)" \
-          '{ "commands": [$script_body] }' > ssm_params.json
+          --arg timeout "$AWS_ROLE_DURATION" \
+          '{ "commands": [$script_body], "executionTimeout": [$timeout] }' > ssm_params.json
 
           # Echo script for debugging
           cat remote_script.sh
