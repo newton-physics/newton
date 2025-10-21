@@ -480,6 +480,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
     parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
+    parser.add_argument("--event-trace", default=False, action=argparse.BooleanOptionalAction, help="Print profiling information.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
@@ -532,8 +533,7 @@ if __name__ == "__main__":
         print("The option ``use-mujoco-cpu`` is not yet supported. Disabling it.")
 
     trace = {}
-
-    with EventTracer(enabled=True) as tracer:
+    with EventTracer(enabled=args.event_trace) as tracer:
         with wp.ScopedDevice(args.device):
             example = Example(
                 robot=args.robot,
@@ -603,8 +603,8 @@ if __name__ == "__main__":
             for _ in range(args.num_frames):
                 example.step()
                 example.render()
-                trace = add_trace(trace, tracer.trace())
+                if args.event_trace:
+                    trace = add_trace(trace, tracer.trace())
 
-    print(trace)
-
-    # print_trace(trace, 0, args.num_frames * example.sim_substeps)
+    if args.event_trace:
+        print_trace(trace, 0, args.num_frames * example.sim_substeps)
