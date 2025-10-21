@@ -108,7 +108,7 @@ class TestAnymalReset(unittest.TestCase):
             iterations=100,
             ls_iterations=50,
             njmax=200,
-            ncon_per_env=50,
+            ncon_per_world=50,
         )
 
         if self.headless:
