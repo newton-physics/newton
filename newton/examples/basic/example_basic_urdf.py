@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs):
+    def __init__(self, viewer, num_worlds):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -42,7 +42,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -71,11 +71,11 @@ class Example:
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
         quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
 
-        # use "scene" for the entire set of environments
+        # use "scene" for the entire set of worlds
         scene = newton.ModelBuilder()
 
-        # use the builder.replicate() function to create N copies of the environment
-        scene.replicate(quadruped, self.num_envs)
+        # use the builder.replicate() function to create N copies of the world
+        scene.replicate(quadruped, self.num_worlds)
         scene.add_ground_plane()
 
         # finalize model
@@ -133,14 +133,14 @@ class Example:
             lambda q, qd: max(abs(qd)) < 0.15,
         )
 
-        bodies_per_env = self.model.body_count // self.num_envs
+        bodies_per_world = self.model.body_count // self.num_worlds
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "quadrupeds have reached the terminal height",
             lambda q, qd: wp.abs(q[2] - 0.46) < 0.01,
-            # only select the root body of each environment
-            indices=[i * bodies_per_env for i in range(self.num_envs)],
+            # only select the root body of each world
+            indices=[i * bodies_per_world for i in range(self.num_worlds)],
         )
 
     def render(self):
@@ -153,12 +153,12 @@ class Example:
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=100, help="Total number of simulated worlds.")
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

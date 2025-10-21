@@ -40,12 +40,12 @@ class _FastBenchmark:
     number = 1
     rounds = 2
     repeat = None
-    num_envs = None
+    num_worlds = None
     random_init = None
 
     def setup(self):
         if not hasattr(self, "builder") or self.builder is None:
-            self.builder = Example.create_model_builder(self.robot, self.num_envs, randomize=True, seed=123)
+            self.builder = Example.create_model_builder(self.robot, self.num_worlds, randomize=True, seed=123)
 
         self.example = Example(
             stage_path=None,
@@ -53,7 +53,6 @@ class _FastBenchmark:
             randomize=self.random_init,
             headless=True,
             actuation="None",
-            num_envs=self.num_envs,
             use_cuda_graph=True,
             builder=self.builder,
         )
@@ -87,7 +86,7 @@ class _FastBenchmark:
 class _KpiBenchmark:
     """Utility base class for KPI benchmarks."""
 
-    param_names = ["num_envs"]
+    param_names = ["num_worlds"]
     num_frames = None
     params = None
     robot = None
@@ -95,14 +94,14 @@ class _KpiBenchmark:
     ls_iteration = None
     random_init = None
 
-    def setup(self, num_envs):
+    def setup(self, num_worlds):
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
-        if num_envs not in self.builder:
-            self.builder[num_envs] = Example.create_model_builder(self.robot, num_envs, randomize=True, seed=123)
+        if num_worlds not in self.builder:
+            self.builder[num_worlds] = Example.create_model_builder(self.robot, num_worlds, randomize=True, seed=123)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, num_envs):
+    def track_simulate(self, num_worlds):
         total_time = 0.0
         for _iter in range(self.samples):
             example = Example(
@@ -111,9 +110,8 @@ class _KpiBenchmark:
                 randomize=self.random_init,
                 headless=True,
                 actuation="random",
-                num_envs=num_envs,
                 use_cuda_graph=True,
-                builder=self.builder[num_envs],
+                builder=self.builder[num_worlds],
                 ls_iteration=self.ls_iteration,
             )
 
@@ -123,15 +121,15 @@ class _KpiBenchmark:
             wp.synchronize_device()
             total_time += example.benchmark_time
 
-        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_envs * self.samples)
+        return total_time * 1000 / (self.num_frames * example.sim_substeps * num_worlds * self.samples)
 
-    track_simulate.unit = "ms/env-step"
+    track_simulate.unit = "ms/world-step"
 
 
 class _SwizzleBenchmark:
     """Utility base class for measuring swizzling overhead."""
 
-    param_names = ["num_envs"]
+    param_names = ["num_worlds"]
     num_frames = None
     params = None
     robot = None
@@ -139,14 +137,14 @@ class _SwizzleBenchmark:
     ls_iteration = None
     random_init = None
 
-    def setup(self, num_envs):
+    def setup(self, num_worlds):
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
-        if num_envs not in self.builder:
-            self.builder[num_envs] = Example.create_model_builder(self.robot, num_envs, randomize=True, seed=123)
+        if num_worlds not in self.builder:
+            self.builder[num_worlds] = Example.create_model_builder(self.robot, num_worlds, randomize=True, seed=123)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, num_envs):
+    def track_simulate(self, num_worlds):
         trace = {}
         with EventTracer(enabled=True) as tracer:
             for _iter in range(self.samples):
@@ -156,9 +154,9 @@ class _SwizzleBenchmark:
                     randomize=self.random_init,
                     headless=True,
                     actuation="random",
-                    num_envs=num_envs,
+                    num_worlds=num_worlds,
                     use_cuda_graph=True,
-                    builder=self.builder[num_envs],
+                    builder=self.builder[num_worlds],
                     ls_iteration=self.ls_iteration,
                 )
 
@@ -178,7 +176,7 @@ class FastCartpole(_FastBenchmark):
     num_frames = 50
     robot = "cartpole"
     repeat = 8
-    num_envs = 256
+    num_worlds = 256
     random_init = True
 
 
@@ -195,7 +193,7 @@ class FastG1(_FastBenchmark):
     num_frames = 25
     robot = "g1"
     repeat = 2
-    num_envs = 256
+    num_worlds = 256
     random_init = True
 
 
@@ -232,7 +230,7 @@ class FastHumanoid(_FastBenchmark):
     num_frames = 50
     robot = "humanoid"
     repeat = 8
-    num_envs = 256
+    num_worlds = 256
     random_init = True
 
 
@@ -267,7 +265,7 @@ class FastAllegro(_FastBenchmark):
     num_frames = 100
     robot = "allegro"
     repeat = 2
-    num_envs = 256
+    num_worlds = 256
     random_init = False
 
 

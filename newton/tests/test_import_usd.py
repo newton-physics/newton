@@ -331,7 +331,7 @@ class TestImportUsd(unittest.TestCase):
         builder_cloning.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant_multi.usda"),
             collapse_fixed_joints=True,
-            cloned_env="/World/envs/env_0",
+            cloned_world="/World/envs/env_0",
         )
         self.assertEqual(builder_cloning.articulation_key, builder_no_cloning.articulation_key)
         # ordering of the shape keys may differ
