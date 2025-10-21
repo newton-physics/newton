@@ -447,7 +447,6 @@ class Example:
             ls_parallel=ls_parallel,
         )
 
-
     def add_trace(self, stack, new_stack):
         ret = {}
         for k in new_stack:
@@ -480,7 +479,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
     parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
-    parser.add_argument("--event-trace", default=False, action=argparse.BooleanOptionalAction, help="Print profiling information.")
+    parser.add_argument(
+        "--event-trace", default=False, action=argparse.BooleanOptionalAction, help="Print profiling information."
+    )
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
