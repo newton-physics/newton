@@ -466,8 +466,8 @@ def print_trace(trace, indent, steps):
         print("  " * indent + f"{k}: {times / steps:.4f}")
         print_trace(sub_trace, indent + 1, steps)
     if indent == 0:
-        step_time = trace['step'][0]
-        mujoco_warp_step_time = trace['step'][1]['mujoco_warp_step'][0]
+        step_time = trace["step"][0]
+        mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
         overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
         print("---------------------------------------------")
         print("Newton overhead:\t" + f": {overhead:.2f} %")
@@ -581,7 +581,9 @@ if __name__ == "__main__":
             # Get actual max constraints and contacts from MuJoCo Warp data
             actual_njmax = example.solver.mjw_data.njmax
             actual_nconmax = (
-                example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+                example.solver.mjw_data.nconmax // args.num_envs
+                if args.num_envs > 0
+                else example.solver.mjw_data.nconmax
             )
             print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
             print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
@@ -603,4 +605,6 @@ if __name__ == "__main__":
                 example.render()
                 trace = add_trace(trace, tracer.trace())
 
-    print_trace(trace, 0, args.num_frames * example.sim_substeps)
+    print(trace)
+
+    # print_trace(trace, 0, args.num_frames * example.sim_substeps)

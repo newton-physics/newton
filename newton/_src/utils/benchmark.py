@@ -13,24 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import itertools
 import time
-import inspect
 
 import warp as wp
-import functools
-
-
-_STACK = None
 
 
 class EventTracer:
-    """Calculates elapsed times of functions annotated with `event_scope`.
+    """
+    Calculates elapsed times of functions annotated with `event_scope`.
 
-    This class hes been copied from:
-    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L28
+    .. note::
 
-    Use as a context manager like so:
+        This class hes been copied from:
+        https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L28
+
+
+    Example
+    -------
+
+    .. code-block:: python
 
       @event_trace
       def my_warp_function(...):
@@ -41,91 +44,111 @@ class EventTracer:
         print(tracer.trace())
     """
 
-    def __init__(self, enabled: bool = True):
-        global _STACK
-        if _STACK is not None:
+    _STACK = None
+    _active_instance = None
+
+    def __new__(cls, enabled):
+        if cls._STACK is not None:
             raise ValueError("only one EventTracer can run at a time")
+        return super().__new__(cls)
+
+    def __init__(self, enabled: bool = True):
+        """
+        Args:
+            enabled (bool): If True, elapsed times of annotated functions are measured.
+        """
         if enabled:
-            _STACK = {}
+            self._STACK = {}
+            EventTracer._active_instance = self
 
     def __enter__(self):
         return self
 
     def trace(self) -> dict:
         """Calculates elapsed times for every node of the trace."""
-        global _STACK
 
-        if _STACK is None:
+        if self._STACK is None:
             return {}
 
         ret = {}
 
-        for k, v in _STACK.items():
+        for k, v in self._STACK.items():
             events, sub_stack = v
             # push into next level of stack
-            saved_stack, _STACK = _STACK, sub_stack
+            saved_stack, self._STACK = self._STACK, sub_stack
             sub_trace = self.trace()
             # pop!
-            _STACK = saved_stack
+            self._STACK = saved_stack
             events = tuple(wp.get_event_elapsed_time(beg, end) for beg, end in events)
             ret[k] = (events, sub_trace)
 
         return ret
 
     def __exit__(self, type, value, traceback):
-        global _STACK
-        _STACK = None
+        self._STACK = None
 
 
 def _merge(a: dict, b: dict) -> dict:
-    """Merges two event trace stacks.
-    This function hes been copied from:
-    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L78
+    """
+    Merges two event trace stacks.
+
+    .. note::
+
+        This function hes been copied from:
+        https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L78
+
+    Parameters:
+      a  : Base event trace stack.
+      b  : Second event trace stack to add to the base event trace stack.
+
+    Returns:
+      A dictionary where the two event traces are merged.
     """
     ret = {}
     if not a or not b:
         return dict(**a, **b)
     if set(a) != set(b):
         raise ValueError("incompatible stacks")
-    for key in a:
-        a1_events, a1_substack = a[key]
+    for key, (a1_events, a1_substack) in a.items():
         a2_events, a2_substack = b[key]
         ret[key] = (a1_events + a2_events, _merge(a1_substack, a2_substack))
     return ret
 
 
 def event_scope(fn, name: str = ""):
-    """Wraps a function and records an event before and after the function invocation.
-
-    This function hes been copied from:
-    https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L92
     """
-    name = name or getattr(fn, "__name__")
+    Wraps a function and records an event before and after the function invocation.
+
+    .. note::
+
+        This function hes been copied from:
+        https://github.com/google-deepmind/mujoco_warp/blob/660f8e2f0fb3ccde78c4e70cf24658a1a14ecf1b/mujoco_warp/_src/warp_util.py#L92
+
+    Parameters:
+      fn    : Function to be wrapped.
+      name  : Custom name associated with the function.
+    """
+    name = name or fn.__name__
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        global _STACK
-        if _STACK is None:
+        if EventTracer._active_instance is None:
             return fn(*args, **kwargs)
 
-        for frame_info in inspect.stack():
-            if frame_info.function in ("capture_while", "capture_if"):
-                return fn(*args, **kwargs)
-
         # push into next level of stack
-        saved_stack, _STACK = _STACK, {}
+        saved_stack, EventTracer._active_instance._STACK = EventTracer._active_instance._STACK, {}
         beg = wp.Event(enable_timing=True)
         end = wp.Event(enable_timing=True)
         wp.record_event(beg)
         res = fn(*args, **kwargs)
         wp.record_event(end)
         # pop back up to current level
-        sub_stack, _STACK = _STACK, saved_stack
+        sub_stack, EventTracer._active_instance._STACK = EventTracer._active_instance._STACK, saved_stack
         # append events and substack
-        prev_events, prev_substack = _STACK.get(name, ((), {}))
-        events = prev_events + ((beg, end),)
+        prev_events, prev_substack = EventTracer._active_instance._STACK.get(name, ((), {}))
+        events = (*prev_events, (beg, end))
         sub_stack = _merge(prev_substack, sub_stack)
-        _STACK[name] = (events, sub_stack)
+        EventTracer._active_instance._STACK[name] = (events, sub_stack)
         return res
 
     return wrapper
