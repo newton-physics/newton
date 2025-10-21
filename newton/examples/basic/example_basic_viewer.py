@@ -113,29 +113,29 @@ class Example:
         qx_slow = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2 * self.time)
         qz_slow = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4 * self.time)
 
-        # Sphere: gentle bounce at x = -6
+        # Sphere: gentle bounce at y = -4
         sphere_pos = wp.vec3(0.0, base_left, base_height + 0.3 * abs(math.sin(1.2 * self.time)))
         x_sphere_anim = wp.array([wp.transform(sphere_pos, qy_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Box: rocking rotation at x = -3
+        # Box: rocking rotation at y = -2
         x_box_anim = wp.array([wp.transform([0.0, base_left, base_height], qx_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Cone: spinning at origin (x = 0)
+        # Cone: spinning at origin (y = 0)
         x_cone_anim = wp.array([wp.transform([0.0, base_left, base_height], qy_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Cylinder: spinning on different axis at x = 3
+        # Cylinder: spinning on different axis at y = 2
         x_cyl_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Capsule: gentle sway at x = 6
+        # Capsule: gentle sway at y = 4
         capsule_pos = wp.vec3(0.3 * math.sin(0.8 * self.time), base_left, base_height)
         x_cap_anim = wp.array([wp.transform(capsule_pos, qy_slow)], dtype=wp.transform)
         base_left += self.spacing
 
-        # Bunny: spinning at x = 9
+        # Bunny: spinning at y = 6
         x_bunny_anim = wp.array([wp.transform([0.0, base_left, base_height], qz_slow)], dtype=wp.transform)
         base_left += self.spacing
 
