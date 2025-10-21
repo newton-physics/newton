@@ -469,7 +469,7 @@ def print_trace(trace, indent, steps):
         mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
         overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
         print("---------------------------------------------")
-        print("Newton overhead:\t" + f": {overhead:.2f} %")
+        print(f"Newton overhead:\t{overhead:.2f} %")
         print("=============================================")
 
 
