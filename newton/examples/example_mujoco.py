@@ -37,6 +37,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
+from newton.utils import EventTracer
 
 ROBOT_CONFIGS = {
     "humanoid": {
@@ -447,6 +448,32 @@ class Example:
         )
 
 
+def add_trace(stack, new_stack):
+    ret = {}
+    for k in new_stack:
+        times, sub_stack = stack[k] if k in stack.keys() else (0, {})
+        new_times, new_sub_stack = new_stack[k]
+        times = times + sum(new_times)
+        ret[k] = (times, add_trace(sub_stack, new_sub_stack))
+    return ret
+
+
+def print_trace(trace, indent, steps):
+    if indent == 0:
+        print("================= Profiling =================")
+    for k, v in trace.items():
+        times, sub_trace = v
+        print("  " * indent + f"{k}: {times / steps:.4f}")
+        print_trace(sub_trace, indent + 1, steps)
+    if indent == 0:
+        step_time = trace['step'][0]
+        mujoco_warp_step_time = trace['step'][1]['mujoco_warp_step'][0]
+        overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
+        print("---------------------------------------------")
+        print("Newton overhead:\t" + f": {overhead:.2f} %")
+        print("=============================================")
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -504,70 +531,76 @@ if __name__ == "__main__":
         args.use_mujoco_cpu = False
         print("The option ``use-mujoco-cpu`` is not yet supported. Disabling it.")
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            robot=args.robot,
-            env=args.env,
-            stage_path=args.stage_path,
-            num_envs=args.num_envs,
-            use_cuda_graph=args.use_cuda_graph,
-            use_mujoco_cpu=args.use_mujoco_cpu,
-            randomize=args.random_init,
-            headless=args.headless,
-            actuation=args.actuation,
-            solver=args.solver,
-            integrator=args.integrator,
-            solver_iteration=args.solver_iteration,
-            ls_iteration=args.ls_iteration,
-            njmax=args.njmax,
-            nconmax=args.nconmax,
-            ls_parallel=args.ls_parallel,
-        )
+    trace = {}
 
-        # Print simulation configuration summary
-        LABEL_WIDTH = 25
-        TOTAL_WIDTH = 45
-        title = " Simulation Configuration "
-        print(f"\n{title.center(TOTAL_WIDTH, '=')}")
-        print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
-        print(f"{'Environment Count':<{LABEL_WIDTH}}: {args.num_envs}")
-        print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
-        print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
-        print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
-        print("-" * TOTAL_WIDTH)
+    with EventTracer(enabled=True) as tracer:
+        with wp.ScopedDevice(args.device):
+            example = Example(
+                robot=args.robot,
+                env=args.env,
+                stage_path=args.stage_path,
+                num_envs=args.num_envs,
+                use_cuda_graph=args.use_cuda_graph,
+                use_mujoco_cpu=args.use_mujoco_cpu,
+                randomize=args.random_init,
+                headless=args.headless,
+                actuation=args.actuation,
+                solver=args.solver,
+                integrator=args.integrator,
+                solver_iteration=args.solver_iteration,
+                ls_iteration=args.ls_iteration,
+                njmax=args.njmax,
+                nconmax=args.nconmax,
+                ls_parallel=args.ls_parallel,
+            )
 
-        # Map MuJoCo solver enum back to string
-        solver_value = example.solver.mj_model.opt.solver
-        solver_map = {0: "PGS", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
-        actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
-        # Map MuJoCo integrator enum back to string
-        integrator_map = {
-            0: "Euler",
-            1: "RK4",
-            2: "Implicit",
-            3: "Implicitfast",
-        }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
-        actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
-        # Get actual max constraints and contacts from MuJoCo Warp data
-        actual_njmax = example.solver.mjw_data.njmax
-        actual_nconmax = (
-            example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
-        )
-        print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
-        print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
-        # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
-        print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
-        print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
-        print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")
-        print(f"{'Max Contacts / env':<{LABEL_WIDTH}}: {actual_nconmax}")
-        print(f"{'Joint DOFs':<{LABEL_WIDTH}}: {example.model.joint_dof_count}")
-        print(f"{'Body Count':<{LABEL_WIDTH}}: {example.model.body_count}")
-        print("-" * TOTAL_WIDTH)
+            # Print simulation configuration summary
+            LABEL_WIDTH = 25
+            TOTAL_WIDTH = 45
+            title = " Simulation Configuration "
+            print(f"\n{title.center(TOTAL_WIDTH, '=')}")
+            print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
+            print(f"{'Environment Count':<{LABEL_WIDTH}}: {args.num_envs}")
+            print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
+            print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
+            print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
+            print("-" * TOTAL_WIDTH)
 
-        print(f"{'Execution Device':<{LABEL_WIDTH}}: {wp.get_device()}")
-        print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
-        print("=" * TOTAL_WIDTH + "\n")
+            # Map MuJoCo solver enum back to string
+            solver_value = example.solver.mj_model.opt.solver
+            solver_map = {0: "PGS", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
+            actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
+            # Map MuJoCo integrator enum back to string
+            integrator_map = {
+                0: "Euler",
+                1: "RK4",
+                2: "Implicit",
+                3: "Implicitfast",
+            }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
+            actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
+            # Get actual max constraints and contacts from MuJoCo Warp data
+            actual_njmax = example.solver.mjw_data.njmax
+            actual_nconmax = (
+                example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+            )
+            print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
+            print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
+            # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
+            print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
+            print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
+            print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")
+            print(f"{'Max Contacts / env':<{LABEL_WIDTH}}: {actual_nconmax}")
+            print(f"{'Joint DOFs':<{LABEL_WIDTH}}: {example.model.joint_dof_count}")
+            print(f"{'Body Count':<{LABEL_WIDTH}}: {example.model.body_count}")
+            print("-" * TOTAL_WIDTH)
 
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
+            print(f"{'Execution Device':<{LABEL_WIDTH}}: {wp.get_device()}")
+            print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
+            print("=" * TOTAL_WIDTH + "\n")
+
+            for _ in range(args.num_frames):
+                example.step()
+                example.render()
+                trace = add_trace(trace, tracer.trace())
+
+    print_trace(trace, 0, args.num_frames * example.sim_substeps)
