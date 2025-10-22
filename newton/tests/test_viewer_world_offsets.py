@@ -26,6 +26,25 @@ wp.config.quiet = True
 
 
 class TestViewerWorldOffsets(unittest.TestCase):
+    def test_compute_world_offsets_function(self):
+        """Test that the shared compute_world_offsets function works correctly."""
+        # Test basic functionality
+        test_cases = [
+            (1, (0.0, 0.0, 0.0), [[0.0, 0.0, 0.0]]),
+            (1, (5.0, 5.0, 0.0), [[0.0, 0.0, 0.0]]),  # Single world always at origin
+            (2, (10.0, 0.0, 0.0), [[-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
+            (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]]),
+        ]
+
+        for num_worlds, spacing, expected in test_cases:
+            # Test without up_axis
+            offsets = newton.utils.compute_world_offsets(num_worlds, spacing)
+            assert_np_equal(offsets, np.array(expected), tol=1e-5)
+
+            # Test with up_axis
+            offsets_with_up = newton.utils.compute_world_offsets(num_worlds, spacing, up_axis=newton.Axis.Z)
+            assert_np_equal(offsets_with_up, np.array(expected), tol=1e-5)
+
     def test_physics_at_origin(self):
         """Test that physics simulation runs with all worlds at origin."""
         num_worlds = 4
@@ -264,5 +283,4 @@ for device in devices:
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)

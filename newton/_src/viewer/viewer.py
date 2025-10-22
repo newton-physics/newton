@@ -20,6 +20,7 @@ import warp as wp
 
 import newton
 from newton.utils import (
+    compute_world_offsets,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -104,51 +105,11 @@ class ViewerBase:
             num_worlds: Number of worlds
             spacing: Spacing between worlds along each axis (x, y, z)
         """
-        # Compute offsets using the same logic as ModelBuilder._compute_replicate_offsets
+        # Get up axis from model if available
+        up_axis = self.model.up_axis if self.model else None
 
-        world_spacing = np.array(spacing)
-        nonzeros = np.nonzero(world_spacing)[0]
-        num_dim = nonzeros.shape[0]
-
-        if num_dim > 0 and num_worlds > 0:
-            side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
-            world_offsets = []
-
-            if num_dim == 1:
-                for i in range(num_worlds):
-                    world_offsets.append(i * world_spacing)
-            elif num_dim == 2:
-                for i in range(num_worlds):
-                    d0 = i // side_length
-                    d1 = i % side_length
-                    offset = np.zeros(3)
-                    offset[nonzeros[0]] = d0 * world_spacing[nonzeros[0]]
-                    offset[nonzeros[1]] = d1 * world_spacing[nonzeros[1]]
-                    world_offsets.append(offset)
-            elif num_dim == 3:
-                for i in range(num_worlds):
-                    d0 = i // (side_length * side_length)
-                    d1 = (i // side_length) % side_length
-                    d2 = i % side_length
-                    offset = np.zeros(3)
-                    offset[0] = d0 * world_spacing[0]
-                    offset[1] = d1 * world_spacing[1]
-                    offset[2] = d2 * world_spacing[2]
-                    world_offsets.append(offset)
-
-            world_offsets = np.array(world_offsets)
-
-            # Center the worlds
-            min_offsets = np.min(world_offsets, axis=0)
-            correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
-
-            # Ensure the worlds are not shifted below the ground plane
-            if self.model is not None:
-                correction[self.model.up_axis] = 0.0
-
-            world_offsets -= correction
-        else:
-            world_offsets = np.zeros((num_worlds, 3))
+        # Compute offsets using the shared utility function
+        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
