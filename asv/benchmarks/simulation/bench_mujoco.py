@@ -41,6 +41,7 @@ class _FastBenchmark:
     repeat = None
     num_worlds = None
     random_init = None
+    environment = "None"
 
     def setup(self):
         if not hasattr(self, "builder") or self.builder is None:
@@ -54,6 +55,7 @@ class _FastBenchmark:
             actuation="None",
             use_cuda_graph=True,
             builder=self.builder,
+            environment=self.environment,
         )
 
         wp.synchronize_device()
@@ -92,6 +94,7 @@ class _KpiBenchmark:
     samples = None
     ls_iteration = None
     random_init = None
+    environment = "None"
 
     def setup(self, num_worlds):
         if not hasattr(self, "builder") or self.builder is None:
@@ -112,6 +115,7 @@ class _KpiBenchmark:
                 use_cuda_graph=True,
                 builder=self.builder[num_worlds],
                 ls_iteration=self.ls_iteration,
+                environment=self.environment,
             )
 
             wp.synchronize_device()
@@ -131,6 +135,7 @@ class FastCartpole(_FastBenchmark):
     repeat = 8
     num_worlds = 256
     random_init = True
+    environment = "None"
 
 
 class KpiCartpole(_KpiBenchmark):
@@ -140,6 +145,7 @@ class KpiCartpole(_KpiBenchmark):
     samples = 4
     ls_iteration = 3
     random_init = True
+    environment = "None"
 
 
 class FastG1(_FastBenchmark):
@@ -148,6 +154,7 @@ class FastG1(_FastBenchmark):
     repeat = 2
     num_worlds = 256
     random_init = True
+    environment = "None"
 
 
 class KpiG1(_KpiBenchmark):
@@ -158,6 +165,7 @@ class KpiG1(_KpiBenchmark):
     samples = 2
     ls_iteration = 10
     random_init = True
+    environment = "None"
 
 
 class FastHumanoid(_FastBenchmark):
@@ -166,6 +174,7 @@ class FastHumanoid(_FastBenchmark):
     repeat = 8
     num_worlds = 256
     random_init = True
+    environment = "None"
 
 
 class KpiHumanoid(_KpiBenchmark):
@@ -175,6 +184,7 @@ class KpiHumanoid(_KpiBenchmark):
     samples = 4
     ls_iteration = 15
     random_init = True
+    environment = "None"
 
 
 class FastAllegro(_FastBenchmark):
@@ -183,6 +193,7 @@ class FastAllegro(_FastBenchmark):
     repeat = 2
     num_worlds = 256
     random_init = False
+    environment = "None"
 
 
 class KpiAllegro(_KpiBenchmark):
@@ -192,6 +203,27 @@ class KpiAllegro(_KpiBenchmark):
     samples = 2
     ls_iteration = 10
     random_init = False
+    environment = "None"
+
+
+class FastKitchenG1(_FastBenchmark):
+    num_frames = 25
+    robot = "g1"
+    repeat = 2
+    num_worlds = 32
+    random_init = True
+    environment = "kitchen"
+
+
+class KpiKitchenG1(_KpiBenchmark):
+    params = [512]
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+    environment = "kitchen"
 
 
 if __name__ == "__main__":
@@ -204,10 +236,12 @@ if __name__ == "__main__":
         "FastG1": FastG1,
         "FastHumanoid": FastHumanoid,
         "FastAllegro": FastAllegro,
+        "FastKitchenG1": FastKitchenG1,
         "KpiCartpole": KpiCartpole,
         "KpiG1": KpiG1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
+        "KpiKitchenG1": KpiKitchenG1,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
