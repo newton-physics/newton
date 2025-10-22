@@ -30,7 +30,6 @@ from .collision_primitive import (
     collide_sphere_sphere,
 )
 from .flags import ParticleFlags, ShapeFlags
-from .gjk import build_ccd_generic
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
 from .types import (
     MESH_MAXHULLVERT,
@@ -50,7 +49,6 @@ __all__ = [
     "Mesh",
     "ParticleFlags",
     "ShapeFlags",
-    "build_ccd_generic",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",

@@ -1023,9 +1023,10 @@ def update_joint_transforms_kernel(
 @wp.kernel(enable_backward=False)
 def update_incoming_shape_xform_kernel(
     geom_to_shape_idx: wp.array(dtype=wp.int32),
-    shape_world: wp.array(dtype=wp.int32),
+    geom_is_static: wp.array(dtype=bool),
     shape_transform: wp.array(dtype=wp.transform),
     shape_range_len: int,
+    first_env_shape_base: int,
     geom_pos: wp.array(dtype=wp.vec3),
     geom_quat: wp.array(dtype=wp.quat),
     # output
@@ -1033,17 +1034,31 @@ def update_incoming_shape_xform_kernel(
     reverse_shape_mapping: wp.array(dtype=wp.int32, ndim=2),
     shape_incoming_xform: wp.array(dtype=wp.transform),
 ):
-    world_idx, geom_idx = wp.tid()
-    template_shape_idx = geom_to_shape_idx[geom_idx]
-    if template_shape_idx < 0:
+    env_idx, geom_idx = wp.tid()
+    template_or_static_idx = geom_to_shape_idx[geom_idx]
+    if template_or_static_idx < 0:
         return
-    if shape_world[template_shape_idx] < 0:
-        # this is a static shape that is used in all worlds
-        global_shape_idx = template_shape_idx
+
+    # Check if this is a static shape using the precomputed mask
+    # For static shapes, template_or_static_idx is the absolute Newton shape index
+    # For non-static shapes, template_or_static_idx is 0-based offset from first env's first shape
+    is_static = geom_is_static[geom_idx]
+
+    if is_static:
+        # Static shape - use absolute index
+        # Store world ID as -1 (sentinel) since static shapes exist in all worlds
+        # The actual world ID will be determined from the non-static shape in the contact pair
+        global_shape_idx = template_or_static_idx
+        if env_idx == 0:
+            # Only store the mapping once for static shapes (use env 0's geom index)
+            full_shape_mapping[global_shape_idx] = wp.vec2i(-1, geom_idx)
+        reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
     else:
-        global_shape_idx = world_idx * shape_range_len + template_shape_idx
-    full_shape_mapping[global_shape_idx] = wp.vec2i(world_idx, geom_idx)
-    reverse_shape_mapping[world_idx, geom_idx] = global_shape_idx
+        # Non-static shape - compute the absolute Newton shape index for this environment
+        # template_or_static_idx is 0-based offset within first_group shapes
+        global_shape_idx = first_env_shape_base + template_or_static_idx + env_idx * shape_range_len
+        full_shape_mapping[global_shape_idx] = wp.vec2i(env_idx, geom_idx)
+        reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
     # Update incoming shape transforms
     # compute the difference between the original shape transform
     # and the transform after applying the joint child transform
@@ -1802,6 +1817,13 @@ class SolverMuJoCo(SolverBase):
         if not model.joint_count:
             raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
 
+        # Validate that separate_worlds=False is only used with single world
+        if not separate_worlds and model.num_worlds > 1:
+            raise ValueError(
+                f"separate_worlds=False is only supported for single-world models. "
+                f"Got num_worlds={model.num_worlds}. Use separate_worlds=True for multi-world models."
+            )
+
         mujoco, mujoco_warp = self.import_mujoco()
 
         actuator_args = {
@@ -1991,6 +2013,7 @@ class SolverMuJoCo(SolverBase):
             GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
             GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
             GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
+            GeoType.CONVEX_MESH: mujoco.mjtGeom.mjGEOM_MESH,
         }
 
         mj_bodies = [spec.worldbody]
@@ -2020,6 +2043,10 @@ class SolverMuJoCo(SolverBase):
             selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0]
             selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0]
         else:
+            # if we are not separating environments to worlds, we use all shapes, bodies, joints
+            first_group = 0
+            shape_range_len = model.shape_count
+
             # if we are not separating worlds, we use all shapes, bodies, joints
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
@@ -2079,7 +2106,7 @@ class SolverMuJoCo(SolverBase):
                     "name": name,
                 }
                 tf = wp.transform(*shape_transform[shape])
-                if stype == GeoType.MESH:
+                if stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)
@@ -2410,9 +2437,28 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
             # build the geom index mappings now that we have the actual indices
+            # geom_to_shape_idx maps from MuJoCo geom index to absolute Newton shape index.
+            # Convert non-static shapes to template-relative indices for the kernel.
             geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
-            fill_arr_from_dict(geom_to_shape_idx_np, geom_to_shape_idx)
+
+            # Find the minimum shape index for the first non-static group to use as the base
+            first_env_shapes = np.where(shape_world == first_group)[0]
+            first_env_shape_base = int(np.min(first_env_shapes)) if len(first_env_shapes) > 0 else 0
+
+            # Per-geom static mask (True if static, False otherwise)
+            geom_is_static_np = np.zeros((self.mj_model.ngeom,), dtype=bool)
+
+            for geom_idx, abs_shape_idx in geom_to_shape_idx.items():
+                if shape_world[abs_shape_idx] < 0:
+                    # Static shape - use absolute index and mark mask
+                    geom_to_shape_idx_np[geom_idx] = abs_shape_idx
+                    geom_is_static_np[geom_idx] = True
+                else:
+                    # Non-static shape - convert to template-relative offset from first env base
+                    geom_to_shape_idx_np[geom_idx] = abs_shape_idx - first_env_shape_base
+
             geom_to_shape_idx_wp = wp.array(geom_to_shape_idx_np, dtype=wp.int32)
+            geom_is_static_wp = wp.array(geom_is_static_np, dtype=bool)
 
             # use the actual number of geoms from the MuJoCo model
             self.to_newton_shape_index = wp.full((model.num_worlds, self.mj_model.ngeom), -1, dtype=wp.int32)
@@ -2433,9 +2479,10 @@ class SolverMuJoCo(SolverBase):
                     dim=(self.model.num_worlds, self.mj_model.ngeom),
                     inputs=[
                         geom_to_shape_idx_wp,
-                        self.model.shape_world,
+                        geom_is_static_wp,
                         self.model.shape_transform,
                         shape_range_len,
+                        first_env_shape_base,
                         self.mjw_model.geom_pos[0],
                         self.mjw_model.geom_quat[0],
                     ],
